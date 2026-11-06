@@ -400,7 +400,13 @@ One batch response is successful only after every member has a confirmed reply;
 code 16 exposes no partial digest vector. An uncertain member or mixed leadership
 result refuses the whole response.
 The members are not an atomic transaction. Failed publication never replays an
-uncertain write. Standalone journal nodes apply and sync members one at a time.
+uncertain write. A standalone journal node applies the bounded batch under one
+lock, appends one binary outcome per accepted page, and performs one durability
+sync before replying. At the maximum batch width this changes eight durability
+syncs into one without changing the eight recoverable outcomes. If a later
+member is refused, the accepted prefix is synced before the error is returned.
+Recovery can therefore observe that prefix;
+the shared sync reduces write amplification but does not make the pages atomic.
 This reduces request admission overhead for small object pages; it does not
 reduce replicated page payload bytes or physical storage writes.
 

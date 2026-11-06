@@ -441,10 +441,12 @@ fn frame_response(
                 };
                 #[cfg(not(feature = "chunk-consensus"))]
                 let result = match request {
-                    ReplicaRequest::WriteChunkBatchIfSequence { writes } =>
-                        apply_batch(replica, writes, options.max_payload_bytes),
-                    ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } =>
-                        apply_batch_digests(replica, writes, options.max_payload_bytes),
+                    ReplicaRequest::WriteChunkBatchIfSequence { writes } => {
+                        apply_batch(replica, writes, options.max_payload_bytes)
+                    }
+                    ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } => {
+                        apply_batch_digests(replica, writes, options.max_payload_bytes)
+                    }
                     request => apply(replica, request, options.max_payload_bytes),
                 };
                 match result.and_then(|reply| {
@@ -470,14 +472,32 @@ fn apply_batch(
     writes: Vec<super::message::ConditionalChunkWrite>,
     max_payload_bytes: usize,
 ) -> Result<ReplicaReply, ObjectError> {
-    for write in writes {
-        apply(replica, ReplicaRequest::WriteChunkIfSequence {
-            page_id: write.page_id,
-            offset: write.offset,
-            data: write.data,
-            expected_sequence: write.expected_sequence,
-        }, max_payload_bytes)?;
+    if writes.is_empty() {
+        return Ok(ReplicaReply::Applied);
     }
+    let mut guard = replica.lock().map_err(|_| {
+        ObjectError::Corruption(
+            "this replica's state was left locked by a request that panicked, so it can no longer be trusted to answer"
+                .to_string(),
+        )
+    })?;
+    for write in writes {
+        if let Err(error) = apply_locked(
+            &mut guard,
+            ReplicaRequest::WriteChunkIfSequence {
+                page_id: write.page_id,
+                offset: write.offset,
+                data: write.data,
+                expected_sequence: write.expected_sequence,
+            },
+            max_payload_bytes,
+            false,
+        ) {
+            finish_deferred_journal(&mut guard)?;
+            return Err(error);
+        }
+    }
+    finish_deferred_journal(&mut guard)?;
     Ok(ReplicaReply::Applied)
 }
 
@@ -486,10 +506,19 @@ fn apply_batch_digests(
     writes: Vec<super::message::ConditionalChunkWrite>,
     max_payload_bytes: usize,
 ) -> Result<ReplicaReply, ObjectError> {
+    if writes.is_empty() {
+        return Ok(ReplicaReply::Digests(Vec::new()));
+    }
+    let mut guard = replica.lock().map_err(|_| {
+        ObjectError::Corruption(
+            "this replica's state was left locked by a request that panicked, so it can no longer be trusted to answer"
+                .to_string(),
+        )
+    })?;
     let mut digests = Vec::with_capacity(writes.len());
     for write in writes {
-        match apply(
-            replica,
+        let reply = match apply_locked(
+            &mut guard,
             ReplicaRequest::WriteChunkIfSequenceDigest {
                 page_id: write.page_id,
                 offset: write.offset,
@@ -497,20 +526,54 @@ fn apply_batch_digests(
                 expected_sequence: write.expected_sequence,
             },
             max_payload_bytes,
-        )? {
+            false,
+        ) {
+            Ok(reply) => reply,
+            Err(error) => {
+                finish_deferred_journal(&mut guard)?;
+                return Err(error);
+            }
+        };
+        match reply {
             ReplicaReply::Digest {
                 write_sequence,
                 length,
                 sha256,
             } => digests.push((write_sequence, length, sha256)),
             other => {
+                finish_deferred_journal(&mut guard)?;
                 return Err(ObjectError::Corruption(format!(
                     "unexpected conditional write digest reply: {other:?}"
                 )))
             }
         }
     }
+    finish_deferred_journal(&mut guard)?;
     Ok(ReplicaReply::Digests(digests))
+}
+
+fn finish_deferred_journal(guard: &mut NodeReplica) -> Result<(), ObjectError> {
+    let Some(journal) = guard.journal.as_mut() else {
+        return Ok(());
+    };
+    if let Err(error) = journal.sync_deferred() {
+        guard.failed = true;
+        return Err(ObjectError::Corruption(format!(
+            "replica outcome persistence failed: {error}"
+        )));
+    }
+    if journal.checkpoint_due(guard.journal_checkpoint_after_bytes) {
+        let NodeReplica {
+            service, journal, ..
+        } = guard;
+        if let Err(error) = journal.as_mut().unwrap().checkpoint(service) {
+            guard.failed = true;
+            return Err(ObjectError::Corruption(format!(
+                "replica outcome persistence failed: {error}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Run one request against the replica.
@@ -534,6 +597,15 @@ fn apply(
                 .to_string(),
         )
     })?;
+    apply_locked(&mut guard, request, max_payload_bytes, true)
+}
+
+fn apply_locked(
+    guard: &mut NodeReplica,
+    request: ReplicaRequest,
+    max_payload_bytes: usize,
+    sync_journal: bool,
+) -> Result<ReplicaReply, ObjectError> {
     if guard.failed {
         return Err(ObjectError::Corruption(
             "replica journal failed; restart and recover before serving requests".to_string(),
@@ -557,7 +629,7 @@ fn apply(
         ));
     }
     if let ReplicaRequest::StateInstall(request) = request {
-        return apply_state_install(&mut guard, request);
+        return apply_state_install(guard, request);
     }
     if let ReplicaRequest::ReadChunkStateRange { length, .. } = &request {
         let size = usize::try_from(*length)
@@ -651,14 +723,18 @@ fn apply(
                 );
             let record = ReplicaJournal::encode_outcome(&outcome)
                 .map_err(|err| ObjectError::Corruption(err.to_string()))?;
-            guard
-                .journal
-                .as_mut()
-                .unwrap()
-                .append(&record)
-                .map_err(|err| ObjectError::Corruption(err.to_string()))
+            let journal = guard.journal.as_mut().unwrap();
+            if sync_journal {
+                journal.append(&record)
+            } else {
+                journal.append_deferred(&record)
+            }
+            .map_err(|err| ObjectError::Corruption(err.to_string()))
         })();
         let persist = persist.and_then(|()| {
+            if !sync_journal {
+                return Ok(());
+            }
             if guard
                 .journal
                 .as_ref()
@@ -1049,6 +1125,98 @@ mod journal_failure_tests {
             assert_eq!(service.head_chunk(&page).unwrap(), before);
         }
         assert_eq!(service.read_chunk(&page, 0, 8).unwrap().data, b"original");
+    }
+
+    #[test]
+    fn standalone_star_batches_sync_once_and_recover_accepted_prefixes() {
+        let directory = std::env::temp_dir().join(format!(
+            "replica-star-batch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("replica.wal");
+        let mut service = MatrixReplicaService::new();
+        let journal = ReplicaJournal::open(&path, &mut service).unwrap();
+        let replica = Arc::new(Mutex::new(NodeReplica {
+            used_bytes: 0,
+            service,
+            journal: Some(journal),
+            journal_checkpoint_after_bytes: 0,
+            staged: None,
+            maintenance: false,
+            max_pages: 65_536,
+            #[cfg(all(feature = "chunk-consensus", feature = "meta-server"))]
+            applied_membership: None,
+            failed: false,
+        }));
+        let make_page = |index| PageId {
+            chunk_id: ChunkId::new(7, 9).unwrap(),
+            page_index: index,
+        };
+        let write = |index, expected_sequence| super::super::message::ConditionalChunkWrite {
+            page_id: make_page(index),
+            offset: 0,
+            data: vec![index as u8 + 1; 16],
+            expected_sequence,
+        };
+
+        assert_eq!(
+            apply_batch(
+                &replica,
+                (0..8).map(|index| write(index, 0)).collect(),
+                MAX_PAYLOAD_BYTES,
+            )
+            .unwrap(),
+            ReplicaReply::Applied
+        );
+        assert_eq!(
+            replica
+                .lock()
+                .unwrap()
+                .journal
+                .as_ref()
+                .unwrap()
+                .sync_count(),
+            1
+        );
+
+        assert!(matches!(
+            apply_batch(
+                &replica,
+                vec![write(8, 0), write(9, 1)],
+                MAX_PAYLOAD_BYTES,
+            ),
+            Err(ObjectError::PreconditionFailed(_))
+        ));
+        assert_eq!(
+            replica
+                .lock()
+                .unwrap()
+                .journal
+                .as_ref()
+                .unwrap()
+                .sync_count(),
+            2
+        );
+        drop(replica);
+
+        let mut recovered = MatrixReplicaService::new();
+        drop(ReplicaJournal::open(&path, &mut recovered).unwrap());
+        for index in 0..9 {
+            assert_eq!(
+                recovered.read_chunk(&make_page(index), 0, 16).unwrap().data,
+                vec![index as u8 + 1; 16]
+            );
+        }
+        assert!(matches!(
+            recovered.head_chunk(&make_page(9)),
+            Err(ObjectError::NotFound(_))
+        ));
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
