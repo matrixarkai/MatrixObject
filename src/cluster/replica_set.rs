@@ -35,6 +35,54 @@ use crate::{ObjectError, PageId, ReplicaHead, ReplicaReadResult};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 
+#[cfg(unix)]
+fn wait_for_pending(pending: &[Option<super::client::PendingReplicaReply<'_>>]) {
+    use std::os::fd::AsRawFd;
+
+    let mut deadline = None;
+    let mut descriptors = Vec::with_capacity(pending.len());
+    for reply in pending.iter().flatten() {
+        let (socket, events) = reply.readiness();
+        descriptors.push(libc::pollfd {
+            fd: socket.as_raw_fd(),
+            events,
+            revents: 0,
+        });
+        deadline = Some(
+            deadline.map_or(reply.deadline(), |current: std::time::Instant| {
+                current.min(reply.deadline())
+            }),
+        );
+    }
+    let Some(deadline) = deadline else {
+        return;
+    };
+    let timeout = deadline
+        .saturating_duration_since(std::time::Instant::now())
+        .min(std::time::Duration::from_millis(50));
+    let milliseconds = timeout
+        .as_millis()
+        .saturating_add(u128::from(timeout.subsec_nanos() % 1_000_000 != 0))
+        .min(50) as libc::c_int;
+    // SAFETY: descriptors owns this initialized contiguous array for the
+    // duration of poll, and every socket stays borrowed by `pending`.
+    let result = unsafe {
+        libc::poll(
+            descriptors.as_mut_ptr(),
+            descriptors.len() as libc::nfds_t,
+            milliseconds,
+        )
+    };
+    if result < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[cfg(not(unix))]
+fn wait_for_pending(_: &[Option<super::client::PendingReplicaReply<'_>>]) {
+    std::thread::sleep(std::time::Duration::from_millis(1));
+}
+
 /// A set of replica nodes in other processes, and the quorums over them.
 #[derive(Debug)]
 pub struct RemoteReplicaSet {
@@ -186,7 +234,7 @@ impl RemoteReplicaSet {
                 }
             }
             if !progressed && pending.iter().any(Option::is_some) {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                wait_for_pending(&pending);
             }
         }
         replies.into_iter().map(Option::unwrap).collect()
@@ -938,6 +986,57 @@ mod send_progress_tests {
     use std::os::fd::AsRawFd;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn star_fanout_wait_wakes_for_a_replica_reply() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let mut client = RemoteReplicaClient::connect(
+            &endpoint,
+            &ReplicaClientOptions {
+                read_timeout: Duration::from_secs(1),
+                write_timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (mut peer, _) = listener.accept().unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut header = [0; 6];
+            peer.read_exact(&mut header).unwrap();
+            let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+            let mut payload = vec![0; length];
+            peer.read_exact(&mut payload).unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+            peer.write_all(&super::super::message::encode_reply(&ReplicaReply::Applied))
+                .unwrap();
+        });
+        let request = ReplicaRequest::WriteChunkIfSequence {
+            page_id: PageId {
+                chunk_id: crate::ChunkId::new(1, 1).unwrap(),
+                page_index: 0,
+            },
+            offset: 0,
+            data: vec![7; 1024],
+            expected_sequence: 0,
+        };
+        let mut pending = Some(
+            client
+                .begin_encoded(
+                    request.code(),
+                    super::super::message::encode_request(&request).into(),
+                )
+                .unwrap(),
+        );
+        assert!(pending.as_mut().unwrap().poll().is_none());
+        wait_for_pending(std::slice::from_ref(&pending));
+        assert!(matches!(
+            pending.as_mut().unwrap().poll(),
+            Some(Ok(ReplicaReply::Applied))
+        ));
+        drop(pending);
+        worker.join().unwrap();
+    }
 
     #[test]
     fn star_blocked_sender_does_not_delay_healthy_members_or_replay() {

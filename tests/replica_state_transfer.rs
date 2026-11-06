@@ -815,7 +815,7 @@ fn star_fanout_measures_reads_and_writes_with_delayed_replies() {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::time::{Duration, Instant};
-    fn run(pipelined: bool, round: usize) {
+    fn run(pipelined: bool, round: usize, delay_ms: u64) {
         let nodes: Vec<_> = (0..3).map(|_| start()).collect();
         let listeners: Vec<_> = (0..3)
             .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
@@ -870,7 +870,7 @@ fn star_fanout_measures_reads_and_writes_with_delayed_replies() {
                         assert!(size <= 8192);
                         body.resize(size, 0);
                         back.read_exact(&mut body).unwrap();
-                        std::thread::sleep(Duration::from_millis(5));
+                        std::thread::sleep(Duration::from_millis(delay_ms));
                         front.write_all(&header).unwrap();
                         front.write_all(&body).unwrap();
                     }
@@ -962,9 +962,14 @@ fn star_fanout_measures_reads_and_writes_with_delayed_replies() {
         for (operation, mut samples) in [("write", writes), ("read", reads), ("head", heads)] {
             let total: u64 = samples.iter().sum();
             samples.sort_unstable();
-            eprintln!("STAR_DELAY round={round} pipelined={pipelined} operation={operation} replicas=3 bytes=1024 delay_ms=5 samples=24 total_us={total} p50_us={} p95_us={} operations_per_second={:.1}", samples[11], samples[22], 24_000_000.0 / total as f64);
+            eprintln!("STAR_DELAY round={round} pipelined={pipelined} operation={operation} replicas=3 bytes=1024 delay_ms={delay_ms} samples=24 total_us={total} p50_us={} p95_us={} operations_per_second={:.1}", samples[11], samples[22], 24_000_000.0 / total as f64);
         }
     }
+    let delay_ms = std::env::var("MATRIXOBJECT_STAR_REPLY_DELAY_MS")
+        .ok()
+        .map(|value| value.parse::<u64>().unwrap())
+        .unwrap_or(5);
+    assert!(delay_ms <= 100, "reply delay must be at most 100 ms");
     // Alternate order to reduce systematic warm-up bias. Do not assert timing ratios.
     for round in 0..3 {
         for pipelined in if round % 2 == 0 {
@@ -972,7 +977,7 @@ fn star_fanout_measures_reads_and_writes_with_delayed_replies() {
         } else {
             [true, false]
         } {
-            run(pipelined, round);
+            run(pipelined, round, delay_ms);
         }
     }
 }

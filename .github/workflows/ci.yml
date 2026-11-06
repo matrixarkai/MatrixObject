@@ -759,6 +759,12 @@ jobs:
           cargo test --locked --all-features --test replica_state_transfer star_reads_writes_and_discards_send_all_members_before_waiting_for_replies -- --exact --nocapture | tee /tmp/star-fanout.log
           grep -q 'test result: ok. 1 passed' /tmp/star-fanout.log
 
+      - name: star fanout waits for socket readiness
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::replica_set::send_progress_tests::star_fanout_wait_wakes_for_a_replica_reply -- --exact --nocapture | tee /tmp/star-readiness.log
+          grep -q 'test result: ok. 1 passed' /tmp/star-readiness.log
+
       - name: unfinished fanout replies close their connections
         run: |
           set -o pipefail

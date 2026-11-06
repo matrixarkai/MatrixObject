@@ -419,7 +419,12 @@ The existing socket-phase test now holds every head reply until all members have
 received the request, checking both present and absent pages. The controlled-delay
 release benchmark also times heads: over three alternating serial/send-all rounds
 of 24 samples with three members and a 5 ms delay per reply, median head latency
-was 16.78–16.91 ms serially and 5.87–5.88 ms with send-all scheduling on local WSL.
+was 16.83–17.03 ms serially and 5.62–5.79 ms with send-all scheduling on local WSL.
+The same benchmark with no injected delay, built from clean isolated release
+targets before and after readiness waiting, measured median star-write latency
+falling from 2.498–2.600 ms to 0.833–0.861 ms and throughput rising from 379–392
+to 1,093–1,130 operations per second. Median send-all read and head latency fell
+from 1.24–1.35 ms to 0.42–0.46 ms.
 Those injected-delay observations measure overlapping replies, not production
 latency or total repair throughput. Repair still validates complete bytes and
 rechecks its source quorum before staging and committing each destination.
@@ -691,13 +696,17 @@ request. Its write deadline starts when the exchange is prepared; its response
 deadline starts only when the entire request has been sent. An optional absolute
 client deadline clamps both stages.
 
-Replies also advance in bounded 64 KiB sweeps. Idle sweeps sleep briefly; sweeps
-that transfer bytes continue immediately. Waiting on earlier members never grants
-later members a fresh timeout. All selected exchanges are resolved or expired
-before returning, with results kept in membership order and the same quorum
-checks. Partial requests and incomplete or invalid responses retire their sockets;
-fully decoded replies restore blocking operation for reuse. An expired partial
-write can still have reached the server and is never automatically replayed.
+Replies also advance in bounded 64 KiB sweeps. Sweeps that transfer bytes continue
+immediately. When no member advances on Unix, one `poll` waits for pending sends
+to become writable or pending replies to become readable, bounded by the earliest
+exchange deadline and a 50 ms wake interval. This removes the fixed one-millisecond
+timer from healthy low-latency fan-out. Non-Unix builds retain that timer fallback.
+Waiting on earlier members never grants later members a fresh timeout. All selected
+exchanges are resolved or expired before returning, with results kept in membership
+order and the same quorum checks. Partial requests and incomplete or invalid
+responses retire their sockets; fully decoded replies restore blocking operation
+for reuse. An expired partial write can still have reached the server and is never
+automatically replayed.
 
 No extra worker threads are created. Pending sends share one encoded frame, and
 each pending response retains at most its configured payload bound plus its frame
@@ -709,4 +718,5 @@ reads while an 8 MiB mutation is sent to three members. Both healthy members mus
 receive and acknowledge the complete request before the stalled member's send
 timeout. The test checks a partial frame at the stalled member and no replay at
 the healthy members. It fails with the former sequential send implementation and
-passes with bounded send sweeps in local WSL.
+passes with bounded send sweeps in local WSL. A separate socket test waits on a
+pending reply and verifies that readiness wakes the fan-out collector.
