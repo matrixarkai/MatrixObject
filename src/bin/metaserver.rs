@@ -23,7 +23,7 @@
 //! | `MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES` | `0` | opt-in WAL checkpoint interval; 1024..134217728 bytes when enabled |
 //! | `MATRIXOBJECT_METASERVER_ADDR` | `127.0.0.1:17200` | address to bind; port `0` lets the kernel choose |
 //! | `MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS` | `0` | automatic expiry TTL, 1000..3600000 ms; zero disables |
-//! | `MATRIXOBJECT_METASERVER_THREADS` | `2` | connections served at once |
+//! | `MATRIXOBJECT_METASERVER_THREADS` | logical CPUs, clamped to `4..=16` | connections served at once |
 //! | `MATRIXOBJECT_METASERVER_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
 //! | `MATRIXOBJECT_METASERVER_STATE_DIR` | *(unset)* | existing directory for locked, atomic metadata snapshots |
 //! | `MATRIXOBJECT_METASERVER_DATA_ROSTER` | *(unset)* | comma-separated `node-id@socket-address@failure-domain`; starts offline until heartbeat |
@@ -47,7 +47,7 @@
 //!
 //! ```text
 //! metaserver listening on 127.0.0.1:41923 pid=81124 protocol_stamp=1 \
-//!   threads=2 max_payload_bytes=8388608 auth=none storage=memory
+//!   threads=16 max_payload_bytes=8388608 auth=none storage=memory
 //! ```
 //!
 //! Printed before serving and flushed, because a supervisor -- or a test standing this up on
@@ -78,6 +78,20 @@ fn main() {
          build turned it off: cargo run --features meta-server --bin metaserver"
     );
     std::process::exit(2);
+}
+
+#[cfg(feature = "meta-server")]
+fn worker_threads_for_parallelism(parallelism: usize) -> usize {
+    parallelism.clamp(4, 16)
+}
+
+#[cfg(feature = "meta-server")]
+fn default_worker_threads() -> usize {
+    worker_threads_for_parallelism(
+        std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(4),
+    )
 }
 
 #[cfg(feature = "meta-server")]
@@ -114,7 +128,11 @@ fn main() {
     }
 
     let addr = env_string("MATRIXOBJECT_METASERVER_ADDR", "127.0.0.1:17200");
-    let worker_threads = env_usize("MATRIXOBJECT_METASERVER_THREADS", 2).max(1);
+    let worker_threads = env_usize(
+        "MATRIXOBJECT_METASERVER_THREADS",
+        default_worker_threads(),
+    )
+    .max(1);
     let max_payload_bytes = env_usize(
         "MATRIXOBJECT_METASERVER_MAX_PAYLOAD_BYTES",
         MAX_PAYLOAD_BYTES,
@@ -358,5 +376,20 @@ fn main() {
     if let Err(err) = server.serve() {
         eprintln!("the accept loop stopped: {err}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(all(test, feature = "meta-server"))]
+mod tests {
+    use super::worker_threads_for_parallelism;
+
+    #[test]
+    fn metadata_worker_default_is_bounded_by_host_parallelism() {
+        assert_eq!(worker_threads_for_parallelism(0), 4);
+        assert_eq!(worker_threads_for_parallelism(1), 4);
+        assert_eq!(worker_threads_for_parallelism(4), 4);
+        assert_eq!(worker_threads_for_parallelism(8), 8);
+        assert_eq!(worker_threads_for_parallelism(16), 16);
+        assert_eq!(worker_threads_for_parallelism(128), 16);
     }
 }

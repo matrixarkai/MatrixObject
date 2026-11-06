@@ -214,6 +214,30 @@ fn an_empty_endpoint_list_is_the_control_plane_this_store_has_always_had() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn metaserver_default_worker_pool_tracks_bounded_host_parallelism() {
+    use node_regime::processes;
+
+    assert!(
+        std::env::var_os("MATRIXOBJECT_METASERVER_THREADS").is_none(),
+        "this test requires the worker override to be absent"
+    );
+    let node = processes::start(
+        env!("CARGO_BIN_EXE_metaserver"),
+        &[("MATRIXOBJECT_METASERVER_ADDR", "127.0.0.1:0")],
+    );
+    let reported = processes::field(&node.startup_line, "threads=")
+        .expect("the startup line reports its worker count")
+        .parse::<usize>()
+        .expect("the worker count is numeric");
+    let expected = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(4)
+        .clamp(4, 16);
+    assert_eq!(reported, expected);
+}
+
 // ---------------------------------------------------------------------------------------
 // The test that decides it
 // ---------------------------------------------------------------------------------------
