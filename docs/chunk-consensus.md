@@ -363,14 +363,16 @@ must resolve uncertain results before issuing another operation.
 `RemoteReplicaSet::write_chunks` admits up to eight distinct pages. One code-18
 binary protobuf request asks each member for the whole ordered head batch. The
 coordinator votes every page independently, then groups pages by the members
-matching their selected state. Each group shares one code-14 binary protobuf
-mutation frame per selected member. Eight new pages with the same matching set
-therefore use one head frame and one mutation frame per member instead of eight
-head frames and eight mutation frames. A typed unknown-request refusal permits
+matching their selected state. Each group is partitioned into code-14 binary
+protobuf mutation frames of at most eight pages and 4 MiB of page data. Eight
+small new pages with the same matching set use one head frame and one mutation
+frame per member. Eight default one-MiB pages use one head frame and two
+four-page mutation frames instead of eight head frames and eight mutation
+frames. A typed unknown-request refusal permits
 the read-only head phase to fall back to scalar fencing before any mutation is
 sent. A group is successful only when its complete batch is acknowledged by a
-write quorum. Groups are sent without replay; an error can follow an earlier
-acknowledged group, so candidate pages must be probed before retrying.
+write quorum. Frames are sent without replay; an error can follow an earlier
+acknowledged frame, so candidate pages must be probed before retrying.
 
 The check prevents an already divergent member from counting toward a fresh write
 acknowledgment. It does not repair that member, establish cross-client linearizability

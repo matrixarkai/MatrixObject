@@ -324,8 +324,9 @@ impl RemoteReplicaSet {
     /// Every page is fenced against a quorum-agreed head before any mutation is
     /// sent. Pages with the same matching member set share one encoded conditional
     /// write batch, reducing mutation frames without letting a divergent member
-    /// vote for a write. An error can follow an acknowledged earlier group; callers
-    /// must probe candidate pages instead of replaying an uncertain batch.
+    /// vote for a write. Frames carry at most four MiB of page data. An error can
+    /// follow an acknowledged earlier frame; callers must probe candidate pages
+    /// instead of replaying an uncertain batch.
     pub fn write_chunks(
         &mut self,
         writes: &[(PageId, u64, &[u8])],
@@ -337,6 +338,11 @@ impl RemoteReplicaSet {
         }
         if writes.is_empty() {
             return Ok(Vec::new());
+        }
+        if writes.iter().any(|(_, _, data)| data.len() > 1024 * 1024) {
+            return Err(ObjectError::InvalidArgument(
+                "star write page exceeds one MiB".into(),
+            ));
         }
         let mut pages = BTreeSet::new();
         if writes
@@ -367,31 +373,50 @@ impl RemoteReplicaSet {
 
         let mut acknowledgements = vec![0; writes.len()];
         for (matching, group) in groups {
-            let indexes: Vec<_> = group.iter().map(|(index, _)| *index).collect();
-            let request = ReplicaRequest::WriteChunkBatchIfSequence {
-                writes: group.into_iter().map(|(_, write)| write).collect(),
-            };
-            let mut acknowledged = 0usize;
-            let mut first_error = None;
-            for result in self.fan_out(&request, Some(&matching)) {
-                match applied(result) {
-                    Ok(()) => acknowledged += 1,
-                    Err(error) if first_error.is_none() => first_error = Some(error),
-                    Err(_) => {}
+            let mut remaining = group.into_iter().peekable();
+            while remaining.peek().is_some() {
+                let mut frame = Vec::new();
+                let mut frame_bytes = 0usize;
+                while frame.len() < 8 {
+                    let Some((_, write)) = remaining.peek() else {
+                        break;
+                    };
+                    let Some(next_bytes) = frame_bytes.checked_add(write.data.len()) else {
+                        break;
+                    };
+                    if !frame.is_empty() && next_bytes > 4 * 1024 * 1024 {
+                        break;
+                    }
+                    let (index, write) = remaining.next().unwrap();
+                    frame_bytes = next_bytes;
+                    frame.push((index, write));
                 }
-            }
-            if acknowledged < self.write_quorum {
-                return Err(first_error.unwrap_or_else(|| {
-                    ObjectError::Corruption(format!(
-                        "a star write batch was acknowledged by {acknowledged} of {} replica(s), \
-                         short of a write quorum of {}",
-                        self.replicas.len(),
-                        self.write_quorum
-                    ))
-                }));
-            }
-            for index in indexes {
-                acknowledgements[index] = acknowledged;
+                let indexes: Vec<_> = frame.iter().map(|(index, _)| *index).collect();
+                let request = ReplicaRequest::WriteChunkBatchIfSequence {
+                    writes: frame.into_iter().map(|(_, write)| write).collect(),
+                };
+                let mut acknowledged = 0usize;
+                let mut first_error = None;
+                for result in self.fan_out(&request, Some(&matching)) {
+                    match applied(result) {
+                        Ok(()) => acknowledged += 1,
+                        Err(error) if first_error.is_none() => first_error = Some(error),
+                        Err(_) => {}
+                    }
+                }
+                if acknowledged < self.write_quorum {
+                    return Err(first_error.unwrap_or_else(|| {
+                        ObjectError::Corruption(format!(
+                            "a star write batch was acknowledged by {acknowledged} of {} replica(s), \
+                             short of a write quorum of {}",
+                            self.replicas.len(),
+                            self.write_quorum
+                        ))
+                    }));
+                }
+                for index in indexes {
+                    acknowledgements[index] = acknowledged;
+                }
             }
         }
         Ok(acknowledgements)

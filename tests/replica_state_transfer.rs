@@ -540,7 +540,7 @@ fn star_reads_writes_and_discards_send_all_members_before_waiting_for_replies() 
 }
 
 #[test]
-fn star_write_batch_uses_one_head_and_one_mutation_frame_per_member() {
+fn default_page_star_write_uses_four_page_mutation_frames() {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc;
@@ -610,11 +610,11 @@ fn star_write_batch_uses_one_head_and_one_mutation_frame_per_member() {
 
     let mut set =
         RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
-    assert_eq!(
-        set.write_chunks(&[(page(10), 0, b"first"), (page(11), 0, b"second")])
-            .unwrap(),
-        vec![3, 3]
-    );
+    let data = vec![7u8; 1024 * 1024];
+    let writes: Vec<_> = (10..18)
+        .map(|index| (page(index), 0, data.as_slice()))
+        .collect();
+    assert_eq!(set.write_chunks(&writes).unwrap(), vec![3; 8]);
     drop(set);
     for worker in workers {
         worker.join().unwrap();
@@ -627,12 +627,25 @@ fn star_write_batch_uses_one_head_and_one_mutation_frame_per_member() {
     const HEAD_CHUNK_BATCH_CODE: u8 = 18;
     const CONDITIONAL_BATCH_CODE: u8 = 14;
     for member in codes {
-        assert_eq!(member, vec![HEAD_CHUNK_BATCH_CODE, CONDITIONAL_BATCH_CODE]);
+        assert_eq!(
+            member,
+            vec![
+                HEAD_CHUNK_BATCH_CODE,
+                CONDITIONAL_BATCH_CODE,
+                CONDITIONAL_BATCH_CODE,
+            ]
+        );
     }
     for node in &nodes {
         let mut replica = client(node);
-        assert_eq!(replica.read_chunk(&page(10), 0, 5).unwrap().data, b"first");
-        assert_eq!(replica.read_chunk(&page(11), 0, 6).unwrap().data, b"second");
+        assert_eq!(
+            replica.read_chunk(&page(10), 0, data.len() as u64).unwrap().data,
+            data
+        );
+        assert_eq!(
+            replica.read_chunk(&page(17), 0, data.len() as u64).unwrap().data,
+            data
+        );
     }
 }
 
