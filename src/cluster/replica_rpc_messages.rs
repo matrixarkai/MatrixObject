@@ -473,11 +473,16 @@ impl ReplicaRequest {
             let value: super::conditional_requests::ChunkWriteBatch =
                 super::conditional_requests::decode(payload)?;
             if value.version != 1
-                || value.writes.len() > 4
+                || value.writes.len() > 8
                 || value
                     .writes
                     .iter()
                     .any(|write| write.version != 1 || write.data.len() > 1024 * 1024)
+                || value
+                    .writes
+                    .iter()
+                    .try_fold(0usize, |total, write| total.checked_add(write.data.len()))
+                    .is_none_or(|total| total > 4 * 1024 * 1024)
             {
                 return Err(ObjectError::InvalidArgument(
                     "invalid conditional write batch".into(),
@@ -772,7 +777,7 @@ impl ReplicaReply {
             }
             let value: super::conditional_requests::ChunkDigestBatch =
                 super::conditional_requests::decode(payload)?;
-            if value.version != 1 || value.digests.len() > 4 {
+            if value.version != 1 || value.digests.len() > 8 {
                 return Err(ObjectError::Corruption(
                     "invalid conditional write digest batch reply".into(),
                 ));

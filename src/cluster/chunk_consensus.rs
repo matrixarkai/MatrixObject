@@ -440,7 +440,7 @@ impl ChunkConsensus {
         if self.is_failed() {
             return Err(refused("chunk consensus unavailable"));
         }
-        if writes.len() > 4 || writes.iter().any(|write| write.data.len() > 1024 * 1024)
+        if writes.len() > 8 || writes.iter().any(|write| write.data.len() > 1024 * 1024)
             || writes.iter().map(|write| write.data.len()).sum::<usize>() > 4 * 1024 * 1024
         {
             return Err(refused("invalid conditional write batch"));

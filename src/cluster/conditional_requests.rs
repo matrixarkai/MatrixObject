@@ -186,6 +186,16 @@ mod tests {
         let bytes = request.encode_payload();
         assert_eq!(RequestCode::from_u8(14), Some(RequestCode::WriteChunkBatchIfSequence));
         assert_eq!(ReplicaRequest::decode(request.code(), &bytes).unwrap(), request);
+        let mut maximum: ChunkWriteBatch = decode(&bytes).unwrap();
+        maximum.writes.resize(8, maximum.writes[0].clone());
+        for write in &mut maximum.writes {
+            write.data.resize(512 * 1024, 7);
+        }
+        let maximum_bytes = maximum.encode_to_vec();
+        assert!(maximum_bytes.len() <= 4 * 1024 * 1024 + 512);
+        assert!(ReplicaRequest::decode(request.code(), &maximum_bytes).is_ok());
+        maximum.writes[0].data.push(7);
+        assert!(ReplicaRequest::decode(request.code(), &maximum.encode_to_vec()).is_err());
         let digest_request = ReplicaRequest::WriteChunkBatchIfSequenceDigest {
             writes: vec![write; 2],
         };
@@ -205,7 +215,7 @@ mod tests {
         value.writes[0].version = 2;
         assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_err());
         value.writes[0].version = 1;
-        value.writes.resize(5, value.writes[0].clone());
+        value.writes.resize(9, value.writes[0].clone());
         assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_err());
         let mut extra = bytes.clone();
         extra.extend([0x08, 0x01]);
@@ -252,7 +262,7 @@ mod tests {
             .is_err()
         );
         value.digests[0].sha256.push(7);
-        value.digests.resize(5, value.digests[0].clone());
+        value.digests.resize(9, value.digests[0].clone());
         assert!(
             ReplicaReply::decode(
                 RequestCode::WriteChunkBatchIfSequenceDigest,

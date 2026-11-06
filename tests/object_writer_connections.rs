@@ -216,22 +216,20 @@ fn small_pages_start_with_full_nonempty_batches() {
     let address = socket.local_addr().unwrap().to_string();
     let worker = thread::spawn(move || {
         let mut stream = accept(&socket);
-        for start in [0, 4] {
-            let ReplicaRequest::WriteChunkBatchIfSequence { writes } = replica(&mut stream) else {
-                panic!("small pages did not use a conditional write batch");
-            };
-            assert_eq!(writes.len(), 4);
-            assert_eq!(
-                writes
-                    .iter()
-                    .map(|write| write.page_id.page_index)
-                    .collect::<Vec<_>>(),
-                (start..start + 4).collect::<Vec<_>>()
-            );
-            stream
-                .write_all(&message::encode_reply(&ReplicaReply::Applied))
-                .unwrap();
-        }
+        let ReplicaRequest::WriteChunkBatchIfSequence { writes } = replica(&mut stream) else {
+            panic!("small pages did not use a conditional write batch");
+        };
+        assert_eq!(writes.len(), 8);
+        assert_eq!(
+            writes
+                .iter()
+                .map(|write| write.page_id.page_index)
+                .collect::<Vec<_>>(),
+            (0..8).collect::<Vec<_>>()
+        );
+        stream
+            .write_all(&message::encode_reply(&ReplicaReply::Applied))
+            .unwrap();
     });
     let mut client =
         RemoteReplicaClient::connect(&address, &ReplicaClientOptions::default()).unwrap();
@@ -254,34 +252,31 @@ fn small_pages_start_with_full_nonempty_batches() {
 }
 
 #[test]
-fn small_page_writes_return_digests_in_two_batch_exchanges() {
+fn eight_small_page_writes_return_digests_in_one_batch_exchange() {
     let socket = listener();
     let address = socket.local_addr().unwrap().to_string();
     let worker = thread::spawn(move || {
         let mut stream = accept(&socket);
-        for start in [0, 4] {
-            let ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } =
-                replica(&mut stream)
-            else {
-                panic!("small pages did not use a conditional write digest batch");
-            };
-            assert_eq!(writes.len(), 4);
-            let digests = writes
-                .iter()
-                .enumerate()
-                .map(|(position, write)| {
-                    assert_eq!(write.page_id.page_index, start + position as u64);
-                    let mut sha256 = [0; 32];
-                    sha256.copy_from_slice(
-                        ring::digest::digest(&ring::digest::SHA256, &write.data).as_ref(),
-                    );
-                    (1, write.data.len() as u64, sha256)
-                })
-                .collect();
-            stream
-                .write_all(&message::encode_reply(&ReplicaReply::Digests(digests)))
-                .unwrap();
-        }
+        let ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } = replica(&mut stream)
+        else {
+            panic!("small pages did not use a conditional write digest batch");
+        };
+        assert_eq!(writes.len(), 8);
+        let digests = writes
+            .iter()
+            .enumerate()
+            .map(|(position, write)| {
+                assert_eq!(write.page_id.page_index, position as u64);
+                let mut sha256 = [0; 32];
+                sha256.copy_from_slice(
+                    ring::digest::digest(&ring::digest::SHA256, &write.data).as_ref(),
+                );
+                (1, write.data.len() as u64, sha256)
+            })
+            .collect();
+        stream
+            .write_all(&message::encode_reply(&ReplicaReply::Digests(digests)))
+            .unwrap();
     });
     let mut client =
         RemoteReplicaClient::connect(&address, &ReplicaClientOptions::default()).unwrap();
@@ -304,6 +299,84 @@ fn small_page_writes_return_digests_in_two_batch_exchanges() {
         .unwrap();
     assert_eq!(digests.len(), writes.len());
     assert!(digests.iter().all(|(sequence, length, _)| *sequence == 1 && *length == 4));
+    worker.join().unwrap();
+}
+
+#[test]
+fn older_four_write_bound_is_discovered_before_admission() {
+    let socket = listener();
+    let address = socket.local_addr().unwrap().to_string();
+    let worker = thread::spawn(move || {
+        let mut stream = accept(&socket);
+        assert!(matches!(
+            replica(&mut stream),
+            ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes }
+                if writes.len() == 8
+        ));
+        stream
+            .write_all(&message::encode_failure(
+                StatusCode::InvalidArgument,
+                "invalid conditional write batch",
+            ))
+            .unwrap();
+        for start in [0, 4] {
+            let ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } =
+                replica(&mut stream)
+            else {
+                panic!("four-write digest batch missing");
+            };
+            assert_eq!(writes.len(), 4);
+            assert_eq!(writes[0].page_id.page_index, start);
+            let digests = writes
+                .iter()
+                .map(|write| {
+                    let mut sha256 = [0; 32];
+                    sha256.copy_from_slice(
+                        ring::digest::digest(&ring::digest::SHA256, &write.data).as_ref(),
+                    );
+                    (1, write.data.len() as u64, sha256)
+                })
+                .collect();
+            stream
+                .write_all(&message::encode_reply(&ReplicaReply::Digests(digests)))
+                .unwrap();
+        }
+        for start in [0, 4] {
+            let ReplicaRequest::WriteChunkBatchIfSequence { writes } = replica(&mut stream)
+            else {
+                panic!("four-write batch missing");
+            };
+            assert_eq!(writes.len(), 4);
+            assert_eq!(writes[0].page_id.page_index, start);
+            stream
+                .write_all(&message::encode_reply(&ReplicaReply::Applied))
+                .unwrap();
+        }
+    });
+    let mut client =
+        RemoteReplicaClient::connect(&address, &ReplicaClientOptions::default()).unwrap();
+    let chunk_id = ChunkId::new(1, 6).unwrap();
+    let writes: Vec<_> = (0..8)
+        .map(|index| {
+            (
+                PageId {
+                    chunk_id: chunk_id.clone(),
+                    page_index: index,
+                },
+                0,
+                b"page".as_slice(),
+                0,
+            )
+        })
+        .collect();
+    assert_eq!(
+        client
+            .write_chunks_if_sequence_with_digests(&writes)
+            .unwrap()
+            .len(),
+        8
+    );
+    client.write_chunks_if_sequence_pipelined(&writes).unwrap();
     worker.join().unwrap();
 }
 
@@ -435,45 +508,43 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                     for (batch_index, batch) in pages.chunks(8).enumerate() {
                         if writing {
                             if index == 0 {
-                                for part in batch.chunks(4) {
-                                    let ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } =
-                                        replica(&mut stream)
-                                    else {
-                                        panic!("page digest batch missing");
-                                    };
-                                    assert_eq!(writes.len(), part.len());
-                                    let mut digests = Vec::with_capacity(writes.len());
-                                    for (write, &page_index) in writes.iter().zip(part) {
-                                        let start = page_index as usize * 4;
-                                        assert_eq!(write.page_id.page_index, page_index);
-                                        assert_eq!(write.offset, 0);
-                                        assert_eq!(write.expected_sequence, 0);
-                                        assert_eq!(
-                                            write.data,
-                                            object[start..object.len().min(start + 4)]
-                                        );
-                                        let mut sha256 = [0; 32];
-                                        sha256.copy_from_slice(
-                                            ring::digest::digest(
-                                                &ring::digest::SHA256,
-                                                &write.data,
-                                            )
-                                            .as_ref(),
-                                        );
-                                        digests.push((1, write.data.len() as u64, sha256));
-                                    }
-                                    stream
-                                        .write_all(&message::encode_reply(&ReplicaReply::Digests(
-                                            digests,
-                                        )))
-                                        .unwrap();
+                                let ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } =
+                                    replica(&mut stream)
+                                else {
+                                    panic!("page digest batch missing");
+                                };
+                                assert_eq!(writes.len(), batch.len());
+                                let mut digests = Vec::with_capacity(writes.len());
+                                for (write, &page_index) in writes.iter().zip(batch) {
+                                    let start = page_index as usize * 4;
+                                    assert_eq!(write.page_id.page_index, page_index);
+                                    assert_eq!(write.offset, 0);
+                                    assert_eq!(write.expected_sequence, 0);
+                                    assert_eq!(
+                                        write.data,
+                                        object[start..object.len().min(start + 4)]
+                                    );
+                                    let mut sha256 = [0; 32];
+                                    sha256.copy_from_slice(
+                                        ring::digest::digest(
+                                            &ring::digest::SHA256,
+                                            &write.data,
+                                        )
+                                        .as_ref(),
+                                    );
+                                    digests.push((1, write.data.len() as u64, sha256));
                                 }
+                                stream
+                                    .write_all(&message::encode_reply(&ReplicaReply::Digests(
+                                        digests,
+                                    )))
+                                    .unwrap();
                             } else {
                                 if batch_index == 0 {
                                     assert!(matches!(
                                         replica(&mut stream),
                                         ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes }
-                                            if writes.len() == 4
+                                            if writes.len() == 8
                                     ));
                                     stream
                                         .write_all(&message::encode_failure(
@@ -484,7 +555,7 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                                     assert!(matches!(
                                         replica(&mut stream),
                                         ReplicaRequest::WriteChunkBatchIfSequence { writes }
-                                            if writes.len() == 4
+                                            if writes.len() == 8
                                     ));
                                     stream
                                         .write_all(&message::encode_failure(

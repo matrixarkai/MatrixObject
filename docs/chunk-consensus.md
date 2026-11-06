@@ -359,16 +359,18 @@ Raft-group writes continue through their leader and do not use this star fan-out
 ## Bounded object-write admission
 
 Replica request codes 14 and 16 carry the same canonical binary protobuf with at
-most four conditional page writes and no more than 4 MiB of page data. Code 16
+most eight conditional page writes and no more than 4 MiB of page data. Code 16
 returns an ordered canonical protobuf vector containing each committed range's
 write sequence, length and SHA-256 digest. The object writer uses code 16 only
-for pages of at most 64 KiB and starts with up to four real writes. This first
+for pages of at most 64 KiB and starts with up to eight real writes. This first
 request follows leader routing, discovers support and verifies the stored bytes
 without an empty capability or later digest exchange. An older server returns a
 typed unknown-request refusal before admission, which permits the client to use
 code 14 or its bounded individual pipeline followed by digest or full-byte
-verification. Larger pages retain the individual path. Empty code-14 requests
-remain harmless for older upgraded clients.
+verification. A server implementing the earlier four-write bound returns a typed
+invalid-batch response before admission; the client remembers that bound for the
+connection and sends four-write groups. Larger pages retain the individual path.
+Empty code-14 requests remain harmless for older upgraded clients.
 
 On a Raft voter, each accepted member becomes an independent conditional write
 in the consensus inbox. Adjacent writes can enter the existing proposal batch.
