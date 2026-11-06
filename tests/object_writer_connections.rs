@@ -1065,11 +1065,10 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
             let object = object.clone();
             let simultaneous_reads = Arc::clone(&simultaneous_reads);
             thread::spawn(move || {
-                // Both groups write on their verified preflight connections.
-                // The last route-matched connection is reused by the object read.
+                // Both groups write and read on their verified preflight connections.
                 let mut retained_write = None;
                 for turn in 0..2 {
-                    let mut stream = if turn == 1 && index == 1 {
+                    let mut stream = if turn == 1 {
                         retained_write.take().unwrap()
                     } else {
                         let mut stream = accept(&socket);

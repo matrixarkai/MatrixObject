@@ -5,6 +5,8 @@ use super::{ChunkGroupRoute, RemoteMetaClient, RemoteReplicaClient, ReplicaClien
 use crate::object_manifest::{ManifestOutcome, ObjectExtent, ObjectManifest};
 use crate::ObjectError;
 
+const MAX_CACHED_GROUP_CONNECTIONS: usize = 8;
+
 #[derive(Debug)]
 pub(super) struct CachedGroupConnection {
     group: String,
@@ -183,10 +185,11 @@ impl RemoteMetaClient {
         route: &ChunkGroupRoute,
         options: &ReplicaClientOptions,
     ) -> Option<RemoteReplicaClient> {
-        if self.object_connection.as_ref()?.group != group {
-            return None;
-        }
-        let mut cached = self.object_connection.take().unwrap();
+        let index = self
+            .object_connections
+            .iter()
+            .position(|cached| cached.group == group)?;
+        let mut cached = self.object_connections.remove(index);
         (cached.route == *route && cached.client.prepare_for_reuse(options))
             .then_some(cached.client)
     }
@@ -197,7 +200,17 @@ impl RemoteMetaClient {
         route: ChunkGroupRoute,
         client: RemoteReplicaClient,
     ) {
-        self.object_connection = Some(CachedGroupConnection {
+        if let Some(index) = self
+            .object_connections
+            .iter()
+            .position(|cached| cached.group == group)
+        {
+            self.object_connections.remove(index);
+        }
+        if self.object_connections.len() == MAX_CACHED_GROUP_CONNECTIONS {
+            self.object_connections.remove(0);
+        }
+        self.object_connections.push(CachedGroupConnection {
             group,
             route,
             client,
