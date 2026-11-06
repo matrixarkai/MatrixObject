@@ -412,6 +412,24 @@ the shared sync reduces write amplification but does not make the pages atomic.
 This reduces request admission overhead for small object pages; it does not
 reduce replicated page payload bytes or physical storage writes.
 
+## Reusing verified object-read connections
+
+Complete object reads retain one successfully verified data-group connection on
+the metadata client. A later read reuses it only when the placement identifier
+and the complete route still match and the connection accepts the new timeout
+and deadline options. The metadata route remains confirmed for every read. A
+changed route, unusable socket or failed read drops the cached connection and
+requires a new group-identity handshake.
+
+Multi-group reads keep their existing bounded parallelism: an uncached group
+connects and reads in its own worker, while a route-matched cached group begins
+on the retained socket. Successful workers return their connections to the
+single-entry cache; no failed or incomplete exchange is reused. The default
+one-group path therefore performs one data connection and identity handshake
+across sequential reads instead of repeating both for every object, without
+adding mutation retries or weakening manifest sequence, length and checksum
+validation.
+
 ## Star head-read scheduling
 
 `RemoteReplicaSet::head_chunk` sends a head request to every member before waiting
