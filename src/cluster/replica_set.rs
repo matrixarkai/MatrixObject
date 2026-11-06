@@ -603,6 +603,122 @@ impl RemoteReplicaSet {
         vote_reads(answered, replica_count, read_quorum)
     }
 
+    /// Read up to eight independent ranges through quorum-voted star fan-out.
+    /// Default one-MiB ranges share four-range frames while every member is
+    /// still polled and every range is voted independently.
+    pub fn read_chunks(
+        &mut self,
+        reads: &[(PageId, u64, u64)],
+    ) -> Result<Vec<ReplicaReadResult>, ObjectError> {
+        if reads.len() > 8 {
+            return Err(ObjectError::InvalidArgument(
+                "star read batch exceeds eight pages".into(),
+            ));
+        }
+        if reads.iter().any(|(_, _, length)| *length > 1024 * 1024) {
+            return Err(ObjectError::InvalidArgument(
+                "star read range exceeds one MiB".into(),
+            ));
+        }
+        if reads.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.reconnect_failed();
+        let replica_count = self.replicas.len();
+        let read_quorum = self.read_quorum;
+        let mut completed = 0usize;
+        let mut output = Vec::with_capacity(reads.len());
+        while completed < reads.len() {
+            let mut end = completed;
+            let mut frame_bytes = 0u64;
+            while end < reads.len() && end - completed < 8 {
+                let Some(next_bytes) = frame_bytes.checked_add(reads[end].2) else {
+                    break;
+                };
+                if end > completed && next_bytes > 4 * 1024 * 1024 {
+                    break;
+                }
+                frame_bytes = next_bytes;
+                end += 1;
+            }
+            let frame = &reads[completed..end];
+            let request = ReplicaRequest::ReadChunkBatch {
+                reads: frame.to_vec(),
+            };
+            let replies = self.fan_out(&request, None);
+            let scalar_fallback = replies.iter().any(|reply| {
+                matches!(
+                    reply,
+                    Err(ObjectError::PreconditionFailed(_))
+                        | Err(ObjectError::InvalidArgument(_))
+                        | Err(ObjectError::NotFound(_))
+                )
+            });
+            if scalar_fallback {
+                for (page_id, offset, length) in frame {
+                    output.push(self.read_chunk(page_id, *offset, *length)?);
+                }
+                completed = end;
+                continue;
+            }
+
+            let mut votes: Vec<Vec<ReplicaReadResult>> = (0..frame.len())
+                .map(|_| Vec::with_capacity(replica_count))
+                .collect();
+            let mut answered = 0usize;
+            let mut not_found = 0usize;
+            let mut unreachable = 0usize;
+            let mut first_error = None;
+            for reply in replies {
+                match reply {
+                    Ok(ReplicaReply::Reads(reads)) if reads.len() == frame.len() => {
+                        for (range_votes, read) in votes.iter_mut().zip(reads) {
+                            range_votes.push(read);
+                        }
+                        answered += 1;
+                    }
+                    Ok(_) => {
+                        unreachable += 1;
+                        first_error.get_or_insert_with(|| ObjectError::Corruption(
+                            "unexpected replica read batch response".into(),
+                        ));
+                    }
+                    Err(error) => {
+                        if matches!(error, ObjectError::NotFound(_)) {
+                            not_found += 1;
+                        } else {
+                            unreachable += 1;
+                        }
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
+                }
+            }
+            if answered < read_quorum {
+                if not_found >= read_quorum {
+                    return Err(ObjectError::NotFound(format!(
+                        "one or more requested pages are absent on {not_found} of {replica_count} replicas"
+                    )));
+                }
+                return Err(ObjectError::Corruption(format!(
+                    "a star read batch was answered by {answered} of {replica_count} replicas, \
+                     short of a read quorum of {read_quorum} ({unreachable} did not answer, \
+                     {not_found} reported an absent page); the first failure was: {}",
+                    first_error
+                        .map(|error| error.to_string())
+                        .unwrap_or_else(|| "none recorded".into())
+                )));
+            }
+            for range_votes in votes {
+                output.push(vote_reads(range_votes, replica_count, read_quorum)?);
+            }
+            completed = end;
+        }
+        Ok(output)
+    }
+
     /// Read complete page bytes and discard metadata from a matching read quorum.
     /// Each source is checksum-fenced; exact bytes must also agree. At most two
     /// assembled payloads are retained, independent of the replica count.

@@ -517,6 +517,16 @@ repair for star replicas, establish multihost throughput, or measure peak memory
 
 ## Bounded chunk read confirmation batches
 
+Replica request code 17 carries up to eight ordered ranges in canonical binary
+protobuf, with at most one MiB per range and 4 MiB per frame. A distributed
+star coordinator partitions eight default one-MiB pages into two four-page
+frames, sends each frame to every member concurrently and votes each returned
+page independently by sequence, checksum and exact bytes. An older member, a
+tighter reply budget or a page set that is not present on the same members
+selects scalar reads so every page can still form its own quorum; reads are safe
+to repeat. Raft clients keep the conservative large-page pipeline described by
+their leader-routing policy and do not opt into these wider frames.
+
 A chunk Raft leader can confirm up to 32 already queued read-only requests
 with one quorum read barrier. Admission ends before the barrier starts. Reads
 arriving afterward remain queued for a later confirmation; a pending barrier is

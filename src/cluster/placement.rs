@@ -377,6 +377,21 @@ impl InProcessReplicaSet {
         })
     }
 
+    pub fn read_chunks(
+        &mut self,
+        reads: &[(PageId, u64, u64)],
+    ) -> Result<Vec<ReplicaReadResult>, ObjectError> {
+        if reads.len() > 8 {
+            return Err(ObjectError::InvalidArgument(
+                "read batch exceeds eight pages".into(),
+            ));
+        }
+        reads
+            .iter()
+            .map(|(page, offset, length)| self.read_chunk(page, *offset, *length))
+            .collect()
+    }
+
     /// Discard a byte range on every replica, requiring a write quorum.
     pub fn discard_chunk(
         &mut self,
@@ -491,6 +506,16 @@ impl ReplicaFanout {
         match self {
             ReplicaFanout::InProcess(set) => set.read_chunk(page_id, offset, length),
             ReplicaFanout::Remote(set) => set.read_chunk(page_id, offset, length),
+        }
+    }
+
+    pub fn read_chunks(
+        &mut self,
+        reads: &[(PageId, u64, u64)],
+    ) -> Result<Vec<ReplicaReadResult>, ObjectError> {
+        match self {
+            ReplicaFanout::InProcess(set) => set.read_chunks(reads),
+            ReplicaFanout::Remote(set) => set.read_chunks(reads),
         }
     }
 
