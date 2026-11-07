@@ -17,7 +17,7 @@
 //!
 //! | live nodes | what this test requires |
 //! |---:|---|
-//! | 5 | every page acknowledged by all five |
+//! | 5 | every page confirmed byte-for-byte on all five |
 //! | 3 (exactly a quorum) | all 24 pages read back exact; a new write acknowledged by exactly 3; an unwritten page reads ABSENT |
 //! | 2 (one below) | reads REFUSED, writes REFUSED, and absence NOT asserted |
 //!
@@ -42,7 +42,10 @@
 
 use matrixobjectstore_rs as store;
 
-use store::cluster::{check_quorums, majority, ReplicaClientOptions, ReplicaFanout, ReplicaPlacement};
+use store::cluster::{
+    check_quorums, majority, RemoteReplicaClient, ReplicaClientOptions, ReplicaFanout,
+    ReplicaPlacement,
+};
 use store::{ChunkId, ObjectError, PageId};
 
 use std::time::Duration;
@@ -266,8 +269,9 @@ fn the_majority_constructors_carry_a_majority_at_every_width() {
 ///    `/proc` and required to agree;
 /// 2. **the width and the quorums** -- five nodes, both quorums a majority of five, taken
 ///    from the constructor rather than written as literals;
-/// 3. **every write acknowledged by all five**, so that what the kills remove is known to
-///    have been present everywhere;
+/// 3. **every page confirmed on all five**, so that what the kills remove is known to have
+///    been present everywhere without treating the quorum acknowledgement count as a final
+///    membership-wide application census;
 /// 4. **two kills by PID**, each after confirming from `/proc/<pid>/environ` that the process
 ///    belongs to this test, leaving exactly a quorum;
 /// 5. **at exactly a quorum** -- all 24 pages back, exact count, zero missing, zero wrong; a
@@ -374,15 +378,15 @@ fn five_replica_nodes_serve_at_exactly_a_quorum_and_refuse_one_below_it() {
         );
     }
 
-    // ------------------------------------------- 3. EVERY WRITE ACKNOWLEDGED BY ALL FIVE
+    // ---------------------------------------------- 3. EVERY PAGE CONFIRMED ON ALL FIVE
     for index in 0..CORPUS_PAGES {
         let acknowledged = set
             .write_chunk(&corpus_page_id(index), 0, &corpus_payload(index))
             .unwrap_or_else(|err| panic!("corpus page {index} was refused: {err}"));
-        assert_eq!(
-            acknowledged, NODE_COUNT,
-            "corpus page {index} was acknowledged by {acknowledged} replica(s), not all \
-             {NODE_COUNT}; what the kills below remove would not be known to have been there"
+        assert!(
+            (quorum..=NODE_COUNT).contains(&acknowledged),
+            "corpus page {index} returned {acknowledged} acknowledgement(s), outside the \
+             valid range {quorum}..={NODE_COUNT}"
         );
     }
     assert_eq!(
@@ -390,6 +394,22 @@ fn five_replica_nodes_serve_at_exactly_a_quorum_and_refuse_one_below_it() {
         vec![Some(CORPUS_PAGES); NODE_COUNT],
         "each replica must hold all {CORPUS_PAGES} pages before any of them is killed"
     );
+    for (member, endpoint) in endpoints.iter().enumerate() {
+        let mut replica = RemoteReplicaClient::connect(endpoint, &options)
+            .unwrap_or_else(|err| panic!("replica {member} could not be confirmed: {err}"));
+        for index in 0..CORPUS_PAGES {
+            let read = replica
+                .read_chunk(&corpus_page_id(index), 0, PAGE_BYTES as u64)
+                .unwrap_or_else(|err| {
+                    panic!("corpus page {index} was not readable from replica {member}: {err}")
+                });
+            assert_eq!(
+                read.data,
+                corpus_payload(index),
+                "corpus page {index} differed on replica {member} before failover"
+            );
+        }
+    }
 
     // ------------------------------------------------ 4. TWO KILLS, DOWN TO EXACTLY A QUORUM
     let killed_first = pids[0];
