@@ -144,8 +144,11 @@ fn a_three_node_quorum_recovers_after_every_process_is_killed() {
     let pids: std::collections::BTreeSet<_> = nodes.iter().map(|node| node.pid).collect();
     assert_eq!(pids.len(), 3);
     let endpoints: Vec<_> = nodes.iter().map(|node| node.endpoint.clone()).collect();
+    // This recovery check needs every journal to acknowledge before all
+    // processes are stopped. Normal star writes only wait for their configured
+    // write quorum.
     let mut set =
-        RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+        RemoteReplicaSet::connect(&endpoints, 3, 2, &ReplicaClientOptions::default()).unwrap();
     for index in 0..24 {
         let data = vec![index as u8; 1024];
         assert_eq!(set.write_chunk(&page(index), 0, &data).unwrap(), 3);
@@ -423,8 +426,10 @@ fn star_journal_checkpoints_recover_quorum_pages_and_later_mutations() {
         .map(|d| start_compacting(&d.file()))
         .collect();
     let endpoints: Vec<_> = nodes.iter().map(|n| n.endpoint.clone()).collect();
+    // Each journal is restarted and inspected independently below, so require
+    // every member rather than the normal majority write quorum.
     let mut set =
-        RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+        RemoteReplicaSet::connect(&endpoints, 3, 2, &ReplicaClientOptions::default()).unwrap();
     for value in 1..=20 {
         assert_eq!(set.write_chunk(&page(1), 0, &[value; 1024]).unwrap(), 3);
     }
@@ -443,7 +448,7 @@ fn star_journal_checkpoints_recover_quorum_pages_and_later_mutations() {
     let nodes: Vec<_> = directories.iter().map(|d| start(&d.file())).collect();
     let endpoints: Vec<_> = nodes.iter().map(|n| n.endpoint.clone()).collect();
     let mut set =
-        RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+        RemoteReplicaSet::connect(&endpoints, 3, 2, &ReplicaClientOptions::default()).unwrap();
     assert_eq!(set.head_chunk(&page(1)).unwrap(), expected);
     assert_eq!(
         set.read_chunk(&page(1), 0, 100).unwrap().data,

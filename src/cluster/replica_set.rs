@@ -35,7 +35,9 @@ use crate::{ObjectError, PageId, ReplicaHead, ReplicaReadResult};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 
-const WRITE_QUORUM_DRAIN: std::time::Duration = std::time::Duration::from_millis(10);
+// Preserve sockets for replies already close behind the quorum without adding
+// a network-scale delay to every terminal star mutation.
+const WRITE_QUORUM_DRAIN: std::time::Duration = std::time::Duration::from_millis(1);
 const MAX_PARALLEL_RECONNECTS: usize = 8;
 
 fn run_reconnects_in_bounded_waves<T: Send, F: Fn(&mut T) + Sync>(
