@@ -1221,6 +1221,71 @@ mod journal_failure_tests {
     }
 
     #[test]
+    fn standalone_star_batch_syncs_repeated_page_sequence_once() {
+        let directory = std::env::temp_dir().join(format!(
+            "replica-star-repeated-page-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("replica.wal");
+        let mut service = MatrixReplicaService::new();
+        let journal = ReplicaJournal::open(&path, &mut service).unwrap();
+        let replica = Arc::new(Mutex::new(NodeReplica {
+            used_bytes: 0,
+            service,
+            journal: Some(journal),
+            journal_checkpoint_after_bytes: 0,
+            staged: None,
+            maintenance: false,
+            max_pages: 65_536,
+            #[cfg(all(feature = "chunk-consensus", feature = "meta-server"))]
+            applied_membership: None,
+            failed: false,
+        }));
+        let page = PageId {
+            chunk_id: ChunkId::new(7, 10).unwrap(),
+            page_index: 11,
+        };
+        let writes = [b"abc".as_slice(), b"def", b"ghi"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, data)| super::super::message::ConditionalChunkWrite {
+                page_id: page.clone(),
+                offset: (index * 3) as u64,
+                data: data.to_vec(),
+                expected_sequence: index as u64,
+            })
+            .collect();
+
+        assert_eq!(
+            apply_batch(&replica, writes, MAX_PAYLOAD_BYTES).unwrap(),
+            ReplicaReply::Applied
+        );
+        let guard = replica.lock().unwrap();
+        assert_eq!(guard.service.head_chunk(&page).unwrap().write_sequence, 3);
+        assert_eq!(
+            guard.service.read_chunk(&page, 0, 9).unwrap().data,
+            b"abcdefghi"
+        );
+        assert_eq!(guard.journal.as_ref().unwrap().sync_count(), 1);
+        drop(guard);
+        drop(replica);
+
+        let mut recovered = MatrixReplicaService::new();
+        drop(ReplicaJournal::open(&path, &mut recovered).unwrap());
+        assert_eq!(recovered.head_chunk(&page).unwrap().write_sequence, 3);
+        assert_eq!(
+            recovered.read_chunk(&page, 0, 9).unwrap().data,
+            b"abcdefghi"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn failed_persistence_blocks_acknowledgment_and_all_later_requests() {
         let path = std::env::temp_dir().join(format!(
             "replica-readonly-{}-{}",

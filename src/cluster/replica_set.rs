@@ -394,14 +394,16 @@ impl RemoteReplicaSet {
         Ok(acknowledged)
     }
 
-    /// Apply up to eight independent writes through the standalone star path.
+    /// Apply up to eight ordered writes through the standalone star path.
     ///
-    /// Every page is fenced against a quorum-agreed head before any mutation is
-    /// sent. Pages with the same matching member set share one encoded conditional
-    /// write batch, reducing mutation frames without letting a divergent member
-    /// vote for a write. Frames carry at most four MiB of page data. An error can
-    /// follow an acknowledged earlier frame; callers must probe candidate pages
-    /// instead of replaying an uncertain batch.
+    /// Every distinct page is fenced against a quorum-agreed head before any
+    /// mutation is sent. Repeated writes to one page form an ordered sequence
+    /// chain in the same encoded batch. Pages with the same matching member set
+    /// share conditional mutation frames, reducing head requests, mutation frames
+    /// and journal syncs without letting a divergent member vote for a write.
+    /// Frames carry at most four MiB of page data. An error can follow an
+    /// acknowledged earlier frame; callers must probe candidate pages instead of
+    /// replaying an uncertain batch.
     pub fn write_chunks(
         &mut self,
         writes: &[(PageId, u64, &[u8])],
@@ -419,29 +421,33 @@ impl RemoteReplicaSet {
                 "star write page exceeds one MiB".into(),
             ));
         }
-        let mut pages = BTreeSet::new();
-        if writes
-            .iter()
-            .any(|(page, _, _)| !pages.insert(page.clone()))
-        {
-            return Err(ObjectError::InvalidArgument(
-                "star write batch repeats a page".into(),
-            ));
+        let mut page_indexes = BTreeMap::new();
+        let mut page_ids = Vec::new();
+        for (page, _, _) in writes {
+            if !page_indexes.contains_key(page) {
+                page_indexes.insert(page.clone(), page_ids.len());
+                page_ids.push(page.clone());
+            }
         }
-
-        let page_ids: Vec<_> = writes.iter().map(|(page, _, _)| page.clone()).collect();
         let states = self.mutation_states(&page_ids)?;
+        let mut next_sequences: Vec<_> = states
+            .iter()
+            .map(|(expected, _)| expected.as_ref().map_or(0, |head| head.write_sequence))
+            .collect();
         let mut groups: BTreeMap<Vec<bool>, Vec<(usize, ConditionalChunkWrite)>> = BTreeMap::new();
-        for (index, ((page_id, offset, data), (expected, matching))) in
-            writes.iter().zip(states).enumerate()
-        {
-            groups.entry(matching).or_default().push((
+        for (index, (page_id, offset, data)) in writes.iter().enumerate() {
+            let page_index = page_indexes[page_id];
+            let expected_sequence = next_sequences[page_index];
+            next_sequences[page_index] = expected_sequence.checked_add(1).ok_or_else(|| {
+                ObjectError::PreconditionFailed("page write sequence is exhausted".into())
+            })?;
+            groups.entry(states[page_index].1.clone()).or_default().push((
                 index,
                 ConditionalChunkWrite {
                     page_id: page_id.clone(),
                     offset: *offset,
                     data: data.to_vec(),
-                    expected_sequence: expected.as_ref().map_or(0, |head| head.write_sequence),
+                    expected_sequence,
                 },
             ));
         }

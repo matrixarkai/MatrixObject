@@ -666,6 +666,98 @@ fn default_page_star_io_uses_four_page_frames() {
 }
 
 #[test]
+fn star_batch_sequences_repeated_page_appends_in_one_mutation_frame() {
+    use matrixobjectstore_rs::cluster::{
+        message::encode_reply, ReplicaReply, ReplicaRequest, RequestCode,
+    };
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    let listeners: Vec<_> = (0..3)
+        .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let endpoints: Vec<_> = listeners
+        .iter()
+        .map(|listener| listener.local_addr().unwrap().to_string())
+        .collect();
+    let expected_page = page(19);
+    let workers: Vec<_> = listeners
+        .into_iter()
+        .map(|listener| {
+            let expected_page = expected_page.clone();
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                for phase in 0..2 {
+                    let mut header = [0; 6];
+                    stream.read_exact(&mut header).unwrap();
+                    let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                    let mut body = vec![0; size];
+                    stream.read_exact(&mut body).unwrap();
+                    let code = RequestCode::from_u8(header[1]).unwrap();
+                    match (phase, ReplicaRequest::decode(code, &body).unwrap()) {
+                        (0, ReplicaRequest::HeadChunkBatch { pages }) => {
+                            assert_eq!(pages, vec![expected_page.clone()]);
+                            stream
+                                .write_all(&encode_reply(&ReplicaReply::Heads(vec![None])))
+                                .unwrap();
+                        }
+                        (1, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
+                            assert_eq!(writes.len(), 3);
+                            assert!(writes.iter().all(|write| write.page_id == expected_page));
+                            assert_eq!(
+                                writes
+                                    .iter()
+                                    .map(|write| write.expected_sequence)
+                                    .collect::<Vec<_>>(),
+                                vec![0, 1, 2]
+                            );
+                            assert_eq!(
+                                writes.iter().map(|write| write.offset).collect::<Vec<_>>(),
+                                vec![0, 3, 6]
+                            );
+                            assert_eq!(
+                                writes
+                                    .iter()
+                                    .flat_map(|write| write.data.iter().copied())
+                                    .collect::<Vec<_>>(),
+                                b"abcdefghi"
+                            );
+                            stream
+                                .write_all(&encode_reply(&ReplicaReply::Applied))
+                                .unwrap();
+                        }
+                        other => panic!("unexpected repeated-page batch phase: {other:?}"),
+                    }
+                }
+            })
+        })
+        .collect();
+
+    let mut set =
+        RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+    let acknowledgements = set
+        .write_chunks(&[
+            (expected_page.clone(), 0, b"abc"),
+            (expected_page.clone(), 3, b"def"),
+            (expected_page, 6, b"ghi"),
+        ])
+        .unwrap();
+    assert_eq!(acknowledgements.len(), 3);
+    assert!(acknowledgements.iter().all(|count| *count >= 2));
+    drop(set);
+    for worker in workers {
+        worker.join().unwrap();
+    }
+}
+
+#[test]
 fn star_batches_fall_back_to_scalar_requests_on_older_members() {
     use matrixobjectstore_rs::cluster::{
         message::{encode_failure, encode_reply},
