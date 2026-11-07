@@ -74,6 +74,41 @@ sharing_test!(
 );
 
 #[test]
+fn metadata_default_admits_more_than_legacy_single_worker_connection_limit() {
+    let server = MetaNodeServer::bind(
+        "127.0.0.1:0",
+        MetaNodeOptions {
+            worker_threads: 1,
+            read_timeout: Duration::from_secs(5),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(MetaNodeOptions::default().connections_per_worker > 128);
+    let endpoint = server.local_addr().unwrap().to_string();
+    let shutdown = server.shutdown_handle();
+    let worker = std::thread::spawn(move || server.serve().unwrap());
+    let _cleanup = Cleanup(Some(Box::new(move || {
+        shutdown.stop();
+        let _ = worker.join();
+    })));
+
+    let mut held = Vec::new();
+    for _ in 0..160 {
+        held.push(TcpStream::connect(&endpoint).unwrap());
+    }
+    let mut client = RemoteMetaClient::connect(
+        &endpoint,
+        &MetaClientOptions {
+            read_timeout: Duration::from_secs(2),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    client.list_placement_nodes().unwrap();
+}
+
+#[test]
 fn metadata_fragmented_and_pipelined_frames_keep_their_boundaries() {
     use std::io::Read;
     let server = MetaNodeServer::bind("127.0.0.1:0", MetaNodeOptions::default()).unwrap();

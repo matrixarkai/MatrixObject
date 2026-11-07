@@ -18,6 +18,7 @@ pub(super) struct Options {
     pub max_payload_bytes: usize,
     pub read_timeout: Duration,
     pub write_timeout: Duration,
+    pub connections_per_worker: usize,
 }
 use crate::cluster::shutdown::ActiveConnection;
 use std::{io::ErrorKind, time::Instant};
@@ -25,7 +26,6 @@ use std::{io::ErrorKind, time::Instant};
 #[path = "connections_readiness.rs"]
 mod readiness;
 
-const CONNECTIONS_PER_WORKER: usize = 128;
 #[derive(Clone)]
 struct Budget {
     used: Arc<AtomicUsize>,
@@ -73,9 +73,12 @@ pub(super) struct Dispatch {
     receiver: Arc<Mutex<Receiver<Job>>>,
 }
 impl Dispatch {
-    pub(super) fn new(workers: usize) -> Self {
-        let (jobs, receiver) =
-            mpsc::sync_channel(CONNECTIONS_PER_WORKER.saturating_mul(workers.max(1)));
+    pub(super) fn new(workers: usize, connections_per_worker: usize) -> Self {
+        let (jobs, receiver) = mpsc::sync_channel(
+            connections_per_worker
+                .max(1)
+                .saturating_mul(workers.max(1)),
+        );
         Self {
             jobs,
             receiver: Arc::new(Mutex::new(receiver)),
@@ -331,7 +334,7 @@ pub(super) fn accept_loop(
             let mut progressed = false;
             // Bound accept work so a connection burst cannot starve existing frames.
             for _ in 0..16 {
-                if connections.len() >= CONNECTIONS_PER_WORKER {
+                if connections.len() >= options.connections_per_worker.max(1) {
                     break;
                 }
                 match listener.accept() {
@@ -372,7 +375,12 @@ pub(super) fn accept_loop(
             if !progressed {
                 match &readiness {
                     Some(waiter) => {
-                        waiter.wait(&listener, &connections, &stop);
+                        waiter.wait(
+                            &listener,
+                            &connections,
+                            options.connections_per_worker.max(1),
+                            &stop,
+                        );
                     }
                     None => {
                         stop.wait_for(Duration::from_millis(1));
@@ -390,7 +398,7 @@ mod tests {
     use super::*;
     #[test]
     fn one_io_loop_can_use_idle_request_executors() {
-        let dispatch = Dispatch::new(2);
+        let dispatch = Dispatch::new(2, 128);
         let stop = Arc::new(ServerShutdown::default());
         let (entered, entered_rx) = mpsc::sync_channel(1);
         let (release, release_rx) = mpsc::sync_channel(1);
@@ -427,6 +435,7 @@ mod tests {
                         max_payload_bytes: 64,
                         read_timeout: Duration::from_secs(5),
                         write_timeout: Duration::from_secs(5),
+                        connections_per_worker: 128,
                     },
                     dispatch,
                 );

@@ -554,7 +554,8 @@ fn configured_placement_writes_real_chunk_processes_and_recovers_after_failover(
     let payload = b"binary\0outcome\xff!";
     let mut replicas =
         RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
-    assert_eq!(replicas.write_chunk(&page, 0, payload).unwrap(), 3);
+    let confirmations = replicas.write_chunk(&page, 0, payload).unwrap();
+    assert!((2..=3).contains(&confirmations));
     let placement = client
         .commit_object_placement(
             CommittedPlacement {

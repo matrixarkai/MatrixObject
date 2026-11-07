@@ -24,6 +24,7 @@
 //! | `MATRIXOBJECT_METASERVER_ADDR` | `127.0.0.1:17200` | address to bind; port `0` lets the kernel choose |
 //! | `MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS` | `0` | automatic expiry TTL, 1000..3600000 ms; zero disables |
 //! | `MATRIXOBJECT_METASERVER_THREADS` | logical CPUs, clamped to `4..=16` | connections served at once |
+//! | `MATRIXOBJECT_METASERVER_CONNECTIONS_PER_WORKER` | `1024` | persistent API connections shared by each I/O loop |
 //! | `MATRIXOBJECT_METASERVER_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
 //! | `MATRIXOBJECT_METASERVER_STATE_DIR` | *(unset)* | existing directory for locked, atomic metadata snapshots |
 //! | `MATRIXOBJECT_METASERVER_DATA_ROSTER` | *(unset)* | comma-separated `node-id@socket-address@failure-domain`; starts offline until heartbeat |
@@ -137,6 +138,11 @@ fn main() {
         "MATRIXOBJECT_METASERVER_MAX_PAYLOAD_BYTES",
         MAX_PAYLOAD_BYTES,
     );
+    let connections_per_worker = env_usize(
+        "MATRIXOBJECT_METASERVER_CONNECTIONS_PER_WORKER",
+        MetaNodeOptions::default().connections_per_worker,
+    )
+    .max(1);
 
     let options = MetaNodeOptions {
         tls: matrixobjectstore_rs::cluster::ApiTlsConfig::from_env("MATRIXOBJECT_API").unwrap_or_else(|error| {
@@ -145,6 +151,7 @@ fn main() {
         }),
         max_payload_bytes,
         worker_threads,
+        connections_per_worker,
         ..Default::default()
     };
     let state_dir = std::env::var_os("MATRIXOBJECT_METASERVER_STATE_DIR");
@@ -354,7 +361,8 @@ fn main() {
 
     println!(
         "metaserver listening on {bound} pid={} protocol_stamp={PROTOCOL_STAMP} \
-         threads={worker_threads} max_payload_bytes={max_payload_bytes} auth=none \
+         threads={worker_threads} connections_per_worker={connections_per_worker} \
+         max_payload_bytes={max_payload_bytes} auth=none \
          storage={storage} roster_nodes={seeded}",
         std::process::id()
     );
