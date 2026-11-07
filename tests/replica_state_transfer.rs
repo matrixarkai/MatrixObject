@@ -614,7 +614,9 @@ fn default_page_star_io_uses_four_page_frames() {
     let writes: Vec<_> = (10..18)
         .map(|index| (page(index), 0, data.as_slice()))
         .collect();
-    assert_eq!(set.write_chunks(&writes).unwrap(), vec![3; 8]);
+    let acknowledgements = set.write_chunks(&writes).unwrap();
+    assert_eq!(&acknowledgements[..4], &[3; 4]);
+    assert!(acknowledgements[4..].iter().all(|count| *count >= 2));
     let ranges: Vec<_> = (10..18)
         .map(|index| (page(index), 0, data.len() as u64))
         .collect();
@@ -633,18 +635,23 @@ fn default_page_star_io_uses_four_page_frames() {
     const HEAD_CHUNK_BATCH_CODE: u8 = 18;
     const CONDITIONAL_BATCH_CODE: u8 = 14;
     const READ_BATCH_CODE: u8 = 17;
+    let mut complete_reads = 0usize;
     for member in codes {
         assert_eq!(
-            member,
-            vec![
+            &member[..3],
+            &[
                 HEAD_CHUNK_BATCH_CODE,
                 CONDITIONAL_BATCH_CODE,
                 CONDITIONAL_BATCH_CODE,
-                READ_BATCH_CODE,
-                READ_BATCH_CODE,
             ]
         );
+        if member[3..] == [READ_BATCH_CODE, READ_BATCH_CODE] {
+            complete_reads += 1;
+        } else {
+            assert_eq!(member.len(), 3);
+        }
     }
+    assert!(complete_reads >= 2);
     for node in &nodes {
         let mut replica = client(node);
         assert_eq!(

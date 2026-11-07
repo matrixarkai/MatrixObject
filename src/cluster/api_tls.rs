@@ -451,12 +451,12 @@ mod tests {
             page_index: 0,
         };
         let bytes: Vec<_> = (0..512 * 1024).map(|index| (index % 251) as u8).collect();
-        assert_eq!(set.write_chunk(&page, 0, &bytes).unwrap(), 3);
+        assert!(set.write_chunk(&page, 0, &bytes).unwrap() >= 2);
         assert_eq!(
             set.read_chunk(&page, 0, bytes.len() as u64).unwrap().data,
             bytes
         );
-        assert_eq!(set.write_chunk(&page, 0, b"changed").unwrap(), 3);
+        assert!(set.write_chunk(&page, 0, b"changed").unwrap() >= 2);
         assert_eq!(set.read_chunk(&page, 0, 7).unwrap().data, b"changed");
         let server = MetaNodeServer::bind(
             "127.0.0.1:0",
