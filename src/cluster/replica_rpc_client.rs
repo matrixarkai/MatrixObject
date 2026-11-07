@@ -342,6 +342,11 @@ impl RemoteReplicaClient {
         Ok(())
     }
 
+    /// Whether a later standalone operation must replace this socket before use.
+    pub(super) fn needs_standalone_reconnect(&self) -> bool {
+        !self.connection_usable && self.catalog.is_none() && self.group_identity.is_none()
+    }
+
     /// Connect to a fixed catalog of one through seven chunk API IP sockets.
     /// Only typed pre-admission refusals allow a mutation to move between voters.
     /// Reads may also move after transport failure. Each call visits the catalog once.

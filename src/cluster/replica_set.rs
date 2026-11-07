@@ -36,6 +36,37 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 
 const WRITE_QUORUM_DRAIN: std::time::Duration = std::time::Duration::from_millis(10);
+const MAX_PARALLEL_RECONNECTS: usize = 8;
+
+fn run_reconnects_in_bounded_waves<T: Send, F: Fn(&mut T) + Sync>(
+    mut items: Vec<&mut T>,
+    operation: &F,
+) {
+    while !items.is_empty() {
+        let width = items.len().min(MAX_PARALLEL_RECONNECTS);
+        if width == 1 {
+            operation(items.remove(0));
+            continue;
+        }
+        let wave: Vec<_> = items.drain(..width).collect();
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(wave.len());
+            for item in wave {
+                if let Ok(handle) = std::thread::Builder::new()
+                    .name("star-reconnect".into())
+                    .spawn_scoped(scope, move || operation(item))
+                {
+                    handles.push(handle);
+                }
+            }
+            for handle in handles {
+                if let Err(payload) = handle.join() {
+                    std::panic::resume_unwind(payload);
+                }
+            }
+        });
+    }
+}
 
 #[cfg(unix)]
 fn wait_for_pending(pending: &[Option<super::client::PendingReplicaReply<'_>>]) {
@@ -277,9 +308,15 @@ impl RemoteReplicaSet {
     }
 
     fn reconnect_failed(&mut self) {
-        for replica in &mut self.replicas {
-            let _ = replica.reconnect_standalone_if_failed(&self.options);
-        }
+        let options = self.options.clone();
+        let failed: Vec<_> = self
+            .replicas
+            .iter_mut()
+            .filter(|replica| replica.needs_standalone_reconnect())
+            .collect();
+        run_reconnects_in_bounded_waves(failed, &|replica| {
+            let _ = replica.reconnect_standalone_if_failed(&options);
+        });
     }
 
     pub fn replica_count(&self) -> usize {
@@ -1125,6 +1162,29 @@ fn vote_reads(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_member_work_runs_concurrently_in_bounded_waves() {
+        use std::sync::{Arc, Condvar, Mutex};
+        use std::time::Duration;
+
+        let gate = Arc::new((Mutex::new(0usize), Condvar::new()));
+        let mut values = [0usize; 4];
+        let expected = values.len();
+        run_reconnects_in_bounded_waves(values.iter_mut().collect(), &|value| {
+            *value += 1;
+            let (arrived, ready) = &*gate;
+            let mut arrived = arrived.lock().unwrap();
+            *arrived += 1;
+            ready.notify_all();
+            while *arrived < expected {
+                let (next, timeout) = ready.wait_timeout(arrived, Duration::from_secs(3)).unwrap();
+                assert!(!timeout.timed_out(), "reconnect work ran serially");
+                arrived = next;
+            }
+        });
+        assert_eq!(values, [1; 4]);
+    }
 
     #[test]
     fn quorum_vote_returns_received_payload_and_rejects_conflicting_bytes() {
