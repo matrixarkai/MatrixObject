@@ -347,7 +347,7 @@ fn star_set_reconnects_recovered_members_but_excludes_missed_writes() {
         connect_timeout: std::time::Duration::from_millis(200),
         ..Default::default()
     };
-    let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
+    let mut set = RemoteReplicaSet::connect(&endpoints, 3, 2, &options).unwrap();
     assert_eq!(set.write_chunk(&page(10), 0, b"first").unwrap(), 3);
     drop(nodes[0].take());
     assert_eq!(set.ping_all(), vec![None, Some(1), Some(1)]);
@@ -356,6 +356,8 @@ fn star_set_reconnects_recovered_members_but_excludes_missed_writes() {
     assert_eq!(set.endpoints(), endpoints);
     assert_eq!(set.write_chunk(&page(10), 0, b"again").unwrap(), 3);
     // This time the stopped member misses a successful quorum update.
+    drop(set);
+    let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
     drop(nodes[0].take());
     assert_eq!(set.ping_all(), vec![None, Some(1), Some(1)]);
     assert_eq!(set.write_chunk(&page(10), 0, b"newer").unwrap(), 2);
@@ -384,9 +386,11 @@ fn star_set_reconnects_recovered_members_but_excludes_missed_writes() {
         stale.read_chunk_state(&page(10)).unwrap().data.as_slice(),
         b"final"
     );
+    drop(stale);
+    drop(set);
+    let mut set = RemoteReplicaSet::connect(&endpoints, 3, 2, &options).unwrap();
     assert_eq!(set.write_chunk(&page(10), 0, b"fixed").unwrap(), 3);
     let expected = set.head_chunk(&page(10)).unwrap();
-    drop(stale);
     drop(set);
     for node in &mut nodes {
         drop(node.take());

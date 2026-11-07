@@ -35,9 +35,9 @@ use crate::{ObjectError, PageId, ReplicaHead, ReplicaReadResult};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 
-// Preserve sockets for replies already close behind the quorum without adding
-// a network-scale delay to every terminal star mutation.
-const WRITE_QUORUM_DRAIN: std::time::Duration = std::time::Duration::from_millis(1);
+// Preserve sockets for replies already close behind the mutation quorum without
+// adding a network-scale delay to every terminal star mutation.
+const MUTATION_QUORUM_DRAIN: std::time::Duration = std::time::Duration::from_millis(1);
 const MAX_PARALLEL_RECONNECTS: usize = 8;
 
 fn run_reconnects_in_bounded_waves<T: Send, F: Fn(&mut T) + Sync>(
@@ -293,7 +293,7 @@ impl RemoteReplicaSet {
             }
             if return_after_applied.is_some_and(|required| applied_replies >= required) {
                 let reached_at = quorum_reached_at.get_or_insert_with(std::time::Instant::now);
-                let remaining = WRITE_QUORUM_DRAIN.saturating_sub(reached_at.elapsed());
+                let remaining = MUTATION_QUORUM_DRAIN.saturating_sub(reached_at.elapsed());
                 if remaining.is_zero() {
                     break;
                 }
@@ -1065,6 +1065,10 @@ impl RemoteReplicaSet {
     }
 
     /// Conditionally discard on replicas matching a quorum-agreed existing page.
+    ///
+    /// Returns after a write quorum acknowledges, with the same one-millisecond
+    /// opportunistic drain used by writes. A slower member can still apply a
+    /// fully received request after its incomplete reply socket is retired.
     pub fn discard_chunk(
         &mut self,
         page_id: &PageId,
@@ -1082,7 +1086,7 @@ impl RemoteReplicaSet {
             length,
             expected_sequence: expected.write_sequence,
         };
-        for result in self.fan_out(&request, Some(&observed)) {
+        for result in self.fan_out_write_quorum(&request, Some(&observed)) {
             match applied(result) {
                 Ok(()) => acknowledged += 1,
                 Err(err) if first_error.is_none() => first_error = Some(err),
