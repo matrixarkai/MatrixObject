@@ -372,15 +372,17 @@ mutation unless its complete page state matches the selected quorum. The returne
 count contains acknowledgements observed before return; it may equal the quorum
 even when a slower member applies the request after its reply socket is retired.
 
-`RemoteReplicaSet::write_chunks` admits up to eight distinct pages. One code-18
-binary protobuf request asks each member for the whole ordered head batch. The
-coordinator votes every page independently, then groups pages by the members
-matching their selected state. Each group is partitioned into code-14 binary
-protobuf mutation frames of at most eight pages and 4 MiB of page data. Eight
-small new pages with the same matching set use one head frame and one mutation
-frame per member. Eight default one-MiB pages use one head frame and two
-four-page mutation frames instead of eight head frames and eight mutation
-frames. A typed unknown-request refusal permits
+`RemoteReplicaSet::write_chunks` admits up to eight ordered writes. One code-18
+binary protobuf request asks each member for the distinct page heads. The
+coordinator votes every page independently, then groups writes by the members
+matching their selected state. Repeated writes to one page carry consecutive
+expected sequences in input order, so append-heavy callers can share the head
+fence, mutation frame and standalone journal sync. Each group is partitioned
+into code-14 binary protobuf mutation frames of at most eight writes and 4 MiB
+of page data. Eight small writes with the same matching set use one head frame
+and one mutation frame per member. Eight default one-MiB writes use one head
+frame and two four-write mutation frames instead of eight head frames and eight
+mutation frames. A typed unknown-request refusal permits
 the read-only head phase to fall back to scalar fencing before any mutation is
 sent. A group is successful only when its complete batch is acknowledged by a
 write quorum. Frames are sent without replay; an error can follow an earlier
