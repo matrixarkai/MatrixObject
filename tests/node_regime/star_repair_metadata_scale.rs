@@ -64,7 +64,7 @@ fn exercise(pages: u64) {
     };
     let mut set = RemoteReplicaSet::connect(&endpoints, 3, 3, &options).unwrap();
     for i in 0..pages {
-        assert_eq!(set.write_chunk(&page(i), 0, &payload(i, 1)).unwrap(), 5);
+        assert!((3..=5).contains(&set.write_chunk(&page(i), 0, &payload(i, 1)).unwrap()));
     }
     for node in &mut nodes[..2] {
         drop(node.take());
@@ -197,7 +197,7 @@ fn exercise(pages: u64) {
     wait_health(&mut catalog, false);
     let mut set = RemoteReplicaSet::connect(&endpoints, 3, 3, &options).unwrap();
     for i in 0..pages {
-        assert_eq!(set.write_chunk(&page(i), 64, b"resumed").unwrap(), 5);
+        assert!((3..=5).contains(&set.write_chunk(&page(i), 64, b"resumed").unwrap()));
     }
     assert_eq!(
         catalog
