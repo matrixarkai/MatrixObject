@@ -35,6 +35,8 @@ use crate::{ObjectError, PageId, ReplicaHead, ReplicaReadResult};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 
+const WRITE_QUORUM_DRAIN: std::time::Duration = std::time::Duration::from_millis(10);
+
 #[cfg(unix)]
 fn wait_for_pending(pending: &[Option<super::client::PendingReplicaReply<'_>>]) {
     use std::os::fd::AsRawFd;
@@ -198,8 +200,26 @@ impl RemoteReplicaSet {
         request: &ReplicaRequest,
         selected: Option<&[bool]>,
     ) -> Vec<Result<ReplicaReply, ObjectError>> {
+        self.fan_out_until_applied(request, selected, None)
+    }
+
+    fn fan_out_write_quorum(
+        &mut self,
+        request: &ReplicaRequest,
+        selected: Option<&[bool]>,
+    ) -> Vec<Result<ReplicaReply, ObjectError>> {
+        self.fan_out_until_applied(request, selected, Some(self.write_quorum))
+    }
+
+    fn fan_out_until_applied(
+        &mut self,
+        request: &ReplicaRequest,
+        selected: Option<&[bool]>,
+        return_after_applied: Option<usize>,
+    ) -> Vec<Result<ReplicaReply, ObjectError>> {
         // One shared encoded frame and one pending exchange per selected member.
-        // No worker threads or mutation retries; finish every exchange even after quorum.
+        // No worker threads or mutation retries. A terminal mutation may return at
+        // quorum; dropping an incomplete exchange retires that member's socket.
         let frame: std::sync::Arc<[u8]> = super::message::encode_request(request).into();
         let pending: Vec<_> = self
             .replicas
@@ -218,6 +238,8 @@ impl RemoteReplicaSet {
                 }
             }
         }).collect();
+        let mut applied_replies = 0usize;
+        let mut quorum_reached_at = None;
         while pending.iter().any(Option::is_some) {
             let mut progressed = false;
             for (index, slot) in pending.iter_mut().enumerate() {
@@ -228,16 +250,30 @@ impl RemoteReplicaSet {
                     result
                 });
                 if let Some(result) = result {
+                    if matches!(&result, Ok(ReplicaReply::Applied)) {
+                        applied_replies += 1;
+                    }
                     replies[index] = Some(result);
                     // Drop retires an incomplete frame before the connection can be reused.
                     *slot = None;
                 }
             }
+            if return_after_applied.is_some_and(|required| applied_replies >= required) {
+                let reached_at = quorum_reached_at.get_or_insert_with(std::time::Instant::now);
+                let remaining = WRITE_QUORUM_DRAIN.saturating_sub(reached_at.elapsed());
+                if remaining.is_zero() {
+                    break;
+                }
+                if !progressed {
+                    std::thread::sleep(remaining.min(std::time::Duration::from_millis(1)));
+                }
+                continue;
+            }
             if !progressed && pending.iter().any(Option::is_some) {
                 wait_for_pending(&pending);
             }
         }
-        replies.into_iter().map(Option::unwrap).collect()
+        replies.into_iter().flatten().collect()
     }
 
     fn reconnect_failed(&mut self) {
@@ -279,10 +315,10 @@ impl RemoteReplicaSet {
     /// A conditional sequence check refuses concurrent changes after the head read.
     /// Divergent or unreachable replicas receive no mutation; this does not repair them.
     ///
-    /// Returns how many replicas acknowledged, which is always at least `write_quorum` when
-    /// this returns `Ok`. The count is returned rather than discarded because "3 of 3" and
-    /// "2 of 3" are both successes under a quorum of two and mean different things about what
-    /// a later kill can take away.
+    /// Returns how many acknowledgements were observed before return, which is always at least
+    /// `write_quorum` when this returns `Ok`. A slower member may still apply a fully received
+    /// request after the coordinator retires its incomplete reply socket, so this count is not
+    /// a final membership-wide application census.
     pub fn write_chunk(
         &mut self,
         page_id: &PageId,
@@ -299,7 +335,7 @@ impl RemoteReplicaSet {
             data: data.to_vec(),
             expected_sequence: sequence,
         };
-        for result in self.fan_out(&request, Some(&observed)) {
+        for result in self.fan_out_write_quorum(&request, Some(&observed)) {
             match applied(result) {
                 Ok(()) => acknowledged += 1,
                 Err(err) if first_error.is_none() => first_error = Some(err),
@@ -395,9 +431,15 @@ impl RemoteReplicaSet {
                 let request = ReplicaRequest::WriteChunkBatchIfSequence {
                     writes: frame.into_iter().map(|(_, write)| write).collect(),
                 };
+                let terminal_frame = remaining.peek().is_none();
                 let mut acknowledged = 0usize;
                 let mut first_error = None;
-                for result in self.fan_out(&request, Some(&matching)) {
+                let replies = if terminal_frame {
+                    self.fan_out_write_quorum(&request, Some(&matching))
+                } else {
+                    self.fan_out(&request, Some(&matching))
+                };
+                for result in replies {
                     match applied(result) {
                         Ok(()) => acknowledged += 1,
                         Err(error) if first_error.is_none() => first_error = Some(error),

@@ -360,6 +360,17 @@ fall back to an unconditional write. An uncertain mutation is not retried, and
 partial application can still occur if a member fails after preflight. Callers
 must resolve uncertain results before issuing another operation.
 
+The conditional mutation is sent to every matching member before responses are
+polled. Once a write quorum has acknowledged the terminal mutation frame, the
+coordinator briefly drains already-arriving replies, then returns without waiting
+for slower extra replicas. The short drain keeps healthy near-simultaneous sockets
+hot. Any incomplete exchange retires that socket and is never replayed. The next
+operation reconnects and repeats the head fence, so a member whose result was not
+observed cannot vote for another mutation unless its complete page state matches
+the selected quorum. The returned count contains acknowledgements observed before
+return; it may equal the quorum even when a slower member applies the request after
+its reply socket is retired.
+
 `RemoteReplicaSet::write_chunks` admits up to eight distinct pages. One code-18
 binary protobuf request asks each member for the whole ordered head batch. The
 coordinator votes every page independently, then groups pages by the members
