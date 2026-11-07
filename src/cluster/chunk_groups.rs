@@ -127,7 +127,7 @@ impl ChunkGroupCatalog {
         for group in result.groups.values() {
             let identity = group.identity.as_ref().unwrap();
             match (identity.version, health.get(&group.placement_id)) {
-                (1, None) => {}
+                (1 | 3, None) => {}
                 (2, Some(state)) => {
                     ChunkMembershipHealth::from_bytes(&state.to_bytes(), identity)?;
                 }
@@ -581,6 +581,42 @@ pub(super) mod tests {
             super::super::ChunkMembershipFence::from_status(identity, &status).unwrap(),
         );
         (group, health)
+    }
+
+    fn star_config() -> ChunkGroupConfig {
+        let mut group = config();
+        let identity = group.identity.as_mut().unwrap();
+        identity.version = 3;
+        identity.peer_endpoints.clear();
+        group
+    }
+
+    #[test]
+    fn standalone_star_catalog_roundtrips_canonically() {
+        let group = star_config();
+        let catalog = ChunkGroupCatalog::new(vec![group.clone()]).unwrap();
+        let bytes = catalog.to_bytes().unwrap();
+        let restored = ChunkGroupCatalog::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.get("group-a"), Some(&group));
+        assert_eq!(restored.to_bytes().unwrap(), bytes);
+        assert!(restored.membership_health("group-a").unwrap().is_none());
+    }
+
+    #[test]
+    fn standalone_star_identity_refuses_raft_fields() {
+        let mut group = star_config();
+        group
+            .identity
+            .as_mut()
+            .unwrap()
+            .peer_endpoints
+            .push("127.0.0.1:9101".into());
+        assert!(ChunkGroupCatalog::new(vec![group.clone()]).is_err());
+        let identity = group.identity.as_mut().unwrap();
+        identity.peer_endpoints.clear();
+        identity.bootstrap_id = 9;
+        identity.bootstrap_voters = vec![1, 2, 3];
+        assert!(ChunkGroupCatalog::new(vec![group]).is_err());
     }
     #[test]
     fn live_catalog_state_roundtrips_without_replacing_inventory_or_regressing_reports() {

@@ -978,11 +978,11 @@ impl RemoteMetaClient {
         }
         let output = std::sync::Mutex::new(bytes.as_mut_slice());
         let read_group = |route: &super::ChunkGroupRoute,
-                          connection: Option<super::RemoteReplicaClient>,
+                          connection: Option<super::object_client::RemoteGroupClient>,
                           extents: &[&crate::object_manifest::ObjectExtent]| {
             let mut connection = match connection {
                 Some(connection) => connection,
-                None => super::RemoteReplicaClient::connect_routed_raft_catalog(route, options)?,
+                None => super::object_client::RemoteGroupClient::connect(route, options)?,
             };
             for batch in extents.chunks(8) {
                 let pages = batch
@@ -998,7 +998,7 @@ impl RemoteMetaClient {
                         ))
                     })
                     .collect::<Result<Vec<_>, ObjectError>>()?;
-                let reads = connection.read_chunks_pipelined(&pages)?;
+                let reads = connection.read_chunks(&pages)?;
                 for (extent, read) in batch.iter().zip(reads) {
                     let checksum = read.data.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
                         (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
@@ -1018,7 +1018,7 @@ impl RemoteMetaClient {
                     destination[start..start + read.data.len()].copy_from_slice(&read.data);
                 }
             }
-            Ok::<super::RemoteReplicaClient, ObjectError>(connection)
+            Ok::<super::object_client::RemoteGroupClient, ObjectError>(connection)
         };
         // Route lookups use the metadata connection. Overlap the data-group
         // connections and page reads, while bounding sockets and read buffers.

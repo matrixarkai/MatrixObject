@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 //! Bounded object writes across metadata and data quorums.
-use super::{ChunkGroupRoute, RemoteMetaClient, RemoteReplicaClient, ReplicaClientOptions};
+use super::{
+    ChunkGroupRoute, RemoteMetaClient, RemoteReplicaClient, RemoteReplicaSet,
+    ReplicaClientOptions,
+};
 use crate::object_manifest::{ManifestOutcome, ObjectExtent, ObjectManifest};
 use crate::ObjectError;
 
@@ -11,7 +14,119 @@ const MAX_CACHED_GROUP_CONNECTIONS: usize = 8;
 pub(super) struct CachedGroupConnection {
     group: String,
     route: ChunkGroupRoute,
-    client: RemoteReplicaClient,
+    client: RemoteGroupClient,
+}
+
+#[derive(Debug)]
+pub(super) enum RemoteGroupClient {
+    Raft(RemoteReplicaClient),
+    Star(RemoteReplicaSet),
+}
+
+impl RemoteGroupClient {
+    pub(super) fn connect(
+        route: &ChunkGroupRoute,
+        options: &ReplicaClientOptions,
+    ) -> Result<Self, ObjectError> {
+        match route.standalone_star_route()? {
+            Some((endpoints, quorum)) => RemoteReplicaSet::connect(
+                &endpoints,
+                quorum,
+                quorum,
+                options,
+            )
+            .map(Self::Star),
+            None => RemoteReplicaClient::connect_routed_raft_catalog(route, options)
+                .map(Self::Raft),
+        }
+    }
+
+    fn prepare_for_reuse(&mut self, options: &ReplicaClientOptions) -> bool {
+        match self {
+            Self::Raft(client) => client.prepare_for_reuse(options),
+            Self::Star(set) => set.prepare_for_reuse(options),
+        }
+    }
+
+    fn write_chunks_with_digests(
+        &mut self,
+        writes: &[(crate::PageId, u64, &[u8], u64)],
+    ) -> Result<Vec<(u64, u64, [u8; 32])>, ObjectError> {
+        match self {
+            Self::Raft(client) => client.write_chunks_if_sequence_with_digests(writes),
+            Self::Star(set) => {
+                if writes
+                    .iter()
+                    .any(|(_, offset, _, expected)| *offset != 0 || *expected != 0)
+                {
+                    return Err(ObjectError::InvalidArgument(
+                        "star object writes require fresh whole pages".into(),
+                    ));
+                }
+                set.write_chunks_if_sequence(writes)?;
+                Ok(writes
+                    .iter()
+                    .map(|(_, offset, data, expected)| {
+                        let mut sha256 = [0; 32];
+                        sha256.copy_from_slice(
+                            ring::digest::digest(&ring::digest::SHA256, data).as_ref(),
+                        );
+                        Ok((
+                            expected.checked_add(1).ok_or_else(|| {
+                                ObjectError::PreconditionFailed(
+                                    "page write sequence is exhausted".into(),
+                                )
+                            })?,
+                            offset.checked_add(data.len() as u64).ok_or_else(|| {
+                                ObjectError::InvalidArgument("page length overflow".into())
+                            })?,
+                            sha256,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, ObjectError>>()?)
+            }
+        }
+    }
+
+    fn write_batch_limit(&self) -> usize {
+        match self {
+            Self::Raft(_) => 8,
+            Self::Star(_) => 32,
+        }
+    }
+
+    fn probe_chunk_digests(
+        &mut self,
+        pages: &[(crate::PageId, u64, u64)],
+    ) -> Result<Vec<Option<(u64, u64, [u8; 32])>>, ObjectError> {
+        match self {
+            Self::Raft(client) => client.probe_chunk_digests_pipelined(pages),
+            Self::Star(set) => pages
+                .iter()
+                .map(|(page, offset, length)| match set.read_chunk(page, *offset, *length) {
+                    Ok(read) => {
+                        let mut sha256 = [0; 32];
+                        sha256.copy_from_slice(
+                            ring::digest::digest(&ring::digest::SHA256, &read.data).as_ref(),
+                        );
+                        Ok(Some((read.write_sequence, read.data.len() as u64, sha256)))
+                    }
+                    Err(ObjectError::NotFound(_)) => Ok(None),
+                    Err(error) => Err(error),
+                })
+                .collect(),
+        }
+    }
+
+    pub(super) fn read_chunks(
+        &mut self,
+        pages: &[(crate::PageId, u64, u64)],
+    ) -> Result<Vec<crate::ReplicaReadResult>, ObjectError> {
+        match self {
+            Self::Raft(client) => client.read_chunks_pipelined(pages),
+            Self::Star(set) => set.read_chunks(pages),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -114,23 +229,24 @@ fn preflight(
 fn connect_group(
     group: &ChunkGroupRoute,
     options: &ReplicaClientOptions,
-) -> Result<RemoteReplicaClient, ObjectError> {
-    RemoteReplicaClient::connect_routed_raft_catalog(group, options)
+) -> Result<RemoteGroupClient, ObjectError> {
+    RemoteGroupClient::connect(group, options)
 }
 
 fn write_group_extents(
     indexes: &[usize],
     configured: &ChunkGroupRoute,
-    client: Option<RemoteReplicaClient>,
+    client: Option<RemoteGroupClient>,
     manifest: &ObjectManifest,
     data: &[u8],
     options: &ObjectWriteOptions,
-) -> Result<RemoteReplicaClient, ObjectError> {
+) -> Result<RemoteGroupClient, ObjectError> {
     let mut client = match client {
         Some(client) => client,
         None => connect_group(configured, &options.replica)?,
     };
-    for batch in indexes.chunks(8) {
+    let write_batch_limit = client.write_batch_limit();
+    for batch in indexes.chunks(write_batch_limit) {
         let mut writes = Vec::with_capacity(batch.len());
         for &index in batch {
             let extent = &manifest.extents[index];
@@ -142,25 +258,7 @@ fn write_group_extents(
             };
             writes.push((page.clone(), 0, bytes, 0));
         }
-        if let [(page, offset, bytes, expected_sequence)] = writes.as_slice() {
-            let (sequence, actual_length, sha256) = client.write_chunk_if_sequence_with_digest(
-                page.clone(),
-                *offset,
-                bytes,
-                *expected_sequence,
-            )?;
-            let extent = &manifest.extents[batch[0]];
-            if sequence != 1
-                || actual_length != extent.length
-                || sha256.as_ref() != ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()
-            {
-                return Err(ObjectError::Corruption(
-                    "written page verification failed".into(),
-                ));
-            }
-            continue;
-        }
-        let digests = client.write_chunks_if_sequence_with_digests(&writes)?;
+        let digests = client.write_chunks_with_digests(&writes)?;
         for (&index, (sequence, actual_length, sha256)) in batch.iter().zip(digests) {
             let extent = &manifest.extents[index];
             let start = extent.object_offset as usize;
@@ -184,7 +282,7 @@ impl RemoteMetaClient {
         group: &str,
         route: &ChunkGroupRoute,
         options: &ReplicaClientOptions,
-    ) -> Option<RemoteReplicaClient> {
+    ) -> Option<RemoteGroupClient> {
         let index = self
             .object_connections
             .iter()
@@ -198,7 +296,7 @@ impl RemoteMetaClient {
         &mut self,
         group: String,
         route: ChunkGroupRoute,
-        client: RemoteReplicaClient,
+        client: RemoteGroupClient,
     ) {
         if let Some(index) = self
             .object_connections
@@ -221,8 +319,8 @@ impl RemoteMetaClient {
         &mut self,
         batch: &[(String, ChunkGroupRoute)],
         options: &ReplicaClientOptions,
-    ) -> Result<Vec<RemoteReplicaClient>, ObjectError> {
-        let mut clients: Vec<Option<RemoteReplicaClient>> = batch
+    ) -> Result<Vec<RemoteGroupClient>, ObjectError> {
+        let mut clients: Vec<Option<RemoteGroupClient>> = batch
             .iter()
             .map(|(group, route)| self.take_group_connection(group, route, options))
             .collect();
@@ -375,7 +473,7 @@ impl RemoteMetaClient {
                         page_index: extent.page_index,
                     }, 0, extent.length))
                 }).collect::<Result<Vec<_>, ObjectError>>().map_err(&staged_error)?;
-                let probes = client.probe_chunk_digests_pipelined(&pages).map_err(&staged_error)?;
+                let probes = client.probe_chunk_digests(&pages).map_err(&staged_error)?;
                 for (&index, probe) in batch.iter().zip(probes) {
                     let extent = &staged.extents[index];
                     match probe {
@@ -514,7 +612,7 @@ impl RemoteMetaClient {
         };
         let mut groups: std::collections::BTreeMap<String, ChunkGroupRoute> =
             std::collections::BTreeMap::new();
-        let mut connections: Vec<(String, RemoteReplicaClient)> = Vec::new();
+        let mut connections: Vec<(String, RemoteGroupClient)> = Vec::new();
         if pages > 0 {
             let (plan, planned_routes) = if let Some((plan, routes)) = preplanned {
                 (plan, Some(routes))
@@ -798,7 +896,7 @@ mod tests {
             write_group_extents(
                 &[0],
                 &route,
-                Some(client),
+                Some(RemoteGroupClient::Raft(client)),
                 &manifest,
                 b"abcd",
                 &ObjectWriteOptions::default()

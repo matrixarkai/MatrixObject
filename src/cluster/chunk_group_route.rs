@@ -34,7 +34,7 @@ impl ChunkGroupRoute {
         }
         let identity = group.identity.as_ref().unwrap();
         match identity.version {
-            1 if self.fence.is_empty() => Ok(None),
+            1 | 3 if self.fence.is_empty() => Ok(None),
             2 if !self.fence.is_empty() => {
                 ChunkMembershipFence::from_bytes(&self.fence, identity).map(Some)
             }
@@ -67,6 +67,21 @@ impl ChunkGroupRoute {
                 Ok((group.api_endpoints[index].clone(), id))
             })
             .collect()
+    }
+    /// Fixed standalone star sockets and their majority quorum.
+    pub(crate) fn standalone_star_route(
+        &self,
+    ) -> Result<Option<(Vec<String>, usize)>, ObjectError> {
+        let members = self.active_members()?;
+        let identity = self.group.as_ref().unwrap().identity.as_ref().unwrap();
+        if !identity.is_standalone_star() {
+            return Ok(None);
+        }
+        let quorum = members.len() / 2 + 1;
+        Ok(Some((
+            members.into_iter().map(|(endpoint, _)| endpoint).collect(),
+            quorum,
+        )))
     }
     pub(super) fn from_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
         if bytes.len() > 65536 {
@@ -247,6 +262,30 @@ mod tests {
                 member_ids: (1..=64).map(|i| format!("member-{i}")).collect(),
             }),
         }
+    }
+
+    #[test]
+    fn standalone_star_route_uses_all_fixed_members_and_majority() {
+        let mut route = route();
+        let group = route.group.as_mut().unwrap();
+        let identity = group.identity.as_mut().unwrap();
+        identity.version = 3;
+        identity.voters = vec![1, 2, 3];
+        identity.peer_endpoints.clear();
+        identity.bootstrap_id = 0;
+        identity.bootstrap_voters.clear();
+        group.api_endpoints.truncate(3);
+        group.member_ids.truncate(3);
+        route.fence.clear();
+        let endpoints = group.api_endpoints.clone();
+        assert_eq!(
+            route.standalone_star_route().unwrap(),
+            Some((endpoints, 2))
+        );
+        assert_eq!(
+            ChunkGroupRoute::from_payload(&route.encode_to_vec()).unwrap(),
+            route
+        );
     }
     #[test]
     fn routes_only_joint_voters_from_large_inventory() {

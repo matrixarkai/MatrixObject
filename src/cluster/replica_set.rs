@@ -176,6 +176,32 @@ fn applied(reply: Result<ReplicaReply, ObjectError>) -> Result<(), ObjectError> 
 }
 
 impl RemoteReplicaSet {
+    pub(super) fn prepare_for_reuse(&mut self, options: &ReplicaClientOptions) -> bool {
+        let same_tls = match (&self.options.tls, &options.tls) {
+            (None, None) => true,
+            (Some(left), Some(right)) => left.same_configuration(right),
+            _ => false,
+        };
+        if !same_tls
+            || self.options.connect_timeout != options.connect_timeout
+            || self.options.read_timeout != options.read_timeout
+            || self.options.write_timeout != options.write_timeout
+            || self.options.max_payload_bytes != options.max_payload_bytes
+        {
+            return false;
+        }
+        if self
+            .replicas
+            .iter_mut()
+            .filter(|replica| !replica.needs_standalone_reconnect())
+            .any(|replica| !replica.prepare_direct_for_reuse(&self.options, options))
+        {
+            return false;
+        }
+        self.options = options.clone();
+        true
+    }
+
     /// Connect to every endpoint, refusing incomplete or duplicate membership.
     ///
     /// Each connected socket must name a distinct peer address. Multiple connections
@@ -408,6 +434,28 @@ impl RemoteReplicaSet {
         &mut self,
         writes: &[(PageId, u64, &[u8])],
     ) -> Result<Vec<usize>, ObjectError> {
+        self.write_chunks_inner(writes, None)
+    }
+
+    /// Apply ordered writes only when each selected quorum state has the caller's
+    /// sequence. Repeated writes to one page must provide consecutive sequences.
+    pub fn write_chunks_if_sequence(
+        &mut self,
+        writes: &[(PageId, u64, &[u8], u64)],
+    ) -> Result<Vec<usize>, ObjectError> {
+        let plain: Vec<_> = writes
+            .iter()
+            .map(|(page, offset, data, _)| (page.clone(), *offset, *data))
+            .collect();
+        let expected: Vec<_> = writes.iter().map(|(_, _, _, sequence)| *sequence).collect();
+        self.write_chunks_inner(&plain, Some(&expected))
+    }
+
+    fn write_chunks_inner(
+        &mut self,
+        writes: &[(PageId, u64, &[u8])],
+        required_sequences: Option<&[u64]>,
+    ) -> Result<Vec<usize>, ObjectError> {
         if writes.len() > 32 {
             return Err(ObjectError::InvalidArgument(
                 "star write batch exceeds thirty-two writes".into(),
@@ -438,6 +486,11 @@ impl RemoteReplicaSet {
         for (index, (page_id, offset, data)) in writes.iter().enumerate() {
             let page_index = page_indexes[page_id];
             let expected_sequence = next_sequences[page_index];
+            if required_sequences.is_some_and(|required| required[index] != expected_sequence) {
+                return Err(ObjectError::PreconditionFailed(
+                    "star write sequence precondition changed".into(),
+                ));
+            }
             next_sequences[page_index] = expected_sequence.checked_add(1).ok_or_else(|| {
                 ObjectError::PreconditionFailed("page write sequence is exhausted".into())
             })?;

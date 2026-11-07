@@ -387,6 +387,13 @@ sent. A group is successful only when its complete batch is acknowledged by a
 write quorum. Frames are sent without replay; an error can follow an earlier
 acknowledged frame, so candidate pages must be probed before retrying.
 
+Metadata-routed standalone groups use identity version 3. Their fixed `voters`
+numbers correspond positionally to `api_endpoints`; peer endpoints and bootstrap
+fields are empty because these members do not run chunk Raft. Object writes use
+the same majority for the read fence and mutation quorum. They admit up to 32
+fresh pages per coordinator call while retaining the eight-write, 4 MiB mutation
+frame bounds. Identity versions 1 and 2 remain Raft routes.
+
 The check prevents an already divergent member from counting toward a fresh write
 acknowledgment. It does not repair that member, establish cross-client linearizability
 or authenticate replies. Explicit repair is available through `repair_chunk` and
@@ -408,6 +415,14 @@ verification. A server implementing the earlier four-write bound returns a typed
 invalid-batch response before admission; the client remembers that bound for the
 connection and sends four-write groups. Larger pages retain the individual path.
 Empty code-14 requests remain harmless for older upgraded clients.
+
+For a version-3 standalone route, the object writer instead uses the conditional
+star batch and derives the expected digest only for a fresh whole-page write.
+Offset appends and nonzero starting sequences are refused on this path. A cached
+fixed-member set remains reusable after a member transport failure; later
+operations attempt to reconnect that member but can proceed when the configured
+majority still agrees. Initial construction of the public `RemoteReplicaSet`
+continues to require every configured endpoint.
 
 On a Raft voter, each accepted member becomes an independent conditional write
 in the consensus inbox. Adjacent writes can enter the existing proposal batch.

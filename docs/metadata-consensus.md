@@ -654,9 +654,11 @@ sequences and checksums, through learner catch-up, replacement, new-quorum write
 and full restart including the removed process. Separate tests exercise minority
 refusal and removal of the serving leader. These are local process simulations.
 
-The metadata placement catalog currently accepts fixed chunk groups only and
-explicitly rejects version-2 identities. Its health quorum calculation must use
-committed membership before membership-enabled chunk groups can participate in
-catalog-managed object placement. Do not describe this standalone group API as
-completed placement integration. API endpoint discovery remains manual, and
-client catalogs retain the seven-endpoint bound.
+The metadata placement catalog accepts three route identities. Version 1 is a
+fixed Raft voter set. Version 2 uses committed membership health to select its
+current incoming and outgoing Raft voters and exclude learners. Version 3 is a
+fixed standalone star set whose API members use majority read and write quorums;
+it carries no Raft peer or bootstrap fields. Metadata-routed object reads and
+writes dispatch to the corresponding client without changing versions 1 or 2.
+API endpoints remain explicitly configured, and group inventories retain the
+seven-member bound.
