@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 //! Socket readiness and executor completion wakeups for the bounded API loop.
-use super::{Connection, ServerShutdown, CONNECTIONS_PER_WORKER};
+use super::{Connection, ServerShutdown};
 pub(super) use crate::cluster::socket_readiness::Notify;
 use crate::cluster::socket_readiness::SocketReadiness;
 use std::io;
@@ -24,6 +24,7 @@ impl Waiter {
         &self,
         listener: &TcpListener,
         connections: &[Connection],
+        connections_per_worker: usize,
         stop: &ServerShutdown,
     ) -> bool {
         let now = Instant::now();
@@ -35,7 +36,7 @@ impl Waiter {
         // Completion uses a separate wake socket. Exclude pending clients so
         // a disconnected client cannot cause readiness to spin during execution.
         self.inner.wait(
-            (connections.len() < CONNECTIONS_PER_WORKER).then_some(listener),
+            (connections.len() < connections_per_worker).then_some(listener),
             connections
                 .iter()
                 .filter(|c| c.pending.is_none())
@@ -61,10 +62,10 @@ mod tests {
         let stop = Arc::new(ServerShutdown::default());
         let waiter = Waiter::new(&stop).unwrap();
         let start = Instant::now();
-        assert!(!waiter.wait(&listener, &[], &stop));
+        assert!(!waiter.wait(&listener, &[], 128, &stop));
         assert!(start.elapsed() >= Duration::from_millis(20));
         let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        assert!(waiter.wait(&listener, &[], &stop));
+        assert!(waiter.wait(&listener, &[], 128, &stop));
         let (server, _) = listener.accept().unwrap();
         drop((client, server));
         let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
@@ -76,33 +77,34 @@ mod tests {
             max_payload_bytes: 64,
             read_timeout: Duration::from_secs(5),
             write_timeout: Duration::from_secs(5),
+            connections_per_worker: 128,
         };
         let mut connection = Connection::new(server, active, &options, Some(&waiter.notifier())).unwrap();
         client.write_all(&[7]).unwrap();
-        assert!(waiter.wait(&listener, std::slice::from_ref(&connection), &stop));
+        assert!(waiter.wait(&listener, std::slice::from_ref(&connection), 128, &stop));
         let mut byte = [0];
         connection.stream.read_exact(&mut byte).unwrap();
         assert_eq!(byte, [7]);
         connection.output = vec![1];
-        assert!(waiter.wait(&listener, std::slice::from_ref(&connection), &stop));
+        assert!(waiter.wait(&listener, std::slice::from_ref(&connection), 128, &stop));
         connection.output.clear();
         let (_reply, pending) = std::sync::mpsc::sync_channel(1);
         connection.pending = Some(pending);
         drop(client);
         // An executor still owns this request: client hangup must not spin poll.
-        assert!(!waiter.wait(&listener, std::slice::from_ref(&connection), &stop));
+        assert!(!waiter.wait(&listener, std::slice::from_ref(&connection), 128, &stop));
         drop(connection);
         // Saturation is nonblocking; a full notification socket is already readable.
         for _ in 0..4096 {
             waiter.notifier().notify();
         }
-        assert!(waiter.wait(&listener, &[], &stop));
+        assert!(waiter.wait(&listener, &[], 128, &stop));
         let waiter = Waiter::new(&stop).unwrap();
         let notify = waiter.notifier();
         let worker = std::thread::spawn(move || {
             notify.notify();
         });
-        assert!(waiter.wait(&listener, &[], &stop));
+        assert!(waiter.wait(&listener, &[], 128, &stop));
         worker.join().unwrap();
         let waiter = Waiter::new(&stop).unwrap();
         let shutdown = Arc::clone(&stop);
@@ -110,7 +112,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
             shutdown.stop();
         });
-        assert!(waiter.wait(&listener, &[], &stop));
+        assert!(waiter.wait(&listener, &[], 128, &stop));
         worker.join().unwrap();
         assert!(stop.is_stopped());
     }

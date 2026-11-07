@@ -180,8 +180,10 @@ pub struct MetaNodeOptions {
     /// frame can make the node allocate.
     /// Also bounds outgoing payloads, including failure messages; minimum 24 bytes.
     pub max_payload_bytes: usize,
-    /// Request workers; each has a companion that shares up to 128 connections.
+    /// Request workers; each has a companion that shares persistent connections.
     pub worker_threads: usize,
+    /// Maximum persistent API connections handled by each I/O loop.
+    pub connections_per_worker: usize,
     /// Deadline for receiving a complete frame, including initial idle time.
     pub read_timeout: Duration,
     /// Deadline for sending a complete response.
@@ -193,9 +195,10 @@ impl Default for MetaNodeOptions {
         Self {
             tls: None,
             max_payload_bytes: MAX_PAYLOAD_BYTES,
-            // Idle sockets do not occupy a worker. Each worker shares up to 128 sockets
-            // and bounds reserved frame buffers to twice the maximum payload size.
+            // Idle sockets do not occupy a request worker. The higher control-plane
+            // default accommodates large chunk fleets while frame memory stays bounded.
             worker_threads: 2,
+            connections_per_worker: 1024,
             read_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
         }
@@ -499,7 +502,10 @@ impl MetaNodeServer {
     /// Accept and serve until the shutdown handle is used.
     pub fn serve(self) -> std::io::Result<()> {
         let worker_threads = self.options.worker_threads.max(1);
-        let dispatch = super::connections::Dispatch::new(worker_threads);
+        let dispatch = super::connections::Dispatch::new(
+            worker_threads,
+            self.options.connections_per_worker.max(1),
+        );
         let mut handles = Vec::with_capacity(worker_threads);
         for _ in 0..worker_threads {
             let dispatch = dispatch.clone();
@@ -587,6 +593,7 @@ fn accept_loop(
             max_payload_bytes: options.max_payload_bytes,
             read_timeout: options.read_timeout,
             write_timeout: options.write_timeout,
+            connections_per_worker: options.connections_per_worker,
         },
         dispatch,
     );

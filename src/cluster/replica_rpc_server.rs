@@ -301,7 +301,7 @@ impl ReplicaNodeServer {
             }
         }
         let worker_threads = self.options.worker_threads.max(1);
-        let dispatch = super::connections::Dispatch::new(worker_threads);
+        let dispatch = super::connections::Dispatch::new(worker_threads, 128);
         let mut handles = Vec::with_capacity(worker_threads);
         for _ in 0..worker_threads {
             let dispatch = dispatch.clone();
@@ -395,6 +395,7 @@ fn accept_loop(
             max_payload_bytes: options.max_payload_bytes,
             read_timeout: options.read_timeout,
             write_timeout: options.write_timeout,
+            connections_per_worker: 128,
         },
         dispatch,
     );
