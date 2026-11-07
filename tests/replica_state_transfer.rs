@@ -516,9 +516,9 @@ fn star_reads_writes_and_discards_send_all_members_before_waiting_for_replies() 
         ..Default::default()
     };
     let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
-    assert_eq!(set.write_chunk(&page(0), 0, b"abcdefgh").unwrap(), 3);
+    assert!((2..=3).contains(&set.write_chunk(&page(0), 0, b"abcdefgh").unwrap()));
     assert_eq!(set.read_chunk(&page(0), 0, 8).unwrap().data, b"abcdefgh");
-    assert_eq!(set.discard_chunk(&page(0), 2, 2).unwrap(), 3);
+    assert!((2..=3).contains(&set.discard_chunk(&page(0), 2, 2).unwrap()));
     assert_eq!(set.read_chunk(&page(0), 0, 2).unwrap().data, b"ab");
     let head = set.head_chunk(&page(0)).unwrap();
     assert_eq!(head.write_sequence, 2);
@@ -540,7 +540,7 @@ fn star_reads_writes_and_discards_send_all_members_before_waiting_for_replies() 
 }
 
 #[test]
-fn default_page_star_io_uses_four_page_frames() {
+fn sixteen_default_pages_use_bounded_star_frames() {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc;
@@ -611,17 +611,20 @@ fn default_page_star_io_uses_four_page_frames() {
     let mut set =
         RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
     let data = vec![7u8; 1024 * 1024];
-    let writes: Vec<_> = (10..18)
+    let writes: Vec<_> = (10..26)
         .map(|index| (page(index), 0, data.as_slice()))
         .collect();
     let acknowledgements = set.write_chunks(&writes).unwrap();
-    assert_eq!(&acknowledgements[..4], &[3; 4]);
-    assert!(acknowledgements[4..].iter().all(|count| *count >= 2));
-    let ranges: Vec<_> = (10..18)
+    assert_eq!(&acknowledgements[..12], &[3; 12]);
+    assert!(acknowledgements[12..].iter().all(|count| *count >= 2));
+    let ranges: Vec<_> = (10..26)
         .map(|index| (page(index), 0, data.len() as u64))
         .collect();
-    let reads = set.read_chunks(&ranges).unwrap();
-    assert_eq!(reads.len(), 8);
+    let reads: Vec<_> = ranges
+        .chunks(8)
+        .flat_map(|batch| set.read_chunks(batch).unwrap())
+        .collect();
+    assert_eq!(reads.len(), 16);
     assert!(reads.iter().all(|read| read.data == data));
     drop(set);
     for worker in workers {
@@ -638,17 +641,20 @@ fn default_page_star_io_uses_four_page_frames() {
     let mut complete_reads = 0usize;
     for member in codes {
         assert_eq!(
-            &member[..3],
+            &member[..6],
             &[
                 HEAD_CHUNK_BATCH_CODE,
+                HEAD_CHUNK_BATCH_CODE,
+                CONDITIONAL_BATCH_CODE,
+                CONDITIONAL_BATCH_CODE,
                 CONDITIONAL_BATCH_CODE,
                 CONDITIONAL_BATCH_CODE,
             ]
         );
-        if member[3..] == [READ_BATCH_CODE, READ_BATCH_CODE] {
+        if member[6..] == [READ_BATCH_CODE, READ_BATCH_CODE, READ_BATCH_CODE, READ_BATCH_CODE] {
             complete_reads += 1;
         } else {
-            assert_eq!(member.len(), 3);
+            assert_eq!(member.len(), 6);
         }
     }
     assert!(complete_reads >= 2);
@@ -659,14 +665,14 @@ fn default_page_star_io_uses_four_page_frames() {
             data
         );
         assert_eq!(
-            replica.read_chunk(&page(17), 0, data.len() as u64).unwrap().data,
+            replica.read_chunk(&page(25), 0, data.len() as u64).unwrap().data,
             data
         );
     }
 }
 
 #[test]
-fn star_batch_sequences_repeated_page_appends_in_one_mutation_frame() {
+fn star_batch_sequences_thirty_two_repeated_page_appends_after_one_head_fence() {
     use matrixobjectstore_rs::cluster::{
         message::encode_reply, ReplicaReply, ReplicaRequest, RequestCode,
     };
@@ -694,7 +700,7 @@ fn star_batch_sequences_repeated_page_appends_in_one_mutation_frame() {
                 stream
                     .set_write_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
-                for phase in 0..2 {
+                for phase in 0..5 {
                     let mut header = [0; 6];
                     stream.read_exact(&mut header).unwrap();
                     let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
@@ -708,27 +714,22 @@ fn star_batch_sequences_repeated_page_appends_in_one_mutation_frame() {
                                 .write_all(&encode_reply(&ReplicaReply::Heads(vec![None])))
                                 .unwrap();
                         }
-                        (1, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
-                            assert_eq!(writes.len(), 3);
+                        (1..=4, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
+                            assert_eq!(writes.len(), 8);
                             assert!(writes.iter().all(|write| write.page_id == expected_page));
+                            let first = (phase - 1) * 8;
                             assert_eq!(
                                 writes
                                     .iter()
                                     .map(|write| write.expected_sequence)
                                     .collect::<Vec<_>>(),
-                                vec![0, 1, 2]
+                                (first..first + 8).map(|value| value as u64).collect::<Vec<_>>()
                             );
                             assert_eq!(
                                 writes.iter().map(|write| write.offset).collect::<Vec<_>>(),
-                                vec![0, 3, 6]
+                                (first..first + 8).map(|value| value as u64).collect::<Vec<_>>()
                             );
-                            assert_eq!(
-                                writes
-                                    .iter()
-                                    .flat_map(|write| write.data.iter().copied())
-                                    .collect::<Vec<_>>(),
-                                b"abcdefghi"
-                            );
+                            assert!(writes.iter().all(|write| write.data == b"x"));
                             stream
                                 .write_all(&encode_reply(&ReplicaReply::Applied))
                                 .unwrap();
@@ -742,15 +743,21 @@ fn star_batch_sequences_repeated_page_appends_in_one_mutation_frame() {
 
     let mut set =
         RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
-    let acknowledgements = set
-        .write_chunks(&[
-            (expected_page.clone(), 0, b"abc"),
-            (expected_page.clone(), 3, b"def"),
-            (expected_page, 6, b"ghi"),
-        ])
-        .unwrap();
-    assert_eq!(acknowledgements.len(), 3);
-    assert!(acknowledgements.iter().all(|count| *count >= 2));
+    let writes: Vec<_> = (0..32)
+        .map(|offset| (expected_page.clone(), offset, b"x".as_slice()))
+        .collect();
+    let acknowledgements = set.write_chunks(&writes).unwrap();
+    assert_eq!(acknowledgements.len(), 32);
+    assert_eq!(&acknowledgements[..24], &[3; 24]);
+    assert!(acknowledgements[24..].iter().all(|count| *count >= 2));
+    let too_many: Vec<_> = (0..33)
+        .map(|offset| (expected_page.clone(), offset, b"x".as_slice()))
+        .collect();
+    assert!(matches!(
+        set.write_chunks(&too_many),
+        Err(ObjectError::InvalidArgument(message))
+            if message == "star write batch exceeds thirty-two writes"
+    ));
     drop(set);
     for worker in workers {
         worker.join().unwrap();

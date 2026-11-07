@@ -394,7 +394,7 @@ impl RemoteReplicaSet {
         Ok(acknowledged)
     }
 
-    /// Apply up to eight ordered writes through the standalone star path.
+    /// Apply up to thirty-two ordered writes through the standalone star path.
     ///
     /// Every distinct page is fenced against a quorum-agreed head before any
     /// mutation is sent. Repeated writes to one page form an ordered sequence
@@ -408,9 +408,9 @@ impl RemoteReplicaSet {
         &mut self,
         writes: &[(PageId, u64, &[u8])],
     ) -> Result<Vec<usize>, ObjectError> {
-        if writes.len() > 8 {
+        if writes.len() > 32 {
             return Err(ObjectError::InvalidArgument(
-                "star write batch exceeds eight pages".into(),
+                "star write batch exceeds thirty-two writes".into(),
             ));
         }
         if writes.is_empty() {
@@ -538,44 +538,53 @@ impl RemoteReplicaSet {
         pages: &[PageId],
     ) -> Result<Vec<(Option<ReplicaHead>, Vec<bool>)>, ObjectError> {
         self.reconnect_failed();
-        let replies = self.fan_out(
-            &ReplicaRequest::HeadChunkBatch {
-                pages: pages.to_vec(),
-            },
-            None,
-        );
-        let unsupported = replies.iter().any(|reply| {
-            matches!(
-                reply,
-                Err(ObjectError::PreconditionFailed(message))
-                    if message.starts_with("the replica does not implement this request:")
-            )
-        });
-        if unsupported {
-            return pages
-                .iter()
-                .map(|page| self.mutation_state(page))
-                .collect();
-        }
-        let mut observed = vec![Vec::with_capacity(self.replicas.len()); pages.len()];
-        for reply in replies {
-            match reply {
-                Ok(ReplicaReply::Heads(heads)) if heads.len() == pages.len() => {
-                    for (page, head) in observed.iter_mut().zip(heads) {
-                        page.push(Some(head));
+        let mut states = Vec::with_capacity(pages.len());
+        for batch in pages.chunks(8) {
+            let replies = self.fan_out(
+                &ReplicaRequest::HeadChunkBatch {
+                    pages: batch.to_vec(),
+                },
+                None,
+            );
+            let unsupported = replies.iter().any(|reply| {
+                matches!(
+                    reply,
+                    Err(ObjectError::PreconditionFailed(message))
+                        if message.starts_with("the replica does not implement this request:")
+                )
+            });
+            if unsupported {
+                states.extend(
+                    batch
+                        .iter()
+                        .map(|page| self.mutation_state(page))
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
+                continue;
+            }
+            let mut observed = vec![Vec::with_capacity(self.replicas.len()); batch.len()];
+            for reply in replies {
+                match reply {
+                    Ok(ReplicaReply::Heads(heads)) if heads.len() == batch.len() => {
+                        for (page, head) in observed.iter_mut().zip(heads) {
+                            page.push(Some(head));
+                        }
                     }
-                }
-                _ => {
-                    for page in &mut observed {
-                        page.push(None);
+                    _ => {
+                        for page in &mut observed {
+                            page.push(None);
+                        }
                     }
                 }
             }
+            states.extend(
+                observed
+                    .into_iter()
+                    .map(|page| self.select_mutation_state(page))
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
         }
-        observed
-            .into_iter()
-            .map(|page| self.select_mutation_state(page))
-            .collect()
+        Ok(states)
     }
 
     fn select_mutation_state(
