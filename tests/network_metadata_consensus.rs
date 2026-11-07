@@ -637,6 +637,127 @@ fn configured_placement_writes_real_chunk_processes_and_recovers_after_failover(
 
 #[cfg(feature = "replica-server")]
 #[test]
+fn metadata_routes_object_writes_through_a_standalone_star_quorum() {
+    use matrixobjectstore_rs::cluster::{
+        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ObjectWriteOptions,
+        RemoteReplicaClient, ReplicaClientOptions,
+    };
+    use matrixobjectstore_rs::{ChunkId, PageId};
+
+    let root = std::env::temp_dir().join(node_regime::run_token("star-object-route"));
+    std::fs::create_dir(&root).unwrap();
+    let mut chunks = Vec::new();
+    for index in 0..3 {
+        let journal = root.join(format!("{index}.log"));
+        chunks.push(processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", journal.to_str().unwrap()),
+            ],
+        ));
+    }
+    let endpoints: Vec<_> = chunks.iter().map(|node| node.endpoint.clone()).collect();
+    let members: Vec<_> = (1..=3).map(|id| format!("star-{id}")).collect();
+    let config = ChunkGroupConfig {
+        placement_id: "group-a".into(),
+        failure_domain: "rack-a".into(),
+        identity: Some(ChunkGroupIdentity {
+            version: 3,
+            group_id: 1,
+            node_id: 1,
+            capacity_bytes: 1 << 28,
+            max_pages: 4096,
+            voters: vec![1, 2, 3],
+            peer_endpoints: Vec::new(),
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
+        }),
+        api_endpoints: endpoints.clone(),
+        member_ids: members.clone(),
+    };
+    let catalog = ChunkGroupCatalog::new(vec![config]).unwrap();
+    let metadata = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let mut client = metadata.client(metadata.leader());
+    for member in &members {
+        client
+            .heartbeat_placement_node(member, 0, 1 << 28, false, true, 100)
+            .unwrap();
+    }
+
+    let options = ObjectWriteOptions {
+        page_bytes: 4,
+        target_groups: 1,
+        replica: ReplicaClientOptions {
+            read_timeout: Duration::from_secs(2),
+            write_timeout: Duration::from_secs(2),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let first_bytes: Vec<u8> = (0..160).collect();
+    let first = client
+        .write_object("star", "first", None, &first_bytes, &options)
+        .unwrap();
+    assert_eq!(first.extents.len(), 40);
+    assert_eq!(
+        client
+            .read_object("star", "first", first_bytes.len(), &options.replica)
+            .unwrap(),
+        (first.clone(), first_bytes.clone())
+    );
+
+    let extent = &first.extents[0];
+    let page = PageId {
+        chunk_id: ChunkId::new(extent.volume_id, extent.chunk_id).unwrap(),
+        page_index: extent.page_index,
+    };
+    for endpoint in &endpoints {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let mut replica =
+                RemoteReplicaClient::connect(endpoint, &options.replica).unwrap();
+            match replica.read_chunk(&page, 0, extent.length) {
+                Ok(read) => {
+                    assert_eq!(read.data, &first_bytes[..extent.length as usize]);
+                    break;
+                }
+                Err(error) => {
+                    assert!(Instant::now() < deadline, "star member missed write: {error}");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+    }
+
+    chunks[0].child.kill().unwrap();
+    assert!(processes::reap_within(&mut chunks[0].child, Duration::from_secs(3)).is_some());
+    assert_eq!(
+        client
+            .read_object("star", "first", first_bytes.len(), &options.replica)
+            .unwrap()
+            .1,
+        first_bytes
+    );
+    let second_bytes = b"quorum remains writable";
+    let second = client
+        .write_object("star", "second", None, second_bytes, &options)
+        .unwrap();
+    assert_eq!(
+        client
+            .read_object("star", "second", second_bytes.len(), &options.replica)
+            .unwrap(),
+        (second, second_bytes.to_vec())
+    );
+
+    drop(client);
+    drop(metadata);
+    drop(chunks);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(feature = "replica-server")]
+#[test]
 fn chunk_processes_report_usage_follow_leaders_and_expire_without_manual_heartbeats() {
     run_chunk_health(false);
 }

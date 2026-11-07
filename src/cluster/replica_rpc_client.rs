@@ -241,6 +241,29 @@ impl Drop for PendingReplicaReply<'_> {
 }
 
 impl RemoteReplicaClient {
+    pub(super) fn prepare_direct_for_reuse(
+        &mut self,
+        current: &ReplicaClientOptions,
+        next: &ReplicaClientOptions,
+    ) -> bool {
+        let same_tls = match (&current.tls, &next.tls) {
+            (None, None) => true,
+            (Some(left), Some(right)) => left.same_configuration(right),
+            _ => false,
+        };
+        if !self.connection_usable
+            || !same_tls
+            || current.connect_timeout != next.connect_timeout
+            || current.read_timeout != next.read_timeout
+            || current.write_timeout != next.write_timeout
+            || current.max_payload_bytes != next.max_payload_bytes
+        {
+            return false;
+        }
+        self.deadline = next.deadline;
+        true
+    }
+
     pub(super) fn prepare_for_reuse(&mut self, options: &ReplicaClientOptions) -> bool {
         let Some((_, current)) = &mut self.catalog else {
             return false;
@@ -477,6 +500,11 @@ impl RemoteReplicaClient {
     /// A new metadata route is needed when a later operation outlives this configuration.
     #[cfg(feature = "meta-server")]
     pub fn connect_routed_raft_catalog(route: &crate::cluster::ChunkGroupRoute, options: &ReplicaClientOptions) -> Result<Self, ObjectError> {
+        if route.standalone_star_route()?.is_some() {
+            return Err(ObjectError::InvalidArgument(
+                "standalone star route is not a Raft catalog".into(),
+            ));
+        }
         let active = route.active_members()?;
         let endpoints: Vec<_> = active.iter().map(|(endpoint, _)| endpoint.clone()).collect();
         let members: std::collections::BTreeMap<_, _> = active.into_iter().collect();

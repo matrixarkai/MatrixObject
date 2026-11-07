@@ -39,8 +39,12 @@ pub(crate) fn check_inventory_limit(limit: u64) -> Result<(), ObjectError> {
     Ok(())
 }
 
-/// Immutable voter configuration, available on leaders and followers.
-/// This identifies configuration; it does not authenticate a server or establish readiness.
+/// Immutable chunk-group configuration.
+///
+/// Versions 1 and 2 describe Raft voters. Version 3 describes fixed standalone
+/// star members: `voters` supplies stable member numbers while peer endpoints,
+/// bootstrap voters and the bootstrap ID stay empty. This identifies
+/// configuration; it does not authenticate a server or establish readiness.
 #[derive(Clone, PartialEq, Eq, Message)]
 pub struct ChunkGroupIdentity {
     #[prost(uint32, tag = "1")]
@@ -67,15 +71,19 @@ pub struct ChunkGroupIdentity {
 impl ChunkGroupIdentity {
     pub(crate) fn validate(&self) -> Result<(), ObjectError> {
         let mut sockets = std::collections::BTreeSet::new();
-        if !matches!(self.version, 1 | 2) || self.group_id == 0 || self.node_id == 0
-            || self.voters.is_empty() || self.voters.len() > if self.version == 1 {7} else {64}
+        let standalone_star = self.version == 3;
+        if !matches!(self.version, 1 | 2 | 3) || self.group_id == 0 || self.node_id == 0
+            || self.voters.is_empty() || self.voters.len() > if self.version == 2 {64} else {7}
             || (self.version == 1 && (!self.bootstrap_voters.is_empty() || self.bootstrap_id != 0))
             || (self.version == 2 && (self.bootstrap_id == 0 || self.bootstrap_voters.is_empty() || self.bootstrap_voters.len() > 7
                 || self.bootstrap_voters.windows(2).any(|w| w[0] >= w[1])
                 || self.bootstrap_voters.iter().any(|id| !self.voters.contains(id))))
+            || (standalone_star && (self.capacity_bytes == 0 || self.max_pages == 0
+                || !self.bootstrap_voters.is_empty() || self.bootstrap_id != 0
+                || !self.peer_endpoints.is_empty()))
             || self.voters[0] == 0 || self.voters.windows(2).any(|w| w[0] >= w[1])
             || !self.voters.contains(&self.node_id)
-            || self.peer_endpoints.len() != self.voters.len()
+            || (!standalone_star && self.peer_endpoints.len() != self.voters.len())
             || self.peer_endpoints.iter().any(|value| {
                 let Ok(address) = value.parse::<std::net::SocketAddr>() else { return true; };
                 value.len() > 128 || address.port() == 0 || address.ip().is_unspecified()
@@ -86,6 +94,9 @@ impl ChunkGroupIdentity {
             return Err(ObjectError::Corruption("invalid chunk group identity".into()));
         }
         Ok(())
+    }
+    pub(crate) fn is_standalone_star(&self) -> bool {
+        self.version == 3
     }
     pub(crate) fn same_group(&self, other: &Self) -> bool {
         let mut normalized = other.clone();
