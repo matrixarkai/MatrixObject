@@ -2908,3 +2908,13 @@ jobs:
           cargo test --locked --release --all-features --test network_chunk_consensus chunk_streamed_checkpoints_recover_large_process_state -- --exact --ignored --nocapture | tee /tmp/chunk-stream-large.log
           grep -q '^running 1 test$' /tmp/chunk-stream-large.log
           grep -q '^test result: ok. 1 passed' /tmp/chunk-stream-large.log
+      - name: The erasure-coding sidecar functions still produce the original bytes
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib -- \
+            the_ec_sidecar_xor_matches_the_original_byte_loop_at_every_length_that_matters \
+            the_ec_fragment_digests_match_the_original_allocating_form_at_every_length_that_matters \
+            a_run_of_zero_bytes_folds_into_fnv1a64_exactly_as_hashing_them_does \
+            | tee /tmp/ec-sidecar.log
+          grep -q '^running 3 tests$' /tmp/ec-sidecar.log
+          grep -q '^test result: ok. 3 passed' /tmp/ec-sidecar.log

@@ -145,6 +145,7 @@ pub(crate) fn evaluate_object_read_preconditions(
 }
 
 pub(crate) const FNV1A64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+const FNV1A64_PRIME: u64 = 0x100000001b3;
 
 /// Read back what [`append_etag_of_digest`] spelled.
 ///
@@ -180,7 +181,22 @@ pub(crate) fn fnv1a64(data: &[u8]) -> u64 {
 pub(crate) fn fnv1a64_resumed(mut hash: u64, data: &[u8]) -> u64 {
     for byte in data {
         hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
+        hash = hash.wrapping_mul(FNV1A64_PRIME);
+    }
+    hash
+}
+
+/// FNV-1a over `count` zero bytes, starting from a digest already computed, in O(log count).
+///
+/// A zero byte leaves the hash unchanged under the xor and then multiplies it by the prime, so
+/// `count` of them multiply it by `prime^count` modulo 2^64. The result is exactly what hashing
+/// the zeros one at a time gives, and a test pins that identity.
+pub(crate) fn fnv1a64_zero_run(mut hash: u64, count: usize) -> u64 {
+    let mut left = count;
+    while left > 0 {
+        let step = left.min(u32::MAX as usize);
+        hash = hash.wrapping_mul(FNV1A64_PRIME.wrapping_pow(step as u32));
+        left -= step;
     }
     hash
 }
