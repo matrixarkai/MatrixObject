@@ -20,6 +20,7 @@ impl MatrixMetaService {
         &self,
         placement: &ObjectPlacement,
         source_node_id: &str,
+        reserved_bytes: &BTreeMap<String, u64>,
     ) -> Result<PlacementMigrationPlan, ObjectError> {
         let mut candidates: Vec<&PlacementNode> = self
             .nodes
@@ -30,14 +31,13 @@ impl MatrixMetaService {
                         .node_ids
                         .iter()
                         .any(|current| current == &node.node_id)
-                    && node.committed_bytes.saturating_add(placement.length)
-                        <= Self::node_effective_capacity_bytes(node)
+                    && Self::node_unreserved_free_bytes(node, reserved_bytes) >= placement.length
             })
             .collect();
         let occupied_domains =
             self.placement_domains_without_source(placement, Some(source_node_id));
         candidates.sort_by(|left, right| {
-            Self::compare_repair_target_nodes(left, right, &occupied_domains)
+            Self::compare_repair_target_nodes(left, right, &occupied_domains, reserved_bytes)
         });
         let target = candidates.first().ok_or_else(|| {
             ObjectError::PreconditionFailed("root placement repair target missing".to_string())
@@ -50,6 +50,7 @@ impl MatrixMetaService {
         item: &PlacementHealthItem,
         expected_replica_count: usize,
         min_free_bytes: u64,
+        reserved_bytes: &BTreeMap<String, u64>,
     ) -> Result<PlacementMigrationPlan, ObjectError> {
         if self.object_manifests.get(&item.placement.object_id).is_some() {
             return Err(ObjectError::PreconditionFailed(
@@ -67,6 +68,7 @@ impl MatrixMetaService {
             &item.placement,
             source_node_id.as_deref(),
             min_free_bytes,
+            reserved_bytes,
         )?;
         let mut after_node_ids = item.placement.node_ids.clone();
         let (source_node_id, reason) = if let Some(source_node_id) = source_node_id {
@@ -113,6 +115,7 @@ impl MatrixMetaService {
         placement: &ObjectPlacement,
         source_node_id: Option<&str>,
         min_free_bytes: u64,
+        reserved_bytes: &BTreeMap<String, u64>,
     ) -> Result<String, ObjectError> {
         let mut candidates: Vec<&PlacementNode> = self
             .nodes
@@ -123,13 +126,13 @@ impl MatrixMetaService {
                         .node_ids
                         .iter()
                         .any(|current| current == &node.node_id)
-                    && Self::node_effective_free_bytes(node)
+                    && Self::node_unreserved_free_bytes(node, reserved_bytes)
                         >= placement.length.saturating_add(min_free_bytes)
             })
             .collect();
         let occupied_domains = self.placement_domains_without_source(placement, source_node_id);
         candidates.sort_by(|left, right| {
-            Self::compare_repair_target_nodes(left, right, &occupied_domains)
+            Self::compare_repair_target_nodes(left, right, &occupied_domains, reserved_bytes)
         });
         candidates
             .first()
@@ -139,6 +142,52 @@ impl MatrixMetaService {
                     "root placement health repair target missing".to_string(),
                 )
             })
+    }
+
+    fn placement_durability_deficit(
+        item: &PlacementHealthItem,
+        expected_replica_count: usize,
+    ) -> usize {
+        expected_replica_count
+            .saturating_sub(item.placement.node_ids.len())
+            .saturating_add(item.missing_node_ids.len())
+            .saturating_add(item.offline_node_ids.len())
+    }
+
+    fn compare_health_repair_priority(
+        left: &PlacementHealthItem,
+        right: &PlacementHealthItem,
+        expected_replica_count: usize,
+    ) -> Ordering {
+        Self::placement_durability_deficit(right, expected_replica_count)
+            .cmp(&Self::placement_durability_deficit(left, expected_replica_count))
+            .then_with(|| {
+                right
+                    .missing_node_ids
+                    .len()
+                    .saturating_add(right.offline_node_ids.len())
+                    .cmp(
+                        &left
+                            .missing_node_ids
+                            .len()
+                            .saturating_add(left.offline_node_ids.len()),
+                    )
+            })
+            .then_with(|| right.missing_node_ids.len().cmp(&left.missing_node_ids.len()))
+            .then_with(|| right.offline_node_ids.len().cmp(&left.offline_node_ids.len()))
+            .then_with(|| {
+                right
+                    .draining_node_ids
+                    .len()
+                    .cmp(&left.draining_node_ids.len())
+            })
+            .then_with(|| {
+                right
+                    .capacity_pressure_node_ids
+                    .len()
+                    .cmp(&left.capacity_pressure_node_ids.len())
+            })
+            .then_with(|| left.placement.object_id.cmp(&right.placement.object_id))
     }
 
     fn commit_placement_health_repair(

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
+const UNHEALTHY_REPAIR_PRIORITY_LOOKAHEAD: usize = 8;
+
 impl MatrixMetaService {
     pub fn plan_unhealthy_placement_repairs(
         &self,
@@ -9,29 +11,67 @@ impl MatrixMetaService {
         min_free_bytes: u64,
         max_payload_bytes: u64,
     ) -> Result<PlacementRepairReport, ObjectError> {
-        let health = self.audit_placement_health(
+        let repair_limit = if max_objects == 0 {
+            usize::MAX
+        } else {
+            max_objects
+        };
+        let scan_limit = if max_objects == 0 {
+            0
+        } else {
+            max_objects.saturating_mul(UNHEALTHY_REPAIR_PRIORITY_LOOKAHEAD)
+        };
+        let mut health = self.audit_placement_health(
             marker,
-            max_objects,
+            scan_limit,
             expected_replica_count,
             min_free_bytes,
             true,
             max_payload_bytes,
         )?;
+        let mut skipped_manifests = 0u64;
+        health.items.retain(|item| {
+            let repairable = self
+                .object_manifests
+                .get(&item.placement.object_id)
+                .is_none();
+            if !repairable {
+                skipped_manifests = skipped_manifests.saturating_add(1);
+            }
+            repairable
+        });
+        health.items.sort_by(|left, right| {
+            Self::compare_health_repair_priority(left, right, expected_replica_count)
+        });
+        let deferred_objects = health.items.len().saturating_sub(repair_limit);
+        let has_more = health.has_more || deferred_objects > 0;
+        let next_marker = if deferred_objects > 0 {
+            marker.cloned()
+        } else {
+            health.next_marker.clone()
+        };
         let mut report = PlacementRepairReport {
             marker: marker.cloned(),
-            next_marker: health.next_marker.clone(),
-            has_more: health.has_more,
+            next_marker,
+            has_more,
             scanned_objects: health.scanned_objects,
-            skipped_objects: health.skipped_objects,
+            skipped_objects: health
+                .skipped_objects
+                .saturating_add(skipped_manifests)
+                .saturating_add(deferred_objects as u64),
             ..PlacementRepairReport::default()
         };
-        for item in health.items {
-            if self.object_manifests.get(&item.placement.object_id).is_some() {
-                report.skipped_objects = report.skipped_objects.saturating_add(1);
-                continue;
-            }
-            match self.plan_health_repair_for_item(&item, expected_replica_count, min_free_bytes) {
+        let mut reserved_bytes = BTreeMap::<String, u64>::new();
+        for item in health.items.into_iter().take(repair_limit) {
+            match self.plan_health_repair_for_item(
+                &item,
+                expected_replica_count,
+                min_free_bytes,
+                &reserved_bytes,
+            ) {
                 Ok(plan) => {
+                    let reserved = reserved_bytes.entry(plan.target_node_id.clone()).or_default();
+                    *reserved = reserved.saturating_add(plan.length);
                     report.repair_objects = report.repair_objects.saturating_add(1);
                     report.bytes_to_repair = report.bytes_to_repair.saturating_add(plan.length);
                     report.items.push(PlacementRepairItem { plan });

@@ -163,11 +163,41 @@ impl MatrixMetaService {
         left: &PlacementNode,
         right: &PlacementNode,
         occupied_domains: &BTreeSet<String>,
+        reserved_bytes: &BTreeMap<String, u64>,
     ) -> Ordering {
         occupied_domains
             .contains(&left.failure_domain)
             .cmp(&occupied_domains.contains(&right.failure_domain))
-            .then_with(|| Self::compare_placement_target_nodes(left, right))
+            .then_with(|| {
+                Self::node_reclaim_pressure_score(left)
+                    .cmp(&Self::node_reclaim_pressure_score(right))
+            })
+            .then_with(|| {
+                Self::node_effective_free_bytes(right)
+                    .saturating_sub(*reserved_bytes.get(&right.node_id).unwrap_or(&0))
+                    .cmp(
+                        &Self::node_effective_free_bytes(left)
+                            .saturating_sub(*reserved_bytes.get(&left.node_id).unwrap_or(&0)),
+                    )
+            })
+            .then_with(|| {
+                Self::node_reclaim_pressure_bytes(left)
+                    .cmp(&Self::node_reclaim_pressure_bytes(right))
+            })
+            .then_with(|| {
+                Self::node_fragmentation_pressure_units(left)
+                    .cmp(&Self::node_fragmentation_pressure_units(right))
+            })
+            .then_with(|| left.failure_domain.cmp(&right.failure_domain))
+            .then_with(|| left.node_id.cmp(&right.node_id))
+    }
+
+    fn node_unreserved_free_bytes(
+        node: &PlacementNode,
+        reserved_bytes: &BTreeMap<String, u64>,
+    ) -> u64 {
+        Self::node_effective_free_bytes(node)
+            .saturating_sub(*reserved_bytes.get(&node.node_id).unwrap_or(&0))
     }
 
     fn placement_domains_without_source(
