@@ -876,6 +876,84 @@ fn star_head_fence_falls_back_to_eight_page_frames_after_bounded_refusal() {
 }
 
 #[test]
+fn fresh_star_pages_use_conditional_writes_as_the_absence_fence() {
+    use matrixobjectstore_rs::cluster::{
+        message::{encode_failure, encode_reply},
+        ReplicaReply, ReplicaRequest, RequestCode, StatusCode,
+    };
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    let listeners: Vec<_> = (0..3)
+        .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let endpoints: Vec<_> = listeners
+        .iter()
+        .map(|listener| listener.local_addr().unwrap().to_string())
+        .collect();
+    let workers: Vec<_> = listeners
+        .into_iter()
+        .enumerate()
+        .map(|(index, listener)| {
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                for phase in 0..2 {
+                    let mut header = [0; 6];
+                    stream.read_exact(&mut header).unwrap();
+                    let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                    let mut body = vec![0; size];
+                    stream.read_exact(&mut body).unwrap();
+                    let code = RequestCode::from_u8(header[1]).unwrap();
+                    let ReplicaRequest::WriteChunkBatchIfSequence { writes } =
+                        ReplicaRequest::decode(code, &body).unwrap()
+                    else {
+                        panic!("fresh star page write sent a separate head request");
+                    };
+                    assert_eq!(writes.len(), 8);
+                    assert!(writes
+                        .iter()
+                        .all(|write| write.offset == 0 && write.expected_sequence == 0));
+                    assert_eq!(writes[0].page_id, page(300 + phase * 8));
+                    if index == 2 {
+                        stream
+                            .write_all(&encode_failure(
+                                StatusCode::PreconditionFailed,
+                                "page already exists",
+                            ))
+                            .unwrap();
+                    } else {
+                        stream
+                            .write_all(&encode_reply(&ReplicaReply::Applied))
+                            .unwrap();
+                    }
+                }
+            })
+        })
+        .collect();
+
+    let mut set =
+        RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+    let payloads = vec![vec![7u8]; 16];
+    let writes: Vec<_> = payloads
+        .iter()
+        .enumerate()
+        .map(|(index, data)| (page(300 + index as u64), 0, data.as_slice(), 0))
+        .collect();
+    assert_eq!(set.write_chunks_if_sequence(&writes).unwrap(), vec![2; 16]);
+    drop(set);
+    for worker in workers {
+        worker.join().unwrap();
+    }
+}
+
+#[test]
 fn star_batch_sequences_thirty_two_repeated_page_appends_after_one_head_fence() {
     use matrixobjectstore_rs::cluster::{
         message::encode_reply, ReplicaReply, ReplicaRequest, RequestCode,
