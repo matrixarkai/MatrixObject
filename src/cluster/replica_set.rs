@@ -277,7 +277,6 @@ pub struct PageRepairBatch {
     pub blocked: bool,
 }
 
-
 fn applied(reply: Result<ReplicaReply, ObjectError>) -> Result<(), ObjectError> {
     match reply? {
         ReplicaReply::Applied => Ok(()),
@@ -481,6 +480,38 @@ impl RemoteReplicaSet {
         selected: Option<&[bool]>,
         return_after_applied: Option<usize>,
     ) -> Vec<Result<ReplicaReply, ObjectError>> {
+        let reply_count = self
+            .replicas
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| selected.map_or(true, |members| members[*index]))
+            .count();
+        let mut replies: Vec<_> = (0..reply_count).map(|_| None).collect();
+        self.fan_out_each_until_applied(
+            request,
+            selected,
+            return_after_applied,
+            |index, result| replies[index] = Some(result),
+        );
+        replies.into_iter().flatten().collect()
+    }
+
+    fn fan_out_each<F>(&mut self, request: &ReplicaRequest, selected: Option<&[bool]>, on_reply: F)
+    where
+        F: FnMut(usize, Result<ReplicaReply, ObjectError>),
+    {
+        self.fan_out_each_until_applied(request, selected, None, on_reply);
+    }
+
+    fn fan_out_each_until_applied<F>(
+        &mut self,
+        request: &ReplicaRequest,
+        selected: Option<&[bool]>,
+        return_after_applied: Option<usize>,
+        mut on_reply: F,
+    ) where
+        F: FnMut(usize, Result<ReplicaReply, ObjectError>),
+    {
         // One shared encoded frame and one pending exchange per selected member.
         // No worker threads or mutation retries. A terminal mutation may return at
         // quorum; dropping an incomplete exchange retires that member's socket.
@@ -492,16 +523,17 @@ impl RemoteReplicaSet {
             .filter(|(i, _)| selected.map_or(true, |members| members[*i]))
             .map(|(_, replica)| replica.begin_encoded(request.code(), frame.clone()))
             .collect();
-        let mut replies: Vec<_> = (0..pending.len()).map(|_| None).collect();
-        let mut pending: Vec<_> = pending.into_iter().enumerate().map(|(index, result)| {
-            match result {
+        let mut pending: Vec<_> = pending
+            .into_iter()
+            .enumerate()
+            .map(|(index, result)| match result {
                 Ok(reply) => Some(reply),
                 Err(error) => {
-                    replies[index] = Some(Err(error));
+                    on_reply(index, Err(error));
                     None
                 }
-            }
-        }).collect();
+            })
+            .collect();
         let mut applied_replies = 0usize;
         let mut quorum_reached_at = None;
         while pending.iter().any(Option::is_some) {
@@ -517,7 +549,7 @@ impl RemoteReplicaSet {
                     if matches!(&result, Ok(ReplicaReply::Applied)) {
                         applied_replies += 1;
                     }
-                    replies[index] = Some(result);
+                    on_reply(index, result);
                     // Drop retires an incomplete frame before the connection can be reused.
                     *slot = None;
                 }
@@ -537,7 +569,6 @@ impl RemoteReplicaSet {
                 wait_for_pending(&pending);
             }
         }
-        replies.into_iter().flatten().collect()
     }
 
     fn reconnect_failed(&mut self) {
@@ -845,15 +876,18 @@ impl RemoteReplicaSet {
             next_sequences[page_index] = expected_sequence.checked_add(1).ok_or_else(|| {
                 ObjectError::PreconditionFailed("page write sequence is exhausted".into())
             })?;
-            groups.entry(states[page_index].1.clone()).or_default().push((
-                index,
-                ConditionalChunkWrite {
-                    page_id: page_id.clone(),
-                    offset: *offset,
-                    data: data.to_vec(),
-                    expected_sequence,
-                },
-            ));
+            groups
+                .entry(states[page_index].1.clone())
+                .or_default()
+                .push((
+                    index,
+                    ConditionalChunkWrite {
+                        page_id: page_id.clone(),
+                        offset: *offset,
+                        data: data.to_vec(),
+                        expected_sequence,
+                    },
+                ));
         }
 
         let mut acknowledgements = vec![0; writes.len()];
@@ -1052,16 +1086,16 @@ impl RemoteReplicaSet {
         self.reconnect_failed();
         let replica_count = self.replicas.len();
         let read_quorum = self.read_quorum;
-        let mut answered = Vec::with_capacity(replica_count);
+        let mut votes = ReadVoteCollector::default();
         let mut not_found = 0usize;
         let mut unreachable = 0usize;
-        let mut first_error: Option<ObjectError> = None;
+        let mut first_error: Option<(usize, ObjectError)> = None;
         let request = ReplicaRequest::ReadChunk {
             page_id: page_id.clone(),
             offset,
             length,
         };
-        for result in self.fan_out(&request, None) {
+        self.fan_out_each(&request, None, |index, result| {
             let result = result.and_then(|reply| match reply {
                 ReplicaReply::Read(read) => Ok(read),
                 _ => Err(ObjectError::Corruption(
@@ -1069,20 +1103,23 @@ impl RemoteReplicaSet {
                 )),
             });
             match result {
-                Ok(read) => answered.push(read),
+                Ok(read) => votes.push(read),
                 Err(err) => {
-                    if matches!(err, ObjectError::NotFound(_)) {
+                    if matches!(&err, ObjectError::NotFound(_)) {
                         not_found += 1;
                     } else {
                         unreachable += 1;
                     }
-                    if first_error.is_none() {
-                        first_error = Some(err);
+                    if first_error
+                        .as_ref()
+                        .is_none_or(|(first_index, _)| index < *first_index)
+                    {
+                        first_error = Some((index, err));
                     }
                 }
             }
-        }
-        if answered.len() < read_quorum {
+        });
+        if votes.answered_count() < read_quorum {
             // THE ABSENT CASE IS NAMED, AND THE TEST IS A QUORUM OF ITS OWN. A read quorum
             // of replicas affirmatively said the page is not there, so this is absence and
             // not an outage -- even with other replicas unreachable at the same moment.
@@ -1103,13 +1140,13 @@ impl RemoteReplicaSet {
                 "a page read was answered by {} of {replica_count} replica(s), short of a \
                  read quorum of {read_quorum} ({unreachable} did not answer, {not_found} \
                  reported the page absent); the first failure was: {}",
-                answered.len(),
+                votes.answered_count(),
                 first_error
-                    .map(|err| err.to_string())
+                    .map(|(_, err)| err.to_string())
                     .unwrap_or_else(|| "none recorded".to_string())
             )));
         }
-        vote_reads(answered, replica_count, read_quorum)
+        votes.finish(replica_count, read_quorum)
     }
 
     /// Read up to eight independent ranges through quorum-voted star fan-out.
@@ -1155,14 +1192,51 @@ impl RemoteReplicaSet {
             let request = ReplicaRequest::ReadChunkBatch {
                 reads: frame.to_vec(),
             };
-            let replies = self.fan_out(&request, None);
-            let scalar_fallback = replies.iter().any(|reply| {
-                matches!(
-                    reply,
-                    Err(ObjectError::PreconditionFailed(_))
-                        | Err(ObjectError::InvalidArgument(_))
-                        | Err(ObjectError::NotFound(_))
-                )
+            let mut scalar_fallback = false;
+            let mut votes: Vec<ReadVoteCollector> = (0..frame.len())
+                .map(|_| ReadVoteCollector::default())
+                .collect();
+            let mut answered = 0usize;
+            let mut not_found = 0usize;
+            let mut unreachable = 0usize;
+            let mut first_error: Option<(usize, ObjectError)> = None;
+            self.fan_out_each(&request, None, |index, reply| match reply {
+                Ok(ReplicaReply::Reads(reads)) if reads.len() == frame.len() => {
+                    for (range_votes, read) in votes.iter_mut().zip(reads) {
+                        range_votes.push(read);
+                    }
+                    answered += 1;
+                }
+                Ok(_) => {
+                    unreachable += 1;
+                    let error =
+                        ObjectError::Corruption("unexpected replica read batch response".into());
+                    if first_error
+                        .as_ref()
+                        .is_none_or(|(first_index, _)| index < *first_index)
+                    {
+                        first_error = Some((index, error));
+                    }
+                }
+                Err(error) => {
+                    scalar_fallback |= matches!(
+                        &error,
+                        ObjectError::PreconditionFailed(_)
+                            | ObjectError::InvalidArgument(_)
+                            | ObjectError::NotFound(_)
+                    );
+                    if matches!(&error, ObjectError::NotFound(_)) {
+                        not_found += 1;
+                    } else {
+                        unreachable += 1;
+                    }
+                    if first_error
+                        .as_ref()
+                        .is_none_or(|(first_index, _)| index < *first_index)
+                    {
+                        first_error = Some((index, error));
+                    }
+                }
             });
             if scalar_fallback {
                 for (page_id, offset, length) in frame {
@@ -1170,40 +1244,6 @@ impl RemoteReplicaSet {
                 }
                 completed = end;
                 continue;
-            }
-
-            let mut votes: Vec<Vec<ReplicaReadResult>> = (0..frame.len())
-                .map(|_| Vec::with_capacity(replica_count))
-                .collect();
-            let mut answered = 0usize;
-            let mut not_found = 0usize;
-            let mut unreachable = 0usize;
-            let mut first_error = None;
-            for reply in replies {
-                match reply {
-                    Ok(ReplicaReply::Reads(reads)) if reads.len() == frame.len() => {
-                        for (range_votes, read) in votes.iter_mut().zip(reads) {
-                            range_votes.push(read);
-                        }
-                        answered += 1;
-                    }
-                    Ok(_) => {
-                        unreachable += 1;
-                        first_error.get_or_insert_with(|| ObjectError::Corruption(
-                            "unexpected replica read batch response".into(),
-                        ));
-                    }
-                    Err(error) => {
-                        if matches!(error, ObjectError::NotFound(_)) {
-                            not_found += 1;
-                        } else {
-                            unreachable += 1;
-                        }
-                        if first_error.is_none() {
-                            first_error = Some(error);
-                        }
-                    }
-                }
             }
             if answered < read_quorum {
                 if not_found >= read_quorum {
@@ -1216,12 +1256,12 @@ impl RemoteReplicaSet {
                      short of a read quorum of {read_quorum} ({unreachable} did not answer, \
                      {not_found} reported an absent page); the first failure was: {}",
                     first_error
-                        .map(|error| error.to_string())
+                        .map(|(_, error)| error.to_string())
                         .unwrap_or_else(|| "none recorded".into())
                 )));
             }
             for range_votes in votes {
-                output.push(vote_reads(range_votes, replica_count, read_quorum)?);
+                output.push(range_votes.finish(replica_count, read_quorum)?);
             }
             completed = end;
         }
@@ -1554,40 +1594,59 @@ impl RemoteReplicaSet {
 }
 
 // Keep exact sequence/checksum/byte voting while moving each received payload
-// into the vote table. No second payload allocation is needed for a vote.
-fn vote_reads(
-    answered: Vec<ReplicaReadResult>,
-    replica_count: usize,
-    read_quorum: usize,
-) -> Result<ReplicaReadResult, ObjectError> {
-    let answered_count = answered.len();
-    let mut votes: BTreeMap<(u64, String, Vec<u8>), usize> = BTreeMap::new();
-    for read in answered {
+// directly into the vote table. Matching allocations are released as replies
+// complete, so retained bytes scale with distinct copies rather than responders.
+#[derive(Default)]
+struct ReadVoteCollector {
+    answered_count: usize,
+    votes: BTreeMap<(u64, String, Vec<u8>), usize>,
+}
+
+impl ReadVoteCollector {
+    fn push(&mut self, read: ReplicaReadResult) {
+        self.answered_count += 1;
         let key = (read.write_sequence, read.checksum, read.data);
-        *votes.entry(key).or_insert(0) += 1;
+        *self.votes.entry(key).or_insert(0) += 1;
     }
-    let (winning_key, winning_count) = votes
-        .into_iter()
-        .max_by_key(|(_, count)| *count)
-        .ok_or_else(|| {
+
+    fn answered_count(&self) -> usize {
+        self.answered_count
+    }
+
+    fn finish(
+        self,
+        replica_count: usize,
+        read_quorum: usize,
+    ) -> Result<ReplicaReadResult, ObjectError> {
+        let (winning_key, winning_count) = self
+            .votes
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .ok_or_else(|| {
             ObjectError::Corruption(
                 "a page read reached quorum with no answers to vote over".to_string(),
             )
         })?;
-    if winning_count < read_quorum {
-        return Err(ObjectError::Corruption(format!(
-            "a page read got {} answer(s) from {replica_count} replica(s) and the \
-                 largest group agreeing was {winning_count}, short of a read quorum of \
-                 {read_quorum}: the replicas hold divergent copies of this page",
-            answered_count
-        )));
+        if winning_count < read_quorum {
+            return Err(ObjectError::Corruption(format!(
+                "a page read got {} answer(s) from {replica_count} replica(s) and the \
+                     largest group agreeing was {winning_count}, short of a read quorum of \
+                     {read_quorum}: the replicas hold divergent copies of this page",
+                self.answered_count
+            )));
+        }
+        let (write_sequence, checksum, data) = winning_key;
+        Ok(ReplicaReadResult {
+            data,
+            write_sequence,
+            checksum,
+        })
     }
-    let (write_sequence, checksum, data) = winning_key;
-    Ok(ReplicaReadResult {
-        data,
-        write_sequence,
-        checksum,
-    })
+
+    #[cfg(test)]
+    fn retained_payloads(&self) -> usize {
+        self.votes.len()
+    }
 }
 
 #[cfg(test)]
@@ -1687,7 +1746,9 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
 
         let reconnect = set.routed_reconnect.as_ref().unwrap();
-        assert!(reconnect.pending.is_some() || reconnect.unavailable_endpoints == [closed_endpoint]);
+        assert!(
+            reconnect.pending.is_some() || reconnect.unavailable_endpoints == [closed_endpoint]
+        );
         assert_eq!(set.replicas.len(), 2);
     }
 
@@ -1704,7 +1765,13 @@ mod tests {
         let other = second.data.as_ptr();
         let mut conflicting = first.clone();
         conflicting.data[0] = 4;
-        let result = vote_reads(vec![conflicting, first, second], 3, 2).unwrap();
+        let mut votes = ReadVoteCollector::default();
+        votes.push(conflicting);
+        votes.push(first);
+        votes.push(second);
+        assert_eq!(votes.answered_count(), 3);
+        assert_eq!(votes.retained_payloads(), 2);
+        let result = votes.finish(3, 2).unwrap();
         assert!(
             result.data.as_ptr() == original || result.data.as_ptr() == other,
             "the winning bytes must retain a received allocation"
@@ -1712,19 +1779,24 @@ mod tests {
         assert_eq!(result.data, vec![3; 1024 * 1024]);
         assert_eq!(result.write_sequence, 7);
         assert_eq!(result.checksum, "same-checksum");
+        let rejects = |left, right| {
+            let mut votes = ReadVoteCollector::default();
+            votes.push(left);
+            votes.push(right);
+            votes.finish(2, 2)
+        };
         assert!(matches!(
-            vote_reads(vec![reply(vec![1]), reply(vec![2])], 2, 2),
+            rejects(reply(vec![1]), reply(vec![2])),
             Err(ObjectError::Corruption(_))
         ));
         let mut newer = reply(vec![1]);
         newer.write_sequence = 8;
-        assert!(vote_reads(vec![reply(vec![1]), newer], 2, 2).is_err());
+        assert!(rejects(reply(vec![1]), newer).is_err());
         let mut changed = reply(vec![1]);
         changed.checksum.push('x');
-        assert!(vote_reads(vec![reply(vec![1]), changed], 2, 2).is_err());
+        assert!(rejects(reply(vec![1]), changed).is_err());
     }
 }
-
 
 #[cfg(all(test, target_os = "linux"))]
 mod send_progress_tests {
@@ -1788,26 +1860,50 @@ mod send_progress_tests {
 
     #[test]
     fn star_blocked_sender_does_not_delay_healthy_members_or_replay() {
-        let listeners: Vec<_> = (0..3).map(|_| TcpListener::bind("127.0.0.1:0").unwrap()).collect();
+        let listeners: Vec<_> = (0..3)
+            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
         // Bound the first receive window before the handshake to force backpressure.
         let size: libc::c_int = 4096;
-        assert_eq!(unsafe {
-            libc::setsockopt(listeners[0].as_raw_fd(), libc::SOL_SOCKET, libc::SO_RCVBUF,
-                &size as *const _ as *const libc::c_void, std::mem::size_of_val(&size) as libc::socklen_t)
-        }, 0);
-        let endpoints: Vec<_> = listeners.iter().map(|listener| listener.local_addr().unwrap().to_string()).collect();
-        let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions {
-            write_timeout: Duration::from_secs(3),
-            read_timeout: Duration::from_secs(3),
-            ..Default::default()
-        }).unwrap();
-        let sockets: Vec<_> = listeners.iter().map(|listener| listener.accept().unwrap().0).collect();
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    listeners[0].as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_RCVBUF,
+                    &size as *const _ as *const libc::c_void,
+                    std::mem::size_of_val(&size) as libc::socklen_t,
+                )
+            },
+            0
+        );
+        let endpoints: Vec<_> = listeners
+            .iter()
+            .map(|listener| listener.local_addr().unwrap().to_string())
+            .collect();
+        let mut set = RemoteReplicaSet::connect(
+            &endpoints,
+            2,
+            2,
+            &ReplicaClientOptions {
+                write_timeout: Duration::from_secs(3),
+                read_timeout: Duration::from_secs(3),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let sockets: Vec<_> = listeners
+            .iter()
+            .map(|listener| listener.accept().unwrap().0)
+            .collect();
         let (ready, received) = mpsc::channel();
         let (release, released) = mpsc::channel();
         let mut receivers = Vec::new();
         let mut released = Some(released);
         for (index, mut socket) in sockets.into_iter().enumerate() {
-            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             let ready = ready.clone();
             let released = if index == 0 { released.take() } else { None };
             receivers.push(std::thread::spawn(move || {
@@ -1816,7 +1912,10 @@ mod send_progress_tests {
                     let mut bytes = Vec::new();
                     socket.read_to_end(&mut bytes).unwrap();
                     assert!(!bytes.is_empty());
-                    assert!(bytes.len() < 8 * 1024 * 1024, "stalled member must receive only a partial frame");
+                    assert!(
+                        bytes.len() < 8 * 1024 * 1024,
+                        "stalled member must receive only a partial frame"
+                    );
                     return;
                 }
                 let mut header = [0; 6];
@@ -1826,16 +1925,30 @@ mod send_progress_tests {
                 let mut payload = vec![0; length];
                 socket.read_exact(&mut payload).unwrap();
                 ready.send(index).unwrap();
-                socket.write_all(&super::super::message::encode_reply(&ReplicaReply::Applied)).unwrap();
+                socket
+                    .write_all(&super::super::message::encode_reply(&ReplicaReply::Applied))
+                    .unwrap();
                 let mut byte = [0];
-                assert_eq!(socket.read(&mut byte).unwrap(), 0, "mutation must not replay");
+                assert_eq!(
+                    socket.read(&mut byte).unwrap(),
+                    0,
+                    "mutation must not replay"
+                );
             }));
         }
         let writer = std::thread::spawn(move || {
-            let replies = set.fan_out(&ReplicaRequest::WriteChunkIfSequence {
-                page_id: PageId { chunk_id: crate::ChunkId::new(1, 1).unwrap(), page_index: 0 },
-                offset: 0, data: vec![7; 8 * 1024 * 1024], expected_sequence: 0,
-            }, None);
+            let replies = set.fan_out(
+                &ReplicaRequest::WriteChunkIfSequence {
+                    page_id: PageId {
+                        chunk_id: crate::ChunkId::new(1, 1).unwrap(),
+                        page_index: 0,
+                    },
+                    offset: 0,
+                    data: vec![7; 8 * 1024 * 1024],
+                    expected_sequence: 0,
+                },
+                None,
+            );
             assert!(replies[0].is_err());
             assert!(matches!(replies[1], Ok(ReplicaReply::Applied)));
             assert!(matches!(replies[2], Ok(ReplicaReply::Applied)));
@@ -1844,7 +1957,12 @@ mod send_progress_tests {
         let second = received.recv_timeout(Duration::from_secs(1));
         writer.join().unwrap();
         release.send(()).unwrap();
-        for worker in receivers { worker.join().unwrap(); }
-        assert!(first.is_ok() && second.is_ok(), "healthy members waited behind the stalled sender");
+        for worker in receivers {
+            worker.join().unwrap();
+        }
+        assert!(
+            first.is_ok() && second.is_ok(),
+            "healthy members waited behind the stalled sender"
+        );
     }
 }
