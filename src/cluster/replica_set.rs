@@ -236,6 +236,7 @@ pub struct RemoteReplicaSet {
     routed_reconnect: Option<RoutedReconnect>,
     write_quorum: usize,
     read_quorum: usize,
+    read_cursor: usize,
     options: ReplicaClientOptions,
 }
 
@@ -363,6 +364,7 @@ impl RemoteReplicaSet {
             routed_reconnect: None,
             write_quorum,
             read_quorum,
+            read_cursor: 0,
             options: options.clone(),
         })
     }
@@ -439,6 +441,7 @@ impl RemoteReplicaSet {
             routed_reconnect: Some(routed_reconnect),
             write_quorum,
             read_quorum,
+            read_cursor: 0,
             options: options.clone(),
         })
     }
@@ -737,6 +740,22 @@ impl RemoteReplicaSet {
 
     pub fn read_quorum(&self) -> usize {
         self.read_quorum
+    }
+
+    fn next_read_waves(&mut self) -> (Vec<bool>, Vec<bool>) {
+        let member_count = self.replicas.len();
+        let mut primary = vec![false; member_count];
+        if member_count == 0 {
+            return (primary.clone(), primary);
+        }
+        let primary_count = self.read_quorum.min(member_count);
+        let start = self.read_cursor % member_count;
+        for step in 0..primary_count {
+            primary[(start + step) % member_count] = true;
+        }
+        self.read_cursor = (start + primary_count) % member_count;
+        let fallback = primary.iter().map(|selected| !selected).collect();
+        (primary, fallback)
     }
 
     /// Every connection's local and peer address, in endpoint order.
@@ -1123,12 +1142,12 @@ impl RemoteReplicaSet {
         Ok((expected, matching))
     }
 
-    /// Read a byte range of `page_id`, taking a majority over the replicas that answer.
+    /// Read a byte range of `page_id`, taking an exact vote over a read quorum.
     ///
-    /// Every replica is asked, not just enough of them to reach quorum. Stopping at the
-    /// first `read_quorum` agreeing answers is the faster rule and is what the in-process
-    /// path does; here the whole set is polled so that the count of replicas that answered
-    /// is a real count, which is what a kill test needs to assert against.
+    /// The first wave rotates across `read_quorum` members. Remaining members are asked
+    /// only when the first wave cannot decide because a member failed or the copies differ.
+    /// This keeps the steady-state physical read count at quorum while preserving the same
+    /// exact sequence, checksum, and payload vote under failure or divergence.
     pub fn read_chunk(
         &mut self,
         page_id: &PageId,
@@ -1147,30 +1166,39 @@ impl RemoteReplicaSet {
             offset,
             length,
         };
-        self.fan_out_each(&request, None, |index, result| {
-            let result = result.and_then(|reply| match reply {
-                ReplicaReply::Read(read) => Ok(read),
-                _ => Err(ObjectError::Corruption(
-                    "unexpected replica read response".into(),
-                )),
-            });
-            match result {
-                Ok(read) => votes.push(read),
-                Err(err) => {
-                    if matches!(&err, ObjectError::NotFound(_)) {
-                        not_found += 1;
-                    } else {
-                        unreachable += 1;
-                    }
-                    if first_error
-                        .as_ref()
-                        .is_none_or(|(first_index, _)| index < *first_index)
-                    {
-                        first_error = Some((index, err));
+        let (primary, fallback) = self.next_read_waves();
+        for selected in [&primary, &fallback] {
+            if !selected.iter().any(|member| *member) {
+                continue;
+            }
+            self.fan_out_each(&request, Some(selected), |index, result| {
+                let result = result.and_then(|reply| match reply {
+                    ReplicaReply::Read(read) => Ok(read),
+                    _ => Err(ObjectError::Corruption(
+                        "unexpected replica read response".into(),
+                    )),
+                });
+                match result {
+                    Ok(read) => votes.push(read),
+                    Err(err) => {
+                        if matches!(&err, ObjectError::NotFound(_)) {
+                            not_found += 1;
+                        } else {
+                            unreachable += 1;
+                        }
+                        if first_error
+                            .as_ref()
+                            .is_none_or(|(first_index, _)| index < *first_index)
+                        {
+                            first_error = Some((index, err));
+                        }
                     }
                 }
+            });
+            if votes.has_quorum(read_quorum) || not_found >= read_quorum {
+                break;
             }
-        });
+        }
         if votes.answered_count() < read_quorum {
             // THE ABSENT CASE IS NAMED, AND THE TEST IS A QUORUM OF ITS OWN. A read quorum
             // of replicas affirmatively said the page is not there, so this is absence and
@@ -1202,8 +1230,9 @@ impl RemoteReplicaSet {
     }
 
     /// Read up to eight independent ranges through quorum-voted star fan-out.
-    /// Default one-MiB ranges share four-range frames while every member is
-    /// still polled and every range is voted independently.
+    /// Default one-MiB ranges share four-range frames. A rotating quorum is
+    /// contacted first and remaining members are used only when that wave cannot
+    /// produce an exact vote for every range.
     pub fn read_chunks(
         &mut self,
         reads: &[(PageId, u64, u64)],
@@ -1252,44 +1281,57 @@ impl RemoteReplicaSet {
             let mut not_found = 0usize;
             let mut unreachable = 0usize;
             let mut first_error: Option<(usize, ObjectError)> = None;
-            self.fan_out_each(&request, None, |index, reply| match reply {
-                Ok(ReplicaReply::Reads(reads)) if reads.len() == frame.len() => {
-                    for (range_votes, read) in votes.iter_mut().zip(reads) {
-                        range_votes.push(read);
-                    }
-                    answered += 1;
+            let (primary, fallback) = self.next_read_waves();
+            for selected in [&primary, &fallback] {
+                if !selected.iter().any(|member| *member) {
+                    continue;
                 }
-                Ok(_) => {
-                    unreachable += 1;
-                    let error =
-                        ObjectError::Corruption("unexpected replica read batch response".into());
-                    if first_error
-                        .as_ref()
-                        .is_none_or(|(first_index, _)| index < *first_index)
-                    {
-                        first_error = Some((index, error));
+                self.fan_out_each(&request, Some(selected), |index, reply| match reply {
+                    Ok(ReplicaReply::Reads(reads)) if reads.len() == frame.len() => {
+                        for (range_votes, read) in votes.iter_mut().zip(reads) {
+                            range_votes.push(read);
+                        }
+                        answered += 1;
                     }
-                }
-                Err(error) => {
-                    scalar_fallback |= matches!(
-                        &error,
-                        ObjectError::PreconditionFailed(_)
-                            | ObjectError::InvalidArgument(_)
-                            | ObjectError::NotFound(_)
-                    );
-                    if matches!(&error, ObjectError::NotFound(_)) {
-                        not_found += 1;
-                    } else {
+                    Ok(_) => {
                         unreachable += 1;
+                        let error = ObjectError::Corruption(
+                            "unexpected replica read batch response".into(),
+                        );
+                        if first_error
+                            .as_ref()
+                            .is_none_or(|(first_index, _)| index < *first_index)
+                        {
+                            first_error = Some((index, error));
+                        }
                     }
-                    if first_error
-                        .as_ref()
-                        .is_none_or(|(first_index, _)| index < *first_index)
-                    {
-                        first_error = Some((index, error));
+                    Err(error) => {
+                        scalar_fallback |= matches!(
+                            &error,
+                            ObjectError::PreconditionFailed(_)
+                                | ObjectError::InvalidArgument(_)
+                                | ObjectError::NotFound(_)
+                        );
+                        if matches!(&error, ObjectError::NotFound(_)) {
+                            not_found += 1;
+                        } else {
+                            unreachable += 1;
+                        }
+                        if first_error
+                            .as_ref()
+                            .is_none_or(|(first_index, _)| index < *first_index)
+                        {
+                            first_error = Some((index, error));
+                        }
                     }
+                });
+                if scalar_fallback
+                    || not_found >= read_quorum
+                    || votes.iter().all(|range_votes| range_votes.has_quorum(read_quorum))
+                {
+                    break;
                 }
-            });
+            }
             if scalar_fallback {
                 for (page_id, offset, length) in frame {
                     output.push(self.read_chunk(page_id, *offset, *length)?);
@@ -1665,6 +1707,10 @@ impl ReadVoteCollector {
         self.answered_count
     }
 
+    fn has_quorum(&self, read_quorum: usize) -> bool {
+        self.votes.values().any(|count| *count >= read_quorum)
+    }
+
     fn finish(
         self,
         replica_count: usize,
@@ -1908,6 +1954,178 @@ mod send_progress_tests {
         ));
         drop(pending);
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn star_scalar_and_batch_reads_use_rotating_quorums() {
+        let listeners: Vec<_> = (0..3)
+            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let endpoints: Vec<_> = listeners
+            .iter()
+            .map(|listener| listener.local_addr().unwrap().to_string())
+            .collect();
+        let mut set = RemoteReplicaSet::connect(
+            &endpoints,
+            2,
+            2,
+            &ReplicaClientOptions {
+                read_timeout: Duration::from_secs(1),
+                write_timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let scalar_code = ReplicaRequest::ReadChunk {
+            page_id: PageId {
+                chunk_id: crate::ChunkId::new(1, 2).unwrap(),
+                page_index: 0,
+            },
+            offset: 0,
+            length: 11,
+        }
+        .code() as u8;
+        let mut workers = Vec::new();
+        for listener in listeners {
+            let (mut peer, _) = listener.accept().unwrap();
+            workers.push(std::thread::spawn(move || {
+                let mut requests = 0usize;
+                loop {
+                    let mut header = [0; 6];
+                    match peer.read_exact(&mut header) {
+                        Ok(()) => {}
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::UnexpectedEof
+                                    | std::io::ErrorKind::ConnectionReset
+                            ) =>
+                        {
+                            break;
+                        }
+                        Err(error) => panic!("star read member failed: {error}"),
+                    }
+                    let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                    let mut payload = vec![0; length];
+                    peer.read_exact(&mut payload).unwrap();
+                    requests += 1;
+                    let first = ReplicaReadResult {
+                        data: b"quorum-data".to_vec(),
+                        write_sequence: 7,
+                        checksum: "quorum-checksum".into(),
+                    };
+                    let reply = if header[1] == scalar_code {
+                        ReplicaReply::Read(first)
+                    } else {
+                        ReplicaReply::Reads(vec![
+                            first,
+                            ReplicaReadResult {
+                                data: b"second".to_vec(),
+                                write_sequence: 7,
+                                checksum: "second-checksum".into(),
+                            },
+                        ])
+                    };
+                    peer.write_all(&super::super::message::encode_reply(&reply))
+                        .unwrap();
+                }
+                requests
+            }));
+        }
+
+        let page = PageId {
+            chunk_id: crate::ChunkId::new(1, 2).unwrap(),
+            page_index: 0,
+        };
+        for _ in 0..2 {
+            let read = set.read_chunk(&page, 0, 11).unwrap();
+            assert_eq!(read.data, b"quorum-data");
+        }
+        let batch = [
+            (page.clone(), 0, 11),
+            (
+                PageId {
+                    chunk_id: crate::ChunkId::new(1, 2).unwrap(),
+                    page_index: 1,
+                },
+                0,
+                6,
+            ),
+        ];
+        for _ in 0..2 {
+            let reads = set.read_chunks(&batch).unwrap();
+            assert_eq!(reads[0].data, b"quorum-data");
+            assert_eq!(reads[1].data, b"second");
+        }
+        drop(set);
+
+        let requests: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(requests, vec![3, 3, 2]);
+        assert_eq!(requests.iter().sum::<usize>(), 8);
+    }
+
+    #[test]
+    fn star_read_uses_optional_wave_when_quorum_copies_differ() {
+        let listeners: Vec<_> = (0..3)
+            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let endpoints: Vec<_> = listeners
+            .iter()
+            .map(|listener| listener.local_addr().unwrap().to_string())
+            .collect();
+        let mut set = RemoteReplicaSet::connect(
+            &endpoints,
+            2,
+            2,
+            &ReplicaClientOptions {
+                read_timeout: Duration::from_secs(1),
+                write_timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut workers = Vec::new();
+        for (index, listener) in listeners.into_iter().enumerate() {
+            let (mut peer, _) = listener.accept().unwrap();
+            workers.push(std::thread::spawn(move || {
+                let mut header = [0; 6];
+                peer.read_exact(&mut header).unwrap();
+                let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                let mut payload = vec![0; length];
+                peer.read_exact(&mut payload).unwrap();
+                let data = if index == 1 {
+                    b"different".to_vec()
+                } else {
+                    b"selected".to_vec()
+                };
+                peer.write_all(&super::super::message::encode_reply(
+                    &ReplicaReply::Read(ReplicaReadResult {
+                        checksum: format!("checksum-{data:?}"),
+                        data,
+                        write_sequence: 7,
+                    }),
+                ))
+                .unwrap();
+            }));
+        }
+
+        let read = set
+            .read_chunk(
+                &PageId {
+                    chunk_id: crate::ChunkId::new(1, 3).unwrap(),
+                    page_index: 0,
+                },
+                0,
+                8,
+            )
+            .unwrap();
+        assert_eq!(read.data, b"selected");
+        for worker in workers {
+            worker.join().unwrap();
+        }
     }
 
     #[test]

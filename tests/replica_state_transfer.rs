@@ -421,7 +421,7 @@ fn star_repair_aborts_changed_sources_and_never_replays_uncertain_commits() {
 }
 
 #[test]
-fn star_reads_writes_and_discards_send_all_members_before_waiting_for_replies() {
+fn star_operations_send_each_wave_before_waiting_for_replies() {
     use matrixobjectstore_rs::cluster::RequestCode;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
@@ -463,15 +463,27 @@ fn star_reads_writes_and_discards_send_all_members_before_waiting_for_replies() 
                 s.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
                 s.set_nodelay(true).unwrap();
             }
-            for phase in 0..8 {
+            loop {
                 let mut header = [0; 6];
-                front.read_exact(&mut header).unwrap();
+                match front.read_exact(&mut header) {
+                    Ok(()) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::UnexpectedEof
+                                | std::io::ErrorKind::ConnectionReset
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(error) => panic!("proxy read: {error}"),
+                }
                 let size = u32::from_be_bytes(header[2..6].try_into().unwrap()) as usize;
                 assert!(size <= 4096);
                 let mut body = vec![0; size];
                 front.read_exact(&mut body).unwrap();
-                arrived.send((phase, index, header[1])).unwrap();
-                // No member can answer until the whole phase has been sent.
+                arrived.send((index, header[1])).unwrap();
+                // No selected member can answer until the whole wave has been sent.
                 released.recv_timeout(Duration::from_secs(5)).unwrap();
                 back.write_all(&header).unwrap();
                 back.write_all(&body).unwrap();
@@ -497,17 +509,18 @@ fn star_reads_writes_and_discards_send_all_members_before_waiting_for_replies() 
             RequestCode::HeadChunk,
             RequestCode::HeadChunk,
         ];
-        for (phase, code) in codes.into_iter().enumerate() {
+        for code in codes {
+            let expected_members = if code == RequestCode::ReadChunk { 2 } else { 3 };
             let mut members = std::collections::BTreeSet::new();
-            for _ in 0..3 {
-                let (actual, index, actual_code) =
-                    arrivals.recv_timeout(Duration::from_secs(5)).unwrap();
-                assert_eq!(actual, phase);
+            for _ in 0..expected_members {
+                let (index, actual_code) = arrivals
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap_or_else(|error| panic!("waiting for {code:?}: {error}"));
                 assert_eq!(actual_code, code as u8);
                 assert!(members.insert(index));
             }
-            for release in &releases {
-                release.send(()).unwrap();
+            for index in members {
+                releases[index].send(()).unwrap();
             }
         }
     });
@@ -1078,17 +1091,29 @@ fn star_batches_fall_back_to_scalar_requests_on_older_members() {
                     .set_write_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
                 let mut codes = Vec::new();
-                for phase in 0..7 {
+                loop {
                     let mut header = [0; 6];
-                    stream.read_exact(&mut header).unwrap();
+                    match stream.read_exact(&mut header) {
+                        Ok(()) => {}
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::UnexpectedEof
+                                    | std::io::ErrorKind::ConnectionReset
+                            ) =>
+                        {
+                            break;
+                        }
+                        Err(error) => panic!("older member read failed: {error}"),
+                    }
                     let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
                     let mut body = vec![0; size];
                     stream.read_exact(&mut body).unwrap();
                     let code = RequestCode::from_u8(header[1]).unwrap();
                     let request = ReplicaRequest::decode(code, &body).unwrap();
                     codes.push(code);
-                    match (phase, request) {
-                        (0, ReplicaRequest::HeadChunkBatch { pages }) => {
+                    match request {
+                        ReplicaRequest::HeadChunkBatch { pages } => {
                             assert_eq!(pages.len(), 2);
                             stream
                                 .write_all(&encode_failure(
@@ -1097,16 +1122,16 @@ fn star_batches_fall_back_to_scalar_requests_on_older_members() {
                                 ))
                                 .unwrap();
                         }
-                        (1 | 2, ReplicaRequest::HeadChunk { .. }) => stream
+                        ReplicaRequest::HeadChunk { .. } => stream
                             .write_all(&encode_failure(StatusCode::NotFound, "absent"))
                             .unwrap(),
-                        (3, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
+                        ReplicaRequest::WriteChunkBatchIfSequence { writes } => {
                             assert_eq!(writes.len(), 2);
                             stream
                                 .write_all(&encode_reply(&ReplicaReply::Applied))
                                 .unwrap();
                         }
-                        (4, ReplicaRequest::ReadChunkBatch { reads }) => {
+                        ReplicaRequest::ReadChunkBatch { reads } => {
                             assert_eq!(reads.len(), 2);
                             stream
                                 .write_all(&encode_failure(
@@ -1115,7 +1140,7 @@ fn star_batches_fall_back_to_scalar_requests_on_older_members() {
                                 ))
                                 .unwrap();
                         }
-                        (5 | 6, ReplicaRequest::ReadChunk { page_id, .. }) => {
+                        ReplicaRequest::ReadChunk { page_id, .. } => {
                             let data = if page_id.page_index == 30 {
                                 b"first".to_vec()
                             } else {
@@ -1131,21 +1156,10 @@ fn star_batches_fall_back_to_scalar_requests_on_older_members() {
                                 )))
                                 .unwrap();
                         }
-                        other => panic!("unexpected fallback phase: {other:?}"),
+                        other => panic!("unexpected fallback request: {other:?}"),
                     }
                 }
-                assert_eq!(
-                    codes,
-                    vec![
-                        RequestCode::HeadChunkBatch,
-                        RequestCode::HeadChunk,
-                        RequestCode::HeadChunk,
-                        RequestCode::WriteChunkBatchIfSequence,
-                        RequestCode::ReadChunkBatch,
-                        RequestCode::ReadChunk,
-                        RequestCode::ReadChunk,
-                    ]
-                );
+                codes
             })
         })
         .collect();
@@ -1164,9 +1178,45 @@ fn star_batches_fall_back_to_scalar_requests_on_older_members() {
     assert!(set.read_chunks(&[]).unwrap().is_empty());
     assert!(set.write_chunks(&[]).unwrap().is_empty());
     drop(set);
+    let mut codes = Vec::new();
     for worker in workers {
-        worker.join().unwrap();
+        codes.extend(worker.join().unwrap());
     }
+    assert_eq!(
+        codes
+            .iter()
+            .filter(|code| **code == RequestCode::HeadChunkBatch)
+            .count(),
+        3
+    );
+    assert_eq!(
+        codes
+            .iter()
+            .filter(|code| **code == RequestCode::HeadChunk)
+            .count(),
+        6
+    );
+    assert_eq!(
+        codes
+            .iter()
+            .filter(|code| **code == RequestCode::WriteChunkBatchIfSequence)
+            .count(),
+        3
+    );
+    assert_eq!(
+        codes
+            .iter()
+            .filter(|code| **code == RequestCode::ReadChunkBatch)
+            .count(),
+        2
+    );
+    assert_eq!(
+        codes
+            .iter()
+            .filter(|code| **code == RequestCode::ReadChunk)
+            .count(),
+        4
+    );
 }
 
 #[test]
