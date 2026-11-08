@@ -83,11 +83,14 @@ pub(crate) fn chunk_ec_parity_from_data(data: &[u8]) -> Vec<u8> {
     let shard_len = chunk_ec_fragment_len(data.len());
     let mut sidecar = vec![0u8; shard_len];
     for index in 0..shards {
-        let base = index * shard_len;
-        for offset in 0..shard_len {
-            if let Some(byte) = data.get(base + offset) {
-                sidecar[offset] ^= byte;
-            }
+        let start = (index * shard_len).min(data.len());
+        let end = ((index + 1) * shard_len).min(data.len());
+        // A shard shorter than `shard_len` is zero-padded, and xor with zero changes nothing, so
+        // only the bytes that exist are folded in. Folding whole slices lets the compiler xor a
+        // vector at a time; the byte-at-a-time form this replaces went through a bounds-checked
+        // `get` for every byte of the page on every write.
+        for (accumulator, byte) in sidecar.iter_mut().zip(&data[start..end]) {
+            *accumulator ^= *byte;
         }
     }
     sidecar
@@ -104,20 +107,21 @@ pub(crate) fn chunk_ec_fragment_digests_from_data(data: &[u8]) -> Vec<u64> {
         .map(|index| {
             let start = (index * shard_len).min(data.len());
             let end = ((index + 1) * shard_len).min(data.len());
-            // ZERO-PADDED TO THE SHARD LENGTH, exactly as `chunk_ec_data_fragments` pads
-            // and as the sidecar's XOR treats a short tail.
+            // ZERO-PADDED TO THE SHARD LENGTH, exactly as `chunk_ec_data_fragments` pads and as
+            // the sidecar's xor treats a short tail -- but without building the padded shard.
+            // The fragment is hashed where it lies, and the padding is folded in as a run of
+            // zero bytes, which FNV-1a lets one do without visiting them. The digest is the same
+            // value as hashing the padded copy; what is gone is a copy of every fragment of the
+            // page, made on every write only to be hashed once and dropped.
             //
-            // NO INPUT DISTINGUISHES THIS, and that is worth saying rather than leaving it
-            // to look load-bearing. The only reader of these digests compares a stored
-            // table against one it computes with this same function, so padding or not
-            // padding changes both sides together -- a mutation that removed the resize
-            // went uncaught against a payload with a short tail, which is the case the
-            // padding exists for. It stays for consistency with the two functions above,
-            // so a future reader who does cross-compare a digest with a rebuilt fragment
-            // finds them agreeing.
-            let mut shard = data[start..end].to_vec();
-            shard.resize(shard_len, 0);
-            fnv1a64(&shard)
+            // NO INPUT DISTINGUISHES THE PADDING, and that is worth saying rather than leaving it
+            // to look load-bearing. The only reader of these digests compares a stored table
+            // against one it computes with this same function, so padding or not padding changes
+            // both sides together. It stays for consistency with the two functions above, so a
+            // future reader who does cross-compare a digest with a rebuilt fragment finds them
+            // agreeing.
+            let hash = fnv1a64(&data[start..end]);
+            fnv1a64_zero_run(hash, shard_len - (end - start))
         })
         .collect()
 }
