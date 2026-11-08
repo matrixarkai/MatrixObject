@@ -937,53 +937,67 @@ impl RemoteReplicaSet {
         pages: &[PageId],
     ) -> Result<Vec<(Option<ReplicaHead>, Vec<bool>)>, ObjectError> {
         self.reconnect_failed();
+        if pages.len() > 8 {
+            if let Some(states) = self.mutation_states_batch(pages, true)? {
+                return Ok(states);
+            }
+        }
         let mut states = Vec::with_capacity(pages.len());
         for batch in pages.chunks(8) {
-            let replies = self.fan_out(
-                &ReplicaRequest::HeadChunkBatch {
-                    pages: batch.to_vec(),
-                },
-                None,
-            );
-            let unsupported = replies.iter().any(|reply| {
-                matches!(
-                    reply,
-                    Err(ObjectError::PreconditionFailed(message))
-                        if message.starts_with("the replica does not implement this request:")
-                )
-            });
-            if unsupported {
-                states.extend(
+            match self.mutation_states_batch(batch, false)? {
+                Some(batch_states) => states.extend(batch_states),
+                None => states.extend(
                     batch
                         .iter()
                         .map(|page| self.mutation_state(page))
                         .collect::<Result<Vec<_>, _>>()?,
-                );
-                continue;
+                ),
             }
-            let mut observed = vec![Vec::with_capacity(self.replicas.len()); batch.len()];
-            for reply in replies {
-                match reply {
-                    Ok(ReplicaReply::Heads(heads)) if heads.len() == batch.len() => {
-                        for (page, head) in observed.iter_mut().zip(heads) {
-                            page.push(Some(head));
-                        }
+        }
+        Ok(states)
+    }
+
+    fn mutation_states_batch(
+        &mut self,
+        pages: &[PageId],
+        allow_bounded_refusal: bool,
+    ) -> Result<Option<Vec<(Option<ReplicaHead>, Vec<bool>)>>, ObjectError> {
+        let replies = self.fan_out(
+            &ReplicaRequest::HeadChunkBatch {
+                pages: pages.to_vec(),
+            },
+            None,
+        );
+        let unsupported = replies.iter().any(|reply| match reply {
+            Err(ObjectError::PreconditionFailed(message)) => {
+                message.starts_with("the replica does not implement this request:")
+            }
+            Err(ObjectError::InvalidArgument(_)) => allow_bounded_refusal,
+            _ => false,
+        });
+        if unsupported {
+            return Ok(None);
+        }
+        let mut observed = vec![Vec::with_capacity(self.replicas.len()); pages.len()];
+        for reply in replies {
+            match reply {
+                Ok(ReplicaReply::Heads(heads)) if heads.len() == pages.len() => {
+                    for (page, head) in observed.iter_mut().zip(heads) {
+                        page.push(Some(head));
                     }
-                    _ => {
-                        for page in &mut observed {
-                            page.push(None);
-                        }
+                }
+                _ => {
+                    for page in &mut observed {
+                        page.push(None);
                     }
                 }
             }
-            states.extend(
-                observed
-                    .into_iter()
-                    .map(|page| self.select_mutation_state(page))
-                    .collect::<Result<Vec<_>, _>>()?,
-            );
         }
-        Ok(states)
+        observed
+            .into_iter()
+            .map(|page| self.select_mutation_state(page))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
     }
 
     fn select_mutation_state(
