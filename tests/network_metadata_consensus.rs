@@ -640,7 +640,7 @@ fn configured_placement_writes_real_chunk_processes_and_recovers_after_failover(
 fn metadata_routes_object_writes_through_a_standalone_star_quorum() {
     use matrixobjectstore_rs::cluster::{
         ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ObjectWriteOptions,
-        RemoteReplicaClient, ReplicaClientOptions,
+        RemoteReplicaClient, RemoteReplicaSet, ReplicaClientOptions,
     };
     use matrixobjectstore_rs::{ChunkId, PageId};
 
@@ -710,6 +710,16 @@ fn metadata_routes_object_writes_through_a_standalone_star_quorum() {
         (first.clone(), first_bytes.clone())
     );
 
+    // A quorum write may finish with different two-member acknowledgement
+    // subsets for different pages. Repair the initial object across the full
+    // membership so the failure below exercises routing, not that variation.
+    let mut initial = RemoteReplicaSet::connect(&endpoints, 2, 2, &options.replica).unwrap();
+    let repaired = initial.repair_inventory_batch(None, 64).unwrap();
+    assert!(!repaired.blocked);
+    assert!(!repaired.has_more);
+    assert_eq!(repaired.pages.len(), first.extents.len());
+    assert!(repaired.pages.iter().all(|entry| entry.result.is_ok()));
+
     let extent = &first.extents[0];
     let page = PageId {
         chunk_id: ChunkId::new(extent.volume_id, extent.chunk_id).unwrap(),
@@ -766,25 +776,40 @@ fn metadata_routes_object_writes_through_a_standalone_star_quorum() {
         ],
     );
     assert_eq!(chunks[0].endpoint, endpoints[0]);
-    let third_bytes = b"returning member rejoins later writes";
-    let third = client
-        .write_object("star", "third", None, third_bytes, &options)
-        .unwrap();
+    let mut returned = RemoteReplicaClient::connect(&endpoints[0], &options.replica).unwrap();
+    let rejoin_deadline = Instant::now() + Duration::from_secs(12);
+    let mut attempt = 0;
+    let (third_key, third, third_bytes) = loop {
+        let key = format!("third-{attempt}");
+        let bytes = format!("returning member rejoins later write {attempt}").into_bytes();
+        let manifest = client
+            .write_object("star", &key, None, &bytes, &options)
+            .unwrap();
+        let extent = &manifest.extents[0];
+        let page = PageId {
+            chunk_id: ChunkId::new(extent.volume_id, extent.chunk_id).unwrap(),
+            page_index: extent.page_index,
+        };
+        match returned.read_chunk(&page, 0, extent.length) {
+            Ok(read) => {
+                assert_eq!(read.data, bytes[..extent.length as usize]);
+                break (key, manifest, bytes);
+            }
+            Err(_) => {
+                assert!(
+                    Instant::now() < rejoin_deadline,
+                    "returning star member did not rejoin later writes"
+                );
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    };
     assert_eq!(
         client
-            .read_object("star", "third", third_bytes.len(), &options.replica)
+            .read_object("star", &third_key, third_bytes.len(), &options.replica)
             .unwrap(),
-        (third.clone(), third_bytes.to_vec())
-    );
-    let extent = &third.extents[0];
-    let page = PageId {
-        chunk_id: ChunkId::new(extent.volume_id, extent.chunk_id).unwrap(),
-        page_index: extent.page_index,
-    };
-    let mut returned = RemoteReplicaClient::connect(&endpoints[0], &options.replica).unwrap();
-    assert_eq!(
-        returned.read_chunk(&page, 0, extent.length).unwrap().data,
-        &third_bytes[..extent.length as usize]
+        (third.clone(), third_bytes.clone())
     );
     drop(returned);
     for node in &mut chunks[..2] {
@@ -794,7 +819,7 @@ fn metadata_routes_object_writes_through_a_standalone_star_quorum() {
     drop(client);
     let mut minority = metadata.client(metadata.leader());
     assert!(minority
-        .read_object("star", "third", third_bytes.len(), &options.replica)
+        .read_object("star", &third_key, third_bytes.len(), &options.replica)
         .is_err());
 
     drop(minority);
