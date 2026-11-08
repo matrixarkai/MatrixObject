@@ -615,8 +615,11 @@ fn sixteen_default_pages_use_bounded_star_frames() {
         .map(|index| (page(index), 0, data.as_slice()))
         .collect();
     let acknowledgements = set.write_chunks(&writes).unwrap();
-    assert_eq!(&acknowledgements[..12], &[3; 12]);
-    assert!(acknowledgements[12..].iter().all(|count| *count >= 2));
+    assert!(
+        acknowledgements
+            .iter()
+            .all(|count| (2..=3).contains(count))
+    );
     let ranges: Vec<_> = (10..26)
         .map(|index| (page(index), 0, data.len() as u64))
         .collect();
@@ -639,35 +642,153 @@ fn sixteen_default_pages_use_bounded_star_frames() {
     const CONDITIONAL_BATCH_CODE: u8 = 14;
     const READ_BATCH_CODE: u8 = 17;
     let mut complete_reads = 0usize;
+    let mut complete_writes = 0usize;
     for member in codes {
         assert_eq!(
-            &member[..6],
-            &[
-                HEAD_CHUNK_BATCH_CODE,
-                HEAD_CHUNK_BATCH_CODE,
-                CONDITIONAL_BATCH_CODE,
-                CONDITIONAL_BATCH_CODE,
-                CONDITIONAL_BATCH_CODE,
-                CONDITIONAL_BATCH_CODE,
-            ]
+            &member[..2],
+            &[HEAD_CHUNK_BATCH_CODE, HEAD_CHUNK_BATCH_CODE]
         );
-        if member[6..] == [READ_BATCH_CODE, READ_BATCH_CODE, READ_BATCH_CODE, READ_BATCH_CODE] {
+        let write_frames = member
+            .iter()
+            .filter(|code| **code == CONDITIONAL_BATCH_CODE)
+            .count();
+        assert!((1..=4).contains(&write_frames));
+        complete_writes += usize::from(write_frames == 4);
+        if member
+            .iter()
+            .filter(|code| **code == READ_BATCH_CODE)
+            .count()
+            == 4
+        {
             complete_reads += 1;
-        } else {
-            assert_eq!(member.len(), 6);
         }
     }
+    assert!(complete_writes >= 2);
     assert!(complete_reads >= 2);
+    let mut final_page_copies = 0usize;
     for node in &nodes {
         let mut replica = client(node);
         assert_eq!(
             replica.read_chunk(&page(10), 0, data.len() as u64).unwrap().data,
             data
         );
-        assert_eq!(
-            replica.read_chunk(&page(25), 0, data.len() as u64).unwrap().data,
-            data
-        );
+        if let Ok(read) = replica.read_chunk(&page(25), 0, data.len() as u64) {
+            assert_eq!(read.data, data);
+            final_page_copies += 1;
+        }
+    }
+    assert!(final_page_copies >= 2);
+}
+
+#[test]
+fn star_batch_continues_on_quorum_when_one_member_stalls() {
+    use matrixobjectstore_rs::cluster::{
+        message::encode_reply, ReplicaReply, ReplicaRequest, RequestCode,
+    };
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let listeners: Vec<_> = (0..3)
+        .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let endpoints: Vec<_> = listeners
+        .iter()
+        .map(|listener| listener.local_addr().unwrap().to_string())
+        .collect();
+    let (release_slow, slow_released) = mpsc::channel();
+    let (advanced, observed_advance) = mpsc::channel();
+    let mut slow_released = Some(slow_released);
+    let workers: Vec<_> = listeners
+        .into_iter()
+        .enumerate()
+        .map(|(index, listener)| {
+            let release = if index == 2 {
+                slow_released.take()
+            } else {
+                None
+            };
+            let advanced = advanced.clone();
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                for phase in 0..4 {
+                    let mut header = [0; 6];
+                    stream.read_exact(&mut header).unwrap();
+                    let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                    let mut body = vec![0; size];
+                    stream.read_exact(&mut body).unwrap();
+                    let code = RequestCode::from_u8(header[1]).unwrap();
+                    match (phase, ReplicaRequest::decode(code, &body).unwrap()) {
+                        (0..=1, ReplicaRequest::HeadChunkBatch { pages }) => {
+                            assert_eq!(pages.len(), 8);
+                            stream
+                                .write_all(&encode_reply(&ReplicaReply::Heads(vec![
+                                    None;
+                                    pages.len()
+                                ])))
+                                .unwrap();
+                        }
+                        (2, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
+                            assert_eq!(writes.len(), 8);
+                            if let Some(release) = release.as_ref() {
+                                release.recv_timeout(Duration::from_secs(5)).unwrap();
+                                let _ = stream.write_all(&encode_reply(&ReplicaReply::Applied));
+                                return;
+                            }
+                            stream
+                                .write_all(&encode_reply(&ReplicaReply::Applied))
+                                .unwrap();
+                        }
+                        (3, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
+                            assert_eq!(writes.len(), 8);
+                            advanced.send(index).unwrap();
+                            stream
+                                .write_all(&encode_reply(&ReplicaReply::Applied))
+                                .unwrap();
+                        }
+                        other => panic!("unexpected stalled-member batch phase: {other:?}"),
+                    }
+                }
+            })
+        })
+        .collect();
+    drop(advanced);
+
+    let mut set = RemoteReplicaSet::connect(
+        &endpoints,
+        2,
+        2,
+        &ReplicaClientOptions {
+            read_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(5),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let writer = std::thread::spawn(move || {
+        let writes: Vec<_> = (100..116)
+            .map(|index| (page(index), 0, b"x".as_slice()))
+            .collect();
+        set.write_chunks(&writes)
+    });
+
+    let continued = observed_advance.recv_timeout(Duration::from_secs(2));
+    release_slow.send(()).unwrap();
+    let acknowledgements = writer.join().unwrap().unwrap();
+    assert!(
+        continued.is_ok(),
+        "a slow optional member delayed the next star write frame"
+    );
+    assert_eq!(acknowledgements, vec![2; 16]);
+    for worker in workers {
+        worker.join().unwrap();
     }
 }
 
@@ -748,8 +869,11 @@ fn star_batch_sequences_thirty_two_repeated_page_appends_after_one_head_fence() 
         .collect();
     let acknowledgements = set.write_chunks(&writes).unwrap();
     assert_eq!(acknowledgements.len(), 32);
-    assert_eq!(&acknowledgements[..24], &[3; 24]);
-    assert!(acknowledgements[24..].iter().all(|count| *count >= 2));
+    assert!(
+        acknowledgements
+            .iter()
+            .all(|count| (2..=3).contains(count))
+    );
     let too_many: Vec<_> = (0..33)
         .map(|offset| (expected_page.clone(), offset, b"x".as_slice()))
         .collect();
