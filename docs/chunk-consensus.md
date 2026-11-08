@@ -521,7 +521,19 @@ it attempts one reconnect for connections already marked unusable by a transport
 or framing error. Healthy connections are retained. Reconnection uses the pinned
 IP socket rather than resolving the caller's hostname again; endpoint labels and
 membership order remain unchanged. Each attempt uses `connect_timeout`, so an
-unreachable member can add that delay to an operation.
+unreachable member can add that delay only while the client lacks a serving
+quorum. With a healthy quorum, up to eight bounded workers finish optional
+initial connections and later reconnects outside the operation's critical path.
+Routed construction returns as soon as the configured read and write quorums are
+connected, and below-quorum recovery stops waiting as soon as service is restored.
+Every unfinished endpoint remains part of the fixed membership and is collected
+or retried by later operations.
+
+The Linux mutual-TLS regression
+`routed_star_tls_connect_returns_when_quorum_is_ready` starts two serving replicas
+and holds a third accepted socket before its handshake response. The optional
+member has a four-second connect timeout; routed construction must return through
+the two-member quorum in under two seconds and keep the unfinished member tracked.
 
 An operation that discovers a broken connection does not reconnect and resend its
 request. A later explicit operation can reconnect. A lost write or discard reply

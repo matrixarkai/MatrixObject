@@ -438,6 +438,43 @@ mod tests {
             ..Default::default()
         }
     }
+
+    #[test]
+    fn routed_star_tls_connect_returns_when_quorum_is_ready() {
+        use std::sync::mpsc;
+
+        let files = TlsFiles::new();
+        let tls = config(&files);
+        let nodes: Vec<_> = (0..2).map(|_| replica(&tls)).collect();
+        let stalled = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let stalled_endpoint = stalled.local_addr().unwrap().to_string();
+        let (accepted_sender, accepted_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let stalled_worker = std::thread::spawn(move || {
+            let (socket, _) = stalled.accept().unwrap();
+            accepted_sender.send(()).unwrap();
+            release_receiver.recv().unwrap();
+            drop(socket);
+        });
+        let endpoints = vec![nodes[0].0.clone(), stalled_endpoint, nodes[1].0.clone()];
+        let mut client_options = options(&tls);
+        client_options.connect_timeout = Duration::from_secs(4);
+
+        let started = Instant::now();
+        let set =
+            RemoteReplicaSet::connect_routed_quorum(&endpoints, 2, 2, &client_options).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "a ready star quorum waited for an optional TLS handshake"
+        );
+        accepted_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        release_sender.send(()).unwrap();
+        stalled_worker.join().unwrap();
+        drop(set);
+    }
+
     #[test]
     fn api_tls_serves_persistent_metadata_and_star_data_connections() {
         let files = TlsFiles::new();
