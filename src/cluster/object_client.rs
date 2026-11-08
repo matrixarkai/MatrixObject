@@ -23,6 +23,11 @@ pub(super) enum RemoteGroupClient {
     Star(RemoteReplicaSet),
 }
 
+enum GroupWriteReceipt {
+    Applied,
+    Digests(Vec<(u64, u64, [u8; 32])>),
+}
+
 impl RemoteGroupClient {
     pub(super) fn connect(
         route: &ChunkGroupRoute,
@@ -48,12 +53,14 @@ impl RemoteGroupClient {
         }
     }
 
-    fn write_chunks_with_digests(
+    fn write_chunks_with_receipt(
         &mut self,
         writes: &[(crate::PageId, u64, &[u8], u64)],
-    ) -> Result<Vec<(u64, u64, [u8; 32])>, ObjectError> {
+    ) -> Result<GroupWriteReceipt, ObjectError> {
         match self {
-            Self::Raft(client) => client.write_chunks_if_sequence_with_digests(writes),
+            Self::Raft(client) => client
+                .write_chunks_if_sequence_with_digests(writes)
+                .map(GroupWriteReceipt::Digests),
             Self::Star(set) => {
                 if writes
                     .iter()
@@ -64,26 +71,10 @@ impl RemoteGroupClient {
                     ));
                 }
                 set.write_chunks_if_sequence(writes)?;
-                Ok(writes
-                    .iter()
-                    .map(|(_, offset, data, expected)| {
-                        let mut sha256 = [0; 32];
-                        sha256.copy_from_slice(
-                            ring::digest::digest(&ring::digest::SHA256, data).as_ref(),
-                        );
-                        Ok((
-                            expected.checked_add(1).ok_or_else(|| {
-                                ObjectError::PreconditionFailed(
-                                    "page write sequence is exhausted".into(),
-                                )
-                            })?,
-                            offset.checked_add(data.len() as u64).ok_or_else(|| {
-                                ObjectError::InvalidArgument("page length overflow".into())
-                            })?,
-                            sha256,
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, ObjectError>>()?)
+                // Star acknowledgements come from a durable write quorum. Hashing the
+                // caller's input again here only rechecks local memory and does not inspect
+                // a replica, so it adds a full-object pass without strengthening the receipt.
+                Ok(GroupWriteReceipt::Applied)
             }
         }
     }
@@ -258,18 +249,28 @@ fn write_group_extents(
             };
             writes.push((page.clone(), 0, bytes, 0));
         }
-        let digests = client.write_chunks_with_digests(&writes)?;
-        for (&index, (sequence, actual_length, sha256)) in batch.iter().zip(digests) {
-            let extent = &manifest.extents[index];
-            let start = extent.object_offset as usize;
-            let bytes = &data[start..start + extent.length as usize];
-            if sequence != 1
-                || actual_length != extent.length
-                || sha256.as_ref() != ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()
-            {
-                return Err(ObjectError::Corruption(
-                    "written page verification failed".into(),
-                ));
+        match client.write_chunks_with_receipt(&writes)? {
+            GroupWriteReceipt::Applied => {}
+            GroupWriteReceipt::Digests(digests) => {
+                if digests.len() != batch.len() {
+                    return Err(ObjectError::Corruption(
+                        "written page verification count changed".into(),
+                    ));
+                }
+                for (&index, (sequence, actual_length, sha256)) in batch.iter().zip(digests) {
+                    let extent = &manifest.extents[index];
+                    let start = extent.object_offset as usize;
+                    let bytes = &data[start..start + extent.length as usize];
+                    if sequence != 1
+                        || actual_length != extent.length
+                        || sha256.as_ref()
+                            != ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()
+                    {
+                        return Err(ObjectError::Corruption(
+                            "written page verification failed".into(),
+                        ));
+                    }
+                }
             }
         }
     }
