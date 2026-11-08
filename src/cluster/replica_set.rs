@@ -39,6 +39,69 @@ use std::net::SocketAddr;
 // adding a network-scale delay to every terminal star mutation.
 const MUTATION_QUORUM_DRAIN: std::time::Duration = std::time::Duration::from_millis(1);
 const MAX_PARALLEL_RECONNECTS: usize = 8;
+const ROUTED_RECONNECT_MIN_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+const ROUTED_RECONNECT_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+type ReconnectResults = Vec<(String, Result<RemoteReplicaClient, ObjectError>)>;
+
+struct PendingRoutedReconnect {
+    endpoints: Vec<String>,
+    options: ReplicaClientOptions,
+    receiver: std::sync::mpsc::Receiver<ReconnectResults>,
+}
+
+impl std::fmt::Debug for PendingRoutedReconnect {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PendingRoutedReconnect")
+            .field("endpoints", &self.endpoints)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug)]
+struct RoutedReconnect {
+    unavailable_endpoints: Vec<String>,
+    pending: Option<PendingRoutedReconnect>,
+    retry_at: std::time::Instant,
+    failures: u32,
+}
+
+impl RoutedReconnect {
+    fn new(unavailable_endpoints: Vec<String>) -> Self {
+        let failures = u32::from(!unavailable_endpoints.is_empty());
+        let retry_at = std::time::Instant::now()
+            .checked_add(if failures == 0 {
+                std::time::Duration::ZERO
+            } else {
+                ROUTED_RECONNECT_MIN_DELAY
+            })
+            .unwrap_or_else(std::time::Instant::now);
+        Self {
+            unavailable_endpoints,
+            pending: None,
+            retry_at,
+            failures,
+        }
+    }
+
+    fn retry_later(&mut self) {
+        self.failures = self.failures.saturating_add(1);
+        let shift = self.failures.saturating_sub(1).min(7);
+        let multiplier = 1u32 << shift;
+        let delay = ROUTED_RECONNECT_MIN_DELAY
+            .saturating_mul(multiplier)
+            .min(ROUTED_RECONNECT_MAX_DELAY);
+        self.retry_at = std::time::Instant::now()
+            .checked_add(delay)
+            .unwrap_or_else(std::time::Instant::now);
+    }
+
+    fn mark_complete(&mut self) {
+        self.failures = 0;
+        self.retry_at = std::time::Instant::now();
+    }
+}
 
 fn run_reconnects_in_bounded_waves<T: Send, F: Fn(&mut T) + Sync>(
     mut items: Vec<&mut T>,
@@ -123,7 +186,7 @@ fn wait_for_pending(_: &[Option<super::client::PendingReplicaReply<'_>>]) {
 pub struct RemoteReplicaSet {
     replicas: Vec<RemoteReplicaClient>,
     configured_endpoints: Vec<String>,
-    unavailable_endpoints: Vec<String>,
+    routed_reconnect: Option<RoutedReconnect>,
     write_quorum: usize,
     read_quorum: usize,
     options: ReplicaClientOptions,
@@ -251,7 +314,7 @@ impl RemoteReplicaSet {
         Ok(Self {
             replicas,
             configured_endpoints: endpoints.to_vec(),
-            unavailable_endpoints: Vec::new(),
+            routed_reconnect: None,
             write_quorum,
             read_quorum,
             options: options.clone(),
@@ -261,8 +324,9 @@ impl RemoteReplicaSet {
     /// Connect a routed star group when its configured majority is available.
     ///
     /// The complete membership and its quorums remain fixed. Endpoints that are
-    /// unavailable during this call are retained and retried before later
-    /// operations, so temporary loss does not turn into a smaller membership.
+    /// unavailable during this call remain in the membership. A healthy quorum
+    /// reconnects them beside later operations; a set below quorum waits for a
+    /// bounded attempt because it cannot serve the operation without one.
     pub(super) fn connect_routed_quorum(
         endpoints: &[String],
         write_quorum: usize,
@@ -291,9 +355,7 @@ impl RemoteReplicaSet {
 
         let mut connected = Vec::new();
         let mut unavailable = Vec::new();
-        for (endpoint, result) in
-            Self::connect_endpoints_in_bounded_waves(endpoints, options)
-        {
+        for (endpoint, result) in Self::connect_endpoints_in_bounded_waves(endpoints, options) {
             match result {
                 Ok(replica) => connected.push(replica),
                 Err(_) => unavailable.push(endpoint),
@@ -310,7 +372,7 @@ impl RemoteReplicaSet {
         Ok(Self {
             replicas: connected,
             configured_endpoints: endpoints.to_vec(),
-            unavailable_endpoints: unavailable,
+            routed_reconnect: Some(RoutedReconnect::new(unavailable)),
             write_quorum,
             read_quorum,
             options: options.clone(),
@@ -436,6 +498,10 @@ impl RemoteReplicaSet {
     }
 
     fn reconnect_failed(&mut self) {
+        if self.routed_reconnect.is_some() {
+            self.reconnect_routed();
+            return;
+        }
         let options = self.options.clone();
         let failed: Vec<_> = self
             .replicas
@@ -445,15 +511,146 @@ impl RemoteReplicaSet {
         run_reconnects_in_bounded_waves(failed, &|replica| {
             let _ = replica.reconnect_standalone_if_failed(&options);
         });
-        if !self.unavailable_endpoints.is_empty() {
-            let endpoints = std::mem::take(&mut self.unavailable_endpoints);
-            for (endpoint, result) in
-                Self::connect_endpoints_in_bounded_waves(&endpoints, &options)
-            {
-                match result {
-                    Ok(replica) => self.replicas.push(replica),
-                    Err(_) => self.unavailable_endpoints.push(endpoint),
+    }
+
+    fn reconnect_routed(&mut self) {
+        // Optional members must not put their connect timeout on the quorum
+        // read/write path. Only a set that cannot currently reach quorum waits.
+        self.retire_failed_routed_connections();
+        let required = self.write_quorum.max(self.read_quorum);
+        self.collect_routed_reconnect(self.replicas.len() < required);
+        let Some(state) = self.routed_reconnect.as_ref() else {
+            return;
+        };
+        if state.pending.is_some()
+            || state.unavailable_endpoints.is_empty()
+            || std::time::Instant::now() < state.retry_at
+        {
+            return;
+        }
+        if self.replicas.len() < required {
+            self.reconnect_routed_now();
+        } else {
+            self.start_routed_reconnect();
+        }
+    }
+
+    fn retire_failed_routed_connections(&mut self) {
+        let state = self.routed_reconnect.as_mut().unwrap();
+        let mut index = 0;
+        while index < self.replicas.len() {
+            if !self.replicas[index].needs_standalone_reconnect() {
+                index += 1;
+                continue;
+            }
+            let endpoint = self.replicas.remove(index).endpoint().to_string();
+            if !state.unavailable_endpoints.contains(&endpoint) {
+                state.unavailable_endpoints.push(endpoint);
+            }
+            state.retry_at = std::time::Instant::now();
+        }
+    }
+
+    fn collect_routed_reconnect(&mut self, wait: bool) {
+        let pending = self
+            .routed_reconnect
+            .as_mut()
+            .and_then(|state| state.pending.take());
+        let Some(pending) = pending else { return };
+        let outcome = match pending.receiver.try_recv() {
+            Ok(results) => Ok(results),
+            Err(std::sync::mpsc::TryRecvError::Empty) if !wait => {
+                self.routed_reconnect.as_mut().unwrap().pending = Some(pending);
+                return;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => pending.receiver.recv().map_err(|_| ()),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(()),
+        };
+        match outcome {
+            Ok(results) => self.apply_routed_reconnect_results(results, &pending.options),
+            Err(()) => {
+                let state = self.routed_reconnect.as_mut().unwrap();
+                for endpoint in pending.endpoints {
+                    if !state.unavailable_endpoints.contains(&endpoint) {
+                        state.unavailable_endpoints.push(endpoint);
+                    }
                 }
+                state.retry_later();
+            }
+        }
+    }
+
+    fn apply_routed_reconnect_results(
+        &mut self,
+        results: ReconnectResults,
+        connected_options: &ReplicaClientOptions,
+    ) {
+        let state = self.routed_reconnect.as_mut().unwrap();
+        for (endpoint, result) in results {
+            match result {
+                Ok(mut replica) => {
+                    if replica.prepare_direct_for_reuse(connected_options, &self.options) {
+                        self.replicas.push(replica);
+                    } else if !state.unavailable_endpoints.contains(&endpoint) {
+                        state.unavailable_endpoints.push(endpoint);
+                    }
+                }
+                Err(_) if !state.unavailable_endpoints.contains(&endpoint) => {
+                    state.unavailable_endpoints.push(endpoint)
+                }
+                Err(_) => {}
+            }
+        }
+        if state.unavailable_endpoints.is_empty() {
+            state.mark_complete();
+        } else {
+            state.retry_later();
+        }
+    }
+
+    fn reconnect_routed_now(&mut self) {
+        let endpoints = std::mem::take(
+            &mut self
+                .routed_reconnect
+                .as_mut()
+                .unwrap()
+                .unavailable_endpoints,
+        );
+        let options = self.options.clone();
+        let results = Self::connect_endpoints_in_bounded_waves(&endpoints, &options);
+        self.apply_routed_reconnect_results(results, &options);
+    }
+
+    fn start_routed_reconnect(&mut self) {
+        let endpoints = std::mem::take(
+            &mut self
+                .routed_reconnect
+                .as_mut()
+                .unwrap()
+                .unavailable_endpoints,
+        );
+        let worker_endpoints = endpoints.clone();
+        let options = self.options.clone();
+        let worker_options = options.clone();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        match std::thread::Builder::new()
+            .name("star-route-reconnect".into())
+            .spawn(move || {
+                let results =
+                    Self::connect_endpoints_in_bounded_waves(&worker_endpoints, &worker_options);
+                let _ = sender.send(results);
+            }) {
+            Ok(_) => {
+                self.routed_reconnect.as_mut().unwrap().pending = Some(PendingRoutedReconnect {
+                    endpoints,
+                    options,
+                    receiver,
+                });
+            }
+            Err(_) => {
+                let state = self.routed_reconnect.as_mut().unwrap();
+                state.unavailable_endpoints.extend(endpoints);
+                state.retry_later();
             }
         }
     }
@@ -1366,6 +1563,42 @@ mod tests {
             }
         });
         assert_eq!(values, [1; 4]);
+    }
+
+    #[test]
+    fn routed_quorum_schedules_optional_reconnect_off_the_operation_path() {
+        use std::net::TcpListener;
+
+        let live: Vec<_> = (0..2)
+            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed_endpoint = closed.local_addr().unwrap().to_string();
+        drop(closed);
+        let endpoints = vec![
+            live[0].local_addr().unwrap().to_string(),
+            live[1].local_addr().unwrap().to_string(),
+            closed_endpoint,
+        ];
+        let mut set = RemoteReplicaSet::connect_routed_quorum(
+            &endpoints,
+            2,
+            2,
+            &ReplicaClientOptions {
+                connect_timeout: std::time::Duration::from_secs(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(set.replicas.len(), 2);
+        set.routed_reconnect.as_mut().unwrap().retry_at = std::time::Instant::now();
+
+        set.reconnect_failed();
+
+        let reconnect = set.routed_reconnect.as_ref().unwrap();
+        assert!(reconnect.unavailable_endpoints.is_empty());
+        assert!(reconnect.pending.is_some());
+        assert_eq!(set.replicas.len(), 2);
     }
 
     #[test]
