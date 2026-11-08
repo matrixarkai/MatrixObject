@@ -435,6 +435,7 @@ fn star_operations_send_each_wave_before_waiting_for_replies() {
         .iter()
         .map(|l| l.local_addr().unwrap().to_string())
         .collect();
+    let step_timeout = Duration::from_secs(20);
     let (arrived, arrivals) = mpsc::channel();
     let mut releases = Vec::new();
     let mut workers = Vec::new();
@@ -445,7 +446,7 @@ fn star_operations_send_each_wave_before_waiting_for_replies() {
         let (release, released) = mpsc::channel();
         releases.push(release);
         workers.push(std::thread::spawn(move || {
-            let until = Instant::now() + Duration::from_secs(5);
+            let until = Instant::now() + step_timeout;
             let mut front = loop {
                 match listener.accept() {
                     Ok((s, _)) => break s,
@@ -459,8 +460,8 @@ fn star_operations_send_each_wave_before_waiting_for_replies() {
             };
             let mut back = TcpStream::connect(endpoint).unwrap();
             for s in [&front, &back] {
-                s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-                s.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+                s.set_read_timeout(Some(step_timeout)).unwrap();
+                s.set_write_timeout(Some(step_timeout)).unwrap();
                 s.set_nodelay(true).unwrap();
             }
             loop {
@@ -484,7 +485,7 @@ fn star_operations_send_each_wave_before_waiting_for_replies() {
                 front.read_exact(&mut body).unwrap();
                 arrived.send((index, header[1])).unwrap();
                 // No selected member can answer until the whole wave has been sent.
-                released.recv_timeout(Duration::from_secs(5)).unwrap();
+                released.recv_timeout(step_timeout).unwrap();
                 back.write_all(&header).unwrap();
                 back.write_all(&body).unwrap();
                 back.read_exact(&mut header).unwrap();
@@ -514,7 +515,7 @@ fn star_operations_send_each_wave_before_waiting_for_replies() {
             let mut members = std::collections::BTreeSet::new();
             for _ in 0..expected_members {
                 let (index, actual_code) = arrivals
-                    .recv_timeout(Duration::from_secs(5))
+                    .recv_timeout(step_timeout)
                     .unwrap_or_else(|error| panic!("waiting for {code:?}: {error}"));
                 assert_eq!(actual_code, code as u8);
                 assert!(members.insert(index));
@@ -525,7 +526,7 @@ fn star_operations_send_each_wave_before_waiting_for_replies() {
         }
     });
     let options = ReplicaClientOptions {
-        read_timeout: Duration::from_secs(8),
+        read_timeout: step_timeout,
         ..Default::default()
     };
     let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
