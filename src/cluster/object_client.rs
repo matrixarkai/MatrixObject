@@ -29,7 +29,7 @@ impl RemoteGroupClient {
         options: &ReplicaClientOptions,
     ) -> Result<Self, ObjectError> {
         match route.standalone_star_route()? {
-            Some((endpoints, quorum)) => RemoteReplicaSet::connect(
+            Some((endpoints, quorum)) => RemoteReplicaSet::connect_routed_quorum(
                 &endpoints,
                 quorum,
                 quorum,

@@ -122,6 +122,8 @@ fn wait_for_pending(_: &[Option<super::client::PendingReplicaReply<'_>>]) {
 #[derive(Debug)]
 pub struct RemoteReplicaSet {
     replicas: Vec<RemoteReplicaClient>,
+    configured_endpoints: Vec<String>,
+    unavailable_endpoints: Vec<String>,
     write_quorum: usize,
     read_quorum: usize,
     options: ReplicaClientOptions,
@@ -248,10 +250,108 @@ impl RemoteReplicaSet {
         }
         Ok(Self {
             replicas,
+            configured_endpoints: endpoints.to_vec(),
+            unavailable_endpoints: Vec::new(),
             write_quorum,
             read_quorum,
             options: options.clone(),
         })
+    }
+
+    /// Connect a routed star group when its configured majority is available.
+    ///
+    /// The complete membership and its quorums remain fixed. Endpoints that are
+    /// unavailable during this call are retained and retried before later
+    /// operations, so temporary loss does not turn into a smaller membership.
+    pub(super) fn connect_routed_quorum(
+        endpoints: &[String],
+        write_quorum: usize,
+        read_quorum: usize,
+        options: &ReplicaClientOptions,
+    ) -> Result<Self, ObjectError> {
+        if endpoints.is_empty() {
+            return Err(ObjectError::InvalidArgument(
+                "a routed star group needs at least one endpoint".into(),
+            ));
+        }
+        crate::cluster::placement::check_quorums(endpoints.len(), write_quorum, read_quorum)?;
+        let mut addresses = BTreeSet::new();
+        for endpoint in endpoints {
+            let address = endpoint.parse::<SocketAddr>().map_err(|_| {
+                ObjectError::InvalidArgument(
+                    "routed star members require numeric IP endpoints".into(),
+                )
+            })?;
+            if !addresses.insert(address) {
+                return Err(ObjectError::InvalidArgument(format!(
+                    "routed star endpoint {endpoint} is configured more than once"
+                )));
+            }
+        }
+
+        let mut connected = Vec::new();
+        let mut unavailable = Vec::new();
+        for (endpoint, result) in
+            Self::connect_endpoints_in_bounded_waves(endpoints, options)
+        {
+            match result {
+                Ok(replica) => connected.push(replica),
+                Err(_) => unavailable.push(endpoint),
+            }
+        }
+        let required = write_quorum.max(read_quorum);
+        if connected.len() < required {
+            return Err(ObjectError::PreconditionFailed(format!(
+                "routed star startup reached {} of {} configured members, short of the required quorum of {required}",
+                connected.len(),
+                endpoints.len()
+            )));
+        }
+        Ok(Self {
+            replicas: connected,
+            configured_endpoints: endpoints.to_vec(),
+            unavailable_endpoints: unavailable,
+            write_quorum,
+            read_quorum,
+            options: options.clone(),
+        })
+    }
+
+    fn connect_endpoints_in_bounded_waves(
+        endpoints: &[String],
+        options: &ReplicaClientOptions,
+    ) -> Vec<(String, Result<RemoteReplicaClient, ObjectError>)> {
+        let mut completed = Vec::with_capacity(endpoints.len());
+        for wave in endpoints.chunks(MAX_PARALLEL_RECONNECTS) {
+            std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(wave.len());
+                for endpoint in wave {
+                    let endpoint = endpoint.clone();
+                    match std::thread::Builder::new()
+                        .name("star-connect".into())
+                        .spawn_scoped(scope, {
+                            let endpoint = endpoint.clone();
+                            move || RemoteReplicaClient::connect(&endpoint, options)
+                        })
+                    {
+                        Ok(handle) => handles.push((endpoint, handle)),
+                        Err(error) => completed.push((
+                            endpoint,
+                            Err(ObjectError::PreconditionFailed(format!(
+                                "cannot start star connector: {error}"
+                            ))),
+                        )),
+                    }
+                }
+                for (endpoint, handle) in handles {
+                    let result = handle.join().unwrap_or_else(|_| {
+                        Err(ObjectError::Corruption("star connector panicked".into()))
+                    });
+                    completed.push((endpoint, result));
+                }
+            });
+        }
+        completed
     }
 
     fn fan_out(
@@ -345,10 +445,21 @@ impl RemoteReplicaSet {
         run_reconnects_in_bounded_waves(failed, &|replica| {
             let _ = replica.reconnect_standalone_if_failed(&options);
         });
+        if !self.unavailable_endpoints.is_empty() {
+            let endpoints = std::mem::take(&mut self.unavailable_endpoints);
+            for (endpoint, result) in
+                Self::connect_endpoints_in_bounded_waves(&endpoints, &options)
+            {
+                match result {
+                    Ok(replica) => self.replicas.push(replica),
+                    Err(_) => self.unavailable_endpoints.push(endpoint),
+                }
+            }
+        }
     }
 
     pub fn replica_count(&self) -> usize {
-        self.replicas.len()
+        self.configured_endpoints.len()
     }
 
     pub fn write_quorum(&self) -> usize {
@@ -1187,12 +1298,9 @@ impl RemoteReplicaSet {
             .collect()
     }
 
-    /// Every endpoint, in the order writes are sent to them.
+    /// Every configured endpoint, in membership order.
     pub fn endpoints(&self) -> Vec<String> {
-        self.replicas
-            .iter()
-            .map(|replica| replica.endpoint().to_string())
-            .collect()
+        self.configured_endpoints.clone()
     }
 }
 
