@@ -51,6 +51,7 @@ impl MatrixMetaService {
         }
         let mut report = prepared.report;
         let mut updated_placements = Vec::new();
+        let mut reserved_bytes = BTreeMap::<String, u64>::new();
         for item in &report.items {
             let plan = &item.plan;
             if plan.plan_checksum != placement_migration_plan_checksum(plan) {
@@ -92,6 +93,16 @@ impl MatrixMetaService {
                     "root prepared placement repair target duplicates placement".to_string(),
                 ));
             }
+            let target = self.nodes.get(&plan.target_node_id).ok_or_else(|| {
+                ObjectError::NotFound("root prepared placement repair target missing".to_string())
+            })?;
+            if Self::node_unreserved_free_bytes(target, &reserved_bytes) < plan.length {
+                return Err(ObjectError::PreconditionFailed(
+                    "root prepared placement repair target lacks capacity".to_string(),
+                ));
+            }
+            let reserved = reserved_bytes.entry(plan.target_node_id.clone()).or_default();
+            *reserved = reserved.saturating_add(plan.length);
             for node_id in &plan.after_node_ids {
                 let node = self.nodes.get(node_id).ok_or_else(|| {
                     ObjectError::NotFound("root placement node missing".to_string())

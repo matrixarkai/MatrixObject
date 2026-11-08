@@ -10370,7 +10370,9 @@ fn repairs_unhealthy_placements_from_health_audit() {
     assert_eq!(first.items.len(), 2);
     assert_eq!(first.repair_objects, 2);
     assert!(first.has_more);
-    assert_eq!(first.next_marker.as_ref().unwrap().key, "missing");
+    assert!(first.next_marker.is_none());
+    assert_eq!(first.items[0].plan.object_id.key, "missing");
+    assert_eq!(first.items[1].plan.object_id.key, "offline");
     assert_eq!(first.items[0].plan.reason, "health_repair");
     assert_eq!(first.items[1].plan.reason, "health_repair");
 
@@ -10401,6 +10403,94 @@ fn repairs_unhealthy_placements_from_health_audit() {
         .audit_placement_health(None, 10, 2, 10, true, 0)
         .unwrap();
     assert_eq!(final_health.degraded_objects, 0);
+}
+
+#[test]
+fn unhealthy_repair_lookahead_prioritizes_unavailable_replicas() {
+    let mut root = MatrixMetaService::new();
+    for (node_id, domain) in [
+        ("chunk-a", "rack-a"),
+        ("chunk-b", "rack-b"),
+        ("chunk-c", "rack-c"),
+    ] {
+        root.register_node(placement_node(node_id, domain, 100)).unwrap();
+    }
+    root.nodes.get_mut("chunk-a").unwrap().committed_bytes = 95;
+    for (key, nodes) in [
+        (
+            "a-capacity",
+            vec!["chunk-a".to_string(), "chunk-b".to_string()],
+        ),
+        (
+            "z-missing",
+            vec!["chunk-missing".to_string(), "chunk-b".to_string()],
+        ),
+    ] {
+        root.placements.insert(
+            ObjectId::new("bucket", key),
+            ObjectPlacement {
+                object_id: ObjectId::new("bucket", key),
+                version: 1,
+                length: 10,
+                node_ids: nodes,
+                group_bytes: Vec::new(),
+                update_time_ms: 10,
+            },
+        );
+    }
+
+    let plan = root
+        .plan_unhealthy_placement_repairs(None, 1, 2, 10, 0)
+        .unwrap();
+
+    assert_eq!(plan.repair_objects, 1);
+    assert_eq!(plan.items[0].plan.object_id.key, "z-missing");
+    assert!(plan.has_more);
+    assert!(plan.next_marker.is_none());
+    assert_eq!(plan.scanned_objects, 2);
+}
+
+#[test]
+fn unhealthy_repair_batch_reserves_reported_target_capacity() {
+    let mut root = MatrixMetaService::new();
+    for (node_id, domain) in [
+        ("anchor", "rack-anchor"),
+        ("target-a", "rack-a"),
+        ("target-b", "rack-b"),
+    ] {
+        root.register_node(placement_node(node_id, domain, 100)).unwrap();
+    }
+    root.nodes
+        .get_mut("target-a")
+        .unwrap()
+        .chunk_health
+        .capacity_free_bytes = 100;
+    root.nodes
+        .get_mut("target-b")
+        .unwrap()
+        .chunk_health
+        .capacity_free_bytes = 100;
+    for (key, missing_node) in [("object-a", "missing-a"), ("object-b", "missing-b")] {
+        root.placements.insert(
+            ObjectId::new("bucket", key),
+            ObjectPlacement {
+                object_id: ObjectId::new("bucket", key),
+                version: 1,
+                length: 60,
+                node_ids: vec![missing_node.to_string(), "anchor".to_string()],
+                group_bytes: Vec::new(),
+                update_time_ms: 10,
+            },
+        );
+    }
+
+    let plan = root
+        .plan_unhealthy_placement_repairs(None, 2, 2, 0, 0)
+        .unwrap();
+
+    assert_eq!(plan.repair_objects, 2);
+    assert_eq!(plan.items[0].plan.target_node_id, "target-a");
+    assert_eq!(plan.items[1].plan.target_node_id, "target-b");
 }
 
 #[test]

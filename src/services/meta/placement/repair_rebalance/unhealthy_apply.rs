@@ -68,6 +68,7 @@ impl MatrixMetaService {
         }
         let mut report = prepared.report;
         let mut updated_placements = Vec::new();
+        let mut reserved_bytes = BTreeMap::<String, u64>::new();
         for item in &report.items {
             let plan = &item.plan;
             if plan.plan_checksum != placement_migration_plan_checksum(plan) {
@@ -132,13 +133,15 @@ impl MatrixMetaService {
                     "root prepared unhealthy placement repair target is not writable".to_string(),
                 ));
             }
-            if target.committed_bytes.saturating_add(plan.length)
-                > Self::node_effective_capacity_bytes(target)
+            if Self::node_unreserved_free_bytes(target, &reserved_bytes)
+                < plan.length.saturating_add(prepared.min_free_bytes)
             {
                 return Err(ObjectError::PreconditionFailed(
                     "root prepared unhealthy placement repair target lacks capacity".to_string(),
                 ));
             }
+            let reserved = reserved_bytes.entry(plan.target_node_id.clone()).or_default();
+            *reserved = reserved.saturating_add(plan.length);
             updated_placements.push(ObjectPlacement {
                 object_id: current.object_id.clone(),
                 version: current.version,

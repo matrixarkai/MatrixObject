@@ -38,6 +38,7 @@ impl MatrixMetaService {
             max_objects
         };
         let mut report = PlacementRepairReport::default();
+        let mut reserved_bytes = BTreeMap::<String, u64>::new();
         for placement in self.placements.values() {
             report.scanned_objects = report.scanned_objects.saturating_add(1);
             if self.object_manifests.get(&placement.object_id).is_some() {
@@ -52,8 +53,14 @@ impl MatrixMetaService {
                 report.has_more = true;
                 continue;
             }
-            match self.plan_repair_target_for_placement(placement, &source_node_id) {
+            match self.plan_repair_target_for_placement(
+                placement,
+                &source_node_id,
+                &reserved_bytes,
+            ) {
                 Ok(plan) => {
+                    let reserved = reserved_bytes.entry(plan.target_node_id.clone()).or_default();
+                    *reserved = reserved.saturating_add(plan.length);
                     report.repair_objects = report.repair_objects.saturating_add(1);
                     report.bytes_to_repair = report.bytes_to_repair.saturating_add(plan.length);
                     report.items.push(PlacementRepairItem { plan });
