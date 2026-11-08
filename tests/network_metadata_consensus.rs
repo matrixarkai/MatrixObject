@@ -646,14 +646,17 @@ fn metadata_routes_object_writes_through_a_standalone_star_quorum() {
 
     let root = std::env::temp_dir().join(node_regime::run_token("star-object-route"));
     std::fs::create_dir(&root).unwrap();
+    let journals: Vec<_> = (0..3).map(|index| root.join(format!("{index}.log"))).collect();
     let mut chunks = Vec::new();
     for index in 0..3 {
-        let journal = root.join(format!("{index}.log"));
         chunks.push(processes::start(
             env!("CARGO_BIN_EXE_chunkserver"),
             &[
                 ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
-                ("MATRIXOBJECT_REPLICA_JOURNAL", journal.to_str().unwrap()),
+                (
+                    "MATRIXOBJECT_REPLICA_JOURNAL",
+                    journals[index].to_str().unwrap(),
+                ),
             ],
         ));
     }
@@ -732,6 +735,8 @@ fn metadata_routes_object_writes_through_a_standalone_star_quorum() {
 
     chunks[0].child.kill().unwrap();
     assert!(processes::reap_within(&mut chunks[0].child, Duration::from_secs(3)).is_some());
+    drop(client);
+    let mut client = metadata.client(metadata.leader());
     assert_eq!(
         client
             .read_object("star", "first", first_bytes.len(), &options.replica)
@@ -750,7 +755,49 @@ fn metadata_routes_object_writes_through_a_standalone_star_quorum() {
         (second, second_bytes.to_vec())
     );
 
+    chunks[0] = processes::start(
+        env!("CARGO_BIN_EXE_chunkserver"),
+        &[
+            ("MATRIXOBJECT_REPLICA_ADDR", &endpoints[0]),
+            (
+                "MATRIXOBJECT_REPLICA_JOURNAL",
+                journals[0].to_str().unwrap(),
+            ),
+        ],
+    );
+    assert_eq!(chunks[0].endpoint, endpoints[0]);
+    let third_bytes = b"returning member rejoins later writes";
+    let third = client
+        .write_object("star", "third", None, third_bytes, &options)
+        .unwrap();
+    assert_eq!(
+        client
+            .read_object("star", "third", third_bytes.len(), &options.replica)
+            .unwrap(),
+        (third.clone(), third_bytes.to_vec())
+    );
+    let extent = &third.extents[0];
+    let page = PageId {
+        chunk_id: ChunkId::new(extent.volume_id, extent.chunk_id).unwrap(),
+        page_index: extent.page_index,
+    };
+    let mut returned = RemoteReplicaClient::connect(&endpoints[0], &options.replica).unwrap();
+    assert_eq!(
+        returned.read_chunk(&page, 0, extent.length).unwrap().data,
+        &third_bytes[..extent.length as usize]
+    );
+    drop(returned);
+    for node in &mut chunks[..2] {
+        node.child.kill().unwrap();
+        assert!(processes::reap_within(&mut node.child, Duration::from_secs(3)).is_some());
+    }
     drop(client);
+    let mut minority = metadata.client(metadata.leader());
+    assert!(minority
+        .read_object("star", "third", third_bytes.len(), &options.replica)
+        .is_err());
+
+    drop(minority);
     drop(metadata);
     drop(chunks);
     std::fs::remove_dir_all(root).unwrap();
@@ -1631,12 +1678,14 @@ fn maintenance_repair_stays_excluded_through_metadata_failover_and_total_restart
     let mut catalog = group.client(group.leader());
     wait_health(&mut catalog, false, 0);
     let options = ReplicaClientOptions::default();
-    let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
     let page = PageId {
         chunk_id: ChunkId::new(1, 9).unwrap(),
         page_index: 0,
     };
-    assert_eq!(set.write_chunk(&page, 0, b"before").unwrap(), 3);
+    let mut initial = RemoteReplicaSet::connect(&endpoints, 3, 3, &options).unwrap();
+    assert_eq!(initial.write_chunk(&page, 0, b"before").unwrap(), 3);
+    drop(initial);
+    let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
     drop(chunks[0].take());
     assert_eq!(set.write_chunk(&page, 0, b"repaired-data").unwrap(), 2);
     assert_eq!(set.discard_chunk(&page, 2, 3).unwrap(), 2);
