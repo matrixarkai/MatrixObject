@@ -765,10 +765,10 @@ jobs:
           cargo test --locked --all-features --test replica_state_transfer star_slow_first_member_does_not_expire_healthy_quorum_replies -- --exact --nocapture | tee /tmp/star-slow.log
           grep -q 'test result: ok. 1 passed' /tmp/star-slow.log
 
-      - name: star fanout sends all members before collecting replies
+      - name: star operations send selected waves before collecting replies
         run: |
           set -o pipefail
-          cargo test --locked --all-features --test replica_state_transfer star_reads_writes_and_discards_send_all_members_before_waiting_for_replies -- --exact --nocapture | tee /tmp/star-fanout.log
+          cargo test --locked --all-features --test replica_state_transfer star_operations_send_each_wave_before_waiting_for_replies -- --exact --nocapture | tee /tmp/star-fanout.log
           grep -q 'test result: ok. 1 passed' /tmp/star-fanout.log
 
       - name: star fanout waits for socket readiness
