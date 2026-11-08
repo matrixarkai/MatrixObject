@@ -2918,3 +2918,20 @@ jobs:
             | tee /tmp/ec-sidecar.log
           grep -q '^running 3 tests$' /tmp/ec-sidecar.log
           grep -q '^test result: ok. 3 passed' /tmp/ec-sidecar.log
+      - name: A journal that ends inside a frame is named, repaired without loss, and a restart writes nothing
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib -- \
+            ensuring_a_bucket_that_exists_writes_nothing_to_the_journal \
+            an_untouched_journal_scans_clean_and_reopens \
+            every_truncation_point_is_classified_by_the_frame_it_cuts_into \
+            a_journal_cut_inside_its_last_frame_is_named_and_nothing_is_discarded \
+            repairing_a_torn_tail_keeps_every_complete_frame_and_preserves_the_dropped_bytes \
+            a_repaired_journal_accepts_new_writes_that_survive_a_reopen \
+            repair_refuses_a_complete_frame_with_a_bad_checksum_and_changes_nothing \
+            an_absurd_length_is_corruption_and_is_never_treated_as_a_tear \
+            a_prefix_of_the_header_is_a_tear_and_anything_else_is_not_a_journal \
+            a_header_prefix_tear_repairs_to_an_empty_journal_that_takes_new_writes \
+            | tee /tmp/journal-tail.log
+          grep -q '^running 10 tests$' /tmp/journal-tail.log
+          grep -q '^test result: ok. 10 passed' /tmp/journal-tail.log

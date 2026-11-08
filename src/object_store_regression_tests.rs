@@ -609,6 +609,297 @@ fn persistent_journal_replays_append_blob_offsets() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+// ---------------------------------------------------------------------------------------------
+// A journal that ends inside a frame.
+//
+// `kill -9` can never produce this: a killed process finishes its in-flight write(). Power loss and
+// short writes do. These tests cut a real journal and check three things separately -- that a tear
+// is NAMED, that nothing is discarded unless the repair is asked for, and that the repair keeps what
+// it drops and refuses everything that is not a tear.
+// ---------------------------------------------------------------------------------------------
+
+/// A journal with a known history: one bucket, then three appends to one object.
+fn torn_tail_fixture(tag: &str) -> (std::path::PathBuf, String, Vec<u8>) {
+    let root = std::env::temp_dir().join(format!(
+        "matrixobjectstore-torn-{tag}-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let journal_path = root.join("store.journal");
+    let path = journal_path.to_string_lossy().to_string();
+    let mut options = test_options();
+    options.persistent_journal_path = path.clone();
+    {
+        let mut store = MatrixObjectStore::new(options).unwrap();
+        store.create_bucket("bucket").unwrap();
+        for chunk in [&b"abc"[..], b"defg", b"hij"] {
+            store
+                .append_object("bucket", "wal", chunk.to_vec(), "application/octet-stream")
+                .unwrap();
+        }
+    }
+    let bytes = std::fs::read(&journal_path).unwrap();
+    (root, path, bytes)
+}
+
+/// The frame boundaries of a journal, found by an INDEPENDENT parse of the layout
+/// `[u64 len][payload][u64 24][24 checksum bytes]`, so the scanner is checked against a second
+/// reading of the format rather than against itself.
+fn journal_frame_starts(bytes: &[u8]) -> (usize, Vec<usize>) {
+    let header_len = 8 + PERSISTENT_JOURNAL_MAGIC.len();
+    let mut starts = Vec::new();
+    let mut position = header_len;
+    while position < bytes.len() {
+        starts.push(position);
+        let payload_len =
+            u64::from_le_bytes(bytes[position..position + 8].try_into().unwrap()) as usize;
+        position += 8 + payload_len + 8 + 24;
+    }
+    assert_eq!(position, bytes.len(), "the fixture journal is not whole frames");
+    (header_len, starts)
+}
+
+#[test]
+fn ensuring_a_bucket_that_exists_writes_nothing_to_the_journal() {
+    let root = std::env::temp_dir().join(format!(
+        "matrixobjectstore-ensure-bucket-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let journal_path = root.join("store.journal");
+    let path = journal_path.to_string_lossy().to_string();
+    let mut options = test_options();
+    options.persistent_journal_path = path.clone();
+    let journal_len = || std::fs::metadata(&journal_path).unwrap().len();
+
+    {
+        let mut store = MatrixObjectStore::new(options.clone()).unwrap();
+        assert!(store.ensure_bucket("bucket").unwrap(), "the first call creates it");
+    }
+    let first = journal_len();
+    for restart in 1..=3 {
+        let mut store = MatrixObjectStore::new(options.clone()).unwrap();
+        assert!(
+            !store.ensure_bucket("bucket").unwrap(),
+            "restart {restart}: the bucket exists, so nothing is created"
+        );
+    }
+    assert_eq!(journal_len(), first, "restarting must not grow the journal");
+
+    // THE CONTROL. Without it the assertion above could never fail: this is the premise, that
+    // plain `create_bucket` on an existing bucket DOES write.
+    {
+        let mut store = MatrixObjectStore::new(options.clone()).unwrap();
+        store.create_bucket("bucket").unwrap();
+    }
+    assert!(
+        journal_len() > first,
+        "create_bucket on an existing bucket is expected to append a frame"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn an_untouched_journal_scans_clean_and_reopens() {
+    let (root, path, bytes) = torn_tail_fixture("clean");
+    let (frames, end) = scan_persistent_journal(&bytes, true).unwrap();
+    assert_eq!(end, PersistentJournalEnd::Clean);
+    assert!(frames >= 4, "a bucket and three appends are at least 4 frames, got {frames}");
+    let mut options = test_options();
+    options.persistent_journal_path = path;
+    let reopened = MatrixObjectStore::new(options).unwrap();
+    assert_eq!(reopened.get_object("bucket", "wal").unwrap().data, b"abcdefghij");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// EVERY possible truncation point, not a chosen few. A prefix ending exactly on a frame boundary
+/// is clean; any other prefix is a tear that begins at the start of the frame it cuts into.
+#[test]
+fn every_truncation_point_is_classified_by_the_frame_it_cuts_into() {
+    let (root, _path, bytes) = torn_tail_fixture("everycut");
+    let (header_len, starts) = journal_frame_starts(&bytes);
+    let mut ends: Vec<usize> = starts[1..].to_vec();
+    ends.push(bytes.len());
+    for end in header_len..=bytes.len() {
+        let complete = ends.iter().filter(|boundary| **boundary <= end).count();
+        let (frames, got) = scan_persistent_journal(&bytes[..end], true).unwrap();
+        assert_eq!(frames as usize, complete, "complete frames in a prefix of {end} bytes");
+        if end == header_len || ends.contains(&end) {
+            assert_eq!(got, PersistentJournalEnd::Clean, "prefix of {end} bytes ends on a boundary");
+        } else {
+            assert_eq!(
+                got,
+                PersistentJournalEnd::Torn { at: starts[complete] },
+                "prefix of {end} bytes cuts into frame {complete}"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_journal_cut_inside_its_last_frame_is_named_and_nothing_is_discarded() {
+    for cut in [1usize, 9, 40] {
+        let (root, path, bytes) = torn_tail_fixture(&format!("cut{cut}"));
+        std::fs::write(&path, &bytes[..bytes.len() - cut]).unwrap();
+        let mut options = test_options();
+        options.persistent_journal_path = path.clone();
+        let message = match MatrixObjectStore::new(options) {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("a journal cut {cut} bytes short must not open silently"),
+        };
+        assert!(message.contains("incomplete frame at byte"), "cut {cut}: {message}");
+        assert!(message.contains("Nothing was discarded"), "cut {cut}: {message}");
+        assert_eq!(
+            std::fs::read(&path).unwrap().len(),
+            bytes.len() - cut,
+            "opening must not modify the journal"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn repairing_a_torn_tail_keeps_every_complete_frame_and_preserves_the_dropped_bytes() {
+    let (root, path, bytes) = torn_tail_fixture("repair");
+    let torn = &bytes[..bytes.len() - 9];
+    std::fs::write(&path, torn).unwrap();
+    let at = match scan_persistent_journal(torn, true).unwrap().1 {
+        PersistentJournalEnd::Torn { at } => at,
+        other => panic!("expected a tear, got {other:?}"),
+    };
+    let (kept, dropped, preserved) = MatrixObjectStore::repair_persistent_journal_tail(&path)
+        .unwrap()
+        .expect("a torn tail is repaired");
+    assert_eq!(kept as usize, at);
+    assert_eq!(dropped as usize, torn.len() - at);
+    // LOSSLESS: the preserved file is exactly the bytes that were removed.
+    assert_eq!(std::fs::read(&preserved).unwrap(), torn[at..].to_vec());
+    assert_eq!(std::fs::read(&path).unwrap(), torn[..at].to_vec());
+    // The store opens, and the one append whose frame was torn is the only thing lost.
+    let mut options = test_options();
+    options.persistent_journal_path = path.clone();
+    let reopened = MatrixObjectStore::new(options).unwrap();
+    assert_eq!(reopened.get_object("bucket", "wal").unwrap().data, b"abcdefg");
+    // Nothing left to repair, and repairing again changes nothing.
+    assert!(MatrixObjectStore::repair_persistent_journal_tail(&path).unwrap().is_none());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_repaired_journal_accepts_new_writes_that_survive_a_reopen() {
+    let (root, path, bytes) = torn_tail_fixture("appendafter");
+    std::fs::write(&path, &bytes[..bytes.len() - 9]).unwrap();
+    MatrixObjectStore::repair_persistent_journal_tail(&path).unwrap().unwrap();
+    let mut options = test_options();
+    options.persistent_journal_path = path.clone();
+    {
+        let mut store = MatrixObjectStore::new(options.clone()).unwrap();
+        store
+            .append_object("bucket", "wal", b"XYZ".to_vec(), "application/octet-stream")
+            .unwrap();
+    }
+    // A frame appended after the repair must land on a clean boundary, not after leftover bytes.
+    let after = std::fs::read(&path).unwrap();
+    assert_eq!(scan_persistent_journal(&after, true).unwrap().1, PersistentJournalEnd::Clean);
+    let reopened = MatrixObjectStore::new(options).unwrap();
+    assert_eq!(reopened.get_object("bucket", "wal").unwrap().data, b"abcdefgXYZ");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn repair_refuses_a_complete_frame_with_a_bad_checksum_and_changes_nothing() {
+    let (root, path, mut bytes) = torn_tail_fixture("badsum");
+    let (_header_len, starts) = journal_frame_starts(&bytes);
+    // Damage a payload byte of the SECOND frame, with frames after it: damage in the middle.
+    bytes[starts[1] + 8 + 3] ^= 0xff;
+    std::fs::write(&path, &bytes).unwrap();
+    let message = MatrixObjectStore::repair_persistent_journal_tail(&path)
+        .unwrap_err()
+        .to_string();
+    assert!(message.contains("checksum mismatch"), "{message}");
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "a refused repair must not touch the journal");
+    let side_files: Vec<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name().to_string_lossy().contains(".torn-"))
+        .collect();
+    assert!(side_files.is_empty(), "a refused repair must not leave a side file");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn an_absurd_length_is_corruption_and_is_never_treated_as_a_tear() {
+    let (root, path, mut bytes) = torn_tail_fixture("absurd");
+    bytes.extend_from_slice(&u64::MAX.to_le_bytes());
+    std::fs::write(&path, &bytes).unwrap();
+    let scanned = scan_persistent_journal(&bytes, true).map(|_| ());
+    let repaired = MatrixObjectStore::repair_persistent_journal_tail(&path).map(|_| ());
+    for outcome in [scanned, repaired] {
+        let message = outcome.unwrap_err().to_string();
+        assert!(message.contains("too large"), "{message}");
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_header_prefix_tear_repairs_to_an_empty_journal_that_takes_new_writes() {
+    // The journal was initialised in THIS process, so the writer believes its header is already on
+    // disk. Repairing a file that is only a header prefix EMPTIES it, and a writer that kept that
+    // belief would then append frames to a file with no header, which no later open can read.
+    // Anything less than emptying the file would not need the writer's state reset, which is why
+    // this is the case that pins it.
+    let (root, path, bytes) = torn_tail_fixture("headerprefix");
+    let header_len = 8 + PERSISTENT_JOURNAL_MAGIC.len();
+    std::fs::write(&path, &bytes[..header_len - 4]).unwrap();
+    let (kept, dropped, _preserved) = MatrixObjectStore::repair_persistent_journal_tail(&path)
+        .unwrap()
+        .expect("a header-prefix tear is repaired");
+    assert_eq!(kept, 0);
+    assert_eq!(dropped as usize, header_len - 4);
+    assert_eq!(std::fs::read(&path).unwrap().len(), 0, "the repair empties the file");
+
+    let mut options = test_options();
+    options.persistent_journal_path = path.clone();
+    {
+        let mut store = MatrixObjectStore::new(options.clone()).unwrap();
+        store.create_bucket("bucket").unwrap();
+        store
+            .append_object("bucket", "wal", b"fresh".to_vec(), "application/octet-stream")
+            .unwrap();
+    }
+    let rebuilt = std::fs::read(&path).unwrap();
+    assert_eq!(
+        scan_persistent_journal(&rebuilt, true).unwrap().1,
+        PersistentJournalEnd::Clean,
+        "a journal rebuilt after the repair must begin with a header again"
+    );
+    let reopened = MatrixObjectStore::new(options).unwrap();
+    assert_eq!(reopened.get_object("bucket", "wal").unwrap().data, b"fresh");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_prefix_of_the_header_is_a_tear_and_anything_else_is_not_a_journal() {
+    let mut header = Vec::new();
+    header.extend_from_slice(&(PERSISTENT_JOURNAL_MAGIC.len() as u64).to_le_bytes());
+    header.extend_from_slice(PERSISTENT_JOURNAL_MAGIC.as_bytes());
+    for keep in 1..header.len() {
+        assert_eq!(
+            scan_persistent_journal(&header[..keep], true).unwrap(),
+            (0, PersistentJournalEnd::Torn { at: 0 }),
+            "the first {keep} bytes of the header"
+        );
+    }
+    assert_eq!(
+        scan_persistent_journal(&header, true).unwrap(),
+        (0, PersistentJournalEnd::Clean)
+    );
+    assert!(scan_persistent_journal(b"not a journal at all", true).is_err());
+    assert!(scan_persistent_journal(b"abc", true).is_err());
+}
+
 #[test]
 fn persistent_journal_replays_objectstore_gateway_catalog() {
     let root = std::env::temp_dir().join(format!(

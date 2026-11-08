@@ -823,3 +823,177 @@ fn append_persistent_journal_frame_to_file(
     }
     Ok(())
 }
+
+/// How a journal file ends, found without applying anything in it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PersistentJournalEnd {
+    /// The last frame ends exactly where the file does.
+    Clean,
+    /// The file ends INSIDE a frame that begins at `at`.
+    Torn { at: usize },
+}
+
+/// Walk a journal's frames and say how it ends, returning the number of COMPLETE frames before
+/// the end.
+///
+/// A frame is `[u64 payload_len][payload][u64 checksum_len = 24]["fnv1a64:" + 16 hex]`, all lengths
+/// little-endian, after a header of `[u64 len]["MOSRSJNL1"]`.
+///
+/// # WHAT COUNTS AS A TEAR, AND WHAT DOES NOT
+///
+/// Only one shape is a tear: the file ends before a frame it has begun is finished. A write that
+/// was cut short leaves exactly that, because a frame is written front to back.
+///
+/// Everything else that is wrong is CORRUPTION and is returned as an error, never as a tear:
+/// a length over [`MAX_PERSISTENT_JOURNAL_RECORD_BYTES`], a checksum length other than the 24 the
+/// writer always writes, a magic that is not this format, and -- when `verify_checksums` is set --
+/// a COMPLETE frame whose checksum does not match. The distinction is the one that matters: a
+/// complete frame with a bad checksum is damage in the middle of the log, and treating it as
+/// "the end" would silently discard every acknowledged frame after it.
+///
+/// # THE CASE THIS CANNOT TELL APART
+///
+/// A length field damaged in the MIDDLE of the log to a plausible value that runs past the end of
+/// the file reads identically to a torn final frame. Nothing in the bytes distinguishes them, which
+/// is why [`repair_persistent_journal_tail_file`] is opt-in and keeps what it drops.
+pub(crate) fn scan_persistent_journal(
+    bytes: &[u8],
+    verify_checksums: bool,
+) -> Result<(u64, PersistentJournalEnd), ObjectError> {
+    const WORD: usize = std::mem::size_of::<u64>();
+    const CHECKSUM_TEXT_LEN: usize = 24;
+    let corrupt = |message: &str| ObjectError::Corruption(message.to_string());
+    let word = |at: usize| -> u64 {
+        let mut raw = [0u8; WORD];
+        raw.copy_from_slice(&bytes[at..at + WORD]);
+        u64::from_le_bytes(raw)
+    };
+
+    if bytes.is_empty() {
+        return Ok((0, PersistentJournalEnd::Clean));
+    }
+    let magic = PERSISTENT_JOURNAL_MAGIC.as_bytes();
+    let header_len = WORD + magic.len();
+    if bytes.len() < header_len {
+        // A file shorter than the header is a tear only if it is a PREFIX of the header.
+        let mut expected = Vec::with_capacity(header_len);
+        expected.extend_from_slice(&(magic.len() as u64).to_le_bytes());
+        expected.extend_from_slice(magic);
+        return if expected.starts_with(bytes) {
+            Ok((0, PersistentJournalEnd::Torn { at: 0 }))
+        } else {
+            Err(corrupt("persistent journal magic mismatch"))
+        };
+    }
+    if word(0) != magic.len() as u64 || &bytes[WORD..header_len] != magic {
+        return Err(corrupt("persistent journal magic mismatch"));
+    }
+
+    let mut position = header_len;
+    let mut frames = 0u64;
+    while position < bytes.len() {
+        if bytes.len() - position < WORD {
+            return Ok((frames, PersistentJournalEnd::Torn { at: position }));
+        }
+        let payload_len = word(position);
+        if payload_len > MAX_PERSISTENT_JOURNAL_RECORD_BYTES as u64 {
+            return Err(corrupt("persistent journal record is too large"));
+        }
+        let payload_start = position + WORD;
+        let payload_end = payload_start + payload_len as usize;
+        let checksum_len_end = payload_end + WORD;
+        if bytes.len() < checksum_len_end {
+            return Ok((frames, PersistentJournalEnd::Torn { at: position }));
+        }
+        if word(payload_end) != CHECKSUM_TEXT_LEN as u64 {
+            return Err(corrupt(
+                "persistent journal record has an unexpected checksum length",
+            ));
+        }
+        let frame_end = checksum_len_end + CHECKSUM_TEXT_LEN;
+        if bytes.len() < frame_end {
+            return Ok((frames, PersistentJournalEnd::Torn { at: position }));
+        }
+        if verify_checksums {
+            let text = std::str::from_utf8(&bytes[checksum_len_end..frame_end])
+                .map_err(|_| corrupt("persistent journal record checksum is not text"))?;
+            if !etag_matches(&bytes[payload_start..payload_end], text) {
+                return Err(corrupt("persistent journal record checksum mismatch"));
+            }
+        }
+        position = frame_end;
+        frames += 1;
+    }
+    Ok((frames, PersistentJournalEnd::Clean))
+}
+
+/// Drop a torn final frame from a journal file, KEEPING the dropped bytes.
+///
+/// Returns `None` when the journal already ends cleanly (or does not exist), and otherwise
+/// `(kept_bytes, dropped_bytes, preserved_path)`.
+///
+/// Order is the safety property. Every complete frame is checksum-verified FIRST, so damage in the
+/// middle of the log is refused instead of being mistaken for the end. The dropped bytes are then
+/// written to `<journal>.torn-<offset>` and synced BEFORE the journal is shortened, so a crash
+/// between the two leaves the journal whole and the copy present, and a rerun finishes the job.
+/// A different file already sitting at that name is refused rather than overwritten.
+pub(crate) fn repair_persistent_journal_tail_file(
+    path: &str,
+) -> Result<Option<(u64, u64, String)>, ObjectError> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(ObjectError::Corruption(format!(
+                "failed to read persistent journal {path}: {err}"
+            )));
+        }
+    };
+    let (_frames, end) = scan_persistent_journal(&bytes, true)?;
+    let at = match end {
+        PersistentJournalEnd::Clean => return Ok(None),
+        PersistentJournalEnd::Torn { at } => at,
+    };
+    let dropped = &bytes[at..];
+    let preserved_path = format!("{path}.torn-{at}");
+    let io_error = |what: &str, err: std::io::Error| {
+        ObjectError::Corruption(format!("journal repair: {what} {preserved_path}: {err}"))
+    };
+    match std::fs::read(&preserved_path) {
+        Ok(existing) if existing == dropped => {} // an earlier repair got this far
+        Ok(_) => {
+            return Err(ObjectError::Corruption(format!(
+                "journal repair refused: {preserved_path} already exists with different bytes"
+            )));
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            use std::io::Write;
+            let mut copy = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&preserved_path)
+                .map_err(|err| io_error("could not create", err))?;
+            copy.write_all(dropped)
+                .map_err(|err| io_error("could not write", err))?;
+            copy.sync_all()
+                .map_err(|err| io_error("could not sync", err))?;
+        }
+        Err(err) => return Err(io_error("could not read", err)),
+    }
+    let journal = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|err| {
+            ObjectError::Corruption(format!("journal repair: could not open {path}: {err}"))
+        })?;
+    journal.set_len(at as u64).map_err(|err| {
+        ObjectError::Corruption(format!("journal repair: could not shorten {path}: {err}"))
+    })?;
+    journal.sync_all().map_err(|err| {
+        ObjectError::Corruption(format!("journal repair: could not sync {path}: {err}"))
+    })?;
+    // This process may hold an open append handle, a "header already written" flag, or sync
+    // counters for the old length; none of them is true any more.
+    forget_persistent_journal_path(path);
+    Ok(Some((at as u64, dropped.len() as u64, preserved_path)))
+}
