@@ -1678,12 +1678,14 @@ fn maintenance_repair_stays_excluded_through_metadata_failover_and_total_restart
     let mut catalog = group.client(group.leader());
     wait_health(&mut catalog, false, 0);
     let options = ReplicaClientOptions::default();
-    let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
     let page = PageId {
         chunk_id: ChunkId::new(1, 9).unwrap(),
         page_index: 0,
     };
-    assert_eq!(set.write_chunk(&page, 0, b"before").unwrap(), 3);
+    let mut initial = RemoteReplicaSet::connect(&endpoints, 3, 3, &options).unwrap();
+    assert_eq!(initial.write_chunk(&page, 0, b"before").unwrap(), 3);
+    drop(initial);
+    let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
     drop(chunks[0].take());
     assert_eq!(set.write_chunk(&page, 0, b"repaired-data").unwrap(), 2);
     assert_eq!(set.discard_chunk(&page, 2, 3).unwrap(), 2);
