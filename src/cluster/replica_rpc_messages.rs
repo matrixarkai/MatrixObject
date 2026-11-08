@@ -491,14 +491,14 @@ impl ReplicaRequest {
             return Ok(Self::ReadChunkBatch { reads });
         }
         if code == RequestCode::HeadChunkBatch {
-            if payload.len() > 512 {
+            if payload.len() > 2048 {
                 return Err(ObjectError::InvalidArgument(
                     "page head batch request exceeds size bound".into(),
                 ));
             }
             let value: super::conditional_requests::ChunkHeadBatch =
                 super::conditional_requests::decode(payload)?;
-            if value.version != 1 || value.pages.is_empty() || value.pages.len() > 8 {
+            if value.version != 1 || value.pages.is_empty() || value.pages.len() > 32 {
                 return Err(ObjectError::InvalidArgument(
                     "invalid page head batch".into(),
                 ));
@@ -883,7 +883,7 @@ impl ReplicaReply {
         if code == RequestCode::HeadChunkBatch {
             let value: super::conditional_requests::ChunkHeadBatchResult =
                 super::conditional_requests::decode(payload)?;
-            if value.version != 1 || value.heads.is_empty() || value.heads.len() > 8 {
+            if value.version != 1 || value.heads.is_empty() || value.heads.len() > 32 {
                 return Err(ObjectError::Corruption(
                     "invalid page head batch reply".into(),
                 ));

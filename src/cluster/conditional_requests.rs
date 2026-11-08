@@ -309,13 +309,28 @@ mod tests {
             ReplicaReply::decode(RequestCode::HeadChunkBatch, &reply_bytes).unwrap(),
             reply
         );
+        let mut maximum_result: ChunkHeadBatchResult = decode(&reply_bytes).unwrap();
+        maximum_result
+            .heads
+            .resize(32, maximum_result.heads[1].clone());
+        assert!(
+            ReplicaReply::decode(RequestCode::HeadChunkBatch, &maximum_result.encode_to_vec())
+                .is_ok()
+        );
+        maximum_result
+            .heads
+            .push(maximum_result.heads[1].clone());
+        assert!(
+            ReplicaReply::decode(RequestCode::HeadChunkBatch, &maximum_result.encode_to_vec())
+                .is_err()
+        );
 
         let mut value: ChunkHeadBatch = decode(&bytes).unwrap();
         value.pages.push(value.pages[0].clone());
         assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_err());
         value.pages.clear();
         assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_err());
-        value.pages = (0..9)
+        value.pages = (0..32)
             .map(|page| ChunkPage {
                 version: 1,
                 volume: 1,
@@ -323,6 +338,20 @@ mod tests {
                 page,
             })
             .collect();
+        assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_ok());
+        for page in &mut value.pages {
+            page.volume = u64::from(u32::MAX);
+            page.chunk = u64::from(u32::MAX);
+            page.page = u64::MAX - page.page;
+        }
+        assert!(value.encode_to_vec().len() <= 2048);
+        assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_ok());
+        value.pages.push(ChunkPage {
+            version: 1,
+            volume: u64::from(u32::MAX),
+            chunk: u64::from(u32::MAX),
+            page: u64::MAX - 32,
+        });
         assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_err());
 
         let mut result: ChunkHeadBatchResult = decode(&reply_bytes).unwrap();

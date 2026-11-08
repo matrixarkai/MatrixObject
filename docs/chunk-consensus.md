@@ -372,12 +372,13 @@ mutation unless its complete page state matches the selected quorum. The returne
 count contains acknowledgements observed before return; it may equal the quorum
 even when a slower member applies the request after its reply socket is retired.
 
-`RemoteReplicaSet::write_chunks` admits up to thirty-two ordered writes. Code-18
-binary protobuf requests ask each member for the distinct page heads in bounded
-groups of eight. The coordinator votes every page independently, then groups
-writes by the members matching their selected state. Repeated writes to one page
-carry consecutive expected sequences in input order, so up to thirty-two appends
-can share one head fence. Each group is partitioned into code-14 binary protobuf
+`RemoteReplicaSet::write_chunks` admits up to thirty-two ordered writes. One bounded
+code-18 binary protobuf request asks each member for up to thirty-two distinct page
+heads. A typed refusal from an older server safely falls back to groups of eight
+because this phase is read-only. The coordinator votes every page independently,
+then groups writes by the members matching their selected state. Repeated writes
+to one page carry consecutive expected sequences in input order, so up to thirty-two
+appends can share one head fence. Each group is partitioned into code-14 binary protobuf
 mutation frames of at most eight writes and 4 MiB of page data. Eight small writes
 with the same matching set use one head frame and one mutation frame per member.
 Eight default one-MiB writes use one head frame and two four-write mutation frames
