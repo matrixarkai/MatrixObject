@@ -331,18 +331,22 @@ admission or protection against a sustained connection flood.
 
 ## Star-replica quorum read memory
 
-`RemoteReplicaSet::read_chunk` still polls every configured replica and requires
-exact agreement on write sequence, checksum and returned bytes. After collecting
-replies, voting moves each payload into its vote key instead of cloning it.
+`RemoteReplicaSet::read_chunk` contacts a rotating read quorum first and requires
+exact agreement on write sequence, checksum and returned bytes. Optional members
+are contacted only when failure or disagreement prevents that first wave from
+deciding. Voting moves each payload into its vote key instead of cloning it.
 Matching duplicates are dropped, and the winning payload is moved into the result.
-This removes additional payload copies during voting without replacing byte
-comparison with digest comparison or changing the quorum threshold.
+All waves share one absolute response budget; a stalled first wave cannot grant
+an optional member a fresh timeout. When only part of the first wave answers, the
+collector briefly drains near-simultaneous replies, retires an incomplete socket
+and hedges to an optional member inside the remaining budget.
 
-For `r` successful replies containing `n` bytes each, the collected payloads still
-occupy about `r * n` bytes. Vote-table nodes, socket buffers and decoding overhead
-are additional. This is not a streaming read or a bound on total process memory.
-The allocation-retention guard also verifies that equal checksum strings cannot
-hide differing payload bytes.
+For `q` successful quorum replies containing `n` bytes each, the healthy path
+retains about `q * n` bytes. A fallback wave can raise that toward the configured
+replica count. Vote-table nodes, socket buffers and decoding overhead are
+additional. This is not a streaming read or a bound on total process memory. The
+allocation-retention guard also verifies that equal checksum strings cannot hide
+differing payload bytes.
 
 ## State-fenced star writes
 
@@ -461,28 +465,23 @@ mutation retries or weakening manifest sequence, length and checksum validation.
 
 ## Star head-read scheduling
 
-`RemoteReplicaSet::head_chunk` sends a head request to every member before waiting
-for responses. Complete-state reads and repair use the same scheduling for their
-quorum head checks. Each sent exchange is finished, including responses beyond
-the required quorum. Full-head voting, absence detection, distinct-peer checks,
+`RemoteReplicaSet::head_chunk` contacts a rotating quorum first. It asks optional
+members only when the first wave cannot produce exact agreement on logical length,
+write sequence, payload checksum, state checksum and discarded ranges, or cannot
+produce an absence quorum. Complete-state reads and repair use the requested
+quorum width for the same scheduling. A 2-of-3 healthy head therefore sends two
+requests instead of three and does not wait on the optional member.
+Primary and optional waves share one absolute response budget. If the first wave
+uses that budget, the optional request is not sent after the operation has expired.
+If only part of the first wave answers, a short drain preserves near-simultaneous
+replies before the optional request is sent within the remaining budget.
+
+The socket tests cover rotating healthy waves and a split first wave that requires
+the optional member. Full-head voting, absence detection, distinct-peer checks,
 per-connection deadlines and failure handling retain their existing semantics.
 No worker threads, mutation retries or new protocol messages are introduced.
-All selected exchanges finish or expire before returning; this is not early
-return on quorum. An optional absolute client deadline also bounds their waits.
-
-The existing socket-phase test now holds every head reply until all members have
-received the request, checking both present and absent pages. The controlled-delay
-release benchmark also times heads: over three alternating serial/send-all rounds
-of 24 samples with three members and a 5 ms delay per reply, median head latency
-was 16.83–17.03 ms serially and 5.62–5.79 ms with send-all scheduling on local WSL.
-The same benchmark with no injected delay, built from clean isolated release
-targets before and after readiness waiting, measured median star-write latency
-falling from 2.498–2.600 ms to 0.833–0.861 ms and throughput rising from 379–392
-to 1,093–1,130 operations per second. Median send-all read and head latency fell
-from 1.24–1.35 ms to 0.42–0.46 ms.
-Those injected-delay observations measure overlapping replies, not production
-latency or total repair throughput. Repair still validates complete bytes and
-rechecks its source quorum before staging and committing each destination.
+Repair still validates complete bytes and rechecks its source quorum before
+staging and committing each destination.
 
 ## Conditional discards
 
@@ -579,12 +578,13 @@ repair for star replicas, establish multihost throughput, or measure peak memory
 Replica request code 17 carries up to eight ordered ranges in canonical binary
 protobuf, with at most one MiB per range and 4 MiB per frame. A distributed
 star coordinator partitions eight default one-MiB pages into two four-page
-frames, sends each frame to every member concurrently and votes each returned
-page independently by sequence, checksum and exact bytes. An older member, a
-tighter reply budget or a page set that is not present on the same members
-selects scalar reads so every page can still form its own quorum; reads are safe
-to repeat. Raft clients keep the conservative large-page pipeline described by
-their leader-routing policy and do not opt into these wider frames.
+frames, sends each frame to a rotating read quorum and votes each returned page
+independently by sequence, checksum and exact bytes. Optional members are used
+when the first wave cannot decide every range. An older member, a tighter reply
+budget or a page set that is not present on the same members selects scalar reads
+so every page can still form its own quorum; reads are safe to repeat. Raft
+clients keep the conservative large-page pipeline described by their
+leader-routing policy and do not opt into these wider frames.
 
 A chunk Raft leader can confirm up to 32 already queued read-only requests
 with one quorum read barrier. Admission ends before the barrier starts. Reads
