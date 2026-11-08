@@ -158,4 +158,29 @@ impl MatrixMetaService {
             .then_with(|| left.failure_domain.cmp(&right.failure_domain))
             .then_with(|| left.node_id.cmp(&right.node_id))
     }
+
+    fn compare_repair_target_nodes(
+        left: &PlacementNode,
+        right: &PlacementNode,
+        occupied_domains: &BTreeSet<String>,
+    ) -> Ordering {
+        occupied_domains
+            .contains(&left.failure_domain)
+            .cmp(&occupied_domains.contains(&right.failure_domain))
+            .then_with(|| Self::compare_placement_target_nodes(left, right))
+    }
+
+    fn placement_domains_without_source(
+        &self,
+        placement: &ObjectPlacement,
+        source_node_id: Option<&str>,
+    ) -> BTreeSet<String> {
+        placement
+            .node_ids
+            .iter()
+            .filter(|node_id| source_node_id != Some(node_id.as_str()))
+            .filter_map(|node_id| self.nodes.get(node_id))
+            .map(|node| node.failure_domain.clone())
+            .collect()
+    }
 }

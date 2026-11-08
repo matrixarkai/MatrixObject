@@ -34,7 +34,11 @@ impl MatrixMetaService {
                         <= Self::node_effective_capacity_bytes(node)
             })
             .collect();
-        candidates.sort_by(|left, right| Self::compare_placement_target_nodes(left, right));
+        let occupied_domains =
+            self.placement_domains_without_source(placement, Some(source_node_id));
+        candidates.sort_by(|left, right| {
+            Self::compare_repair_target_nodes(left, right, &occupied_domains)
+        });
         let target = candidates.first().ok_or_else(|| {
             ObjectError::PreconditionFailed("root placement repair target missing".to_string())
         })?;
@@ -59,8 +63,11 @@ impl MatrixMetaService {
             .or_else(|| item.draining_node_ids.first())
             .or_else(|| item.capacity_pressure_node_ids.first())
             .cloned();
-        let target_node_id =
-            self.select_placement_repair_target(&item.placement, min_free_bytes)?;
+        let target_node_id = self.select_placement_repair_target(
+            &item.placement,
+            source_node_id.as_deref(),
+            min_free_bytes,
+        )?;
         let mut after_node_ids = item.placement.node_ids.clone();
         let (source_node_id, reason) = if let Some(source_node_id) = source_node_id {
             let Some(index) = after_node_ids
@@ -104,6 +111,7 @@ impl MatrixMetaService {
     fn select_placement_repair_target(
         &self,
         placement: &ObjectPlacement,
+        source_node_id: Option<&str>,
         min_free_bytes: u64,
     ) -> Result<String, ObjectError> {
         let mut candidates: Vec<&PlacementNode> = self
@@ -119,7 +127,10 @@ impl MatrixMetaService {
                         >= placement.length.saturating_add(min_free_bytes)
             })
             .collect();
-        candidates.sort_by(|left, right| Self::compare_placement_target_nodes(left, right));
+        let occupied_domains = self.placement_domains_without_source(placement, source_node_id);
+        candidates.sort_by(|left, right| {
+            Self::compare_repair_target_nodes(left, right, &occupied_domains)
+        });
         candidates
             .first()
             .map(|node| node.node_id.clone())
