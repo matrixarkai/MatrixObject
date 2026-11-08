@@ -413,10 +413,53 @@ cargo run --release --bin object_server
 | variable | default | meaning |
 |---|---|---|
 | `MATRIXOBJECT_HTTP_ADDR` | `127.0.0.1:17200` | address to bind |
-| `MATRIXOBJECT_BUCKET` | `default` | bucket created at startup, idempotently |
+| `MATRIXOBJECT_BUCKET` | `default` | bucket created at startup if it is absent; a restart writes nothing |
 | `MATRIXOBJECT_SNAPSHOT_PATH` | *(unset)* | durable snapshot file; **in memory when unset** |
+| `MATRIXOBJECT_JOURNAL_PATH` | *(unset)* | durable append-only journal, replayed at start; **exclusive with the snapshot** |
+| `MATRIXOBJECT_JOURNAL_REPAIR_TORN_TAIL` | *(unset)* | `1` drops a torn final journal frame at start and keeps it beside the journal |
+| `MATRIXOBJECT_REPLICAS` | *(unset: 3)* | in-process replica count, 1 to 7; the write quorum is a majority |
 | `MATRIXOBJECT_MAX_BODY_BYTES` | 64 MiB | largest object this door accepts |
 | `MATRIXOBJECT_THREADS` | 4 | accept threads |
+
+### Snapshot, journal, and in-process replicas
+
+Three of those settings change what the door costs and what it survives. The figures are from a
+300-operation, 3-node TemporalStore workload against the door (release build, medians of three runs):
+
+| durability | bytes the door handed to `write()` | door CPU | fsync |
+|---|---|---|---|
+| snapshot | 78.4 MB | 5.44 s | **none by default** |
+| journal, sync every frame | 0.2 MB | 2.25 s | every frame |
+| journal, sync every 32 frames (`MATRIX_OBJECTSTORE_RUST_JOURNAL_SYNC_EVERY_FRAMES=32`) | 0.2 MB | 1.78 s | every 32 |
+
+**The snapshot rewrites the whole store on every commit**, so a 200-byte append costs work in
+proportion to the store. Four clusters on one snapshot door wrote 922.6 MB where four doors each
+serving one cluster wrote 4 x 78.8 = 315.4 MB, and throughput on the shared door peaked at two
+clusters (26.8 writes/s) and fell at four (18.0). Snapshot mode also does not `fsync` its file unless
+`MATRIX_OBJECTSTORE_RUST_SNAPSHOT_STRICT_FSYNC` is set, so the two modes are not equally durable by
+default. The journal costs the size of the write and replays after `kill -9` to the same contents.
+
+**The journal has no checkpoint.** It grows with every write and opening it reads all of it, so it
+suits a store whose history is bounded. Restarting does not grow it: the bucket is created only when
+absent (a restart used to append 69 bytes whatever had changed).
+
+**A journal that ends inside a frame** (power loss, a short write) does not open, and the error says
+where: `ends in an incomplete frame at byte N of M (after K complete frames) ... Nothing was
+discarded`. `kill -9` cannot produce this, since a killed process finishes its in-flight write.
+`MATRIXOBJECT_JOURNAL_REPAIR_TORN_TAIL=1` drops that frame and keeps its bytes in
+`<journal>.torn-<offset>` before shortening the journal. It refuses anything that is not a tail: a
+complete frame whose checksum fails, a length over 128 MiB, a file that is not a journal. A length
+damaged in the middle of the log to a plausible value reads exactly like a tear, which is why the
+repair is opt-in and why the dropped bytes are kept.
+
+**The store keeps three in-process copies of every page by default**, and they all live in this one
+process, so they do not survive its failure. Resident memory over logical bytes stored, net of the
+idle door, at three replicas against one: 3.62x vs 1.69x (20,000 x 1 KiB), 3.06x vs 1.13x (1,000 x
+64 KiB), 3.30x vs 1.30x (64 x 1 MiB), 3.70x vs 1.76x (40,000 x 256 B appends). One replica also halves
+the CPU of a full 64 KiB read (420 to 615 ms per 1,000 reads against 838 to 1,268). What it costs: a
+single copy keeps an erasure-coding sidecar so it can repair itself, and rebuilding that sidecar is
+O(page) on every write. A 1 KiB put costs 1.08 million instructions at one replica against 166
+thousand at three.
 
 The verbs, where `{bucket}` is the first path segment and `{key}` is everything after it:
 

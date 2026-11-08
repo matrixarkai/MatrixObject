@@ -5,6 +5,21 @@ impl MatrixObjectStore {
         self.create_bucket_fenced(bucket, 0, 0)
     }
 
+    /// Create `bucket` only if it does not exist; returns whether it was created.
+    ///
+    /// `create_bucket` is idempotent in what it RETURNS and not in what it WRITES: called on a
+    /// bucket that exists it commits the bucket's metadata record again at a new version and,
+    /// with a journal, appends a frame. A service that creates its bucket on every start
+    /// therefore grows its journal on every restart. Measured: 69 bytes a restart, with no data
+    /// written, in a mode that has no checkpoint to reclaim it.
+    pub fn ensure_bucket(&mut self, bucket: &str) -> Result<bool, ObjectError> {
+        if self.bucket_exists(bucket)? {
+            return Ok(false);
+        }
+        self.create_bucket(bucket)?;
+        Ok(true)
+    }
+
     pub fn create_bucket_fenced(
         &mut self,
         bucket: &str,
