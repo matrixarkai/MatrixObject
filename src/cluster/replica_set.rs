@@ -734,7 +734,9 @@ impl RemoteReplicaSet {
     /// mutation is sent. Repeated writes to one page form an ordered sequence
     /// chain in the same encoded batch. Pages with the same matching member set
     /// share conditional mutation frames, reducing head requests, mutation frames
-    /// and journal syncs without letting a divergent member vote for a write.
+    /// and journal syncs without letting a divergent member vote for a write. Each
+    /// frame completes at write quorum so a slow optional member cannot delay the
+    /// remaining frames.
     /// Frames carry at most four MiB of page data. An error can follow an
     /// acknowledged earlier frame; callers must probe candidate pages instead of
     /// replaying an uncertain batch.
@@ -837,14 +839,9 @@ impl RemoteReplicaSet {
                 let request = ReplicaRequest::WriteChunkBatchIfSequence {
                     writes: frame.into_iter().map(|(_, write)| write).collect(),
                 };
-                let terminal_frame = remaining.peek().is_none();
                 let mut acknowledged = 0usize;
                 let mut first_error = None;
-                let replies = if terminal_frame {
-                    self.fan_out_write_quorum(&request, Some(&matching))
-                } else {
-                    self.fan_out(&request, Some(&matching))
-                };
+                let replies = self.fan_out_write_quorum(&request, Some(&matching));
                 for result in replies {
                     match applied(result) {
                         Ok(()) => acknowledged += 1,
