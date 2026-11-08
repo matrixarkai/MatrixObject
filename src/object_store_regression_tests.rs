@@ -12016,6 +12016,44 @@ fn repairs_draining_placements_in_bulk() {
 }
 
 #[test]
+fn draining_repair_preserves_failure_domain_diversity_before_free_space_ordering() {
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    for (node_id, domain, capacity) in [
+        ("chunk-a", "rack-a", 100),
+        ("chunk-b", "rack-b", 100),
+    ] {
+        store
+            .register_placement_node(placement_node(node_id, domain, capacity))
+            .unwrap();
+    }
+    store
+        .put_object_with_root_placement(
+            "bucket",
+            "object",
+            vec![b'a'; 32],
+            "application/octet-stream",
+            2,
+            PutOptions::default(),
+        )
+        .unwrap();
+    store
+        .register_placement_node(placement_node("chunk-c", "rack-b", 1_000))
+        .unwrap();
+    store
+        .register_placement_node(placement_node("chunk-d", "rack-c", 100))
+        .unwrap();
+    store
+        .heartbeat_placement_node("chunk-a", 32, 100, true, true, 20)
+        .unwrap();
+
+    let plan = store.plan_draining_placement_repairs(1);
+
+    assert_eq!(plan.repair_objects, 1);
+    assert_eq!(plan.items[0].plan.source_node_id, "chunk-a");
+    assert_eq!(plan.items[0].plan.target_node_id, "chunk-d");
+}
+
+#[test]
 fn placement_rebalances_capacity_pressure_in_bulk() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     for (node_id, domain, capacity) in [("chunk-a", "rack-a", 64), ("chunk-b", "rack-b", 64)] {
