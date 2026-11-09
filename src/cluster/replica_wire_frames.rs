@@ -99,6 +99,8 @@ pub enum RequestCode {
     Capabilities = 19,
     /// Write only when the page's complete pre-write state matches.
     WriteChunkIfState = 20,
+    /// Report bounded conditional-write framing without admitting a mutation.
+    ConditionalWriteLimits = 21,
 }
 
 impl RequestCode {
@@ -129,6 +131,7 @@ impl RequestCode {
             18 => Some(RequestCode::HeadChunkBatch),
             19 => Some(RequestCode::Capabilities),
             20 => Some(RequestCode::WriteChunkIfState),
+            21 => Some(RequestCode::ConditionalWriteLimits),
             _ => None,
         }
     }

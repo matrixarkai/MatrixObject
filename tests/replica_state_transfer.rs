@@ -765,7 +765,7 @@ fn star_batch_continues_on_quorum_when_one_member_stalls() {
                 stream
                     .set_write_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
-                for phase in 0..3 {
+                for phase in 0..4 {
                     let mut header = [0; 6];
                     stream.read_exact(&mut header).unwrap();
                     let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
@@ -782,7 +782,13 @@ fn star_batch_continues_on_quorum_when_one_member_stalls() {
                                 ])))
                                 .unwrap();
                         }
-                        (1, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
+                        (1, ReplicaRequest::ConditionalWriteLimits) => stream
+                            .write_all(&encode_reply(&ReplicaReply::ConditionalWriteLimits {
+                                max_writes: 8,
+                                max_payload_bytes: 4 * 1024 * 1024,
+                            }))
+                            .unwrap(),
+                        (2, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
                             assert_eq!(writes.len(), 8);
                             if let Some(release) = release.as_ref() {
                                 release.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -793,7 +799,7 @@ fn star_batch_continues_on_quorum_when_one_member_stalls() {
                                 .write_all(&encode_reply(&ReplicaReply::Applied))
                                 .unwrap();
                         }
-                        (2, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
+                        (3, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
                             assert_eq!(writes.len(), 8);
                             advanced.send(index).unwrap();
                             stream
@@ -893,8 +899,14 @@ fn star_head_fence_falls_back_to_eight_page_frames_after_bounded_refusal() {
                                 ])))
                                 .unwrap();
                         }
-                        (3 | 4, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
-                            assert_eq!(writes.len(), 8);
+                        (3, ReplicaRequest::ConditionalWriteLimits) => stream
+                            .write_all(&encode_reply(&ReplicaReply::ConditionalWriteLimits {
+                                max_writes: 32,
+                                max_payload_bytes: 4 * 1024 * 1024,
+                            }))
+                            .unwrap(),
+                        (4, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
+                            assert_eq!(writes.len(), 16);
                             stream
                                 .write_all(&encode_reply(&ReplicaReply::Applied))
                                 .unwrap();
@@ -954,27 +966,33 @@ fn fresh_star_pages_use_conditional_writes_as_the_absence_fence() {
                     let mut body = vec![0; size];
                     stream.read_exact(&mut body).unwrap();
                     let code = RequestCode::from_u8(header[1]).unwrap();
-                    let ReplicaRequest::WriteChunkBatchIfSequence { writes } =
-                        ReplicaRequest::decode(code, &body).unwrap()
-                    else {
-                        panic!("fresh star page write sent a separate head request");
-                    };
-                    assert_eq!(writes.len(), 8);
-                    assert!(writes
-                        .iter()
-                        .all(|write| write.offset == 0 && write.expected_sequence == 0));
-                    assert_eq!(writes[0].page_id, page(300 + phase * 8));
-                    if index == 2 {
-                        stream
-                            .write_all(&encode_failure(
-                                StatusCode::PreconditionFailed,
-                                "page already exists",
-                            ))
-                            .unwrap();
-                    } else {
-                        stream
-                            .write_all(&encode_reply(&ReplicaReply::Applied))
-                            .unwrap();
+                    match (phase, ReplicaRequest::decode(code, &body).unwrap()) {
+                        (0, ReplicaRequest::ConditionalWriteLimits) => stream
+                            .write_all(&encode_reply(&ReplicaReply::ConditionalWriteLimits {
+                                max_writes: 32,
+                                max_payload_bytes: 4 * 1024 * 1024,
+                            }))
+                            .unwrap(),
+                        (1, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
+                            assert_eq!(writes.len(), 16);
+                            assert!(writes.iter().all(|write| {
+                                write.offset == 0 && write.expected_sequence == 0
+                            }));
+                            assert_eq!(writes[0].page_id, page(300));
+                            if index == 2 {
+                                stream
+                                    .write_all(&encode_failure(
+                                        StatusCode::PreconditionFailed,
+                                        "page already exists",
+                                    ))
+                                    .unwrap();
+                            } else {
+                                stream
+                                    .write_all(&encode_reply(&ReplicaReply::Applied))
+                                    .unwrap();
+                            }
+                        }
+                        other => panic!("fresh star page write sent {other:?}"),
                     }
                 }
             })
@@ -1025,7 +1043,7 @@ fn star_batch_sequences_thirty_two_repeated_page_appends_after_one_head_fence() 
                 stream
                     .set_write_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
-                for phase in 0..5 {
+                for phase in 0..3 {
                     let mut header = [0; 6];
                     stream.read_exact(&mut header).unwrap();
                     let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
@@ -1039,20 +1057,25 @@ fn star_batch_sequences_thirty_two_repeated_page_appends_after_one_head_fence() 
                                 .write_all(&encode_reply(&ReplicaReply::Heads(vec![None])))
                                 .unwrap();
                         }
-                        (1..=4, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
-                            assert_eq!(writes.len(), 8);
+                        (1, ReplicaRequest::ConditionalWriteLimits) => stream
+                            .write_all(&encode_reply(&ReplicaReply::ConditionalWriteLimits {
+                                max_writes: 32,
+                                max_payload_bytes: 4 * 1024 * 1024,
+                            }))
+                            .unwrap(),
+                        (2, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
+                            assert_eq!(writes.len(), 32);
                             assert!(writes.iter().all(|write| write.page_id == expected_page));
-                            let first = (phase - 1) * 8;
                             assert_eq!(
                                 writes
                                     .iter()
                                     .map(|write| write.expected_sequence)
                                     .collect::<Vec<_>>(),
-                                (first..first + 8).map(|value| value as u64).collect::<Vec<_>>()
+                                (0..32).map(|value| value as u64).collect::<Vec<_>>()
                             );
                             assert_eq!(
                                 writes.iter().map(|write| write.offset).collect::<Vec<_>>(),
-                                (first..first + 8).map(|value| value as u64).collect::<Vec<_>>()
+                                (0..32).map(|value| value as u64).collect::<Vec<_>>()
                             );
                             assert!(writes.iter().all(|write| write.data == b"x"));
                             stream
@@ -1089,6 +1112,183 @@ fn star_batch_sequences_thirty_two_repeated_page_appends_after_one_head_fence() 
     drop(set);
     for worker in workers {
         worker.join().unwrap();
+    }
+}
+
+#[test]
+fn older_member_keeps_star_write_frames_at_eight_writes() {
+    use matrixobjectstore_rs::cluster::{
+        message::{encode_failure, encode_reply},
+        ReplicaReply, ReplicaRequest, RequestCode, StatusCode,
+    };
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    let listeners: Vec<_> = (0..3)
+        .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let endpoints: Vec<_> = listeners
+        .iter()
+        .map(|listener| listener.local_addr().unwrap().to_string())
+        .collect();
+    let workers: Vec<_> = listeners
+        .into_iter()
+        .enumerate()
+        .map(|(index, listener)| {
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                for phase in 0..5 {
+                    let mut header = [0; 6];
+                    stream.read_exact(&mut header).unwrap();
+                    let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                    let mut body = vec![0; size];
+                    stream.read_exact(&mut body).unwrap();
+                    let code = RequestCode::from_u8(header[1]).unwrap();
+                    match (phase, ReplicaRequest::decode(code, &body).unwrap()) {
+                        (0, ReplicaRequest::ConditionalWriteLimits) if index == 2 => stream
+                            .write_all(&encode_failure(
+                                StatusCode::UnknownRequest,
+                                "unsupported request",
+                            ))
+                            .unwrap(),
+                        (0, ReplicaRequest::ConditionalWriteLimits) => stream
+                            .write_all(&encode_reply(&ReplicaReply::ConditionalWriteLimits {
+                                max_writes: 32,
+                                max_payload_bytes: 4 * 1024 * 1024,
+                            }))
+                            .unwrap(),
+                        (1..=4, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
+                            assert_eq!(writes.len(), 8);
+                            let first = (phase - 1) * 8;
+                            assert_eq!(writes[0].page_id, page(400 + first as u64));
+                            stream
+                                .write_all(&encode_reply(&ReplicaReply::Applied))
+                                .unwrap();
+                        }
+                        other => panic!("unexpected mixed-version phase: {other:?}"),
+                    }
+                }
+            })
+        })
+        .collect();
+
+    let mut set =
+        RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+    let payloads = vec![vec![5u8]; 32];
+    let writes: Vec<_> = payloads
+        .iter()
+        .enumerate()
+        .map(|(index, data)| (page(400 + index as u64), 0, data.as_slice(), 0))
+        .collect();
+    assert_eq!(set.write_chunks_if_sequence(&writes).unwrap(), vec![3; 32]);
+    drop(set);
+    for worker in workers {
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+#[ignore = "controlled star batch latency measurement; run explicitly in release mode"]
+fn star_write_frame_width_measurement() {
+    use matrixobjectstore_rs::cluster::{
+        message::encode_reply, ReplicaReply, ReplicaRequest, RequestCode,
+    };
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    fn run(max_writes: u32, delay: Duration) -> (u128, usize) {
+        let listeners: Vec<_> = (0..3)
+            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let endpoints: Vec<_> = listeners
+            .iter()
+            .map(|listener| listener.local_addr().unwrap().to_string())
+            .collect();
+        let expected_frames = 32usize.div_ceil(max_writes as usize);
+        let workers: Vec<_> = listeners
+            .into_iter()
+            .map(|listener| {
+                std::thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let mut mutations = 0usize;
+                    for phase in 0..=expected_frames {
+                        let mut header = [0; 6];
+                        stream.read_exact(&mut header).unwrap();
+                        let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                        let mut body = vec![0; size];
+                        stream.read_exact(&mut body).unwrap();
+                        let code = RequestCode::from_u8(header[1]).unwrap();
+                        let reply = match (phase, ReplicaRequest::decode(code, &body).unwrap()) {
+                            (0, ReplicaRequest::ConditionalWriteLimits) => {
+                                ReplicaReply::ConditionalWriteLimits {
+                                    max_writes,
+                                    max_payload_bytes: 4 * 1024 * 1024,
+                                }
+                            }
+                            (_, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
+                                assert!(!writes.is_empty());
+                                assert!(writes.len() <= max_writes as usize);
+                                mutations += 1;
+                                ReplicaReply::Applied
+                            }
+                            other => panic!("unexpected measured star phase: {other:?}"),
+                        };
+                        std::thread::sleep(delay);
+                        stream.write_all(&encode_reply(&reply)).unwrap();
+                    }
+                    mutations
+                })
+            })
+            .collect();
+
+        let mut set =
+            RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+        let payloads = vec![vec![9u8; 256]; 32];
+        let writes: Vec<_> = payloads
+            .iter()
+            .enumerate()
+            .map(|(index, data)| (page(500 + index as u64), 0, data.as_slice(), 0))
+            .collect();
+        let began = Instant::now();
+        assert_eq!(set.write_chunks_if_sequence(&writes).unwrap(), vec![3; 32]);
+        let elapsed = began.elapsed().as_micros();
+        drop(set);
+        let mutation_frames: usize = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .sum();
+        assert_eq!(mutation_frames, expected_frames * 3);
+        (elapsed, mutation_frames)
+    }
+
+    let delay = Duration::from_millis(5);
+    for max_writes in [8, 32] {
+        let mut samples = Vec::new();
+        let mut mutation_frames = 0usize;
+        for _ in 0..7 {
+            let (elapsed, frames) = run(max_writes, delay);
+            samples.push(elapsed);
+            mutation_frames = frames;
+        }
+        samples.sort_unstable();
+        eprintln!(
+            "STAR_BATCH max_writes={max_writes} writes=32 replicas=3 delay_ms=5 mutation_frames={mutation_frames} p50_us={}",
+            samples[3]
+        );
     }
 }
 
