@@ -110,6 +110,7 @@ pub(super) struct PendingReplicaReply<'a> {
     client: &'a mut RemoteReplicaClient,
     code: crate::cluster::wire::RequestCode,
     deadline: Instant,
+    absolute_deadline: Option<Instant>,
     request: Option<std::sync::Arc<[u8]>>,
     request_written: usize,
     header: [u8; HEADER_BYTES],
@@ -161,7 +162,7 @@ impl PendingReplicaReply<'_> {
             Err(error) => return Err(transport_error(&self.client.endpoint, "flushing a fan-out request", &error.to_string())),
         }
         self.request = None;
-        self.deadline = exchange_deadline(self.client.read_timeout, self.client.deadline)?;
+        self.deadline = exchange_deadline(self.client.read_timeout, self.absolute_deadline)?;
         Ok(true)
     }
     pub(super) fn poll(&mut self) -> Option<Result<ReplicaReply, ObjectError>> {
@@ -1558,10 +1559,20 @@ impl RemoteReplicaClient {
     }
 
     // Every member shares one immutable frame and advances without blocking siblings.
+    #[cfg(test)]
     pub(super) fn begin_encoded(
         &mut self,
         code: crate::cluster::wire::RequestCode,
         frame: std::sync::Arc<[u8]>,
+    ) -> Result<PendingReplicaReply<'_>, ObjectError> {
+        self.begin_encoded_before(code, frame, None)
+    }
+
+    pub(super) fn begin_encoded_before(
+        &mut self,
+        code: crate::cluster::wire::RequestCode,
+        frame: std::sync::Arc<[u8]>,
+        operation_deadline: Option<Instant>,
     ) -> Result<PendingReplicaReply<'_>, ObjectError> {
         if self.catalog.is_some() || !self.connection_usable {
             return Err(transport_error(
@@ -1570,7 +1581,8 @@ impl RemoteReplicaClient {
                 "connection is unavailable or uses a catalog",
             ));
         }
-        let deadline = exchange_deadline(self.write_timeout, self.deadline)?;
+        let absolute_deadline = earliest_deadline(self.deadline, operation_deadline);
+        let deadline = exchange_deadline(self.write_timeout, absolute_deadline)?;
         self.connection_usable = false;
         if let Err(error) = self.writer.set_nonblocking(true) {
             let _ = self.writer.shutdown(Shutdown::Both);
@@ -1580,6 +1592,7 @@ impl RemoteReplicaClient {
             client: self,
             code,
             deadline,
+            absolute_deadline,
             request: Some(frame),
             request_written: 0,
             header: [0; HEADER_BYTES],
@@ -1699,6 +1712,14 @@ fn unexpected_reply(asked: &str, got: &ReplicaReply) -> ObjectError {
     ObjectError::Corruption(format!(
         "{asked} was answered with {got:?}, which does not belong to that request"
     ))
+}
+
+fn earliest_deadline(left: Option<Instant>, right: Option<Instant>) -> Option<Instant> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+        (None, None) => None,
+    }
 }
 
 fn exchange_deadline(timeout: Duration, absolute: Option<Instant>) -> Result<Instant, ObjectError> {

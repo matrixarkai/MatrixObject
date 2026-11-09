@@ -510,8 +510,12 @@ fn star_operations_send_each_wave_before_waiting_for_replies() {
             RequestCode::HeadChunk,
             RequestCode::HeadChunk,
         ];
-        for code in codes {
-            let expected_members = if code == RequestCode::ReadChunk { 2 } else { 3 };
+        for (phase, code) in codes.into_iter().enumerate() {
+            let expected_members = if matches!(phase, 2 | 5 | 6 | 7) {
+                2
+            } else {
+                3
+            };
             let mut members = std::collections::BTreeSet::new();
             for _ in 0..expected_members {
                 let (index, actual_code) = arrivals
@@ -1713,13 +1717,33 @@ fn star_stalled_members_share_reply_wait_budget_without_replaying() {
     }
     let began = Instant::now();
     assert!(set.head_chunk(&page(0)).is_err());
-    assert!(began.elapsed() < Duration::from_millis(1200), "three reply budgets accumulated: {:?}", began.elapsed());
+    assert!(
+        began.elapsed() < Duration::from_millis(1000),
+        "read waves exceeded one shared reply budget: {:?}",
+        began.elapsed()
+    );
+    drop(set);
+    let mut request_counts = Vec::new();
     for socket in &mut sockets {
         let mut bytes = Vec::new();
         socket.read_to_end(&mut bytes).unwrap();
+        if bytes.is_empty() {
+            request_counts.push(0);
+            continue;
+        }
         assert!(bytes.len() >= 6);
-        assert_eq!(bytes[1], matrixobjectstore_rs::cluster::RequestCode::HeadChunk as u8);
+        assert_eq!(
+            bytes[1],
+            matrixobjectstore_rs::cluster::RequestCode::HeadChunk as u8
+        );
         let length = u32::from_be_bytes(bytes[2..6].try_into().unwrap()) as usize;
-        assert_eq!(bytes.len(), 6 + length, "exactly one request must be sent per member");
+        assert_eq!(
+            bytes.len(),
+            6 + length,
+            "a selected member must receive exactly one request"
+        );
+        request_counts.push(1);
     }
+    request_counts.sort_unstable();
+    assert_eq!(request_counts, vec![0, 1, 1]);
 }
