@@ -427,6 +427,15 @@ fn frame_response(
             Ok(request) => {
                 #[cfg(feature = "chunk-consensus")]
                 let result = match request {
+                    ReplicaRequest::ConditionalWriteLimits => {
+                        Ok(ReplicaReply::ConditionalWriteLimits {
+                            max_writes: if consensus.is_some() { 8 } else { 32 },
+                            max_payload_bytes: options
+                                .max_payload_bytes
+                                .min(4 * 1024 * 1024 + 4096)
+                                as u32,
+                        })
+                    }
                     ReplicaRequest::WriteChunkBatchIfSequence { writes } => match consensus {
                         Some(c) => c.request_batch(writes),
                         None => apply_batch(replica, writes, options.max_payload_bytes),
@@ -442,6 +451,15 @@ fn frame_response(
                 };
                 #[cfg(not(feature = "chunk-consensus"))]
                 let result = match request {
+                    ReplicaRequest::ConditionalWriteLimits => {
+                        Ok(ReplicaReply::ConditionalWriteLimits {
+                            max_writes: 32,
+                            max_payload_bytes: options
+                                .max_payload_bytes
+                                .min(4 * 1024 * 1024 + 4096)
+                                as u32,
+                        })
+                    }
                     ReplicaRequest::WriteChunkBatchIfSequence { writes } => {
                         apply_batch(replica, writes, options.max_payload_bytes)
                     }
@@ -1099,6 +1117,10 @@ pub(super) fn apply_to_replica(
         }),
         ReplicaRequest::Capabilities => Ok(ReplicaReply::Capabilities {
             state_conditional_write: true,
+        }),
+        ReplicaRequest::ConditionalWriteLimits => Ok(ReplicaReply::ConditionalWriteLimits {
+            max_writes: 8,
+            max_payload_bytes: 4 * 1024 * 1024,
         }),
         ReplicaRequest::PageInventory { after, limit } => {
             crate::cluster::message::check_inventory_limit(limit)?;

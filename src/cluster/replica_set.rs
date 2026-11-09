@@ -45,6 +45,36 @@ const READ_QUORUM_HEDGE_DRAIN: std::time::Duration = std::time::Duration::from_m
 const MAX_PARALLEL_RECONNECTS: usize = 8;
 const ROUTED_RECONNECT_MIN_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
 const ROUTED_RECONNECT_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+const CONDITIONAL_WRITE_FRAME_OVERHEAD: usize = 8;
+const CONDITIONAL_WRITE_ENTRY_OVERHEAD: usize = 72;
+const CONDITIONAL_WRITE_MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024 + 4096;
+
+fn conditional_write_frame_count(
+    group: &[(usize, ConditionalChunkWrite)],
+    max_writes: usize,
+    max_bytes: usize,
+    frame_overhead: usize,
+    entry_overhead: usize,
+) -> usize {
+    let mut frames = 0usize;
+    let mut frame_writes = 0usize;
+    let mut frame_bytes = frame_overhead;
+    for (_, write) in group {
+        let next_bytes = frame_bytes
+            .saturating_add(entry_overhead)
+            .saturating_add(write.data.len());
+        if frame_writes == max_writes || (frame_writes > 0 && next_bytes > max_bytes) {
+            frames += 1;
+            frame_writes = 0;
+            frame_bytes = frame_overhead;
+        }
+        frame_writes += 1;
+        frame_bytes = frame_bytes
+            .saturating_add(entry_overhead)
+            .saturating_add(write.data.len());
+    }
+    frames + usize::from(frame_writes > 0)
+}
 
 type ReconnectResult = (String, Result<RemoteReplicaClient, ObjectError>);
 
@@ -242,6 +272,7 @@ pub struct RemoteReplicaSet {
     read_quorum: usize,
     read_cursor: usize,
     state_conditional_write: Option<bool>,
+    conditional_write_limits: Option<(usize, usize)>,
     options: ReplicaClientOptions,
 }
 
@@ -371,6 +402,7 @@ impl RemoteReplicaSet {
             read_quorum,
             read_cursor: 0,
             state_conditional_write: None,
+            conditional_write_limits: None,
             options: options.clone(),
         })
     }
@@ -449,6 +481,7 @@ impl RemoteReplicaSet {
             read_quorum,
             read_cursor: 0,
             state_conditional_write: None,
+            conditional_write_limits: None,
             options: options.clone(),
         })
     }
@@ -501,6 +534,41 @@ impl RemoteReplicaSet {
             });
         self.state_conditional_write = Some(supported);
         supported
+    }
+
+    fn conditional_write_limits(&mut self) -> (usize, usize) {
+        if let Some(limits) = self.conditional_write_limits {
+            return limits;
+        }
+        let replica_count = self.replicas.len();
+        let replies = self.fan_out(&ReplicaRequest::ConditionalWriteLimits, None);
+        let limits = if replies.len() == replica_count {
+            replies
+                .into_iter()
+                .try_fold(
+                    (
+                        32usize,
+                        self.options
+                            .max_payload_bytes
+                            .min(CONDITIONAL_WRITE_MAX_PAYLOAD_BYTES),
+                    ),
+                    |limits, reply| match reply {
+                        Ok(ReplicaReply::ConditionalWriteLimits {
+                            max_writes,
+                            max_payload_bytes,
+                        }) => Some((
+                            limits.0.min(max_writes as usize),
+                            limits.1.min(max_payload_bytes as usize),
+                        )),
+                        _ => None,
+                    },
+                )
+                .unwrap_or((8, 4 * 1024 * 1024))
+        } else {
+            (8, 4 * 1024 * 1024)
+        };
+        self.conditional_write_limits = Some(limits);
+        limits
     }
 
     fn fan_out_until_applied(
@@ -648,6 +716,7 @@ impl RemoteReplicaSet {
             self.reconnect_routed();
             if reset_capabilities || self.replicas.len() != connected_before {
                 self.state_conditional_write = None;
+                self.conditional_write_limits = None;
             }
             return;
         }
@@ -662,6 +731,7 @@ impl RemoteReplicaSet {
         });
         if reset_capabilities {
             self.state_conditional_write = None;
+            self.conditional_write_limits = None;
         }
     }
 
@@ -1080,18 +1150,41 @@ impl RemoteReplicaSet {
         selected: Option<&[bool]>,
         acknowledgements: &mut [usize],
     ) -> Result<(), ObjectError> {
+        let legacy_frames = conditional_write_frame_count(&group, 8, 4 * 1024 * 1024, 0, 0);
+        let wider_frames = conditional_write_frame_count(
+            &group,
+            32,
+            CONDITIONAL_WRITE_MAX_PAYLOAD_BYTES,
+            CONDITIONAL_WRITE_FRAME_OVERHEAD,
+            CONDITIONAL_WRITE_ENTRY_OVERHEAD,
+        );
+        let (max_frame_writes, max_frame_bytes, frame_overhead, entry_overhead) =
+            if wider_frames < legacy_frames {
+                let (max_writes, max_bytes) = self.conditional_write_limits();
+                (
+                    max_writes,
+                    max_bytes,
+                    CONDITIONAL_WRITE_FRAME_OVERHEAD,
+                    CONDITIONAL_WRITE_ENTRY_OVERHEAD,
+                )
+            } else {
+                (8, 4 * 1024 * 1024, 0, 0)
+            };
         let mut remaining = group.into_iter().peekable();
         while remaining.peek().is_some() {
             let mut frame = Vec::new();
-            let mut frame_bytes = 0usize;
-            while frame.len() < 8 {
+            let mut frame_bytes = frame_overhead;
+            while frame.len() < max_frame_writes {
                 let Some((_, write)) = remaining.peek() else {
                     break;
                 };
-                let Some(next_bytes) = frame_bytes.checked_add(write.data.len()) else {
+                let Some(next_bytes) = frame_bytes
+                    .checked_add(entry_overhead)
+                    .and_then(|bytes| bytes.checked_add(write.data.len()))
+                else {
                     break;
                 };
-                if !frame.is_empty() && next_bytes > 4 * 1024 * 1024 {
+                if !frame.is_empty() && next_bytes > max_frame_bytes {
                     break;
                 }
                 let (index, write) = remaining.next().unwrap();

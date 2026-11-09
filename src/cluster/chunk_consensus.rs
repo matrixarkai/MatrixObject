@@ -984,6 +984,7 @@ fn read_only(request: &ReplicaRequest) -> bool {
         | ReplicaRequest::PageInventory { .. }
         | ReplicaRequest::Ping
         | ReplicaRequest::Capabilities
+        | ReplicaRequest::ConditionalWriteLimits
         | ReplicaRequest::GroupIdentity => true,
         ReplicaRequest::StateInstall(_)
         | ReplicaRequest::WriteChunk { .. }

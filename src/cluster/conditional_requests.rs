@@ -38,6 +38,15 @@ pub(super) struct ChunkWriteBatch {
     pub writes: Vec<ChunkWrite>,
 }
 #[derive(Clone, PartialEq, Message)]
+pub(super) struct ConditionalWriteLimits {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(uint32, tag = "2")]
+    pub max_writes: u32,
+    #[prost(uint32, tag = "3")]
+    pub max_payload_bytes: u32,
+}
+#[derive(Clone, PartialEq, Message)]
 pub(super) struct StateChunkWrite {
     #[prost(uint32, tag = "1")]
     pub version: u32,
@@ -276,6 +285,16 @@ mod tests {
                 .unwrap(),
             digest_request
         );
+        let mut digest_too_wide: ChunkWriteBatch =
+            decode(&digest_request.encode_payload()).unwrap();
+        digest_too_wide
+            .writes
+            .resize(9, digest_too_wide.writes[0].clone());
+        assert!(ReplicaRequest::decode(
+            RequestCode::WriteChunkBatchIfSequenceDigest,
+            &digest_too_wide.encode_to_vec()
+        )
+        .is_err());
         let mut value: ChunkWriteBatch = decode(&bytes).unwrap();
         value.version = 2;
         assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_err());
@@ -283,7 +302,9 @@ mod tests {
         value.writes[0].version = 2;
         assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_err());
         value.writes[0].version = 1;
-        value.writes.resize(9, value.writes[0].clone());
+        value.writes.resize(32, value.writes[0].clone());
+        assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_ok());
+        value.writes.push(value.writes[0].clone());
         assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_err());
         let mut extra = bytes.clone();
         extra.extend([0x08, 0x01]);
@@ -309,6 +330,10 @@ mod tests {
         let bytes = request.encode_payload();
         assert_eq!(RequestCode::from_u8(19), Some(RequestCode::Capabilities));
         assert_eq!(RequestCode::from_u8(20), Some(RequestCode::WriteChunkIfState));
+        assert_eq!(
+            RequestCode::from_u8(21),
+            Some(RequestCode::ConditionalWriteLimits)
+        );
         assert_eq!(ReplicaRequest::decode(request.code(), &bytes).unwrap(), request);
 
         let absent = ReplicaRequest::WriteChunkIfState {
@@ -346,6 +371,41 @@ mod tests {
                 .unwrap(),
             capabilities
         );
+
+        let limits = ReplicaReply::ConditionalWriteLimits {
+            max_writes: 32,
+            max_payload_bytes: 4 * 1024 * 1024,
+        };
+        assert_eq!(limits.payload_len(), limits.encode_payload().len());
+        assert_eq!(
+            ReplicaRequest::decode(RequestCode::ConditionalWriteLimits, &[]).unwrap(),
+            ReplicaRequest::ConditionalWriteLimits
+        );
+        assert_eq!(
+            ReplicaReply::decode(
+                RequestCode::ConditionalWriteLimits,
+                &limits.encode_payload()
+            )
+            .unwrap(),
+            limits
+        );
+        let mut invalid_limits = ConditionalWriteLimits {
+            version: 1,
+            max_writes: 33,
+            max_payload_bytes: 4 * 1024 * 1024,
+        };
+        assert!(ReplicaReply::decode(
+            RequestCode::ConditionalWriteLimits,
+            &invalid_limits.encode_to_vec()
+        )
+        .is_err());
+        invalid_limits.max_writes = 32;
+        invalid_limits.version = 2;
+        assert!(ReplicaReply::decode(
+            RequestCode::ConditionalWriteLimits,
+            &invalid_limits.encode_to_vec()
+        )
+        .is_err());
     }
 
     #[test]

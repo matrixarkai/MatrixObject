@@ -186,6 +186,7 @@ pub enum ReplicaRequest {
     },
     Ping,
     Capabilities,
+    ConditionalWriteLimits,
     GroupIdentity,
     PageInventory {
         after: Option<PageId>,
@@ -220,6 +221,7 @@ impl ReplicaRequest {
             ReplicaRequest::DiscardChunk { .. } => RequestCode::DiscardChunk,
             ReplicaRequest::Ping => RequestCode::Ping,
             ReplicaRequest::Capabilities => RequestCode::Capabilities,
+            ReplicaRequest::ConditionalWriteLimits => RequestCode::ConditionalWriteLimits,
             ReplicaRequest::GroupIdentity => RequestCode::GroupIdentity,
             ReplicaRequest::PageInventory { .. } => RequestCode::PageInventory,
         }
@@ -381,7 +383,10 @@ impl ReplicaRequest {
                 }
                 .encode_to_vec();
             }
-            ReplicaRequest::Ping | ReplicaRequest::Capabilities | ReplicaRequest::GroupIdentity => {}
+            ReplicaRequest::Ping
+            | ReplicaRequest::Capabilities
+            | ReplicaRequest::ConditionalWriteLimits
+            | ReplicaRequest::GroupIdentity => {}
             ReplicaRequest::PageInventory { after, limit } => {
                 put_u64(&mut out, u64::from(after.is_some()));
                 if let Some(id) = after {
@@ -594,8 +599,13 @@ impl ReplicaRequest {
             }
             let value: super::conditional_requests::ChunkWriteBatch =
                 super::conditional_requests::decode(payload)?;
+            let max_writes = if code == RequestCode::WriteChunkBatchIfSequence {
+                32
+            } else {
+                8
+            };
             if value.version != 1
-                || value.writes.len() > 8
+                || value.writes.len() > max_writes
                 || value
                     .writes
                     .iter()
@@ -696,6 +706,7 @@ impl ReplicaRequest {
             }
             RequestCode::Ping => ReplicaRequest::Ping,
             RequestCode::Capabilities => ReplicaRequest::Capabilities,
+            RequestCode::ConditionalWriteLimits => ReplicaRequest::ConditionalWriteLimits,
             RequestCode::GroupIdentity => ReplicaRequest::GroupIdentity,
             RequestCode::PageInventory => {
                 let after = match cursor.take_u64()? {
@@ -749,6 +760,10 @@ pub enum ReplicaReply {
     Capabilities {
         state_conditional_write: bool,
     },
+    ConditionalWriteLimits {
+        max_writes: u32,
+        max_payload_bytes: u32,
+    },
     PageInventory(PageInventory),
     GroupIdentity(ChunkGroupIdentity),
 }
@@ -759,6 +774,15 @@ impl ReplicaReply {
             Self::StateRange(value) => value.encoded_len(),
             Self::Applied | Self::NotLeader => 0,
             Self::Capabilities { .. } => 8,
+            Self::ConditionalWriteLimits {
+                max_writes,
+                max_payload_bytes,
+            } => super::conditional_requests::ConditionalWriteLimits {
+                version: 1,
+                max_writes: *max_writes,
+                max_payload_bytes: *max_payload_bytes,
+            }
+            .encoded_len(),
             Self::Membership(value) => value.encoded_len(),
             Self::GroupIdentity(identity) => identity.encoded_len(),
             Self::Read(read) => 16usize
@@ -848,6 +872,17 @@ impl ReplicaReply {
             ReplicaReply::Capabilities {
                 state_conditional_write,
             } => put_u64(&mut out, u64::from(*state_conditional_write)),
+            ReplicaReply::ConditionalWriteLimits {
+                max_writes,
+                max_payload_bytes,
+            } => {
+                return super::conditional_requests::ConditionalWriteLimits {
+                    version: 1,
+                    max_writes: *max_writes,
+                    max_payload_bytes: *max_payload_bytes,
+                }
+                .encode_to_vec();
+            }
             ReplicaReply::PageInventory(batch) => {
                 put_u64(&mut out, u64::from(batch.has_more));
                 put_u64(&mut out, batch.entries.len() as u64);
@@ -996,6 +1031,22 @@ impl ReplicaReply {
             }
             return Ok(Self::Heads(heads));
         }
+        if code == RequestCode::ConditionalWriteLimits {
+            let value: super::conditional_requests::ConditionalWriteLimits =
+                super::conditional_requests::decode(payload)?;
+            if value.version != 1
+                || !(1..=32).contains(&value.max_writes)
+                || !(1..=4 * 1024 * 1024 + 4096).contains(&value.max_payload_bytes)
+            {
+                return Err(ObjectError::Corruption(
+                    "invalid conditional write limits".into(),
+                ));
+            }
+            return Ok(Self::ConditionalWriteLimits {
+                max_writes: value.max_writes,
+                max_payload_bytes: value.max_payload_bytes,
+            });
+        }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
             RequestCode::Membership | RequestCode::StateInstall => unreachable!(),
@@ -1004,6 +1055,7 @@ impl ReplicaReply {
             RequestCode::WriteChunkBatchIfSequenceDigest => unreachable!(),
             RequestCode::ReadChunkBatch => unreachable!(),
             RequestCode::HeadChunkBatch => unreachable!(),
+            RequestCode::ConditionalWriteLimits => unreachable!(),
             RequestCode::WriteChunk
             | RequestCode::WriteChunkIfSequence
             | RequestCode::WriteChunkIfState
