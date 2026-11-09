@@ -879,7 +879,8 @@ impl RemoteReplicaSet {
     ) -> Result<usize, ObjectError> {
         self.reconnect_failed();
         if self.supports_state_conditional_write() {
-            let expected = match self.head_chunk_with_quorum(page_id, self.read_quorum) {
+            let preflight_quorum = self.read_quorum.max(self.write_quorum);
+            let expected = match self.head_chunk_with_quorum(page_id, preflight_quorum) {
                 Ok(head) => Some(head),
                 Err(ObjectError::NotFound(_)) => None,
                 Err(error) => return Err(error),

@@ -353,8 +353,10 @@ differing payload bytes.
 `RemoteReplicaSet::write_chunk` learns support for complete-state conditional
 writes with one read-only capability request per connected set. When every
 connected member supports it, a rotating read quorum selects the complete page
-head, or agrees that the page is absent. The mutation is then sent to every
-connected member with that expected sequence and state checksum. Each server
+head, or agrees that the page is absent. If the configured write quorum is
+larger, preflight requires that larger quorum so an impossible write is refused
+before mutation. The mutation is then sent to every connected member with that
+expected sequence and state checksum. Each server
 compares the complete state under the same lock that admits the write, so an
 optional member with equal sequence but different length, bytes or discarded
 ranges refuses the mutation. A healthy 2-of-3 write therefore uses two head
