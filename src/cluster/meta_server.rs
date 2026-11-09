@@ -896,7 +896,7 @@ pub(super) fn apply_with_groups(
     | MetaRequest::PlanObjectWriteRoutes { bucket, key, length, replica_count }
     | MetaRequest::PlanObjectWriteRoutesWide { bucket, key, length, replica_count } = &request {
         let max_groups = if matches!(&request, MetaRequest::PlanObjectWriteRoutesWide { .. }) {
-            8
+            32
         } else {
             4
         };

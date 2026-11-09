@@ -135,11 +135,11 @@ impl RouteReads {
     }
 
     pub(super) fn from_wide_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
-        Self::from_payload_with_max(bytes, 8)
+        Self::from_payload_with_max(bytes, 32)
     }
 
     fn from_payload_with_max(bytes: &[u8], max_routes: usize) -> Result<Self, ObjectError> {
-        let max_payload_bytes = if max_routes <= 4 { 1024 } else { 2048 };
+        let max_payload_bytes = if max_routes <= 4 { 1024 } else { 8192 };
         if bytes.len() > max_payload_bytes {
             return Err(invalid("chunk route batch request exceeds bound"));
         }
@@ -175,7 +175,7 @@ impl RouteBatch {
     }
 
     pub(super) fn from_wide_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
-        Self::from_payload_with_max(bytes, 8)
+        Self::from_payload_with_max(bytes, 32)
     }
 
     fn from_payload_with_max(bytes: &[u8], max_routes: usize) -> Result<Self, ObjectError> {
@@ -410,7 +410,7 @@ mod tests {
         );
         let wide_request = RouteReads {
             version: 1,
-            placement_ids: (0..8).map(|i| format!("group-{i}")).collect(),
+            placement_ids: (0..32).map(|i| format!("group-{i}")).collect(),
         };
         assert_eq!(
             RouteReads::from_wide_payload(&wide_request.encode_to_vec()).unwrap(),
@@ -418,7 +418,7 @@ mod tests {
         );
         let too_wide = RouteReads {
             version: 1,
-            placement_ids: (0..9).map(|i| format!("group-{i}")).collect(),
+            placement_ids: (0..33).map(|i| format!("group-{i}")).collect(),
         };
         assert!(RouteReads::from_wide_payload(&too_wide.encode_to_vec()).is_err());
 
@@ -429,7 +429,7 @@ mod tests {
         assert_eq!(RouteBatch::from_payload(&batch.encode_to_vec()).unwrap(), batch);
         let wide_batch = RouteBatch {
             version: 1,
-            routes: (0..8)
+            routes: (0..32)
                 .map(|i| {
                     let mut value = route();
                     value.group.as_mut().unwrap().placement_id = format!("group-{i}");
