@@ -307,6 +307,29 @@ cargo test --release --locked --all-features --test network_chunk_consensus \
   -- --exact --ignored --nocapture --test-threads=1
 ```
 
+The writer retains up to 32 verified data-group connections for the current
+operation while keeping the persistent cache at eight. With the default
+four-group concurrency, a cold 32-group write previously opened 32 verification
+connections and then reopened 20 groups for data. It now uses the same 32
+connections for both phases, reducing connection establishment from 52 to 32
+without retaining the wider set after the operation.
+
+The sixteen-group recovery check exercises that connection window with 51 local
+WSL processes: sixteen three-voter data groups and three metadata voters. It
+writes one page to every group in each object, removes leaders, writes again,
+restarts every process and verifies every manifest, page and capacity charge:
+
+```sh
+cargo test --release --locked --all-features --test network_chunk_consensus \
+  coupled_groups::sixteen_groups_preserve_sixteen_way_objects_through_recovery \
+  -- --exact --ignored --nocapture --test-threads=1
+```
+
+One November 9, 2026 run wrote 64 initial 16 KiB objects at 15.2 objects per
+second and 16 post-failover objects at 32.1 objects per second, with zero write
+retries. It verified all 80 objects after total restart. This is bounded
+single-host functional-load evidence, not a multihost throughput claim.
+
 `ObjectWriteOptions` defaults to a 64 MiB object limit, 1 MiB pages and one data
 group. Pages must be 1..1048576 bytes, with no more than 4096 per object. The caller
 supplies the modification time. The input is borrowed; temporary payload memory
