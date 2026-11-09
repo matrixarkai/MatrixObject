@@ -3539,7 +3539,7 @@ mod coupled_groups {
         assert!(page_bytes > 0 && object_bytes % page_bytes == 0);
         assert!(object_bytes / page_bytes <= 4096);
         assert!(objects || object_bytes == 1024);
-        assert!(target_groups == 1 || (objects && matches!(target_groups, 2 | 4 | 8)));
+        assert!(target_groups == 1 || (objects && matches!(target_groups, 2 | 4 | 8 | 16)));
         assert!(target_groups as usize <= group_count);
         assert!((2..=64).contains(&group_count));
         assert!(writes > 0 && writes <= 1024);
@@ -3715,6 +3715,27 @@ mod coupled_groups {
             true,
             8,
             8 * 1024,
+            VoterSetup {
+                peer_tls: None,
+                api_tls: false,
+                voters: 3,
+            },
+            16 * 1024,
+            true,
+            false,
+            1024,
+        );
+    }
+    #[test]
+    #[ignore = "51-process sixteen-group object write and recovery measurement; run explicitly in WSL"]
+    fn sixteen_groups_preserve_sixteen_way_objects_through_recovery() {
+        multiple_group_load_with_transport_checkpoint_mode_page_bytes(
+            16,
+            64,
+            4,
+            true,
+            16,
+            16 * 1024,
             VoterSetup {
                 peer_tls: None,
                 api_tls: false,

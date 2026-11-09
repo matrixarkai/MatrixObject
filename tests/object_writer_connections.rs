@@ -187,6 +187,88 @@ fn thirty_two_group_write_plan_uses_one_metadata_exchange() {
 }
 
 #[test]
+fn thirty_two_group_write_uses_each_verified_connection_for_data() {
+    let object: Vec<u8> = (0..32).flat_map(|index| [index as u8; 4]).collect();
+    let sockets: Vec<_> = (0..32).map(|_| listener()).collect();
+    let groups: Vec<_> = sockets.iter().enumerate()
+        .map(|(index, socket)| config(socket, index as u64 + 1)).collect();
+    let workers: Vec<_> = sockets.into_iter().zip(groups.clone()).enumerate()
+        .map(|(index, (socket, group))| thread::spawn(move || {
+            let mut stream = accept(&socket);
+            assert!(matches!(replica(&mut stream), ReplicaRequest::GroupIdentity));
+            stream.write_all(&message::encode_reply(&ReplicaReply::GroupIdentity(
+                group.identity.unwrap(),
+            ))).unwrap();
+            let ReplicaRequest::WriteChunkIfSequenceDigest {
+                page_id, data, expected_sequence, ..
+            } = replica(&mut stream) else {
+                panic!("wide object write did not reuse its verified connection");
+            };
+            assert_eq!(page_id.page_index, index as u64);
+            assert_eq!(data, vec![index as u8; 4]);
+            assert_eq!(expected_sequence, 0);
+            let mut sha256 = [0; 32];
+            sha256.copy_from_slice(
+                ring::digest::digest(&ring::digest::SHA256, &data).as_ref(),
+            );
+            stream.write_all(&message::encode_reply(&ReplicaReply::Digest {
+                write_sequence: 1, length: data.len() as u64, sha256,
+            })).unwrap();
+            assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+            assert!(matches!(socket.accept(),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock));
+        })).collect();
+
+    let socket = listener();
+    let address = socket.local_addr().unwrap().to_string();
+    let metadata_groups = groups.clone();
+    let metadata = thread::spawn(move || {
+        let mut stream = accept(&socket);
+        assert!(matches!(meta(&mut stream), MetaRequest::PlanObjectWriteRoutesWide {
+            length: 4, replica_count: 32, ..
+        }));
+        reply(&mut stream, MetaReply::WritePlanRoutes {
+            current: None,
+            plan: PlacementAssignment {
+                bucket: "bucket".into(), key: "wide".into(), length: 4,
+                node_ids: metadata_groups.iter()
+                    .map(|group| group.placement_id.clone()).collect(),
+                skipped_draining: 0, skipped_offline: 0, skipped_capacity: 0,
+                plan_checksum: "plan".into(),
+            },
+            routes: metadata_groups.iter().cloned().map(|group| ChunkGroupRoute {
+                version: 1, group: Some(group), fence: Vec::new(),
+            }).collect(),
+        });
+        assert!(matches!(meta(&mut stream),
+            MetaRequest::AllocateObjectPages { page_count: 32 }));
+        reply(&mut stream, MetaReply::ObjectPages(ObjectPageAllocation {
+            format_version: 1, allocation_id: 1, page_count: 32,
+        }));
+        let MetaRequest::PublishManifest { outcome, .. } = meta(&mut stream) else {
+            panic!("manifest publication missing");
+        };
+        let manifest = outcome.after.unwrap();
+        assert_eq!(manifest.extents.len(), 32);
+        reply(&mut stream, MetaReply::Manifest(manifest.clone()));
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+        manifest
+    });
+
+    let mut client = RemoteMetaClient::connect(&address, &MetaClientOptions::default()).unwrap();
+    let written = client.write_object(
+        "bucket", "wide", None, &object,
+        &ObjectWriteOptions {
+            page_bytes: 4, target_groups: 32, ..Default::default()
+        },
+    ).unwrap();
+    assert_eq!(written.extents.len(), 32);
+    drop(client);
+    assert_eq!(written, metadata.join().unwrap());
+    for worker in workers { worker.join().unwrap(); }
+}
+
+#[test]
 fn four_group_decoder_refuses_a_thirty_two_group_write_plan() {
     let socket = listener();
     let node_ids: Vec<String> = (1..=32).map(|id| format!("group-{id}")).collect();

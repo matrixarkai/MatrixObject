@@ -9,6 +9,7 @@ use crate::object_manifest::{ManifestOutcome, ObjectExtent, ObjectManifest};
 use crate::ObjectError;
 
 const MAX_CACHED_GROUP_CONNECTIONS: usize = 8;
+const MAX_RETAINED_WRITE_CONNECTIONS: usize = 32;
 
 #[derive(Debug)]
 pub(super) struct CachedGroupConnection {
@@ -641,11 +642,13 @@ impl RemoteMetaClient {
                 )));
             }
             // Verify every selected group before allocation or data writes.
-            // Bound concurrent verification by the write width, visit the first
-            // write target last, and retain at most one batch of connections.
+            // Bound concurrent verification by the write width and retain one
+            // wide-plan window so verification connections can carry the data.
             let mut route_map = planned_routes.map(|routes| {
                 plan.node_ids.iter().cloned().zip(routes).collect::<std::collections::BTreeMap<_, _>>()
             });
+            let retained_connection_limit =
+                plan.node_ids.len().min(MAX_RETAINED_WRITE_CONNECTIONS);
             for window in plan.node_ids.rchunks(8) {
                 let ids: Vec<String> = window.iter().rev().cloned().collect();
                 let routes = if let Some(routes) = &mut route_map {
@@ -661,7 +664,7 @@ impl RemoteMetaClient {
                         .connect_group_batch(batch, &options.replica)
                         .map_err(before)?;
                     for ((group, configured), client) in batch.iter().zip(clients) {
-                        if connections.len() == options.max_parallel_groups {
+                        if connections.len() == retained_connection_limit {
                             let (old_group, old_client) = connections.remove(0);
                             let old_route = groups.get(&old_group).ok_or_else(|| before(
                                 ObjectError::Corruption("verified group route missing".into()),
