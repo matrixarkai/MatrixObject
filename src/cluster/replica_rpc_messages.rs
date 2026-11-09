@@ -13,7 +13,8 @@
 //! are both callers. There is no second copy to keep in step.
 
 use crate::cluster::wire::{
-    put_bytes, put_str, put_u64, Cursor, RequestCode, StatusCode, PROTOCOL_STAMP,
+    put_bytes, put_str, put_u64, Cursor, RequestCode, StatusCode, MAX_PAYLOAD_BYTES,
+    PROTOCOL_STAMP,
 };
 use crate::{ChunkId, DataRange, ObjectError, PageId, ReplicaHead, ReplicaReadResult};
 use prost::Message;
@@ -187,6 +188,7 @@ pub enum ReplicaRequest {
     Ping,
     Capabilities,
     ConditionalWriteLimits,
+    WideConditionalWriteLimits,
     ReadBatchLimits,
     GroupIdentity,
     PageInventory {
@@ -223,6 +225,7 @@ impl ReplicaRequest {
             ReplicaRequest::Ping => RequestCode::Ping,
             ReplicaRequest::Capabilities => RequestCode::Capabilities,
             ReplicaRequest::ConditionalWriteLimits => RequestCode::ConditionalWriteLimits,
+            ReplicaRequest::WideConditionalWriteLimits => RequestCode::WideConditionalWriteLimits,
             ReplicaRequest::ReadBatchLimits => RequestCode::ReadBatchLimits,
             ReplicaRequest::GroupIdentity => RequestCode::GroupIdentity,
             ReplicaRequest::PageInventory { .. } => RequestCode::PageInventory,
@@ -388,6 +391,7 @@ impl ReplicaRequest {
             ReplicaRequest::Ping
             | ReplicaRequest::Capabilities
             | ReplicaRequest::ConditionalWriteLimits
+            | ReplicaRequest::WideConditionalWriteLimits
             | ReplicaRequest::ReadBatchLimits
             | ReplicaRequest::GroupIdentity => {}
             ReplicaRequest::PageInventory { after, limit } => {
@@ -595,7 +599,7 @@ impl ReplicaRequest {
             RequestCode::WriteChunkBatchIfSequence
                 | RequestCode::WriteChunkBatchIfSequenceDigest
         ) {
-            if payload.len() > 4 * 1024 * 1024 + 512 {
+            if payload.len() > MAX_PAYLOAD_BYTES {
                 return Err(ObjectError::InvalidArgument(
                     "conditional write batch exceeds size bound".into(),
                 ));
@@ -617,7 +621,7 @@ impl ReplicaRequest {
                     .writes
                     .iter()
                     .try_fold(0usize, |total, write| total.checked_add(write.data.len()))
-                    .is_none_or(|total| total > 4 * 1024 * 1024)
+                    .is_none_or(|total| total > MAX_PAYLOAD_BYTES)
             {
                 return Err(ObjectError::InvalidArgument(
                     "invalid conditional write batch".into(),
@@ -710,6 +714,7 @@ impl ReplicaRequest {
             RequestCode::Ping => ReplicaRequest::Ping,
             RequestCode::Capabilities => ReplicaRequest::Capabilities,
             RequestCode::ConditionalWriteLimits => ReplicaRequest::ConditionalWriteLimits,
+            RequestCode::WideConditionalWriteLimits => ReplicaRequest::WideConditionalWriteLimits,
             RequestCode::ReadBatchLimits => ReplicaRequest::ReadBatchLimits,
             RequestCode::GroupIdentity => ReplicaRequest::GroupIdentity,
             RequestCode::PageInventory => {
@@ -1059,12 +1064,20 @@ impl ReplicaReply {
             }
             return Ok(Self::Heads(heads));
         }
-        if code == RequestCode::ConditionalWriteLimits {
+        if matches!(
+            code,
+            RequestCode::ConditionalWriteLimits | RequestCode::WideConditionalWriteLimits
+        ) {
             let value: super::conditional_requests::ConditionalWriteLimits =
                 super::conditional_requests::decode(payload)?;
+            let max_payload_bytes = if code == RequestCode::WideConditionalWriteLimits {
+                MAX_PAYLOAD_BYTES as u32
+            } else {
+                (4 * 1024 * 1024 + 4096) as u32
+            };
             if value.version != 1
                 || !(1..=32).contains(&value.max_writes)
-                || !(1..=4 * 1024 * 1024 + 4096).contains(&value.max_payload_bytes)
+                || !(1..=max_payload_bytes).contains(&value.max_payload_bytes)
             {
                 return Err(ObjectError::Corruption(
                     "invalid conditional write limits".into(),
@@ -1098,6 +1111,7 @@ impl ReplicaReply {
             RequestCode::ReadChunkBatch => unreachable!(),
             RequestCode::HeadChunkBatch => unreachable!(),
             RequestCode::ConditionalWriteLimits => unreachable!(),
+            RequestCode::WideConditionalWriteLimits => unreachable!(),
             RequestCode::ReadBatchLimits => unreachable!(),
             RequestCode::WriteChunk
             | RequestCode::WriteChunkIfSequence

@@ -47,7 +47,8 @@ const ROUTED_RECONNECT_MIN_DELAY: std::time::Duration = std::time::Duration::fro
 const ROUTED_RECONNECT_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 const CONDITIONAL_WRITE_FRAME_OVERHEAD: usize = 8;
 const CONDITIONAL_WRITE_ENTRY_OVERHEAD: usize = 72;
-const CONDITIONAL_WRITE_MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024 + 4096;
+const CONDITIONAL_WRITE_MAX_PAYLOAD_BYTES: usize =
+    crate::cluster::wire::MAX_PAYLOAD_BYTES;
 
 fn conditional_write_frame_count(
     group: &[(usize, ConditionalChunkWrite)],
@@ -547,17 +548,16 @@ impl RemoteReplicaSet {
             return limits;
         }
         let replica_count = self.replicas.len();
-        let replies = self.fan_out(&ReplicaRequest::ConditionalWriteLimits, None);
-        let limits = if replies.len() == replica_count {
-            replies
+        let max_payload_bytes = self
+            .options
+            .max_payload_bytes
+            .min(CONDITIONAL_WRITE_MAX_PAYLOAD_BYTES);
+        let fold = |replies: Vec<Result<ReplicaReply, ObjectError>>| {
+            (replies.len() == replica_count)
+                .then_some(replies)?
                 .into_iter()
                 .try_fold(
-                    (
-                        32usize,
-                        self.options
-                            .max_payload_bytes
-                            .min(CONDITIONAL_WRITE_MAX_PAYLOAD_BYTES),
-                    ),
+                    (32usize, max_payload_bytes),
                     |limits, reply| match reply {
                         Ok(ReplicaReply::ConditionalWriteLimits {
                             max_writes,
@@ -569,9 +569,15 @@ impl RemoteReplicaSet {
                         _ => None,
                     },
                 )
-                .unwrap_or((8, 4 * 1024 * 1024))
-        } else {
-            (8, 4 * 1024 * 1024)
+        };
+        let wide_replies = self.fan_out(&ReplicaRequest::WideConditionalWriteLimits, None);
+        let limits = match fold(wide_replies) {
+            Some(limits) => limits,
+            None => {
+                let compatible_replies =
+                    self.fan_out(&ReplicaRequest::ConditionalWriteLimits, None);
+                fold(compatible_replies).unwrap_or((8, 4 * 1024 * 1024))
+            }
         };
         self.conditional_write_limits = Some(limits);
         limits

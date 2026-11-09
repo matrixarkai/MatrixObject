@@ -49,8 +49,8 @@ pub const PROTOCOL_STAMP: u8 = 1;
 ///
 /// A length field is read from the socket before the payload is, so without a bound the
 /// first four bytes of a hostile or corrupt frame choose how much memory this process asks
-/// for. Sized to hold one page (1 MiB) and the address and framing around it with room to
-/// spare, because that is the largest thing a replica call carries.
+/// for. Sized to hold several one-MiB pages in one bounded conditional batch. Individual
+/// pages remain capped at one MiB; batching amortizes framing and durable sync work.
 pub const MAX_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 
 /// The fixed part of every frame: stamp, code, payload length.
@@ -103,6 +103,8 @@ pub enum RequestCode {
     ConditionalWriteLimits = 21,
     /// Report bounded read framing without admitting a read.
     ReadBatchLimits = 22,
+    /// Report wider conditional-write framing without admitting a mutation.
+    WideConditionalWriteLimits = 23,
 }
 
 impl RequestCode {
@@ -135,6 +137,7 @@ impl RequestCode {
             20 => Some(RequestCode::WriteChunkIfState),
             21 => Some(RequestCode::ConditionalWriteLimits),
             22 => Some(RequestCode::ReadBatchLimits),
+            23 => Some(RequestCode::WideConditionalWriteLimits),
             _ => None,
         }
     }

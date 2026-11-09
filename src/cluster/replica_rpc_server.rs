@@ -436,6 +436,18 @@ fn frame_response(
                                 as u32,
                         })
                     }
+                    ReplicaRequest::WideConditionalWriteLimits => {
+                        Ok(ReplicaReply::ConditionalWriteLimits {
+                            max_writes: if consensus.is_some() { 8 } else { 32 },
+                            max_payload_bytes: options
+                                .max_payload_bytes
+                                .min(if consensus.is_some() {
+                                    4 * 1024 * 1024 + 4096
+                                } else {
+                                    MAX_PAYLOAD_BYTES
+                                }) as u32,
+                        })
+                    }
                     ReplicaRequest::ReadBatchLimits => Ok(ReplicaReply::ReadBatchLimits {
                         max_reads: if consensus.is_some() { 8 } else { 32 },
                         max_reply_payload_bytes: options
@@ -463,6 +475,15 @@ fn frame_response(
                             max_payload_bytes: options
                                 .max_payload_bytes
                                 .min(4 * 1024 * 1024 + 4096)
+                                as u32,
+                        })
+                    }
+                    ReplicaRequest::WideConditionalWriteLimits => {
+                        Ok(ReplicaReply::ConditionalWriteLimits {
+                            max_writes: 32,
+                            max_payload_bytes: options
+                                .max_payload_bytes
+                                .min(MAX_PAYLOAD_BYTES)
                                 as u32,
                         })
                     }
@@ -1131,6 +1152,10 @@ pub(super) fn apply_to_replica(
             state_conditional_write: true,
         }),
         ReplicaRequest::ConditionalWriteLimits => Ok(ReplicaReply::ConditionalWriteLimits {
+            max_writes: 8,
+            max_payload_bytes: 4 * 1024 * 1024,
+        }),
+        ReplicaRequest::WideConditionalWriteLimits => Ok(ReplicaReply::ConditionalWriteLimits {
             max_writes: 8,
             max_payload_bytes: 4 * 1024 * 1024,
         }),
