@@ -273,6 +273,7 @@ pub struct RemoteReplicaSet {
     read_cursor: usize,
     state_conditional_write: Option<bool>,
     conditional_write_limits: Option<(usize, usize)>,
+    read_batch_limits: Option<(usize, usize)>,
     options: ReplicaClientOptions,
 }
 
@@ -403,6 +404,7 @@ impl RemoteReplicaSet {
             read_cursor: 0,
             state_conditional_write: None,
             conditional_write_limits: None,
+            read_batch_limits: None,
             options: options.clone(),
         })
     }
@@ -482,6 +484,7 @@ impl RemoteReplicaSet {
             read_cursor: 0,
             state_conditional_write: None,
             conditional_write_limits: None,
+            read_batch_limits: None,
             options: options.clone(),
         })
     }
@@ -568,6 +571,35 @@ impl RemoteReplicaSet {
             (8, 4 * 1024 * 1024)
         };
         self.conditional_write_limits = Some(limits);
+        limits
+    }
+
+    fn read_batch_limits(&mut self) -> (usize, usize) {
+        if let Some(limits) = self.read_batch_limits {
+            return limits;
+        }
+        let replica_count = self.replicas.len();
+        let replies = self.fan_out(&ReplicaRequest::ReadBatchLimits, None);
+        let limits = if replies.len() == replica_count {
+            replies
+                .into_iter()
+                .try_fold((32usize, self.options.max_payload_bytes), |limits, reply| {
+                    match reply {
+                        Ok(ReplicaReply::ReadBatchLimits {
+                            max_reads,
+                            max_reply_payload_bytes,
+                        }) => Some((
+                            limits.0.min(max_reads as usize),
+                            limits.1.min(max_reply_payload_bytes as usize),
+                        )),
+                        _ => None,
+                    }
+                })
+                .unwrap_or((8, 4 * 1024 * 1024))
+        } else {
+            (8, 4 * 1024 * 1024)
+        };
+        self.read_batch_limits = Some(limits);
         limits
     }
 
@@ -717,6 +749,7 @@ impl RemoteReplicaSet {
             if reset_capabilities || self.replicas.len() != connected_before {
                 self.state_conditional_write = None;
                 self.conditional_write_limits = None;
+                self.read_batch_limits = None;
             }
             return;
         }
@@ -732,6 +765,7 @@ impl RemoteReplicaSet {
         if reset_capabilities {
             self.state_conditional_write = None;
             self.conditional_write_limits = None;
+            self.read_batch_limits = None;
         }
     }
 
@@ -1496,7 +1530,7 @@ impl RemoteReplicaSet {
         votes.finish(replica_count, read_quorum)
     }
 
-    /// Read up to eight independent ranges through quorum-voted star fan-out.
+    /// Read up to 32 independent ranges through quorum-voted star fan-out.
     /// Default one-MiB ranges share four-range frames. A rotating quorum is
     /// contacted first and remaining members are used only when that wave cannot
     /// produce an exact vote for every range.
@@ -1504,9 +1538,9 @@ impl RemoteReplicaSet {
         &mut self,
         reads: &[(PageId, u64, u64)],
     ) -> Result<Vec<ReplicaReadResult>, ObjectError> {
-        if reads.len() > 8 {
+        if reads.len() > 32 {
             return Err(ObjectError::InvalidArgument(
-                "star read batch exceeds eight pages".into(),
+                "star read batch exceeds 32 pages".into(),
             ));
         }
         if reads.iter().any(|(_, _, length)| *length > 1024 * 1024) {
@@ -1519,6 +1553,7 @@ impl RemoteReplicaSet {
         }
 
         self.reconnect_failed();
+        let (max_reads, max_reply_bytes) = self.read_batch_limits();
         let replica_count = self.replicas.len();
         let read_quorum = self.read_quorum;
         let mut completed = 0usize;
@@ -1526,11 +1561,14 @@ impl RemoteReplicaSet {
         while completed < reads.len() {
             let mut end = completed;
             let mut frame_bytes = 0u64;
-            while end < reads.len() && end - completed < 8 {
+            while end < reads.len() && end - completed < max_reads {
                 let Some(next_bytes) = frame_bytes.checked_add(reads[end].2) else {
                     break;
                 };
-                if end > completed && next_bytes > 4 * 1024 * 1024 {
+                let framed_bytes = next_bytes.saturating_add(
+                    (end + 1 - completed) as u64 * 64,
+                );
+                if end > completed && framed_bytes > max_reply_bytes as u64 {
                     break;
                 }
                 frame_bytes = next_bytes;
@@ -2410,6 +2448,8 @@ mod send_progress_tests {
             },
         }
         .code() as u8;
+        let read_limits_code = ReplicaRequest::ReadBatchLimits.code() as u8;
+        let batch_code = ReplicaRequest::ReadChunkBatch { reads: Vec::new() }.code() as u8;
         let mut workers = Vec::new();
         for listener in listeners {
             let (mut peer, _) = listener.accept().unwrap();
@@ -2440,6 +2480,10 @@ mod send_progress_tests {
                         checksum: "quorum-checksum".into(),
                     };
                     let reply = match header[1] {
+                        code if code == read_limits_code => ReplicaReply::ReadBatchLimits {
+                            max_reads: 32,
+                            max_reply_payload_bytes: 4 * 1024 * 1024,
+                        },
                         code if code == scalar_code => ReplicaReply::Read(first),
                         code if code == head_code => ReplicaReply::Head(ReplicaHead {
                             logical_length: 11,
@@ -2448,14 +2492,35 @@ mod send_progress_tests {
                             state_checksum: "quorum-state-checksum".into(),
                             discarded_ranges: Vec::new(),
                         }),
-                        _ => ReplicaReply::Reads(vec![
-                            first,
-                            ReplicaReadResult {
-                                data: b"second".to_vec(),
-                                write_sequence: 7,
-                                checksum: "second-checksum".into(),
-                            },
-                        ]),
+                        code if code == batch_code => {
+                            let ReplicaRequest::ReadChunkBatch { reads } =
+                                ReplicaRequest::decode(
+                                    crate::cluster::RequestCode::ReadChunkBatch,
+                                    &payload,
+                                )
+                                .unwrap()
+                            else {
+                                unreachable!()
+                            };
+                            ReplicaReply::Reads(
+                                reads
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(index, _)| {
+                                        if index == 0 {
+                                            first.clone()
+                                        } else {
+                                            ReplicaReadResult {
+                                                data: b"second".to_vec(),
+                                                write_sequence: 7,
+                                                checksum: "second-checksum".into(),
+                                            }
+                                        }
+                                    })
+                                    .collect(),
+                            )
+                        }
+                        code => panic!("unexpected star read request code {code}"),
                     };
                     peer.write_all(&super::super::message::encode_reply(&reply))
                         .unwrap();
@@ -2472,21 +2537,23 @@ mod send_progress_tests {
             let read = set.read_chunk(&page, 0, 11).unwrap();
             assert_eq!(read.data, b"quorum-data");
         }
-        let batch = [
-            (page.clone(), 0, 11),
-            (
-                PageId {
-                    chunk_id: crate::ChunkId::new(1, 2).unwrap(),
-                    page_index: 1,
-                },
-                0,
-                6,
-            ),
-        ];
+        let batch: Vec<_> = (0..32)
+            .map(|page_index| {
+                (
+                    PageId {
+                        chunk_id: crate::ChunkId::new(1, 2).unwrap(),
+                        page_index,
+                    },
+                    0,
+                    if page_index == 0 { 11 } else { 6 },
+                )
+            })
+            .collect();
         for _ in 0..2 {
             let reads = set.read_chunks(&batch).unwrap();
+            assert_eq!(reads.len(), 32);
             assert_eq!(reads[0].data, b"quorum-data");
-            assert_eq!(reads[1].data, b"second");
+            assert!(reads[1..].iter().all(|read| read.data == b"second"));
         }
         for _ in 0..2 {
             let head = set.head_chunk(&page).unwrap();
@@ -2499,8 +2566,8 @@ mod send_progress_tests {
             .into_iter()
             .map(|worker| worker.join().unwrap())
             .collect();
-        assert_eq!(requests, vec![4, 4, 4]);
-        assert_eq!(requests.iter().sum::<usize>(), 12);
+        assert_eq!(requests, vec![5, 5, 5]);
+        assert_eq!(requests.iter().sum::<usize>(), 15);
     }
 
     #[test]

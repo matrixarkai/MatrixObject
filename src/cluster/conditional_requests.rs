@@ -47,6 +47,15 @@ pub(super) struct ConditionalWriteLimits {
     pub max_payload_bytes: u32,
 }
 #[derive(Clone, PartialEq, Message)]
+pub(super) struct ReadBatchLimits {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(uint32, tag = "2")]
+    pub max_reads: u32,
+    #[prost(uint32, tag = "3")]
+    pub max_reply_payload_bytes: u32,
+}
+#[derive(Clone, PartialEq, Message)]
 pub(super) struct StateChunkWrite {
     #[prost(uint32, tag = "1")]
     pub version: u32,
@@ -334,6 +343,7 @@ mod tests {
             RequestCode::from_u8(21),
             Some(RequestCode::ConditionalWriteLimits)
         );
+        assert_eq!(RequestCode::from_u8(22), Some(RequestCode::ReadBatchLimits));
         assert_eq!(ReplicaRequest::decode(request.code(), &bytes).unwrap(), request);
 
         let absent = ReplicaRequest::WriteChunkIfState {
@@ -397,6 +407,31 @@ mod tests {
         assert!(ReplicaReply::decode(
             RequestCode::ConditionalWriteLimits,
             &invalid_limits.encode_to_vec()
+        )
+        .is_err());
+
+        let read_limits = ReplicaReply::ReadBatchLimits {
+            max_reads: 32,
+            max_reply_payload_bytes: 8 * 1024 * 1024,
+        };
+        assert_eq!(read_limits.payload_len(), read_limits.encode_payload().len());
+        assert_eq!(
+            ReplicaRequest::decode(RequestCode::ReadBatchLimits, &[]).unwrap(),
+            ReplicaRequest::ReadBatchLimits
+        );
+        assert_eq!(
+            ReplicaReply::decode(RequestCode::ReadBatchLimits, &read_limits.encode_payload())
+                .unwrap(),
+            read_limits
+        );
+        let invalid_read_limits = ReadBatchLimits {
+            version: 1,
+            max_reads: 33,
+            max_reply_payload_bytes: 8 * 1024 * 1024,
+        };
+        assert!(ReplicaReply::decode(
+            RequestCode::ReadBatchLimits,
+            &invalid_read_limits.encode_to_vec()
         )
         .is_err());
         invalid_limits.max_writes = 32;
@@ -578,7 +613,9 @@ mod tests {
         invalid.reads[0].length = 1024 * 1024 + 1;
         assert!(ReplicaRequest::decode(request.code(), &invalid.encode_to_vec()).is_err());
         invalid.reads[0].length = 5;
-        invalid.reads.resize(9, invalid.reads[0].clone());
+        invalid.reads.resize(32, invalid.reads[0].clone());
+        assert!(ReplicaRequest::decode(request.code(), &invalid.encode_to_vec()).is_ok());
+        invalid.reads.push(invalid.reads[0].clone());
         assert!(ReplicaRequest::decode(request.code(), &invalid.encode_to_vec()).is_err());
         let maximum = ReplicaRequest::ReadChunkBatch {
             reads: (0..4)

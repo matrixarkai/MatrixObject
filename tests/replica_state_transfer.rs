@@ -1293,6 +1293,118 @@ fn star_write_frame_width_measurement() {
 }
 
 #[test]
+#[ignore = "controlled star read latency measurement; run explicitly in release mode"]
+fn star_read_frame_width_measurement() {
+    use matrixobjectstore_rs::cluster::{
+        message::encode_reply, ReplicaReply, ReplicaRequest, RequestCode,
+    };
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    fn run(max_reads: u32, delay: Duration) -> (u128, usize) {
+        let listeners: Vec<_> = (0..3)
+            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let endpoints: Vec<_> = listeners
+            .iter()
+            .map(|listener| listener.local_addr().unwrap().to_string())
+            .collect();
+        let workers: Vec<_> = listeners
+            .into_iter()
+            .map(|listener| {
+                std::thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let mut frames = 0usize;
+                    loop {
+                        let mut header = [0; 6];
+                        match stream.read_exact(&mut header) {
+                            Ok(()) => {}
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::UnexpectedEof
+                                        | std::io::ErrorKind::ConnectionReset
+                                ) => break,
+                            Err(error) => panic!("measured star read failed: {error}"),
+                        }
+                        let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                        let mut body = vec![0; size];
+                        stream.read_exact(&mut body).unwrap();
+                        let code = RequestCode::from_u8(header[1]).unwrap();
+                        let reply = match ReplicaRequest::decode(code, &body).unwrap() {
+                            ReplicaRequest::ReadBatchLimits => ReplicaReply::ReadBatchLimits {
+                                max_reads,
+                                max_reply_payload_bytes: 4 * 1024 * 1024,
+                            },
+                            ReplicaRequest::ReadChunkBatch { reads } => {
+                                assert!(!reads.is_empty());
+                                assert!(reads.len() <= max_reads as usize);
+                                frames += 1;
+                                ReplicaReply::Reads(
+                                    reads
+                                        .into_iter()
+                                        .map(|_| matrixobjectstore_rs::ReplicaReadResult {
+                                            data: vec![9; 256],
+                                            write_sequence: 1,
+                                            checksum: "read-checksum".into(),
+                                        })
+                                        .collect(),
+                                )
+                            }
+                            other => panic!("unexpected measured star read: {other:?}"),
+                        };
+                        std::thread::sleep(delay);
+                        stream.write_all(&encode_reply(&reply)).unwrap();
+                    }
+                    frames
+                })
+            })
+            .collect();
+
+        let mut set =
+            RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+        let reads: Vec<_> = (0..32)
+            .map(|index| (page(600 + index), 0, 256))
+            .collect();
+        let began = Instant::now();
+        let results = set.read_chunks(&reads).unwrap();
+        let elapsed = began.elapsed().as_micros();
+        assert_eq!(results.len(), 32);
+        assert!(results.iter().all(|read| read.data == vec![9; 256]));
+        drop(set);
+        let frames: usize = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .sum();
+        assert_eq!(frames, 32usize.div_ceil(max_reads as usize) * 2);
+        (elapsed, frames)
+    }
+
+    let delay = Duration::from_millis(5);
+    for max_reads in [8, 32] {
+        let mut samples = Vec::new();
+        let mut frames = 0usize;
+        for _ in 0..7 {
+            let (elapsed, observed_frames) = run(max_reads, delay);
+            samples.push(elapsed);
+            frames = observed_frames;
+        }
+        samples.sort_unstable();
+        eprintln!(
+            "STAR_READ_BATCH max_reads={max_reads} reads=32 replicas=3 delay_ms=5 read_frames={frames} p50_us={}",
+            samples[3]
+        );
+    }
+}
+
+#[test]
 fn star_batches_fall_back_to_scalar_requests_on_older_members() {
     use matrixobjectstore_rs::cluster::{
         message::{encode_failure, encode_reply},
@@ -1343,6 +1455,12 @@ fn star_batches_fall_back_to_scalar_requests_on_older_members() {
                     let request = ReplicaRequest::decode(code, &body).unwrap();
                     codes.push(code);
                     match request {
+                        ReplicaRequest::ReadBatchLimits => stream
+                            .write_all(&encode_failure(
+                                StatusCode::UnknownRequest,
+                                "older peer",
+                            ))
+                            .unwrap(),
                         ReplicaRequest::HeadChunkBatch { pages } => {
                             assert_eq!(pages.len(), 2);
                             stream

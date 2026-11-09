@@ -91,7 +91,7 @@ pub enum RequestCode {
     WriteChunkIfSequenceDigest = 15,
     /// Commit up to eight conditional writes and return their applied digests.
     WriteChunkBatchIfSequenceDigest = 16,
-    /// Read up to eight small page ranges with one confirmed Raft read.
+    /// Read a negotiated batch of small page ranges with one confirmed read.
     ReadChunkBatch = 17,
     /// Read up to eight page heads with one request.
     HeadChunkBatch = 18,
@@ -101,6 +101,8 @@ pub enum RequestCode {
     WriteChunkIfState = 20,
     /// Report bounded conditional-write framing without admitting a mutation.
     ConditionalWriteLimits = 21,
+    /// Report bounded read framing without admitting a read.
+    ReadBatchLimits = 22,
 }
 
 impl RequestCode {
@@ -132,6 +134,7 @@ impl RequestCode {
             19 => Some(RequestCode::Capabilities),
             20 => Some(RequestCode::WriteChunkIfState),
             21 => Some(RequestCode::ConditionalWriteLimits),
+            22 => Some(RequestCode::ReadBatchLimits),
             _ => None,
         }
     }

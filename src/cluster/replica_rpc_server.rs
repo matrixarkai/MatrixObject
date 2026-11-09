@@ -436,6 +436,12 @@ fn frame_response(
                                 as u32,
                         })
                     }
+                    ReplicaRequest::ReadBatchLimits => Ok(ReplicaReply::ReadBatchLimits {
+                        max_reads: if consensus.is_some() { 8 } else { 32 },
+                        max_reply_payload_bytes: options
+                            .max_payload_bytes
+                            .min(4 * 1024 * 1024) as u32,
+                    }),
                     ReplicaRequest::WriteChunkBatchIfSequence { writes } => match consensus {
                         Some(c) => c.request_batch(writes),
                         None => apply_batch(replica, writes, options.max_payload_bytes),
@@ -460,6 +466,12 @@ fn frame_response(
                                 as u32,
                         })
                     }
+                    ReplicaRequest::ReadBatchLimits => Ok(ReplicaReply::ReadBatchLimits {
+                        max_reads: 32,
+                        max_reply_payload_bytes: options
+                            .max_payload_bytes
+                            .min(4 * 1024 * 1024) as u32,
+                    }),
                     ReplicaRequest::WriteChunkBatchIfSequence { writes } => {
                         apply_batch(replica, writes, options.max_payload_bytes)
                     }
@@ -1121,6 +1133,10 @@ pub(super) fn apply_to_replica(
         ReplicaRequest::ConditionalWriteLimits => Ok(ReplicaReply::ConditionalWriteLimits {
             max_writes: 8,
             max_payload_bytes: 4 * 1024 * 1024,
+        }),
+        ReplicaRequest::ReadBatchLimits => Ok(ReplicaReply::ReadBatchLimits {
+            max_reads: 8,
+            max_reply_payload_bytes: 4 * 1024 * 1024,
         }),
         ReplicaRequest::PageInventory { after, limit } => {
             crate::cluster::message::check_inventory_limit(limit)?;

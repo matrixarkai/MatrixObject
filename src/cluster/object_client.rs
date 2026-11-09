@@ -86,6 +86,13 @@ impl RemoteGroupClient {
         }
     }
 
+    pub(super) fn read_batch_limit(&self) -> usize {
+        match self {
+            Self::Raft(_) => 8,
+            Self::Star(_) => 32,
+        }
+    }
+
     fn probe_chunk_digests(
         &mut self,
         pages: &[(crate::PageId, u64, u64)],

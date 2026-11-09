@@ -187,6 +187,7 @@ pub enum ReplicaRequest {
     Ping,
     Capabilities,
     ConditionalWriteLimits,
+    ReadBatchLimits,
     GroupIdentity,
     PageInventory {
         after: Option<PageId>,
@@ -222,6 +223,7 @@ impl ReplicaRequest {
             ReplicaRequest::Ping => RequestCode::Ping,
             ReplicaRequest::Capabilities => RequestCode::Capabilities,
             ReplicaRequest::ConditionalWriteLimits => RequestCode::ConditionalWriteLimits,
+            ReplicaRequest::ReadBatchLimits => RequestCode::ReadBatchLimits,
             ReplicaRequest::GroupIdentity => RequestCode::GroupIdentity,
             ReplicaRequest::PageInventory { .. } => RequestCode::PageInventory,
         }
@@ -386,6 +388,7 @@ impl ReplicaRequest {
             ReplicaRequest::Ping
             | ReplicaRequest::Capabilities
             | ReplicaRequest::ConditionalWriteLimits
+            | ReplicaRequest::ReadBatchLimits
             | ReplicaRequest::GroupIdentity => {}
             ReplicaRequest::PageInventory { after, limit } => {
                 put_u64(&mut out, u64::from(after.is_some()));
@@ -536,7 +539,7 @@ impl ReplicaRequest {
             }
             let value: super::conditional_requests::ChunkReadBatch =
                 super::conditional_requests::decode(payload)?;
-            if value.version != 1 || value.reads.len() > 8 || value.reads.iter().any(|read|
+            if value.version != 1 || value.reads.len() > 32 || value.reads.iter().any(|read|
                 read.version != 1 || read.length > 1024 * 1024)
             {
                 return Err(ObjectError::InvalidArgument("invalid read batch".into()));
@@ -707,6 +710,7 @@ impl ReplicaRequest {
             RequestCode::Ping => ReplicaRequest::Ping,
             RequestCode::Capabilities => ReplicaRequest::Capabilities,
             RequestCode::ConditionalWriteLimits => ReplicaRequest::ConditionalWriteLimits,
+            RequestCode::ReadBatchLimits => ReplicaRequest::ReadBatchLimits,
             RequestCode::GroupIdentity => ReplicaRequest::GroupIdentity,
             RequestCode::PageInventory => {
                 let after = match cursor.take_u64()? {
@@ -764,6 +768,10 @@ pub enum ReplicaReply {
         max_writes: u32,
         max_payload_bytes: u32,
     },
+    ReadBatchLimits {
+        max_reads: u32,
+        max_reply_payload_bytes: u32,
+    },
     PageInventory(PageInventory),
     GroupIdentity(ChunkGroupIdentity),
 }
@@ -781,6 +789,15 @@ impl ReplicaReply {
                 version: 1,
                 max_writes: *max_writes,
                 max_payload_bytes: *max_payload_bytes,
+            }
+            .encoded_len(),
+            Self::ReadBatchLimits {
+                max_reads,
+                max_reply_payload_bytes,
+            } => super::conditional_requests::ReadBatchLimits {
+                version: 1,
+                max_reads: *max_reads,
+                max_reply_payload_bytes: *max_reply_payload_bytes,
             }
             .encoded_len(),
             Self::Membership(value) => value.encoded_len(),
@@ -883,6 +900,17 @@ impl ReplicaReply {
                 }
                 .encode_to_vec();
             }
+            ReplicaReply::ReadBatchLimits {
+                max_reads,
+                max_reply_payload_bytes,
+            } => {
+                return super::conditional_requests::ReadBatchLimits {
+                    version: 1,
+                    max_reads: *max_reads,
+                    max_reply_payload_bytes: *max_reply_payload_bytes,
+                }
+                .encode_to_vec();
+            }
             ReplicaReply::PageInventory(batch) => {
                 put_u64(&mut out, u64::from(batch.has_more));
                 put_u64(&mut out, batch.entries.len() as u64);
@@ -971,7 +999,7 @@ impl ReplicaReply {
             }
             let value: super::conditional_requests::ChunkReadBatchResult =
                 super::conditional_requests::decode(payload)?;
-            if value.version != 1 || value.reads.len() > 8 || value.reads.iter().any(|read|
+            if value.version != 1 || value.reads.len() > 32 || value.reads.iter().any(|read|
                 read.version != 1 || read.checksum.len() > 128 || read.data.len() > 1024 * 1024)
             {
                 return Err(ObjectError::Corruption("invalid read batch reply".into()));
@@ -1047,6 +1075,20 @@ impl ReplicaReply {
                 max_payload_bytes: value.max_payload_bytes,
             });
         }
+        if code == RequestCode::ReadBatchLimits {
+            let value: super::conditional_requests::ReadBatchLimits =
+                super::conditional_requests::decode(payload)?;
+            if value.version != 1
+                || !(1..=32).contains(&value.max_reads)
+                || !(1024..=64 * 1024 * 1024).contains(&value.max_reply_payload_bytes)
+            {
+                return Err(ObjectError::Corruption("invalid read batch limits".into()));
+            }
+            return Ok(Self::ReadBatchLimits {
+                max_reads: value.max_reads,
+                max_reply_payload_bytes: value.max_reply_payload_bytes,
+            });
+        }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
             RequestCode::Membership | RequestCode::StateInstall => unreachable!(),
@@ -1056,6 +1098,7 @@ impl ReplicaReply {
             RequestCode::ReadChunkBatch => unreachable!(),
             RequestCode::HeadChunkBatch => unreachable!(),
             RequestCode::ConditionalWriteLimits => unreachable!(),
+            RequestCode::ReadBatchLimits => unreachable!(),
             RequestCode::WriteChunk
             | RequestCode::WriteChunkIfSequence
             | RequestCode::WriteChunkIfState

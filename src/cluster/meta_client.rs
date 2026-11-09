@@ -984,7 +984,7 @@ impl RemoteMetaClient {
                 Some(connection) => connection,
                 None => super::object_client::RemoteGroupClient::connect(route, options)?,
             };
-            for batch in extents.chunks(8) {
+            for batch in extents.chunks(connection.read_batch_limit()) {
                 let pages = batch
                     .iter()
                     .map(|extent| {
