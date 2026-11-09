@@ -985,6 +985,7 @@ fn read_only(request: &ReplicaRequest) -> bool {
         | ReplicaRequest::Ping
         | ReplicaRequest::Capabilities
         | ReplicaRequest::ConditionalWriteLimits
+        | ReplicaRequest::WideConditionalWriteLimits
         | ReplicaRequest::ReadBatchLimits
         | ReplicaRequest::GroupIdentity => true,
         ReplicaRequest::StateInstall(_)

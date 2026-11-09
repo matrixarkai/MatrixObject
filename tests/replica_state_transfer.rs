@@ -700,7 +700,7 @@ fn sixteen_default_pages_use_bounded_star_frames() {
             .iter()
             .filter(|code| **code == CONDITIONAL_BATCH_CODE)
             .count();
-        assert!((1..=4).contains(&member_write_frames));
+        assert!((1..=3).contains(&member_write_frames));
         write_frames += member_write_frames;
         let member_read_frames = member
             .iter()
@@ -709,7 +709,7 @@ fn sixteen_default_pages_use_bounded_star_frames() {
         read_participants += usize::from(member_read_frames > 0);
         read_frames += member_read_frames;
     }
-    assert!((8..=12).contains(&write_frames));
+    assert!((6..=9).contains(&write_frames));
     assert!(read_participants >= 2);
     assert!(read_frames >= 8);
     let mut first_page_copies = 0usize;
@@ -784,7 +784,7 @@ fn star_batch_continues_on_quorum_when_one_member_stalls() {
                                 ])))
                                 .unwrap();
                         }
-                        (1, ReplicaRequest::ConditionalWriteLimits) => stream
+                        (1, ReplicaRequest::WideConditionalWriteLimits) => stream
                             .write_all(&encode_reply(&ReplicaReply::ConditionalWriteLimits {
                                 max_writes: 8,
                                 max_payload_bytes: 4 * 1024 * 1024,
@@ -901,7 +901,7 @@ fn star_head_fence_falls_back_to_eight_page_frames_after_bounded_refusal() {
                                 ])))
                                 .unwrap();
                         }
-                        (3, ReplicaRequest::ConditionalWriteLimits) => stream
+                        (3, ReplicaRequest::WideConditionalWriteLimits) => stream
                             .write_all(&encode_reply(&ReplicaReply::ConditionalWriteLimits {
                                 max_writes: 32,
                                 max_payload_bytes: 4 * 1024 * 1024,
@@ -969,7 +969,7 @@ fn fresh_star_pages_use_conditional_writes_as_the_absence_fence() {
                     stream.read_exact(&mut body).unwrap();
                     let code = RequestCode::from_u8(header[1]).unwrap();
                     match (phase, ReplicaRequest::decode(code, &body).unwrap()) {
-                        (0, ReplicaRequest::ConditionalWriteLimits) => stream
+                        (0, ReplicaRequest::WideConditionalWriteLimits) => stream
                             .write_all(&encode_reply(&ReplicaReply::ConditionalWriteLimits {
                                 max_writes: 32,
                                 max_payload_bytes: 4 * 1024 * 1024,
@@ -1017,7 +1017,7 @@ fn fresh_star_pages_use_conditional_writes_as_the_absence_fence() {
 }
 
 #[test]
-fn fresh_star_page_payloads_use_rotating_write_quorums() {
+fn seven_mib_fresh_star_batches_use_rotating_write_quorums() {
     use matrixobjectstore_rs::cluster::{
         message::encode_reply, ReplicaReply, ReplicaRequest, RequestCode,
     };
@@ -1047,17 +1047,19 @@ fn fresh_star_page_payloads_use_rotating_write_quorums() {
                     stream.read_exact(&mut body).unwrap();
                     let code = RequestCode::from_u8(header[1]).unwrap();
                     let reply = match ReplicaRequest::decode(code, &body).unwrap() {
-                        ReplicaRequest::ConditionalWriteLimits => {
+                        ReplicaRequest::WideConditionalWriteLimits => {
                             ReplicaReply::ConditionalWriteLimits {
                                 max_writes: 32,
-                                max_payload_bytes: 4 * 1024 * 1024,
+                                max_payload_bytes: 8 * 1024 * 1024,
                             }
                         }
                         ReplicaRequest::WriteChunkBatchIfSequence { writes } => {
                             payload_frames += 1;
-                            assert_eq!(writes.len(), 16);
+                            assert_eq!(writes.len(), 7);
                             assert!(writes.iter().all(|write| {
-                                write.offset == 0 && write.expected_sequence == 0
+                                write.offset == 0
+                                    && write.expected_sequence == 0
+                                    && write.data.len() == 1024 * 1024
                             }));
                             ReplicaReply::Applied
                         }
@@ -1073,7 +1075,7 @@ fn fresh_star_page_payloads_use_rotating_write_quorums() {
     let mut set =
         RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
     for first_page in [500, 600] {
-        let payloads = vec![vec![7u8]; 16];
+        let payloads = vec![vec![7u8; 1024 * 1024]; 7];
         let writes: Vec<_> = payloads
             .iter()
             .enumerate()
@@ -1086,7 +1088,7 @@ fn fresh_star_page_payloads_use_rotating_write_quorums() {
                 )
             })
             .collect();
-        assert_eq!(set.write_chunks_if_sequence(&writes).unwrap(), vec![2; 16]);
+        assert_eq!(set.write_chunks_if_sequence(&writes).unwrap(), vec![2; 7]);
     }
     drop(set);
     let mut payload_frames: Vec<_> = workers
@@ -1140,7 +1142,7 @@ fn star_batch_sequences_thirty_two_repeated_page_appends_after_one_head_fence() 
                                 .write_all(&encode_reply(&ReplicaReply::Heads(vec![None])))
                                 .unwrap();
                         }
-                        (1, ReplicaRequest::ConditionalWriteLimits) => stream
+                        (1, ReplicaRequest::WideConditionalWriteLimits) => stream
                             .write_all(&encode_reply(&ReplicaReply::ConditionalWriteLimits {
                                 max_writes: 32,
                                 max_payload_bytes: 4 * 1024 * 1024,
@@ -1238,15 +1240,21 @@ fn older_member_keeps_star_write_frames_at_eight_writes() {
                     stream.read_exact(&mut body).unwrap();
                     let code = RequestCode::from_u8(header[1]).unwrap();
                     match ReplicaRequest::decode(code, &body).unwrap() {
-                        ReplicaRequest::ConditionalWriteLimits if index == 2 => stream
+                        ReplicaRequest::WideConditionalWriteLimits if index == 2 => stream
                             .write_all(&encode_failure(
                                 StatusCode::UnknownRequest,
                                 "unsupported request",
                             ))
                             .unwrap(),
-                        ReplicaRequest::ConditionalWriteLimits => stream
+                        ReplicaRequest::WideConditionalWriteLimits => stream
                             .write_all(&encode_reply(&ReplicaReply::ConditionalWriteLimits {
                                 max_writes: 32,
+                                max_payload_bytes: 8 * 1024 * 1024,
+                            }))
+                            .unwrap(),
+                        ReplicaRequest::ConditionalWriteLimits => stream
+                            .write_all(&encode_reply(&ReplicaReply::ConditionalWriteLimits {
+                                max_writes: 8,
                                 max_payload_bytes: 4 * 1024 * 1024,
                             }))
                             .unwrap(),
@@ -1328,7 +1336,7 @@ fn star_write_frame_width_measurement() {
                         stream.read_exact(&mut body).unwrap();
                         let code = RequestCode::from_u8(header[1]).unwrap();
                         let reply = match (phase, ReplicaRequest::decode(code, &body).unwrap()) {
-                            (0, ReplicaRequest::ConditionalWriteLimits) => {
+                            (0, ReplicaRequest::WideConditionalWriteLimits) => {
                                 ReplicaReply::ConditionalWriteLimits {
                                     max_writes,
                                     max_payload_bytes: 4 * 1024 * 1024,

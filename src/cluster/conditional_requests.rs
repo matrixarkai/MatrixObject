@@ -273,14 +273,14 @@ mod tests {
         assert_eq!(RequestCode::from_u8(14), Some(RequestCode::WriteChunkBatchIfSequence));
         assert_eq!(ReplicaRequest::decode(request.code(), &bytes).unwrap(), request);
         let mut maximum: ChunkWriteBatch = decode(&bytes).unwrap();
-        maximum.writes.resize(8, maximum.writes[0].clone());
+        maximum.writes.resize(7, maximum.writes[0].clone());
         for write in &mut maximum.writes {
-            write.data.resize(512 * 1024, 7);
+            write.data.resize(1024 * 1024, 7);
         }
         let maximum_bytes = maximum.encode_to_vec();
-        assert!(maximum_bytes.len() <= 4 * 1024 * 1024 + 512);
+        assert!(maximum_bytes.len() <= crate::cluster::wire::MAX_PAYLOAD_BYTES);
         assert!(ReplicaRequest::decode(request.code(), &maximum_bytes).is_ok());
-        maximum.writes[0].data.push(7);
+        maximum.writes.push(maximum.writes[0].clone());
         assert!(ReplicaRequest::decode(request.code(), &maximum.encode_to_vec()).is_err());
         let digest_request = ReplicaRequest::WriteChunkBatchIfSequenceDigest {
             writes: vec![write; 2],
@@ -344,6 +344,10 @@ mod tests {
             Some(RequestCode::ConditionalWriteLimits)
         );
         assert_eq!(RequestCode::from_u8(22), Some(RequestCode::ReadBatchLimits));
+        assert_eq!(
+            RequestCode::from_u8(23),
+            Some(RequestCode::WideConditionalWriteLimits)
+        );
         assert_eq!(ReplicaRequest::decode(request.code(), &bytes).unwrap(), request);
 
         let absent = ReplicaRequest::WriteChunkIfState {
@@ -384,7 +388,7 @@ mod tests {
 
         let limits = ReplicaReply::ConditionalWriteLimits {
             max_writes: 32,
-            max_payload_bytes: 4 * 1024 * 1024,
+            max_payload_bytes: crate::cluster::wire::MAX_PAYLOAD_BYTES as u32,
         };
         assert_eq!(limits.payload_len(), limits.encode_payload().len());
         assert_eq!(
@@ -393,11 +397,32 @@ mod tests {
         );
         assert_eq!(
             ReplicaReply::decode(
-                RequestCode::ConditionalWriteLimits,
+                RequestCode::WideConditionalWriteLimits,
                 &limits.encode_payload()
             )
             .unwrap(),
             limits
+        );
+        assert_eq!(
+            ReplicaRequest::decode(RequestCode::WideConditionalWriteLimits, &[]).unwrap(),
+            ReplicaRequest::WideConditionalWriteLimits
+        );
+        assert!(ReplicaReply::decode(
+            RequestCode::ConditionalWriteLimits,
+            &limits.encode_payload()
+        )
+        .is_err());
+        let compatible_limits = ReplicaReply::ConditionalWriteLimits {
+            max_writes: 32,
+            max_payload_bytes: 4 * 1024 * 1024,
+        };
+        assert_eq!(
+            ReplicaReply::decode(
+                RequestCode::ConditionalWriteLimits,
+                &compatible_limits.encode_payload()
+            )
+            .unwrap(),
+            compatible_limits
         );
         let mut invalid_limits = ConditionalWriteLimits {
             version: 1,
