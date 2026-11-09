@@ -112,7 +112,9 @@ pub struct RemoteMetaClient {
     write_timeout: Duration,
     catalog: Option<(Vec<String>, MetaClientOptions)>,
     wide_route_reads: Option<bool>,
+    wide_route_limit: usize,
     wide_write_plan_reads: Option<bool>,
+    wide_write_plan_limit: u64,
     wide_manifest_route_reads: Option<bool>,
     #[cfg(feature = "replica-server")]
     pub(super) object_connections: Vec<super::object_client::CachedGroupConnection>,
@@ -182,7 +184,9 @@ impl RemoteMetaClient {
             write_timeout: options.write_timeout,
             catalog: None,
             wide_route_reads: None,
+            wide_route_limit: 32,
             wide_write_plan_reads: None,
+            wide_write_plan_limit: 32,
             wide_manifest_route_reads: None,
             #[cfg(feature = "replica-server")]
             object_connections: Vec::new(),
@@ -490,13 +494,13 @@ impl RemoteMetaClient {
         }
     }
 
-    /// Resolve up to eight distinct groups after one metadata read barrier.
-    /// Older servers are remembered and use four-route confirmed reads.
+    /// Resolve up to thirty-two distinct groups after one metadata read barrier.
+    /// Older servers are remembered and use eight- or four-route confirmed reads.
     pub fn read_chunk_routes(
         &mut self,
         placement_ids: &[String],
     ) -> Result<Vec<super::ChunkGroupRoute>, ObjectError> {
-        if placement_ids.is_empty() || placement_ids.len() > 8
+        if placement_ids.is_empty() || placement_ids.len() > 32
             || placement_ids.iter().collect::<std::collections::BTreeSet<_>>().len()
                 != placement_ids.len()
         {
@@ -504,6 +508,13 @@ impl RemoteMetaClient {
         }
         if placement_ids.len() == 1 {
             return self.read_chunk_route(&placement_ids[0]).map(|route| vec![route]);
+        }
+        if placement_ids.len() > self.wide_route_limit {
+            return placement_ids
+                .chunks(self.wide_route_limit)
+                .map(|ids| self.read_chunk_routes(ids))
+                .collect::<Result<Vec<_>, _>>()
+                .map(|routes| routes.into_iter().flatten().collect());
         }
         if placement_ids.len() > 4 && self.wide_route_reads == Some(false) {
             return placement_ids
@@ -543,6 +554,18 @@ impl RemoteMetaClient {
                 self.wide_route_reads = Some(false);
                 placement_ids
                     .chunks(4)
+                    .map(|ids| self.read_chunk_routes(ids))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|routes| routes.into_iter().flatten().collect())
+            }
+            Err(ObjectError::InvalidArgument(message))
+                if wide
+                    && placement_ids.len() > 8
+                    && message == "invalid chunk route batch request" =>
+            {
+                self.wide_route_limit = 8;
+                placement_ids
+                    .chunks(8)
                     .map(|ids| self.read_chunk_routes(ids))
                     .collect::<Result<Vec<_>, _>>()
                     .map(|routes| routes.into_iter().flatten().collect())
@@ -663,13 +686,15 @@ impl RemoteMetaClient {
         length: u64,
         replica_count: u64,
     ) -> Result<(Option<crate::object_manifest::ObjectManifest>, PlacementAssignment, Vec<super::ChunkGroupRoute>), ObjectError> {
-        if !(1..=8).contains(&replica_count) {
+        if !(1..=32).contains(&replica_count) {
             return Err(ObjectError::InvalidArgument(
-                "combined write plan width must be one through eight".into(),
+                "combined write plan width must be one through thirty-two".into(),
             ));
         }
         let wide = replica_count > 4;
-        if wide && self.wide_write_plan_reads == Some(false) {
+        if replica_count > self.wide_write_plan_limit
+            || wide && self.wide_write_plan_reads == Some(false)
+        {
             return self.plan_object_write_routes_separately(
                 bucket, key, length, replica_count,
             );
@@ -701,6 +726,14 @@ impl RemoteMetaClient {
                 if wide {
                     self.wide_write_plan_reads = Some(false);
                 }
+                self.plan_object_write_routes_separately(bucket, key, length, replica_count)
+            }
+            Err(ObjectError::InvalidArgument(message))
+                if wide
+                    && replica_count > 8
+                    && message == "combined placement width must be one through 8" =>
+            {
+                self.wide_write_plan_limit = 8;
                 self.plan_object_write_routes_separately(bucket, key, length, replica_count)
             }
             Ok(_) => Err(ObjectError::Corruption("unexpected write plan reply".into())),
@@ -1780,11 +1813,11 @@ mod operation_deadline_tests {
     }
 
     #[test]
-    fn wide_route_batch_uses_one_confirmed_metadata_read() {
+    fn thirty_two_routes_use_one_confirmed_metadata_read() {
         use crate::cluster::{ChunkGroupConfig, ChunkGroupIdentity, ChunkGroupRoute};
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = listener.local_addr().unwrap().to_string();
-        let names: Vec<String> = (0..8).map(|i| format!("group-{i}")).collect();
+        let names: Vec<String> = (0..32).map(|i| format!("group-{i}")).collect();
         let expected = names.clone();
         let worker = std::thread::spawn(move || {
             let (mut server, _) = listener.accept().unwrap();
@@ -1828,22 +1861,22 @@ mod operation_deadline_tests {
         });
         let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
         let routes = client.read_chunk_routes(&names).unwrap();
-        assert_eq!(routes.len(), 8);
+        assert_eq!(routes.len(), 32);
         assert_eq!(client.wide_route_reads, Some(true));
         worker.join().unwrap();
     }
 
     #[test]
-    fn wide_route_batch_remembers_an_older_server() {
+    fn thirty_two_routes_fall_back_to_eight_route_frames() {
         use crate::cluster::{ChunkGroupConfig, ChunkGroupIdentity, ChunkGroupRoute};
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = listener.local_addr().unwrap().to_string();
-        let names: Vec<String> = (0..8).map(|i| format!("group-{i}")).collect();
+        let names: Vec<String> = (0..32).map(|i| format!("group-{i}")).collect();
         let expected = names.clone();
         let worker = std::thread::spawn(move || {
             let (mut server, _) = listener.accept().unwrap();
             server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-            for request_index in 0..5 {
+            for request_index in 0..9 {
                 let mut header = [0u8; HEADER_BYTES];
                 server.read_exact(&mut header).unwrap();
                 let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
@@ -1853,20 +1886,20 @@ mod operation_deadline_tests {
                 if request_index == 0 {
                     assert_eq!(code, MetaRequestCode::ReadChunkRoutesWide);
                     server.write_all(&super::super::message::encode_failure(
-                        StatusCode::UnknownRequest,
-                        "unknown wide route batch",
+                        StatusCode::InvalidArgument,
+                        "invalid chunk route batch request",
                     )).unwrap();
                     continue;
                 }
-                assert_eq!(code, MetaRequestCode::ReadChunkRoutes);
+                assert_eq!(code, MetaRequestCode::ReadChunkRoutesWide);
                 let ids = match MetaRequest::decode(code, &payload).unwrap() {
-                    MetaRequest::ReadChunkRoutes { placement_ids } => placement_ids,
+                    MetaRequest::ReadChunkRoutesWide { placement_ids } => placement_ids,
                     request => panic!("unexpected request {request:?}"),
                 };
-                let half = (request_index - 1) % 2;
-                assert_eq!(ids, expected[half * 4..half * 4 + 4]);
+                let group = (request_index - 1) % 4;
+                assert_eq!(ids, expected[group * 8..group * 8 + 8]);
                 let routes = ids.into_iter().enumerate().map(|(offset, name)| {
-                    let index = half * 4 + offset;
+                    let index = group * 8 + offset;
                     ChunkGroupRoute {
                         version: 1,
                         fence: Vec::new(),
@@ -1898,9 +1931,10 @@ mod operation_deadline_tests {
             }
         });
         let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
-        assert_eq!(client.read_chunk_routes(&names).unwrap().len(), 8);
-        assert_eq!(client.wide_route_reads, Some(false));
-        assert_eq!(client.read_chunk_routes(&names).unwrap().len(), 8);
+        assert_eq!(client.read_chunk_routes(&names).unwrap().len(), 32);
+        assert_eq!(client.wide_route_reads, Some(true));
+        assert_eq!(client.wide_route_limit, 8);
+        assert_eq!(client.read_chunk_routes(&names).unwrap().len(), 32);
         worker.join().unwrap();
     }
 

@@ -134,7 +134,7 @@ fn write_plan_reply_keeps_manifest_and_routes_for_one_object() {
 }
 
 #[test]
-fn eight_group_write_plan_uses_one_metadata_exchange() {
+fn thirty_two_group_write_plan_uses_one_metadata_exchange() {
     let socket = listener();
     let endpoint = socket.local_addr().unwrap().to_string();
     let reply_socket = socket.try_clone().unwrap();
@@ -143,13 +143,13 @@ fn eight_group_write_plan_uses_one_metadata_exchange() {
         assert!(matches!(
             meta(&mut stream),
             MetaRequest::PlanObjectWriteRoutesWide {
-                length: 8192,
-                replica_count: 8,
+                length: 32768,
+                replica_count: 32,
                 ..
             }
         ));
-        let node_ids: Vec<String> = (1..=8).map(|id| format!("group-{id}")).collect();
-        let routes = (1..=8)
+        let node_ids: Vec<String> = (1..=32).map(|id| format!("group-{id}")).collect();
+        let routes = (1..=32)
             .map(|id| ChunkGroupRoute {
                 version: 1,
                 group: Some(config(&reply_socket, id)),
@@ -163,7 +163,7 @@ fn eight_group_write_plan_uses_one_metadata_exchange() {
                 plan: PlacementAssignment {
                     bucket: "bucket".into(),
                     key: "key".into(),
-                    length: 8192,
+                    length: 32768,
                     node_ids,
                     skipped_draining: 0,
                     skipped_offline: 0,
@@ -177,20 +177,20 @@ fn eight_group_write_plan_uses_one_metadata_exchange() {
     });
     let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
     let (current, plan, routes) = client
-        .plan_object_write_routes("bucket", "key", 8192, 8)
+        .plan_object_write_routes("bucket", "key", 32768, 32)
         .unwrap();
     assert!(current.is_none());
-    assert_eq!(plan.node_ids.len(), 8);
-    assert_eq!(routes.len(), 8);
+    assert_eq!(plan.node_ids.len(), 32);
+    assert_eq!(routes.len(), 32);
     drop(client);
     worker.join().unwrap();
 }
 
 #[test]
-fn four_group_decoder_refuses_an_eight_group_write_plan() {
+fn four_group_decoder_refuses_a_thirty_two_group_write_plan() {
     let socket = listener();
-    let node_ids: Vec<String> = (1..=8).map(|id| format!("group-{id}")).collect();
-    let routes = (1..=8)
+    let node_ids: Vec<String> = (1..=32).map(|id| format!("group-{id}")).collect();
+    let routes = (1..=32)
         .map(|id| ChunkGroupRoute {
             version: 1,
             group: Some(config(&socket, id)),
@@ -202,7 +202,7 @@ fn four_group_decoder_refuses_an_eight_group_write_plan() {
         plan: PlacementAssignment {
             bucket: "bucket".into(),
             key: "key".into(),
-            length: 8192,
+            length: 32768,
             node_ids,
             skipped_draining: 0,
             skipped_offline: 0,
@@ -306,6 +306,58 @@ fn older_server_wide_write_plan_fallback_is_remembered() {
         assert!(current.is_none());
         assert_eq!(plan.node_ids.len(), 8);
         assert_eq!(routes.len(), 8);
+    }
+    drop(client);
+    worker.join().unwrap();
+}
+
+#[test]
+fn older_eight_group_write_plan_limit_uses_separate_metadata_reads() {
+    let socket = listener();
+    let endpoint = socket.local_addr().unwrap().to_string();
+    let worker = thread::spawn(move || {
+        let mut stream = accept(&socket);
+        for turn in 0..2 {
+            if turn == 0 {
+                assert!(matches!(
+                    meta(&mut stream),
+                    MetaRequest::PlanObjectWriteRoutesWide { replica_count: 32, .. }
+                ));
+                stream
+                    .write_all(&message::encode_failure(
+                        StatusCode::InvalidArgument,
+                        "combined placement width must be one through 8",
+                    ))
+                    .unwrap();
+            }
+            assert!(matches!(meta(&mut stream), MetaRequest::ReadManifest { .. }));
+            stream
+                .write_all(&message::encode_failure(
+                    StatusCode::NotFound,
+                    "object missing",
+                ))
+                .unwrap();
+            assert!(matches!(
+                meta(&mut stream),
+                MetaRequest::PlanObjectPlacement { replica_count: 32, .. }
+            ));
+            stream
+                .write_all(&message::encode_failure(
+                    StatusCode::InvalidArgument,
+                    "placement stopped after separate reads",
+                ))
+                .unwrap();
+        }
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+    });
+    let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+    for _ in 0..2 {
+        let error = client
+            .plan_object_write_routes("bucket", "key", 32768, 32)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("placement stopped after separate reads"));
     }
     drop(client);
     worker.join().unwrap();

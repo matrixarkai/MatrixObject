@@ -1076,7 +1076,7 @@ impl MetaReply {
                 return Err(ObjectError::Corruption("write plan reply exceeds bound".into()));
             }
             let value: WritePlanRoutesPayload = super::conditional_requests::decode(payload)?;
-            let max_routes = if code == MetaRequestCode::PlanObjectWriteRoutesWide { 8 } else { 4 };
+            let max_routes = if code == MetaRequestCode::PlanObjectWriteRoutesWide { 32 } else { 4 };
             if value.version != 1 || value.encode_to_vec() != payload || value.routes.len() > max_routes {
                 return Err(ObjectError::Corruption("invalid write plan reply".into()));
             }
