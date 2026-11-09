@@ -620,6 +620,7 @@ fn apply_locked(
             &request,
             ReplicaRequest::WriteChunk { .. }
                 | ReplicaRequest::WriteChunkIfSequence { .. }
+                | ReplicaRequest::WriteChunkIfState { .. }
                 | ReplicaRequest::WriteChunkIfSequenceDigest { .. }
                 | ReplicaRequest::DiscardChunk { .. }
                 | ReplicaRequest::DiscardChunkIfSequence { .. }
@@ -657,6 +658,7 @@ fn apply_locked(
         match &request {
             ReplicaRequest::WriteChunk { page_id, .. }
             | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
+            | ReplicaRequest::WriteChunkIfState { page_id, .. }
             | ReplicaRequest::WriteChunkIfSequenceDigest { page_id, .. }
             | ReplicaRequest::DiscardChunkIfSequence { page_id, .. }
             | ReplicaRequest::DiscardChunk { page_id, .. } => Some(page_id.clone()),
@@ -679,6 +681,7 @@ fn apply_locked(
     let changed_page = match &request {
         ReplicaRequest::WriteChunk { page_id, .. }
         | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
+        | ReplicaRequest::WriteChunkIfState { page_id, .. }
         | ReplicaRequest::WriteChunkIfSequenceDigest { page_id, .. }
         | ReplicaRequest::DiscardChunkIfSequence { page_id, .. }
         | ReplicaRequest::DiscardChunk { page_id, .. } => Some(page_id.clone()),
@@ -1025,6 +1028,40 @@ pub(super) fn apply_to_replica(
                 max_pages,
             )
         }
+        ReplicaRequest::WriteChunkIfState {
+            page_id,
+            offset,
+            data,
+            expected_sequence,
+            expected_state_checksum,
+        } => {
+            let matches = match guard.head_chunk(&page_id) {
+                Ok(head) => {
+                    expected_sequence != 0
+                        && expected_sequence != u64::MAX
+                        && head.write_sequence == expected_sequence
+                        && head.state_checksum == expected_state_checksum
+                }
+                Err(ObjectError::NotFound(_)) => {
+                    expected_sequence == 0 && expected_state_checksum.is_empty()
+                }
+                Err(error) => return Err(error),
+            };
+            if !matches {
+                return Err(ObjectError::PreconditionFailed(
+                    "page state changed".into(),
+                ));
+            }
+            apply_to_replica(
+                guard,
+                ReplicaRequest::WriteChunk {
+                    page_id,
+                    offset,
+                    data,
+                },
+                max_pages,
+            )
+        }
         ReplicaRequest::DiscardChunkIfSequence {
             page_id,
             offset,
@@ -1060,6 +1097,9 @@ pub(super) fn apply_to_replica(
         ReplicaRequest::Ping => Ok(ReplicaReply::Pong {
             page_count: guard.page_count() as u64,
         }),
+        ReplicaRequest::Capabilities => Ok(ReplicaReply::Capabilities {
+            state_conditional_write: true,
+        }),
         ReplicaRequest::PageInventory { after, limit } => {
             crate::cluster::message::check_inventory_limit(limit)?;
             let mut entries = guard.page_write_sequences_after(after.as_ref(), limit as usize + 1);
@@ -1092,6 +1132,50 @@ mod journal_failure_tests {
             write_sequence: 1, length: 4, sha256,
         } if sha256 == expected));
         assert_eq!(service.read_chunk(&page_id, 0, 4).unwrap().data, b"page");
+    }
+
+    #[test]
+    fn state_conditional_write_checks_the_complete_prewrite_state() {
+        let mut service = MatrixReplicaService::new();
+        let page_id = PageId {
+            chunk_id: ChunkId::new(1, 9).unwrap(),
+            page_index: 0,
+        };
+        service
+            .write_chunk(page_id.clone(), 0, b"original")
+            .unwrap();
+        let head = service.head_chunk(&page_id).unwrap();
+        let changed_checksum = ReplicaRequest::WriteChunkIfState {
+            page_id: page_id.clone(),
+            offset: 0,
+            data: b"changed!".to_vec(),
+            expected_sequence: head.write_sequence,
+            expected_state_checksum: format!("{}-changed", head.state_checksum),
+        };
+        assert!(matches!(
+            apply_to_replica(&mut service, changed_checksum, 8),
+            Err(ObjectError::PreconditionFailed(_))
+        ));
+        assert_eq!(
+            service.read_chunk(&page_id, 0, 8).unwrap().data,
+            b"original"
+        );
+
+        let matching = ReplicaRequest::WriteChunkIfState {
+            page_id: page_id.clone(),
+            offset: 0,
+            data: b"changed!".to_vec(),
+            expected_sequence: head.write_sequence,
+            expected_state_checksum: head.state_checksum,
+        };
+        assert_eq!(
+            apply_to_replica(&mut service, matching, 8).unwrap(),
+            ReplicaReply::Applied
+        );
+        assert_eq!(
+            service.read_chunk(&page_id, 0, 8).unwrap().data,
+            b"changed!"
+        );
     }
     #[test]
     fn conditional_mutations_refuse_exhausted_page_sequences() {

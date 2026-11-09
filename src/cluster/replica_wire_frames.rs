@@ -95,6 +95,10 @@ pub enum RequestCode {
     ReadChunkBatch = 17,
     /// Read up to eight page heads with one request.
     HeadChunkBatch = 18,
+    /// Report optional replica verbs without admitting a mutation.
+    Capabilities = 19,
+    /// Write only when the page's complete pre-write state matches.
+    WriteChunkIfState = 20,
 }
 
 impl RequestCode {
@@ -123,6 +127,8 @@ impl RequestCode {
             16 => Some(RequestCode::WriteChunkBatchIfSequenceDigest),
             17 => Some(RequestCode::ReadChunkBatch),
             18 => Some(RequestCode::HeadChunkBatch),
+            19 => Some(RequestCode::Capabilities),
+            20 => Some(RequestCode::WriteChunkIfState),
             _ => None,
         }
     }

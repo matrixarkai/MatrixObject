@@ -37,7 +37,10 @@ use std::net::SocketAddr;
 
 // Preserve sockets for replies already close behind the mutation quorum without
 // adding a network-scale delay to every terminal star mutation.
-const MUTATION_QUORUM_DRAIN: std::time::Duration = std::time::Duration::from_millis(1);
+const MUTATION_QUORUM_DRAIN: std::time::Duration = std::time::Duration::from_millis(5);
+const LARGE_MUTATION_QUORUM_DRAIN: std::time::Duration =
+    std::time::Duration::from_millis(25);
+const LARGE_MUTATION_FRAME_BYTES: usize = 1024 * 1024;
 const READ_QUORUM_HEDGE_DRAIN: std::time::Duration = std::time::Duration::from_millis(25);
 const MAX_PARALLEL_RECONNECTS: usize = 8;
 const ROUTED_RECONNECT_MIN_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
@@ -238,6 +241,7 @@ pub struct RemoteReplicaSet {
     write_quorum: usize,
     read_quorum: usize,
     read_cursor: usize,
+    state_conditional_write: Option<bool>,
     options: ReplicaClientOptions,
 }
 
@@ -366,6 +370,7 @@ impl RemoteReplicaSet {
             write_quorum,
             read_quorum,
             read_cursor: 0,
+            state_conditional_write: None,
             options: options.clone(),
         })
     }
@@ -443,6 +448,7 @@ impl RemoteReplicaSet {
             write_quorum,
             read_quorum,
             read_cursor: 0,
+            state_conditional_write: None,
             options: options.clone(),
         })
     }
@@ -476,6 +482,25 @@ impl RemoteReplicaSet {
         selected: Option<&[bool]>,
     ) -> Vec<Result<ReplicaReply, ObjectError>> {
         self.fan_out_until_applied(request, selected, Some(self.write_quorum))
+    }
+
+    fn supports_state_conditional_write(&mut self) -> bool {
+        if let Some(supported) = self.state_conditional_write {
+            return supported;
+        }
+        let replica_count = self.replicas.len();
+        let replies = self.fan_out(&ReplicaRequest::Capabilities, None);
+        let supported = replies.len() == replica_count
+            && replies.into_iter().all(|reply| {
+                matches!(
+                    reply,
+                    Ok(ReplicaReply::Capabilities {
+                        state_conditional_write: true
+                    })
+                )
+            });
+        self.state_conditional_write = Some(supported);
+        supported
     }
 
     fn fan_out_until_applied(
@@ -537,6 +562,11 @@ impl RemoteReplicaSet {
         // No worker threads or mutation retries. A terminal mutation may return at
         // quorum; dropping an incomplete exchange retires that member's socket.
         let frame: std::sync::Arc<[u8]> = super::message::encode_request(request).into();
+        let mutation_drain = if frame.len() >= LARGE_MUTATION_FRAME_BYTES {
+            LARGE_MUTATION_QUORUM_DRAIN
+        } else {
+            MUTATION_QUORUM_DRAIN
+        };
         let pending: Vec<_> = self
             .replicas
             .iter_mut()
@@ -582,7 +612,7 @@ impl RemoteReplicaSet {
             }
             if return_after_applied.is_some_and(|required| applied_replies >= required) {
                 let reached_at = quorum_reached_at.get_or_insert_with(std::time::Instant::now);
-                let remaining = MUTATION_QUORUM_DRAIN.saturating_sub(reached_at.elapsed());
+                let remaining = mutation_drain.saturating_sub(reached_at.elapsed());
                 if remaining.is_zero() {
                     break;
                 }
@@ -609,8 +639,16 @@ impl RemoteReplicaSet {
     }
 
     fn reconnect_failed(&mut self) {
+        let reset_capabilities = self
+            .replicas
+            .iter()
+            .any(RemoteReplicaClient::needs_standalone_reconnect);
+        let connected_before = self.replicas.len();
         if self.routed_reconnect.is_some() {
             self.reconnect_routed();
+            if reset_capabilities || self.replicas.len() != connected_before {
+                self.state_conditional_write = None;
+            }
             return;
         }
         let options = self.options.clone();
@@ -622,6 +660,9 @@ impl RemoteReplicaSet {
         run_reconnects_in_bounded_waves(failed, &|replica| {
             let _ = replica.reconnect_standalone_if_failed(&options);
         });
+        if reset_capabilities {
+            self.state_conditional_write = None;
+        }
     }
 
     fn reconnect_routed(&mut self) {
@@ -836,17 +877,43 @@ impl RemoteReplicaSet {
         offset: u64,
         data: &[u8],
     ) -> Result<usize, ObjectError> {
+        self.reconnect_failed();
+        if self.supports_state_conditional_write() {
+            let expected = match self.head_chunk_with_quorum(page_id, self.read_quorum) {
+                Ok(head) => Some(head),
+                Err(ObjectError::NotFound(_)) => None,
+                Err(error) => return Err(error),
+            };
+            let request = ReplicaRequest::WriteChunkIfState {
+                page_id: page_id.clone(),
+                offset,
+                data: data.to_vec(),
+                expected_sequence: expected.as_ref().map_or(0, |head| head.write_sequence),
+                expected_state_checksum: expected
+                    .as_ref()
+                    .map_or_else(String::new, |head| head.state_checksum.clone()),
+            };
+            return self.apply_page_write(&request, None);
+        }
         let (expected, observed) = self.mutation_state(page_id)?;
         let sequence = expected.as_ref().map_or(0, |head| head.write_sequence);
-        let mut acknowledged = 0usize;
-        let mut first_error: Option<ObjectError> = None;
         let request = ReplicaRequest::WriteChunkIfSequence {
             page_id: page_id.clone(),
             offset,
             data: data.to_vec(),
             expected_sequence: sequence,
         };
-        for result in self.fan_out_write_quorum(&request, Some(&observed)) {
+        self.apply_page_write(&request, Some(&observed))
+    }
+
+    fn apply_page_write(
+        &mut self,
+        request: &ReplicaRequest,
+        selected: Option<&[bool]>,
+    ) -> Result<usize, ObjectError> {
+        let mut acknowledged = 0usize;
+        let mut first_error: Option<ObjectError> = None;
+        for result in self.fan_out_write_quorum(request, selected) {
             match applied(result) {
                 Ok(()) => acknowledged += 1,
                 Err(err) if first_error.is_none() => first_error = Some(err),
@@ -1209,6 +1276,7 @@ impl RemoteReplicaSet {
         let mut not_found = 0usize;
         let mut unreachable = 0usize;
         let mut first_error: Option<(usize, ObjectError)> = None;
+        let mut responded = vec![false; replica_count];
         let request = ReplicaRequest::ReadChunk {
             page_id: page_id.clone(),
             offset,
@@ -1221,12 +1289,19 @@ impl RemoteReplicaSet {
                 continue;
             }
             let hedge_after = (wave == 0 && fallback_available).then_some(1);
+            let members: Vec<_> = selected
+                .iter()
+                .enumerate()
+                .filter_map(|(index, selected)| selected.then_some(index))
+                .collect();
             self.fan_out_each_before(
                 &request,
                 Some(selected),
                 operation_deadline,
                 hedge_after,
                 |index, result| {
+                    let member = members[index];
+                    responded[member] = true;
                     let result = result.and_then(|reply| match reply {
                         ReplicaReply::Read(read) => Ok(read),
                         _ => Err(ObjectError::Corruption(
@@ -1243,9 +1318,9 @@ impl RemoteReplicaSet {
                             }
                             if first_error
                                 .as_ref()
-                                .is_none_or(|(first_index, _)| index < *first_index)
+                                .is_none_or(|(first_index, _)| member < *first_index)
                             {
-                                first_error = Some((index, err));
+                                first_error = Some((member, err));
                             }
                         }
                     }
@@ -1253,6 +1328,48 @@ impl RemoteReplicaSet {
             );
             if votes.has_quorum(read_quorum) || not_found >= read_quorum {
                 break;
+            }
+        }
+        if !votes.has_quorum(read_quorum) && not_found < read_quorum {
+            let missing: Vec<_> = responded.iter().map(|answered| !answered).collect();
+            if missing.iter().any(|selected| *selected) {
+                self.reconnect_failed();
+                let members: Vec<_> = missing
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, selected)| selected.then_some(index))
+                    .collect();
+                self.fan_out_each_before(
+                    &request,
+                    Some(&missing),
+                    operation_deadline,
+                    None,
+                    |index, result| {
+                        let member = members[index];
+                        let result = result.and_then(|reply| match reply {
+                            ReplicaReply::Read(read) => Ok(read),
+                            _ => Err(ObjectError::Corruption(
+                                "unexpected replica read response".into(),
+                            )),
+                        });
+                        match result {
+                            Ok(read) => votes.push(read),
+                            Err(err) => {
+                                if matches!(&err, ObjectError::NotFound(_)) {
+                                    not_found += 1;
+                                } else {
+                                    unreachable += 1;
+                                }
+                                if first_error
+                                    .as_ref()
+                                    .is_none_or(|(first_index, _)| member < *first_index)
+                                {
+                                    first_error = Some((member, err));
+                                }
+                            }
+                        }
+                    },
+                );
             }
         }
         if votes.answered_count() < read_quorum {
@@ -1397,6 +1514,10 @@ impl RemoteReplicaSet {
                     break;
                 }
             }
+            scalar_fallback |= answered < read_quorum
+                || !votes
+                    .iter()
+                    .all(|range_votes| range_votes.has_quorum(read_quorum));
             if scalar_fallback {
                 for (page_id, offset, length) in frame {
                     output.push(self.read_chunk(page_id, *offset, *length)?);
@@ -2043,6 +2164,120 @@ mod send_progress_tests {
         ));
         drop(pending);
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn star_scalar_writes_cache_capabilities_and_fence_optional_members() {
+        let listeners: Vec<_> = (0..3)
+            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let endpoints: Vec<_> = listeners
+            .iter()
+            .map(|listener| listener.local_addr().unwrap().to_string())
+            .collect();
+        let mut set = RemoteReplicaSet::connect(
+            &endpoints,
+            2,
+            2,
+            &ReplicaClientOptions {
+                read_timeout: Duration::from_secs(1),
+                write_timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let workers: Vec<_> = listeners
+            .into_iter()
+            .map(|listener| {
+                let (mut peer, _) = listener.accept().unwrap();
+                std::thread::spawn(move || {
+                    let mut requests = 0usize;
+                    let mut writes = 0usize;
+                    loop {
+                        let mut header = [0; 6];
+                        match peer.read_exact(&mut header) {
+                            Ok(()) => {}
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::UnexpectedEof
+                                        | std::io::ErrorKind::ConnectionReset
+                                ) =>
+                            {
+                                break;
+                            }
+                            Err(error) => panic!("star write member failed: {error}"),
+                        }
+                        let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                        let mut payload = vec![0; length];
+                        peer.read_exact(&mut payload).unwrap();
+                        requests += 1;
+                        let code = super::super::wire::RequestCode::from_u8(header[1]).unwrap();
+                        let request = ReplicaRequest::decode(code, &payload).unwrap();
+                        let reply = match request {
+                            ReplicaRequest::Capabilities => ReplicaReply::Capabilities {
+                                state_conditional_write: true,
+                            },
+                            ReplicaRequest::HeadChunk { .. } if writes == 0 => {
+                                peer.write_all(&super::super::message::encode_failure(
+                                    super::super::wire::StatusCode::NotFound,
+                                    "absent",
+                                ))
+                                .unwrap();
+                                continue;
+                            }
+                            ReplicaRequest::HeadChunk { .. } => ReplicaReply::Head(ReplicaHead {
+                                logical_length: 5,
+                                write_sequence: 1,
+                                checksum: "payload-one".into(),
+                                state_checksum: "state-one".into(),
+                                discarded_ranges: Vec::new(),
+                            }),
+                            ReplicaRequest::WriteChunkIfState {
+                                expected_sequence,
+                                expected_state_checksum,
+                                ..
+                            } => {
+                                if writes == 0 {
+                                    assert_eq!(expected_sequence, 0);
+                                    assert!(expected_state_checksum.is_empty());
+                                } else {
+                                    assert_eq!(expected_sequence, 1);
+                                    assert_eq!(expected_state_checksum, "state-one");
+                                }
+                                writes += 1;
+                                ReplicaReply::Applied
+                            }
+                            other => panic!("unexpected star write request: {other:?}"),
+                        };
+                        peer.write_all(&super::super::message::encode_reply(&reply))
+                            .unwrap();
+                    }
+                    (requests, writes)
+                })
+            })
+            .collect();
+
+        let page = PageId {
+            chunk_id: crate::ChunkId::new(9, 1).unwrap(),
+            page_index: 0,
+        };
+        assert_eq!(set.write_chunk(&page, 0, b"first").unwrap(), 3);
+        assert_eq!(set.write_chunk(&page, 5, b"second").unwrap(), 3);
+        drop(set);
+
+        let observed: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(observed.iter().map(|(_, writes)| *writes).sum::<usize>(), 6);
+        assert_eq!(observed.iter().map(|(requests, _)| *requests).sum::<usize>(), 13);
+        let mut request_counts: Vec<_> = observed
+            .into_iter()
+            .map(|(requests, _)| requests)
+            .collect();
+        request_counts.sort_unstable();
+        assert_eq!(request_counts, vec![4, 4, 5]);
     }
 
     #[test]

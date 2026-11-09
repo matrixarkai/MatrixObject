@@ -350,19 +350,25 @@ differing payload bytes.
 
 ## State-fenced star writes
 
-`RemoteReplicaSet::write_chunk` first reads every member's page head. It requires
-a read quorum that agrees on the complete head, or a read quorum reporting an
-absent page. At least a write quorum must match that selected state before any
-mutation is sent. Only those matching members receive a conditional write using
-the observed sequence, with zero requiring an absent page. A concurrent sequence
-change is refused by the serving node. Equal sequences alone cannot admit members
-whose lengths, checksums or discarded ranges differ.
+`RemoteReplicaSet::write_chunk` learns support for complete-state conditional
+writes with one read-only capability request per connected set. When every
+connected member supports it, a rotating read quorum selects the complete page
+head, or agrees that the page is absent. The mutation is then sent to every
+connected member with that expected sequence and state checksum. Each server
+compares the complete state under the same lock that admits the write, so an
+optional member with equal sequence but different length, bytes or discarded
+ranges refuses the mutation. A healthy 2-of-3 write therefore uses two head
+requests and three mutation requests after capability discovery is cached,
+instead of three head requests and three mutations.
 
-This adds a head round trip to each member per star write. All serving replicas
-must support conditional write request code 8; an older server's refusal does not
-fall back to an unconditional write. An uncertain mutation is not retried, and
-partial application can still occur if a member fails after preflight. Callers
-must resolve uncertain results before issuing another operation.
+Capability request code 19 is read-only. State-conditional write code 20 uses
+canonical bounded protobuf and carries at most one MiB of data. If any connected
+member does not advertise the new verb, the coordinator keeps the established
+path: it reads every member's head and sends sequence-conditional request code 8
+only to members whose complete state matched the selected quorum. There is no
+mutation downgrade after code 20 is sent. An uncertain mutation is not retried,
+and partial application can still occur if a member fails after preflight.
+Callers must resolve uncertain results before issuing another operation.
 
 The conditional mutation is sent to every matching member before responses are
 polled. Once a write quorum has acknowledged the terminal write or discard frame,

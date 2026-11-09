@@ -983,10 +983,12 @@ fn read_only(request: &ReplicaRequest) -> bool {
         | ReplicaRequest::HeadChunkBatch { .. }
         | ReplicaRequest::PageInventory { .. }
         | ReplicaRequest::Ping
+        | ReplicaRequest::Capabilities
         | ReplicaRequest::GroupIdentity => true,
         ReplicaRequest::StateInstall(_)
         | ReplicaRequest::WriteChunk { .. }
         | ReplicaRequest::WriteChunkIfSequence { .. }
+        | ReplicaRequest::WriteChunkIfState { .. }
         | ReplicaRequest::WriteChunkIfSequenceDigest { .. }
         | ReplicaRequest::WriteChunkBatchIfSequence { .. }
         | ReplicaRequest::WriteChunkBatchIfSequenceDigest { .. }
@@ -1055,6 +1057,7 @@ fn prepare_candidate(
     let page = match request {
         ReplicaRequest::WriteChunk { page_id, .. }
         | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
+        | ReplicaRequest::WriteChunkIfState { page_id, .. }
         | ReplicaRequest::WriteChunkIfSequenceDigest { page_id, .. }
         | ReplicaRequest::DiscardChunkIfSequence { page_id, .. }
         | ReplicaRequest::DiscardChunk { page_id, .. } => page_id,
