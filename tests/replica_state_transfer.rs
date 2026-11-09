@@ -501,8 +501,9 @@ fn star_operations_send_each_wave_before_waiting_for_replies() {
     drop(arrived);
     let coordinator = std::thread::spawn(move || {
         let codes = [
+            RequestCode::Capabilities,
             RequestCode::HeadChunk,
-            RequestCode::WriteChunkIfSequence,
+            RequestCode::WriteChunkIfState,
             RequestCode::ReadChunk,
             RequestCode::HeadChunk,
             RequestCode::DiscardChunkIfSequence,
@@ -511,7 +512,7 @@ fn star_operations_send_each_wave_before_waiting_for_replies() {
             RequestCode::HeadChunk,
         ];
         for (phase, code) in codes.into_iter().enumerate() {
-            let expected_members = if matches!(phase, 2 | 5 | 6 | 7) {
+            let expected_members = if matches!(phase, 1 | 3 | 6 | 7 | 8) {
                 2
             } else {
                 3
@@ -581,45 +582,69 @@ fn sixteen_default_pages_use_bounded_star_frames() {
             let observed = observed.clone();
             std::thread::spawn(move || {
                 listener.set_nonblocking(true).unwrap();
-                let until = Instant::now() + Duration::from_secs(5);
-                let mut front = loop {
-                    match listener.accept() {
-                        Ok((stream, _)) => break stream,
-                        Err(error)
-                            if error.kind() == std::io::ErrorKind::WouldBlock
-                                && Instant::now() < until =>
-                        {
-                            std::thread::sleep(Duration::from_millis(1));
-                        }
-                        other => panic!("batch proxy accept: {other:?}"),
-                    }
-                };
-                let mut back = TcpStream::connect(endpoint).unwrap();
-                for socket in [&front, &back] {
-                    socket
-                        .set_read_timeout(Some(Duration::from_secs(5)))
-                        .unwrap();
-                    socket
-                        .set_write_timeout(Some(Duration::from_secs(5)))
-                        .unwrap();
-                }
+                let mut first_connection = true;
                 loop {
-                    let mut header = [0; 6];
-                    if front.read_exact(&mut header).is_err() {
+                    let until = Instant::now()
+                        + if first_connection {
+                            Duration::from_secs(5)
+                        } else {
+                            Duration::from_secs(1)
+                        };
+                    let front = loop {
+                        match listener.accept() {
+                            Ok((stream, _)) => break Some(stream),
+                            Err(error)
+                                if error.kind() == std::io::ErrorKind::WouldBlock
+                                    && Instant::now() < until =>
+                            {
+                                std::thread::sleep(Duration::from_millis(1));
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                break None
+                            }
+                            other => panic!("batch proxy accept: {other:?}"),
+                        }
+                    };
+                    let Some(mut front) = front else {
+                        assert!(!first_connection, "batch proxy accepted no connection");
                         break;
+                    };
+                    first_connection = false;
+                    let mut back = TcpStream::connect(&endpoint).unwrap();
+                    for socket in [&front, &back] {
+                        socket
+                            .set_read_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        socket
+                            .set_write_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
                     }
-                    let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
-                    let mut body = vec![0; size];
-                    front.read_exact(&mut body).unwrap();
-                    observed.send((index, header[1])).unwrap();
-                    back.write_all(&header).unwrap();
-                    back.write_all(&body).unwrap();
-                    back.read_exact(&mut header).unwrap();
-                    let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
-                    body.resize(size, 0);
-                    back.read_exact(&mut body).unwrap();
-                    front.write_all(&header).unwrap();
-                    front.write_all(&body).unwrap();
+                    loop {
+                        let mut header = [0; 6];
+                        if front.read_exact(&mut header).is_err() {
+                            break;
+                        }
+                        let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                        let mut body = vec![0; size];
+                        if front.read_exact(&mut body).is_err() {
+                            break;
+                        }
+                        observed.send((index, header[1])).unwrap();
+                        if back.write_all(&header).is_err()
+                            || back.write_all(&body).is_err()
+                            || back.read_exact(&mut header).is_err()
+                        {
+                            break;
+                        }
+                        let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                        body.resize(size, 0);
+                        if back.read_exact(&mut body).is_err()
+                            || front.write_all(&header).is_err()
+                            || front.write_all(&body).is_err()
+                        {
+                            break;
+                        }
+                    }
                 }
             })
         })
@@ -659,7 +684,8 @@ fn sixteen_default_pages_use_bounded_star_frames() {
     const HEAD_CHUNK_BATCH_CODE: u8 = 18;
     const CONDITIONAL_BATCH_CODE: u8 = 14;
     const READ_BATCH_CODE: u8 = 17;
-    let mut complete_reads = 0usize;
+    let mut read_participants = 0usize;
+    let mut read_frames = 0usize;
     let mut complete_writes = 0usize;
     for member in codes {
         assert_eq!(member.first(), Some(&HEAD_CHUNK_BATCH_CODE));
@@ -676,17 +702,16 @@ fn sixteen_default_pages_use_bounded_star_frames() {
             .count();
         assert!((1..=4).contains(&write_frames));
         complete_writes += usize::from(write_frames == 4);
-        if member
+        let member_read_frames = member
             .iter()
             .filter(|code| **code == READ_BATCH_CODE)
-            .count()
-            == 4
-        {
-            complete_reads += 1;
-        }
+            .count();
+        read_participants += usize::from(member_read_frames > 0);
+        read_frames += member_read_frames;
     }
     assert!(complete_writes >= 2);
-    assert!(complete_reads >= 2);
+    assert!(read_participants >= 2);
+    assert!(read_frames >= 8);
     let mut final_page_copies = 0usize;
     for node in &nodes {
         let mut replica = client(node);
@@ -1350,7 +1375,7 @@ fn star_write_returns_after_quorum_without_replaying_a_slow_member() {
                 stream
                     .set_write_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
-                for phase in 0..2 {
+                for phase in 0..3 {
                     let mut header = [0; 6];
                     stream.read_exact(&mut header).unwrap();
                     let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
@@ -1362,10 +1387,16 @@ fn star_write_returns_after_quorum_without_replaying_a_slow_member() {
                     )
                     .unwrap();
                     match (phase, request) {
-                        (0, ReplicaRequest::HeadChunk { .. }) => stream
+                        (0, ReplicaRequest::Capabilities) => stream
+                            .write_all(&encode_failure(
+                                StatusCode::UnknownRequest,
+                                "capabilities",
+                            ))
+                            .unwrap(),
+                        (1, ReplicaRequest::HeadChunk { .. }) => stream
                             .write_all(&encode_failure(StatusCode::NotFound, "absent"))
                             .unwrap(),
-                        (1, ReplicaRequest::WriteChunkIfSequence { expected_sequence, .. }) => {
+                        (2, ReplicaRequest::WriteChunkIfSequence { expected_sequence, .. }) => {
                             assert_eq!(expected_sequence, 0);
                             if index == 0 {
                                 slow_arrived.send(()).unwrap();

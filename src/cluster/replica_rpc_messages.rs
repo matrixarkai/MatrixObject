@@ -136,6 +136,13 @@ pub enum ReplicaRequest {
         data: Vec<u8>,
         expected_sequence: u64,
     },
+    WriteChunkIfState {
+        page_id: PageId,
+        offset: u64,
+        data: Vec<u8>,
+        expected_sequence: u64,
+        expected_state_checksum: String,
+    },
     WriteChunkIfSequenceDigest {
         page_id: PageId,
         offset: u64,
@@ -178,6 +185,7 @@ pub enum ReplicaRequest {
         length: u64,
     },
     Ping,
+    Capabilities,
     GroupIdentity,
     PageInventory {
         after: Option<PageId>,
@@ -194,6 +202,7 @@ impl ReplicaRequest {
             ReplicaRequest::DiscardChunkIfSequence { .. } => RequestCode::DiscardChunkIfSequence,
             ReplicaRequest::WriteChunk { .. } => RequestCode::WriteChunk,
             ReplicaRequest::WriteChunkIfSequence { .. } => RequestCode::WriteChunkIfSequence,
+            ReplicaRequest::WriteChunkIfState { .. } => RequestCode::WriteChunkIfState,
             ReplicaRequest::WriteChunkIfSequenceDigest { .. } => {
                 RequestCode::WriteChunkIfSequenceDigest
             }
@@ -210,6 +219,7 @@ impl ReplicaRequest {
             ReplicaRequest::HeadChunkBatch { .. } => RequestCode::HeadChunkBatch,
             ReplicaRequest::DiscardChunk { .. } => RequestCode::DiscardChunk,
             ReplicaRequest::Ping => RequestCode::Ping,
+            ReplicaRequest::Capabilities => RequestCode::Capabilities,
             ReplicaRequest::GroupIdentity => RequestCode::GroupIdentity,
             ReplicaRequest::PageInventory { .. } => RequestCode::PageInventory,
         }
@@ -275,6 +285,25 @@ impl ReplicaRequest {
                     offset: *offset,
                     data: data.clone(),
                     expected_sequence: *expected_sequence,
+                }
+                .encode_to_vec();
+            }
+            ReplicaRequest::WriteChunkIfState {
+                page_id,
+                offset,
+                data,
+                expected_sequence,
+                expected_state_checksum,
+            } => {
+                return super::conditional_requests::StateChunkWrite {
+                    version: 1,
+                    volume: page_id.chunk_id.volume_id(),
+                    chunk: page_id.chunk_id.id(),
+                    page: page_id.page_index,
+                    offset: *offset,
+                    expected_sequence: *expected_sequence,
+                    data: data.clone(),
+                    expected_state_checksum: expected_state_checksum.clone(),
                 }
                 .encode_to_vec();
             }
@@ -352,7 +381,7 @@ impl ReplicaRequest {
                 }
                 .encode_to_vec();
             }
-            ReplicaRequest::Ping | ReplicaRequest::GroupIdentity => {}
+            ReplicaRequest::Ping | ReplicaRequest::Capabilities | ReplicaRequest::GroupIdentity => {}
             ReplicaRequest::PageInventory { after, limit } => {
                 put_u64(&mut out, u64::from(after.is_some()));
                 if let Some(id) = after {
@@ -465,6 +494,35 @@ impl ReplicaRequest {
                     data: value.data,
                     expected_sequence: value.expected_sequence,
                 },
+            });
+        }
+        if code == RequestCode::WriteChunkIfState {
+            if payload.len() > 1024 * 1024 + 512 {
+                return Err(ObjectError::InvalidArgument(
+                    "state-conditional write exceeds size bound".into(),
+                ));
+            }
+            let value: super::conditional_requests::StateChunkWrite =
+                super::conditional_requests::decode(payload)?;
+            let absent = value.expected_sequence == 0 && value.expected_state_checksum.is_empty();
+            let present = value.expected_sequence != 0
+                && value.expected_sequence != u64::MAX
+                && !value.expected_state_checksum.is_empty()
+                && value.expected_state_checksum.len() <= 128;
+            if value.version != 1 || value.data.len() > 1024 * 1024 || !(absent || present) {
+                return Err(ObjectError::InvalidArgument(
+                    "invalid state-conditional write".into(),
+                ));
+            }
+            return Ok(Self::WriteChunkIfState {
+                page_id: PageId {
+                    chunk_id: ChunkId::new(value.volume, value.chunk)?,
+                    page_index: value.page,
+                },
+                offset: value.offset,
+                data: value.data,
+                expected_sequence: value.expected_sequence,
+                expected_state_checksum: value.expected_state_checksum,
             });
         }
         if code == RequestCode::ReadChunkBatch {
@@ -582,6 +640,7 @@ impl ReplicaRequest {
             RequestCode::HeadChunkBatch => unreachable!(),
             RequestCode::WriteChunkIfSequence
             | RequestCode::WriteChunkIfSequenceDigest
+            | RequestCode::WriteChunkIfState
             | RequestCode::WriteChunkBatchIfSequence
             | RequestCode::WriteChunkBatchIfSequenceDigest
             | RequestCode::DiscardChunkIfSequence => {
@@ -636,6 +695,7 @@ impl ReplicaRequest {
                 }
             }
             RequestCode::Ping => ReplicaRequest::Ping,
+            RequestCode::Capabilities => ReplicaRequest::Capabilities,
             RequestCode::GroupIdentity => ReplicaRequest::GroupIdentity,
             RequestCode::PageInventory => {
                 let after = match cursor.take_u64()? {
@@ -686,6 +746,9 @@ pub enum ReplicaReply {
     Pong {
         page_count: u64,
     },
+    Capabilities {
+        state_conditional_write: bool,
+    },
     PageInventory(PageInventory),
     GroupIdentity(ChunkGroupIdentity),
 }
@@ -695,6 +758,7 @@ impl ReplicaReply {
         match self {
             Self::StateRange(value) => value.encoded_len(),
             Self::Applied | Self::NotLeader => 0,
+            Self::Capabilities { .. } => 8,
             Self::Membership(value) => value.encoded_len(),
             Self::GroupIdentity(identity) => identity.encoded_len(),
             Self::Read(read) => 16usize
@@ -781,6 +845,9 @@ impl ReplicaReply {
             }
             ReplicaReply::Heads(heads) => return encode_head_batch(heads).encode_to_vec(),
             ReplicaReply::Pong { page_count } => put_u64(&mut out, *page_count),
+            ReplicaReply::Capabilities {
+                state_conditional_write,
+            } => put_u64(&mut out, u64::from(*state_conditional_write)),
             ReplicaReply::PageInventory(batch) => {
                 put_u64(&mut out, u64::from(batch.has_more));
                 put_u64(&mut out, batch.entries.len() as u64);
@@ -939,6 +1006,7 @@ impl ReplicaReply {
             RequestCode::HeadChunkBatch => unreachable!(),
             RequestCode::WriteChunk
             | RequestCode::WriteChunkIfSequence
+            | RequestCode::WriteChunkIfState
             | RequestCode::WriteChunkBatchIfSequence
             | RequestCode::DiscardChunk
             | RequestCode::DiscardChunkIfSequence => ReplicaReply::Applied,
@@ -1001,6 +1069,17 @@ impl ReplicaReply {
             }
             RequestCode::Ping => ReplicaReply::Pong {
                 page_count: cursor.take_u64()?,
+            },
+            RequestCode::Capabilities => ReplicaReply::Capabilities {
+                state_conditional_write: match cursor.take_u64()? {
+                    0 => false,
+                    1 => true,
+                    _ => {
+                        return Err(ObjectError::Corruption(
+                            "invalid replica capability flag".into(),
+                        ))
+                    }
+                },
             },
             RequestCode::PageInventory => {
                 let has_more = match cursor.take_u64()? {

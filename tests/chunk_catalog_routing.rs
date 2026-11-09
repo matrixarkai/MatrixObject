@@ -453,11 +453,17 @@ fn star_set_reconnects_only_for_a_later_operation_after_uncertain_write() {
             }
         };
         let mut first = accept();
+        assert_eq!(receive(&mut first), 19);
+        first
+            .write_all(&encode_reply(&ReplicaReply::Capabilities {
+                state_conditional_write: true,
+            }))
+            .unwrap();
         assert_eq!(receive(&mut first), 3);
         first
             .write_all(&encode_failure(StatusCode::NotFound, "absent"))
             .unwrap();
-        assert_eq!(receive(&mut first), 8);
+        assert_eq!(receive(&mut first), 20);
         // The write may have committed, but its response is lost.
         drop(first);
         let mut later = accept();

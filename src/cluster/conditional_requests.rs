@@ -38,6 +38,25 @@ pub(super) struct ChunkWriteBatch {
     pub writes: Vec<ChunkWrite>,
 }
 #[derive(Clone, PartialEq, Message)]
+pub(super) struct StateChunkWrite {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(uint64, tag = "2")]
+    pub volume: u64,
+    #[prost(uint64, tag = "3")]
+    pub chunk: u64,
+    #[prost(uint64, tag = "4")]
+    pub page: u64,
+    #[prost(uint64, tag = "5")]
+    pub offset: u64,
+    #[prost(uint64, tag = "6")]
+    pub expected_sequence: u64,
+    #[prost(bytes = "vec", tag = "7")]
+    pub data: Vec<u8>,
+    #[prost(string, tag = "8")]
+    pub expected_state_checksum: String,
+}
+#[derive(Clone, PartialEq, Message)]
 pub(super) struct ChunkDigest {
     #[prost(uint32, tag = "1")]
     pub version: u32,
@@ -272,6 +291,61 @@ mod tests {
         let mut truncated = bytes;
         truncated.pop();
         assert!(ReplicaRequest::decode(request.code(), &truncated).is_err());
+    }
+
+    #[test]
+    fn state_conditional_writes_and_capabilities_are_canonical_and_bounded() {
+        let page_id = PageId {
+            chunk_id: ChunkId::new(4, 5).unwrap(),
+            page_index: 6,
+        };
+        let request = ReplicaRequest::WriteChunkIfState {
+            page_id: page_id.clone(),
+            offset: 7,
+            data: b"payload".to_vec(),
+            expected_sequence: 8,
+            expected_state_checksum: "state-checksum".into(),
+        };
+        let bytes = request.encode_payload();
+        assert_eq!(RequestCode::from_u8(19), Some(RequestCode::Capabilities));
+        assert_eq!(RequestCode::from_u8(20), Some(RequestCode::WriteChunkIfState));
+        assert_eq!(ReplicaRequest::decode(request.code(), &bytes).unwrap(), request);
+
+        let absent = ReplicaRequest::WriteChunkIfState {
+            page_id,
+            offset: 0,
+            data: b"new".to_vec(),
+            expected_sequence: 0,
+            expected_state_checksum: String::new(),
+        };
+        assert_eq!(
+            ReplicaRequest::decode(absent.code(), &absent.encode_payload()).unwrap(),
+            absent
+        );
+
+        let mut invalid: StateChunkWrite = decode(&bytes).unwrap();
+        invalid.expected_state_checksum.clear();
+        assert!(ReplicaRequest::decode(
+            RequestCode::WriteChunkIfState,
+            &invalid.encode_to_vec()
+        )
+        .is_err());
+        invalid.expected_sequence = 0;
+        invalid.expected_state_checksum = "state-checksum".into();
+        assert!(ReplicaRequest::decode(
+            RequestCode::WriteChunkIfState,
+            &invalid.encode_to_vec()
+        )
+        .is_err());
+
+        let capabilities = ReplicaReply::Capabilities {
+            state_conditional_write: true,
+        };
+        assert_eq!(
+            ReplicaReply::decode(RequestCode::Capabilities, &capabilities.encode_payload())
+                .unwrap(),
+            capabilities
+        );
     }
 
     #[test]
