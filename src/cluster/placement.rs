@@ -381,9 +381,9 @@ impl InProcessReplicaSet {
         &mut self,
         reads: &[(PageId, u64, u64)],
     ) -> Result<Vec<ReplicaReadResult>, ObjectError> {
-        if reads.len() > 8 {
+        if reads.len() > 32 {
             return Err(ObjectError::InvalidArgument(
-                "read batch exceeds eight pages".into(),
+                "read batch exceeds 32 pages".into(),
             ));
         }
         reads
