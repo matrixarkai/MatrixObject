@@ -115,6 +115,26 @@ pub struct ConditionalChunkWrite {
     pub expected_sequence: u64,
 }
 
+fn conditional_write_batch_payload(
+    writes: &[ConditionalChunkWrite],
+) -> super::conditional_requests::ChunkWriteBatch {
+    super::conditional_requests::ChunkWriteBatch {
+        version: 1,
+        writes: writes
+            .iter()
+            .map(|write| super::conditional_requests::ChunkWrite {
+                version: 1,
+                volume: write.page_id.chunk_id.volume_id(),
+                chunk: write.page_id.chunk_id.id(),
+                page: write.page_id.page_index,
+                offset: write.offset,
+                expected_sequence: write.expected_sequence,
+                data: write.data.clone(),
+            })
+            .collect(),
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReplicaRequest {
     Membership(super::MembershipRequest),
@@ -316,18 +336,7 @@ impl ReplicaRequest {
             }
             ReplicaRequest::WriteChunkBatchIfSequence { writes }
             | ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } => {
-                return super::conditional_requests::ChunkWriteBatch {
-                    version: 1,
-                    writes: writes.iter().map(|write| super::conditional_requests::ChunkWrite {
-                        version: 1,
-                        volume: write.page_id.chunk_id.volume_id(),
-                        chunk: write.page_id.chunk_id.id(),
-                        page: write.page_id.page_index,
-                        offset: write.offset,
-                        expected_sequence: write.expected_sequence,
-                        data: write.data.clone(),
-                    }).collect(),
-                }.encode_to_vec();
+                return conditional_write_batch_payload(writes).encode_to_vec();
             }
             ReplicaRequest::ReadChunkBatch { reads } => {
                 return super::conditional_requests::ChunkReadBatch {
@@ -1322,6 +1331,16 @@ fn encode_read_batch(reads: &[ReplicaReadResult]) -> Vec<u8> {
 
 /// Lay out a complete request frame: header then payload.
 pub fn encode_request(request: &ReplicaRequest) -> Vec<u8> {
+    if let ReplicaRequest::WriteChunkBatchIfSequence { writes }
+    | ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } = request
+    {
+        let payload = conditional_write_batch_payload(writes);
+        let payload_len = payload.encoded_len();
+        let mut frame = Vec::with_capacity(crate::cluster::wire::HEADER_BYTES + payload_len);
+        crate::cluster::wire::put_header(&mut frame, request.code() as u8, payload_len);
+        payload.encode(&mut frame).expect("Vec provides frame capacity");
+        return frame;
+    }
     let payload = request.encode_payload();
     let mut frame = Vec::with_capacity(crate::cluster::wire::HEADER_BYTES + payload.len());
     crate::cluster::wire::put_header(&mut frame, request.code() as u8, payload.len());

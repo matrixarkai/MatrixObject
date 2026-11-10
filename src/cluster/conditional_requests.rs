@@ -270,6 +270,12 @@ mod tests {
             writes: vec![write.clone(); 2],
         };
         let bytes = request.encode_payload();
+        let frame = crate::cluster::message::encode_request(&request);
+        assert_eq!(&frame[6..], bytes.as_slice());
+        assert_eq!(
+            u32::from_be_bytes(frame[2..6].try_into().unwrap()) as usize,
+            bytes.len()
+        );
         assert_eq!(RequestCode::from_u8(14), Some(RequestCode::WriteChunkBatchIfSequence));
         assert_eq!(ReplicaRequest::decode(request.code(), &bytes).unwrap(), request);
         let mut maximum: ChunkWriteBatch = decode(&bytes).unwrap();
@@ -285,6 +291,8 @@ mod tests {
         let digest_request = ReplicaRequest::WriteChunkBatchIfSequenceDigest {
             writes: vec![write; 2],
         };
+        let digest_frame = crate::cluster::message::encode_request(&digest_request);
+        assert_eq!(&digest_frame[6..], digest_request.encode_payload());
         assert_eq!(
             RequestCode::from_u8(16),
             Some(RequestCode::WriteChunkBatchIfSequenceDigest)
