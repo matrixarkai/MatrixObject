@@ -1192,6 +1192,33 @@ impl RemoteMetaClient {
         self.publish_manifest_attempt(outcome, update_time_ms).0
     }
 
+    /// Publish a durable tombstone for the current object generation.
+    /// Repeated deletion returns the confirmed tombstone. An uncertain publish
+    /// response must be resolved with `read_manifest`, never replayed blindly.
+    /// Data pages remain available to readers of older generations until reclaimed.
+    pub fn delete_object(
+        &mut self,
+        bucket: &str,
+        key: &str,
+        update_time_ms: u64,
+    ) -> Result<crate::object_manifest::ObjectManifest, ObjectError> {
+        crate::validate_bucket(bucket)?;
+        crate::validate_key(key)?;
+        let current = self.read_manifest(bucket, key)?;
+        if current.deleted {
+            return Ok(current);
+        }
+        let mut tombstone = current.clone();
+        tombstone.generation = current.generation.checked_add(1).ok_or_else(|| {
+            ObjectError::PreconditionFailed("object generation is exhausted".into())
+        })?;
+        tombstone.length = 0;
+        tombstone.extents.clear();
+        tombstone.deleted = true;
+        let outcome = crate::object_manifest::ManifestOutcome::decide(Some(current), tombstone)?;
+        self.publish_manifest(outcome, update_time_ms)
+    }
+
     /// The boolean proves that this publication was not admitted. It comes from
     /// routing state and the typed wire reply, never from an error message.
     pub(super) fn publish_manifest_attempt(
