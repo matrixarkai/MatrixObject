@@ -176,8 +176,9 @@ confirmation reduction on this host; they are not a production throughput guaran
 
 `RemoteMetaClient::read_object` fetches one committed manifest and assembles its
 extents using verified data-group connections. It returns the manifest with the
-bytes only after every extent matches its exact length, write sequence and FNV-1a
-data checksum. A deleted or absent object returns NotFound; a live empty object
+bytes only after every extent matches its exact length, write sequence and
+published content digest. Version 2 manifests use SHA-256; version 1 manifests
+use FNV-1a. A deleted or absent object returns NotFound; a live empty object
 returns an empty buffer. The caller supplies a maximum object byte count, checked
 before allocating or connecting to data nodes. Allocation failure returns an error.
 The client visits all extents of each group together, retaining one data-group

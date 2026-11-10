@@ -905,7 +905,8 @@ impl RemoteMetaClient {
     }
     /// Read one committed object generation through its configured data groups.
     /// The complete result is bounded by `max_bytes`; no bytes are returned until
-    /// every extent matches its committed sequence, length and FNV-1a checksum.
+    /// every extent matches its committed sequence, length and content digest.
+    /// Modern pages use SHA-256; older pages use FNV-1a.
     /// Writers must retain immutable pages while readers can still use them.
     #[cfg(feature = "replica-server")]
     pub fn read_object(
@@ -1037,12 +1038,13 @@ impl RemoteMetaClient {
                     .collect::<Result<Vec<_>, ObjectError>>()?;
                 let reads = connection.read_chunks(&pages, batch)?;
                 for (extent, read) in batch.iter().zip(reads) {
-                    let checksum = read.data.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
-                        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-                    });
+                    // The data-group reader already checked the published SHA-256
+                    // for modern manifests. Older manifests still need FNV here.
+                    let legacy_checksum_mismatch = extent.data_sha256.is_empty()
+                        && crate::fnv1a64(&read.data) != extent.data_checksum;
                     if read.write_sequence != extent.write_sequence
                         || read.data.len() as u64 != extent.length
-                        || checksum != extent.data_checksum
+                        || legacy_checksum_mismatch
                     {
                         return Err(ObjectError::Corruption(
                             "object extent does not match manifest".into(),
