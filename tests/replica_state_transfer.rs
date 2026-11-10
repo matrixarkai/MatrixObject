@@ -1396,6 +1396,118 @@ fn star_write_frame_width_measurement() {
 }
 
 #[test]
+fn seven_mib_star_reads_use_negotiated_reply_frames() {
+    use matrixobjectstore_rs::cluster::{
+        message::encode_reply, ReplicaReply, ReplicaRequest, RequestCode,
+    };
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    fn run(reply_limits: [u32; 3]) -> Vec<usize> {
+        let listeners: Vec<_> = (0..3)
+            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let endpoints: Vec<_> = listeners
+            .iter()
+            .map(|listener| listener.local_addr().unwrap().to_string())
+            .collect();
+        let workers: Vec<_> = listeners
+            .into_iter()
+            .zip(reply_limits)
+            .map(|(listener, max_reply_payload_bytes)| {
+                std::thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(10)))
+                        .unwrap();
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(10)))
+                        .unwrap();
+                    let mut frames = 0usize;
+                    loop {
+                        let mut header = [0; 6];
+                        match stream.read_exact(&mut header) {
+                            Ok(()) => {}
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::UnexpectedEof
+                                        | std::io::ErrorKind::ConnectionReset
+                                ) => break,
+                            Err(error) => panic!("wide star read failed: {error}"),
+                        }
+                        let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                        let mut body = vec![0; size];
+                        stream.read_exact(&mut body).unwrap();
+                        let code = RequestCode::from_u8(header[1]).unwrap();
+                        let reply = match ReplicaRequest::decode(code, &body).unwrap() {
+                            ReplicaRequest::ReadBatchLimits => ReplicaReply::ReadBatchLimits {
+                                max_reads: 32,
+                                max_reply_payload_bytes,
+                            },
+                            ReplicaRequest::ReadChunkBatch { reads } => {
+                                frames += 1;
+                                ReplicaReply::Reads(
+                                    reads
+                                        .into_iter()
+                                        .map(|(_, _, length)| {
+                                            assert_eq!(length, 1024 * 1024);
+                                            matrixobjectstore_rs::ReplicaReadResult {
+                                                data: vec![9; length as usize],
+                                                write_sequence: 1,
+                                                checksum: "read-checksum".into(),
+                                            }
+                                        })
+                                        .collect(),
+                                )
+                            }
+                            other => panic!("unexpected wide star read request: {other:?}"),
+                        };
+                        if let Err(error) = stream.write_all(&encode_reply(&reply)) {
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::BrokenPipe
+                                    | std::io::ErrorKind::ConnectionReset
+                            ) {
+                                break;
+                            }
+                            panic!("wide star read reply failed: {error}");
+                        }
+                    }
+                    frames
+                })
+            })
+            .collect();
+
+        let mut set =
+            RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+        let reads: Vec<_> = (0..7)
+            .map(|index| (page(700 + index), 0, 1024 * 1024))
+            .collect();
+        let results = set.read_chunks(&reads).unwrap();
+        assert_eq!(results.len(), reads.len());
+        assert!(results
+            .iter()
+            .all(|read| read.data.len() == 1024 * 1024 && read.data[0] == 9));
+        drop(set);
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect()
+    }
+
+    let wide_frames = run([8 * 1024 * 1024; 3]);
+    let wide_total = wide_frames.iter().sum::<usize>();
+    assert!((2..=3).contains(&wide_total));
+
+    let compatible_frames = run([8 * 1024 * 1024, 8 * 1024 * 1024, 4 * 1024 * 1024]);
+    let compatible_total = compatible_frames.iter().sum::<usize>();
+    assert!((6..=9).contains(&compatible_total));
+    assert!(compatible_total >= wide_total * 2);
+}
+
+#[test]
 #[ignore = "controlled star read latency measurement; run explicitly in release mode"]
 fn star_read_frame_width_measurement() {
     use matrixobjectstore_rs::cluster::{
