@@ -698,6 +698,48 @@ impl RemoteMetaClient {
         })
     }
 
+    /// Copy a committed source snapshot by publishing its immutable extents.
+    /// No data pages are allocated, fetched or rewritten. Shared pages must remain
+    /// retained while either manifest or an older reader can still use them.
+    pub fn copy_object(
+        &mut self,
+        source_bucket: &str,
+        source_key: &str,
+        bucket: &str,
+        key: &str,
+        expected: Option<ObjectManifest>,
+        options: &ObjectWriteOptions,
+    ) -> Result<ObjectManifest, ObjectWriteFailure> {
+        self.with_operation_deadline(options.replica.deadline, |client| {
+            let (_, generation) = preflight(bucket, key, expected.as_ref(), 0, options)
+                .map_err(before)?;
+            let mut copied = client.read_manifest(source_bucket, source_key).map_err(before)?;
+            copied.validate().map_err(before)?;
+            if copied.deleted {
+                return Err(before(ObjectError::NotFound("copy source is deleted".into())));
+            }
+            if copied.length > options.max_object_bytes as u64 {
+                return Err(before(invalid("copy source exceeds object byte limit")));
+            }
+            copied.bucket = bucket.into();
+            copied.key = key.into();
+            copied.generation = generation;
+            let outcome = ManifestOutcome::decide(expected, copied.clone()).map_err(before)?;
+            let (publication, unadmitted) = client.publish_manifest_attempt(
+                outcome.clone(), options.update_time_ms,
+            );
+            match publication {
+                Ok(value) => Ok(value),
+                Err(error) if unadmitted => Err(ObjectWriteFailure::BeforePublication {
+                    error, staged: Some(Box::new(copied)),
+                }),
+                Err(error) => Err(ObjectWriteFailure::PublicationUnconfirmed {
+                    error, outcome: Box::new(outcome),
+                }),
+            }
+        })
+    }
+
     /// Append fresh immutable pages and conditionally publish the next generation.
     /// Existing pages are retained without reading or rewriting their payloads.
     pub fn append_object(

@@ -1,5 +1,16 @@
 # Object manifest publication
 
+`RemoteMetaClient::copy_object(source_bucket, source_key, bucket, key, expected, options)`
+copies the committed source generation observed by its metadata read. It retains
+the immutable extent records and conditionally publishes the destination, without
+allocating pages or contacting chunk servers. Source changes after that read do
+not change the copied snapshot. Destination generation conflicts refuse the copy.
+The source must be live and fit `max_object_bytes`. Shared extents must remain
+retained while any manifest or older reader can use them. An uncertain publication
+returns the outcome; the caller can inspect the destination without replaying the
+mutation. An identical destination is not treated as proof that this copy's
+destination precondition succeeded.
+
 Resuming an unpublished Star write verifies staged pages against the write
 threshold, even when ordinary committed-object reads need only one copy. A
 partially replicated candidate cannot become visible through resume. Restore
