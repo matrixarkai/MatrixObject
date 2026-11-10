@@ -467,6 +467,32 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus metadata_routes_object_writes_through_a_standalone_star_quorum -- --exact | tee /tmp/manifest-retention.log
           grep -q 'test result: ok. 1 passed' /tmp/manifest-retention.log
 
+      - name: owned allocation formats and atomic outcomes recover
+        run: |
+          set -o pipefail
+          for test in \
+            staged_allocation::tests::staged_codec_and_ownership_reject_malformed_requests_and_foreign_pages \
+            cluster::staged_allocation_commands::tests::staged_capacity_abort_and_publication_survive_binary_recovery_without_reusing_ids \
+            cluster::staged_allocation_commands::tests::staging_journal_size_is_independent_of_existing_append_extents \
+            cluster::staged_allocation_commands::tests::staging_journal_recovers_owned_allocation_and_atomic_publication \
+            cluster::meta_consensus::tests::staging_batch_restores_reservations_and_objects_before_atomic_commit
+          do
+            cargo test --locked --all-features --lib "$test" -- --exact | tee /tmp/staged-ownership.log
+            grep -q 'test result: ok. 1 passed' /tmp/staged-ownership.log
+          done
+
+      - name: owned allocations survive metadata recovery and reject aborted publication
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_metadata_consensus staged_allocations_survive_failover_and_restart_and_fence_aborted_publication -- --exact | tee /tmp/staged-ownership.log
+          grep -q 'test result: ok. 1 passed' /tmp/staged-ownership.log
+
+      - name: owned writes and appends recover with Raft data groups
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::serial_object_writer_preserves_verified_recovery -- --exact | tee /tmp/staged-ownership.log
+          grep -q 'test result: ok. 1 passed' /tmp/staged-ownership.log
+
       - name: sequential writes reuse one freshly routed group connection
         run: |
           set -o pipefail

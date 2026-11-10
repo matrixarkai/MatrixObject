@@ -30,7 +30,7 @@ and release have the same access assumptions as the metadata API; a handle is
 not a separate authorization credential.
 
 At most 128 handles can be retained. Their encoded records share the catalog's
-64-MiB checkpoint body bound with current manifests. A full catalog refuses new
+64-MiB checkpoint body bound with current manifests and staged allocations. A full catalog refuses new
 retention before changing state. Ordinary `read_object` calls do not implicitly
 create handles; callers needing explicit retention must use this API and release
 only after all users finish. Keeping a handle is not a backup and does not repair
@@ -41,7 +41,8 @@ lost or corrupt replicas.
 Metadata opcode 92 uses `proto/manifest_retention.proto`. Requests are bounded at
 8 KiB; replies at 1 MiB plus 128 bytes. `RetainedManifest` and catalog field 3 are
 defined in `proto/object_manifest.proto`. Catalog version 2 carries sorted,
-unique retention IDs. Catalogs without handles retain their version-1 encoding.
+unique retention IDs. Catalogs without handles or staged allocations retain
+their version-1 encoding; staged allocations use catalog version 3.
 Placement outcome version 3 contains only one handle creation or removal. Its
 index and retained prior state are checked before mutation. Speculative Raft
 batches restore every affected handle before proposal admission, including

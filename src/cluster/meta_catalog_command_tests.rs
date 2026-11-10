@@ -146,6 +146,7 @@ fn catalog_journal_recovers_mixed_records_and_every_torn_tail() {
         placements: vec![],
         manifest: None,
         retention: None,
+        staging: None,
     };
     expiry.apply(&mut service).unwrap();
     let (second, _) = prepare_at(&mut service, &groups, &report(2), 65536, 110).unwrap();

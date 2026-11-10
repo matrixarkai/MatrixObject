@@ -458,7 +458,7 @@ impl RemoteMetaClient {
         self.with_operation_deadline(options.replica.deadline, |client| {
             let mut bounded = options.clone();
             bounded.replica.deadline = client.operation_deadline();
-            client.resume_unpublished_object_inner(expected, staged, data, &bounded, false)
+            client.resume_unpublished_object_inner(expected, staged, data, &bounded, false, None)
         })
     }
 
@@ -473,7 +473,7 @@ impl RemoteMetaClient {
         self.with_operation_deadline(options.replica.deadline, |client| {
             let mut bounded = options.clone();
             bounded.replica.deadline = client.operation_deadline();
-            client.resume_unpublished_object_inner(Some(expected), staged, suffix, &bounded, true)
+            client.resume_unpublished_object_inner(Some(expected), staged, suffix, &bounded, true, None)
         })
     }
 
@@ -484,6 +484,7 @@ impl RemoteMetaClient {
         data: &[u8],
         options: &ObjectWriteOptions,
         append: bool,
+        owned: Option<&crate::staged_allocation::StagedAllocation>,
     ) -> Result<ObjectManifest, ObjectWriteFailure> {
         let staged_error = |error| ObjectWriteFailure::BeforePublication {
             error,
@@ -559,6 +560,11 @@ impl RemoteMetaClient {
             return Err(staged_error(ObjectError::PreconditionFailed(
                 "object manifest changed before resume".into(),
             )));
+        }
+        if let Some(allocation) = owned {
+            if self.read_staged_allocation(allocation.allocation_id).map_err(&staged_error)? != *allocation {
+                return Err(staged_error(invalid("staged allocation ownership changed")));
+            }
         }
         let mut clients = std::collections::BTreeMap::new();
         let mut routes = std::collections::BTreeMap::new();
@@ -644,8 +650,11 @@ impl RemoteMetaClient {
         }
         self.check_operation_deadline().map_err(&staged_error)?;
         let outcome = ManifestOutcome::decide(expected, staged.clone()).map_err(&staged_error)?;
-        let (publication, unadmitted) =
-            self.publish_manifest_attempt(outcome.clone(), options.update_time_ms);
+        let (publication, unadmitted) = if let Some(allocation) = owned {
+            self.publish_staged_manifest_attempt(allocation.allocation_id, outcome.clone(), options.update_time_ms)
+        } else {
+            self.publish_manifest_attempt(outcome.clone(), options.update_time_ms)
+        };
         match publication {
             Ok(value) => Ok(value),
             Err(error) if unadmitted => Err(staged_error(error)),
@@ -681,7 +690,7 @@ impl RemoteMetaClient {
         self.with_operation_deadline(options.replica.deadline, |client| {
             let mut bounded = options.clone();
             bounded.replica.deadline = client.operation_deadline();
-            client.write_object_inner(bucket, key, expected, data, &bounded, false)
+            client.write_object_inner(bucket, key, expected, data, &bounded, false, None)
         })
     }
 
@@ -740,7 +749,33 @@ impl RemoteMetaClient {
             bounded.replica.deadline = client.operation_deadline();
             let bucket = expected.bucket.clone();
             let key = expected.key.clone();
-            client.write_object_inner(&bucket, &key, Some(expected), data, &bounded, true)
+            client.write_object_inner(&bucket, &key, Some(expected), data, &bounded, true, None)
+        })
+    }
+
+    /// Write or append using an allocation durably reserved before any page I/O.
+    /// The caller retains the allocation record for abort or failure recovery.
+    pub fn write_staged_object(&mut self, allocation: &crate::staged_allocation::StagedAllocation,
+        expected: Option<ObjectManifest>, data: &[u8], options: &ObjectWriteOptions)
+        -> Result<ObjectManifest, ObjectWriteFailure> {
+        self.with_operation_deadline(options.replica.deadline, |client| {
+            let mut bounded = options.clone();
+            bounded.replica.deadline = client.operation_deadline();
+            client.write_object_inner(&allocation.bucket, &allocation.key, expected, data, &bounded,
+                allocation.append, Some(allocation))
+        })
+    }
+
+    /// Probe and complete the same owned candidate without allocating or replaying publication.
+    pub fn resume_staged_object(&mut self, allocation: &crate::staged_allocation::StagedAllocation,
+        expected: Option<ObjectManifest>, staged: ObjectManifest, data: &[u8], options: &ObjectWriteOptions)
+        -> Result<ObjectManifest, ObjectWriteFailure> {
+        allocation.check_publication(&ManifestOutcome::decide(expected.clone(), staged.clone()).map_err(before)?)
+            .map_err(before)?;
+        self.with_operation_deadline(options.replica.deadline, |client| {
+            let mut bounded = options.clone();
+            bounded.replica.deadline = client.operation_deadline();
+            client.resume_unpublished_object_inner(expected, staged, data, &bounded, allocation.append, Some(allocation))
         })
     }
 
@@ -752,10 +787,20 @@ impl RemoteMetaClient {
         data: &[u8],
         options: &ObjectWriteOptions,
         append: bool,
+        owned: Option<&crate::staged_allocation::StagedAllocation>,
     ) -> Result<ObjectManifest, ObjectWriteFailure> {
         self.check_operation_deadline().map_err(before)?;
         let (pages, generation) =
             preflight(bucket, key, expected.as_ref(), data.len(), options).map_err(before)?;
+        if let Some(allocation) = owned {
+            allocation.validate().map_err(before)?;
+            if allocation.bucket != bucket || allocation.key != key || allocation.append != append
+                || allocation.page_count < pages
+                || allocation.expected_generation != expected.as_ref().map_or(0, |manifest| manifest.generation)
+                || self.read_staged_allocation(allocation.allocation_id).map_err(before)? != *allocation {
+                return Err(before(invalid("staged allocation does not match object write")));
+            }
+        }
         if append {
             let previous = expected.as_ref().unwrap();
             if previous.deleted || previous.format_version != 2
@@ -862,9 +907,11 @@ impl RemoteMetaClient {
                     }
                 }
             }
-            let (allocation, first_page) = self
-                .take_object_page_range(pages, options.page_allocation_lease_pages)
-                .map_err(before)?;
+            let (allocation, first_page) = if let Some(allocation) = owned {
+                (allocation.allocation().map_err(before)?, 0)
+            } else {
+                self.take_object_page_range(pages, options.page_allocation_lease_pages).map_err(before)?
+            };
             for (index, bytes) in data.chunks(options.page_bytes).enumerate() {
                 let page = allocation.page(first_page + index as u32).map_err(before)?;
                 manifest.extents.push(ObjectExtent {
@@ -981,8 +1028,11 @@ impl RemoteMetaClient {
             }
         }
         self.check_operation_deadline().map_err(&staged_error)?;
-        let (publication, unadmitted) =
-            self.publish_manifest_attempt(outcome.clone(), options.update_time_ms);
+        let (publication, unadmitted) = if let Some(allocation) = owned {
+            self.publish_staged_manifest_attempt(allocation.allocation_id, outcome.clone(), options.update_time_ms)
+        } else {
+            self.publish_manifest_attempt(outcome.clone(), options.update_time_ms)
+        };
         match publication {
             Ok(value) => Ok(value),
             Err(error) if unadmitted => Err(staged_error(error)),

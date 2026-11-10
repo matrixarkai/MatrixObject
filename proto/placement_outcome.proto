@@ -4,6 +4,7 @@ syntax = "proto3";
 package matrixobject.outcome.v1;
 import "object_manifest.proto";
 import "manifest_retention.proto";
+import "staged_allocation.proto";
 // MOMP prefix, this binary message, then an eight-byte big-endian FNV checksum.
 message NodeUsage {
   string node_id = 1;
@@ -33,4 +34,5 @@ message PlacementOutcome {
   repeated PlacementChange placements = 5;
   matrixobject.ManifestOutcome manifest = 6; // version 2 only
   matrixobject.ManifestRetentionChange retention = 7; // version 3 only
+  matrixobject.StagedAllocationChange staging = 8; // version 4 only
 }

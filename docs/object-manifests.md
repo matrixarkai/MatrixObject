@@ -92,7 +92,7 @@ them. Recovery must replay catalog outcomes after the matching checkpoint before
 serving reads. These are required integration steps, not implemented guarantees
 of the current HTTP path.
 
-Metadata snapshots with no manifests keep the version-18 encoding and checksum.
+Metadata snapshots without manifests or staged allocations keep the version-18 encoding and checksum.
 A catalog with older placement charges uses version 19. Snapshots with per-group
 charges use version 20 and carry those charges in the placement roster. The
 canonical binary catalog follows the roster. Both the service checksum and

@@ -34,10 +34,20 @@ message ManifestCatalogImage {
   uint32 format_version = 1;
   repeated ObjectManifest objects = 2;
   repeated RetainedManifest retained = 3; // catalog version 2
+  repeated StagedAllocation staged = 4; // catalog version 3
 }
 message RetainedManifest {
   uint64 retention_id = 1;
   ObjectManifest manifest = 2;
+}
+message StagedAllocation {
+  uint32 version = 1;
+  uint64 allocation_id = 2;
+  uint32 page_count = 3;
+  string bucket = 4;
+  string key = 5;
+  uint64 expected_generation = 6; // zero requires absence
+  bool append = 7;
 }
 
 // Unique within one retained metadata history. Page indexes are 0..page_count-1.

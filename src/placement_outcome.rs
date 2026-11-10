@@ -121,6 +121,8 @@ pub struct PlacementOutcome {
     pub manifest: Option<ManifestOutcome>,
     #[prost(message, optional, tag = "7")]
     pub retention: Option<crate::manifest_retention::ManifestRetentionChange>,
+    #[prost(message, optional, tag = "8")]
+    pub staging: Option<crate::staged_allocation::StagedAllocationChange>,
 }
 fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
@@ -155,8 +157,24 @@ fn matches_manifest(placement: &PlacementValue, manifest: &ObjectManifest) -> bo
 }
 impl PlacementOutcome {
     fn validate_manifest_binding(&self) -> Result<(), ObjectError> {
+        if let Some(change) = &self.staging {
+            if self.version != 4 || self.retention.is_some()
+                || self.before_index.checked_add(1) != Some(self.after_index) {
+                return Err(invalid("invalid staged outcome binding"));
+            }
+            match (&change.before, &change.after, &self.manifest) {
+                (None, Some(record), None) if record.allocation_id == self.after_index => record.validate()?,
+                (Some(record), None, None) if record.allocation_id <= self.before_index => record.validate()?,
+                (Some(record), None, Some(manifest)) if record.allocation_id <= self.before_index => record.check_publication(manifest)?,
+                _ => return Err(invalid("invalid staged outcome transition")),
+            }
+            if self.manifest.is_none() {
+                if !self.nodes.is_empty() || !self.placements.is_empty() { return Err(invalid("staging changed unrelated records")); }
+                return Ok(());
+            }
+        } else if self.version == 4 { return Err(invalid("staged outcome lacks ownership change")); }
         if let Some(change) = &self.retention {
-            if self.version != 3 || self.manifest.is_some() || !self.nodes.is_empty() || !self.placements.is_empty()
+            if self.version != 3 || self.staging.is_some() || self.manifest.is_some() || !self.nodes.is_empty() || !self.placements.is_empty()
                 || self.before_index.checked_add(1) != Some(self.after_index) {
                 return Err(invalid("invalid retention outcome binding"));
             }
@@ -169,7 +187,7 @@ impl PlacementOutcome {
         }
         match (self.version, &self.manifest) {
             (1, None) => Ok(()),
-            (2, Some(manifest)) => {
+            (2 | 4, Some(manifest)) => {
                 manifest.validate()?;
                 if self.placements.len() != 1 {
                     return Err(invalid("manifest publication needs one placement change"));
@@ -201,6 +219,23 @@ impl PlacementOutcome {
         service: &MatrixMetaService,
         manifest: ManifestOutcome,
         update_time_ms: u64,
+    ) -> Result<Self, ObjectError> {
+        Self::publish_manifest_with_staging(service, manifest, update_time_ms, None)
+    }
+    pub(crate) fn publish_staged_manifest(
+        service: &MatrixMetaService,
+        manifest: ManifestOutcome,
+        update_time_ms: u64,
+        allocation: crate::staged_allocation::StagedAllocation,
+    ) -> Result<Self, ObjectError> {
+        Self::publish_manifest_with_staging(service, manifest, update_time_ms,
+            Some(crate::staged_allocation::StagedAllocationChange { before: Some(allocation), after: None }))
+    }
+    fn publish_manifest_with_staging(
+        service: &MatrixMetaService,
+        manifest: ManifestOutcome,
+        update_time_ms: u64,
+        staging: Option<crate::staged_allocation::StagedAllocationChange>,
     ) -> Result<Self, ObjectError> {
         manifest.validate()?;
         let after = manifest.after.as_ref().unwrap();
@@ -249,7 +284,7 @@ impl PlacementOutcome {
             }
         }
         let outcome = Self {
-            version: 2,
+            version: if staging.is_some() { 4 } else { 2 },
             before_index: service.placement_commit_index,
             after_index: service
                 .placement_commit_index
@@ -262,6 +297,7 @@ impl PlacementOutcome {
             }],
             manifest: Some(manifest),
             retention: None,
+            staging,
         };
         outcome.validate_manifest_binding()?;
         outcome.validate_publication(service, true)?;
@@ -279,7 +315,8 @@ impl PlacementOutcome {
         if service.object_manifests.get(&after.object_id()) != manifest.before.as_ref() {
             return Err(invalid("manifest publication prior state mismatch"));
         }
-        service.object_manifests.check_outcome(manifest)?;
+        service.object_manifests.check_outcome_with_staging(manifest,
+            self.staging.as_ref().and_then(|change| change.before.as_ref()).map(|record| record.allocation_id))?;
         let change = &self.placements[0];
         if service
             .placements
@@ -378,6 +415,7 @@ impl PlacementOutcome {
             placements,
             manifest: None,
             retention: None,
+            staging: None,
         })
     }
     pub fn finish(mut self, service: &MatrixMetaService) -> Result<Self, ObjectError> {
@@ -447,7 +485,8 @@ impl PlacementOutcome {
                     && self.nodes.is_empty()
                     && self.placements.is_empty()
                     && self.manifest.is_none()
-                    && self.retention.is_none()))
+                    && self.retention.is_none()
+                    && self.staging.is_none()))
         {
             return Err(invalid("placement outcome index mismatch"));
         }
@@ -493,11 +532,17 @@ impl PlacementOutcome {
                 return Err(invalid("placement outcome object state mismatch"));
             }
         }
+        if let Some(staging) = &self.staging {
+            service.object_manifests.check_staging(staging)?;
+        }
+        if self.manifest.is_some() { self.validate_publication(service, false)?; }
+        if let Some(staging) = &self.staging {
+            service.object_manifests.apply_staging(staging)?;
+        }
         if let Some(retention) = &self.retention {
             service.object_manifests.apply_retention(retention)?;
         }
         if let Some(manifest) = &self.manifest {
-            self.validate_publication(service, false)?;
             // Catalog capacity and expected-state checks happen before any other writes.
             service.object_manifests.apply(manifest)?;
         }

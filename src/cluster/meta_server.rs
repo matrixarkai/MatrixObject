@@ -692,6 +692,12 @@ fn apply(
     }
     let request = super::health_report::stamp(request, &guard.service)?;
     let decision = match &request {
+        MetaRequest::StagedAllocation(command) if !command.is_read() => {
+            if guard.storage.is_none() {
+                return Err(ObjectError::PreconditionFailed("staged allocation requires durable metadata storage".into()));
+            }
+            Some(super::staged_allocation_commands::prepare(&guard.service, &guard.groups, command, max_payload_bytes)?)
+        }
         MetaRequest::ManifestRetention(command) if !command.is_read() => {
             if guard.storage.is_none() {
                 return Err(ObjectError::PreconditionFailed("retention requires durable metadata storage".into()));
@@ -727,7 +733,7 @@ fn apply(
     if let Some((decided, reply)) = decision {
         if guard.storage.is_some() {
             // Preflight the local snapshot bound before persisting an outcome.
-            if decided.manifest.is_some() || decided.retention.is_some() {
+            if decided.manifest.is_some() || decided.retention.is_some() || decided.staging.is_some() {
                 let mut preview = guard.service.clone();
                 decided.apply(&mut preview)?;
                 if super::chunk_groups::encode_bootstrap(&preview, &guard.groups)?.len()
@@ -871,6 +877,7 @@ pub(super) fn decide_allocation(
         placements: vec![],
         manifest: None,
         retention: None,
+        staging: None,
     };
     outcome.to_payload()?;
     Ok((outcome, reply))
@@ -943,6 +950,13 @@ pub(super) fn apply_with_groups(
     groups: &super::ChunkGroupCatalog,
 ) -> Result<MetaReply, ObjectError> {
     groups.check_request(&request)?;
+    if let MetaRequest::StagedAllocation(command) = &request {
+        if !command.is_read() {
+            let (outcome, reply) = super::staged_allocation_commands::prepare(service, groups, command, limit)?;
+            outcome.apply(service)?;
+            return Ok(reply);
+        }
+    }
     if let MetaRequest::ManifestRetention(command) = &request {
         if !command.is_read() {
             let (outcome, reply) = decide_retention(service, command, limit)?;
@@ -1127,6 +1141,7 @@ pub(super) fn apply_to_meta(
     max_payload_bytes: usize,
 ) -> Result<MetaReply, ObjectError> {
     match request {
+        MetaRequest::StagedAllocation(command) => super::staged_allocation_commands::read(guard, &command, max_payload_bytes),
         MetaRequest::ManifestRetention(command) => {
             command.validate()?;
             let mut value = crate::manifest_retention::ManifestRetentionReply { version: 1, ..Default::default() };

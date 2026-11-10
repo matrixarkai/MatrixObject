@@ -174,6 +174,8 @@ pub mod meta_message;
 #[cfg(feature = "meta-server")]
 pub mod meta_server;
 #[cfg(feature = "meta-server")]
+mod staged_allocation_commands;
+#[cfg(feature = "meta-server")]
 pub mod meta_wire;
 #[cfg(feature = "meta-server")]
 pub use meta_identity::MetaGroupIdentity;
