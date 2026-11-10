@@ -2,8 +2,9 @@
 // Copyright 2026 MatrixArkAI
 //! Decided page changes shared by local recovery and replicated logs.
 use crate::{
-    chunk_local_state_checksum, ChunkId, DataRange, MatrixReplicaService, ObjectError, PageId,
-    PageState,
+    chunk_local_state_checksum, chunk_local_state_checksum_with_data_etag,
+    validate_chunk_state_with_data_etag, ChunkId, DataRange, MatrixReplicaService, ObjectError,
+    PageId, PageState,
 };
 use prost::Message;
 use std::sync::Arc;
@@ -68,10 +69,16 @@ impl PageOutcome {
         if after.data.len() > 256 * 1024 * 1024 {
             return Err(invalid("page outcome exceeds page size limit"));
         }
-        crate::validate_chunk_state(after)?;
-        if let Some(state) = before {
-            crate::validate_chunk_state(state)?;
-        }
+        let after_data_etag = validate_chunk_state_with_data_etag(after)?;
+        let before_data_etag = before
+            .map(validate_chunk_state_with_data_etag)
+            .transpose()?;
+        let before_checksum = before
+            .zip(before_data_etag.as_deref())
+            .map(|(state, data_etag)| {
+                chunk_local_state_checksum_with_data_etag(state, data_etag)
+            })
+            .unwrap_or_default();
         let old = before.map(|s| s.data.as_slice()).unwrap_or(&[]);
         let mut patches = Vec::new();
         let mut at = 0;
@@ -100,7 +107,7 @@ impl PageOutcome {
             volume_id: page.chunk_id.volume_id(),
             chunk_id: page.chunk_id.id(),
             page_index: page.page_index,
-            before_checksum: before.map(chunk_local_state_checksum).unwrap_or_default(),
+            before_checksum,
             logical_length: after.logical_length,
             write_sequence: after.write_sequence,
             data_checksum: after.checksum_fnv1a64,
@@ -113,7 +120,7 @@ impl PageOutcome {
                     length: r.length,
                 })
                 .collect(),
-            after_checksum: chunk_local_state_checksum(after),
+            after_checksum: chunk_local_state_checksum_with_data_etag(after, &after_data_etag),
             data_length: after.data.len() as u64,
             physical_deltas: vec![0; 4],
         };
