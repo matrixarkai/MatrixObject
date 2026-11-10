@@ -289,7 +289,6 @@ pub struct RemoteReplicaSet {
     routed_reconnect: Option<RoutedReconnect>,
     write_quorum: usize,
     read_quorum: usize,
-    write_cursor: usize,
     read_cursor: usize,
     state_conditional_write: Option<bool>,
     conditional_write_limits: Option<(usize, usize)>,
@@ -421,7 +420,6 @@ impl RemoteReplicaSet {
             routed_reconnect: None,
             write_quorum,
             read_quorum,
-            write_cursor: 0,
             read_cursor: 0,
             state_conditional_write: None,
             conditional_write_limits: None,
@@ -502,7 +500,6 @@ impl RemoteReplicaSet {
             routed_reconnect: Some(routed_reconnect),
             write_quorum,
             read_quorum,
-            write_cursor: 0,
             read_cursor: 0,
             state_conditional_write: None,
             conditional_write_limits: None,
@@ -990,36 +987,6 @@ impl RemoteReplicaSet {
         self.read_quorum
     }
 
-    fn next_write_waves(&mut self, eligible: Option<&[bool]>) -> (Vec<bool>, Vec<bool>) {
-        let member_count = self.replicas.len();
-        let mut primary = vec![false; member_count];
-        if member_count == 0 {
-            return (primary.clone(), primary);
-        }
-        let eligible_count = (0..member_count)
-            .filter(|index| eligible.map_or(true, |members| members[*index]))
-            .count();
-        let primary_count = self.write_quorum.min(eligible_count);
-        let mut examined = 0usize;
-        let mut selected = 0usize;
-        let mut index = self.write_cursor % member_count;
-        while examined < member_count && selected < primary_count {
-            if eligible.map_or(true, |members| members[index]) {
-                primary[index] = true;
-                selected += 1;
-            }
-            index = (index + 1) % member_count;
-            examined += 1;
-        }
-        self.write_cursor = index;
-        let fallback = (0..member_count)
-            .map(|index| {
-                eligible.map_or(true, |members| members[index]) && !primary[index]
-            })
-            .collect();
-        (primary, fallback)
-    }
-
     fn next_read_waves(&mut self, quorum: usize) -> (Vec<bool>, Vec<bool>) {
         let member_count = self.replicas.len();
         let mut primary = vec![false; member_count];
@@ -1196,9 +1163,9 @@ impl RemoteReplicaSet {
 
         // A successful conditional insert from a write quorum is also proof that
         // the quorum held the absent state. Fresh whole pages therefore need no
-        // separate head exchange and send their payload to a rotating quorum first.
-        // Remaining eligible members are a fallback wave when that quorum cannot
-        // acknowledge. Any repeated, partial, or nonzero-sequence write keeps the
+        // separate head exchange. Send to every connected member concurrently and
+        // return after a durable quorum; an optional member may finish later or
+        // require repair. Repeated, partial, or nonzero-sequence writes keep the
         // exact head vote because equal sequences can hold different bytes.
         let mut fresh_pages = BTreeSet::new();
         let fresh_whole_pages = required_sequences.is_some_and(|required| {
@@ -1225,7 +1192,7 @@ impl RemoteReplicaSet {
                 })
                 .collect();
             let mut acknowledgements = vec![0; writes.len()];
-            self.apply_conditional_write_group(group, None, true, &mut acknowledgements)?;
+            self.apply_conditional_write_group(group, None, &mut acknowledgements)?;
             return Ok(acknowledgements);
         }
 
@@ -1270,12 +1237,7 @@ impl RemoteReplicaSet {
 
         let mut acknowledgements = vec![0; writes.len()];
         for (matching, group) in groups {
-            self.apply_conditional_write_group(
-                group,
-                Some(&matching),
-                false,
-                &mut acknowledgements,
-            )?;
+            self.apply_conditional_write_group(group, Some(&matching), &mut acknowledgements)?;
         }
         Ok(acknowledgements)
     }
@@ -1284,7 +1246,6 @@ impl RemoteReplicaSet {
         &mut self,
         group: Vec<(usize, ConditionalChunkWrite)>,
         selected: Option<&[bool]>,
-        quorum_first: bool,
         acknowledgements: &mut [usize],
     ) -> Result<(), ObjectError> {
         let legacy_frames = conditional_write_frame_count(&group, 8, 4 * 1024 * 1024, 0, 0);
@@ -1334,29 +1295,11 @@ impl RemoteReplicaSet {
             };
             let mut acknowledged = 0usize;
             let mut first_error = None;
-            let (primary, fallback) = if quorum_first {
-                let (primary, fallback) = self.next_write_waves(selected);
-                (Some(primary), Some(fallback))
-            } else {
-                (None, None)
-            };
-            let first_wave = primary.as_deref().or(selected);
-            for result in self.fan_out_write_quorum(&request, first_wave) {
+            for result in self.fan_out_write_quorum(&request, selected) {
                 match applied(result) {
                     Ok(()) => acknowledged += 1,
                     Err(error) if first_error.is_none() => first_error = Some(error),
                     Err(_) => {}
-                }
-            }
-            if acknowledged < self.write_quorum {
-                if let Some(fallback) = fallback.as_deref() {
-                    for result in self.fan_out_write_quorum(&request, Some(fallback)) {
-                        match applied(result) {
-                            Ok(()) => acknowledged += 1,
-                            Err(error) if first_error.is_none() => first_error = Some(error),
-                            Err(_) => {}
-                        }
-                    }
                 }
             }
             if acknowledged < self.write_quorum {

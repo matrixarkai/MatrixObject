@@ -1022,7 +1022,98 @@ fn fresh_star_pages_use_conditional_writes_as_the_absence_fence() {
 }
 
 #[test]
-fn seven_mib_fresh_star_batches_use_rotating_write_quorums() {
+fn fresh_star_batch_reaches_all_members_and_returns_after_quorum() {
+    use matrixobjectstore_rs::cluster::{
+        message::encode_reply, ReplicaReply, ReplicaRequest, RequestCode,
+    };
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::time::Duration;
+
+    let listeners: Vec<_> = (0..3)
+        .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let endpoints: Vec<_> = listeners
+        .iter()
+        .map(|listener| listener.local_addr().unwrap().to_string())
+        .collect();
+    let (slow_arrived, arrival) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let (fast_arrived, fast_arrival) = mpsc::channel();
+    let (release_fast, fast_released) = mpsc::channel();
+    let fast_released = Arc::new(Mutex::new(fast_released));
+    let mut released = Some(released);
+    let workers: Vec<_> = listeners
+        .into_iter()
+        .enumerate()
+        .map(|(index, listener)| {
+            let slow_arrived = slow_arrived.clone();
+            let fast_arrived = fast_arrived.clone();
+            let fast_released = Arc::clone(&fast_released);
+            let wait = if index == 0 { released.take() } else { None };
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                for phase in 0..1 {
+                    let mut header = [0; 6];
+                    stream.read_exact(&mut header).unwrap();
+                    let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                    let mut body = vec![0; size];
+                    stream.read_exact(&mut body).unwrap();
+                    let code = RequestCode::from_u8(header[1]).unwrap();
+                    match (phase, ReplicaRequest::decode(code, &body).unwrap()) {
+                        (0, ReplicaRequest::WriteChunkBatchIfSequence { writes }) => {
+                            assert_eq!(writes.len(), 1);
+                            assert_eq!(writes[0].page_id, page(400));
+                            if let Some(ref wait) = wait {
+                                slow_arrived.send(()).unwrap();
+                                wait.recv_timeout(Duration::from_secs(5)).unwrap();
+                            } else {
+                                fast_arrived.send(()).unwrap();
+                                fast_released
+                                    .lock()
+                                    .unwrap()
+                                    .recv_timeout(Duration::from_secs(5))
+                                    .unwrap();
+                            }
+                            let _ = stream.write_all(&encode_reply(&ReplicaReply::Applied));
+                        }
+                        other => panic!("unexpected fresh star batch: {other:?}"),
+                    }
+                }
+            })
+        })
+        .collect();
+    drop(slow_arrived);
+    drop(fast_arrived);
+
+    let (completed, completion) = mpsc::channel();
+    let coordinator = std::thread::spawn(move || {
+        let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default())
+            .unwrap();
+        completed
+            .send(set.write_chunks_if_sequence(&[(page(400), 0, b"quorum", 0)]))
+            .unwrap();
+    });
+    arrival.recv_timeout(Duration::from_secs(2)).unwrap();
+    for _ in 0..2 {
+        fast_arrival.recv_timeout(Duration::from_secs(2)).unwrap();
+        release_fast.send(()).unwrap();
+    }
+    assert_eq!(
+        completion.recv_timeout(Duration::from_secs(1)).unwrap().unwrap(),
+        vec![2]
+    );
+    release.send(()).unwrap();
+    coordinator.join().unwrap();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn seven_mib_fresh_star_batches_preserve_batch_bounds() {
     use matrixobjectstore_rs::cluster::{
         message::encode_reply, ReplicaReply, ReplicaRequest, RequestCode,
     };
@@ -1093,7 +1184,8 @@ fn seven_mib_fresh_star_batches_use_rotating_write_quorums() {
                 )
             })
             .collect();
-        assert_eq!(set.write_chunks_if_sequence(&writes).unwrap(), vec![2; 7]);
+        let acknowledgements = set.write_chunks_if_sequence(&writes).unwrap();
+        assert!(acknowledgements.iter().all(|count| (2..=3).contains(count)));
     }
     drop(set);
     let mut payload_frames: Vec<_> = workers
@@ -1101,7 +1193,8 @@ fn seven_mib_fresh_star_batches_use_rotating_write_quorums() {
         .map(|worker| worker.join().unwrap())
         .collect();
     payload_frames.sort_unstable();
-    assert_eq!(payload_frames, vec![1, 1, 2]);
+    assert!(payload_frames.iter().all(|frames| (1..=2).contains(frames)));
+    assert!(payload_frames.iter().sum::<usize>() >= 4);
 }
 
 #[test]
@@ -1286,20 +1379,20 @@ fn older_member_keeps_star_write_frames_at_eight_writes() {
         .enumerate()
         .map(|(index, data)| (page(400 + index as u64), 0, data.as_slice(), 0))
         .collect();
-    assert_eq!(set.write_chunks_if_sequence(&writes).unwrap(), vec![2; 32]);
+    let acknowledgements = set.write_chunks_if_sequence(&writes).unwrap();
+    assert!(acknowledgements.iter().all(|count| (2..=3).contains(count)));
     drop(set);
     let mut first_pages: Vec<_> = workers
         .into_iter()
         .flat_map(|worker| worker.join().unwrap())
         .collect();
     first_pages.sort_unstable();
-    assert_eq!(
-        first_pages,
-        [400, 408, 416, 424]
-            .into_iter()
-            .flat_map(|index| [page(index), page(index)])
-            .collect::<Vec<_>>()
-    );
+    assert!(first_pages
+        .iter()
+        .all(|page_id| [400, 408, 416, 424].into_iter().any(|index| *page_id == page(index))));
+    for index in [400, 408, 416, 424] {
+        assert!((2..=3).contains(&first_pages.iter().filter(|page_id| **page_id == page(index)).count()));
+    }
 }
 
 #[test]

@@ -407,6 +407,12 @@ the same majority for the read fence and mutation quorum. They admit up to 32
 fresh pages per coordinator call while retaining the eight-write, 4 MiB mutation
 frame bounds. Identity versions 1 and 2 remain Raft routes.
 
+Fresh page batches are sent to every eligible member concurrently. The client
+acknowledges a batch after the write quorum has applied it. A slower optional
+member can complete within the bounded drain; otherwise its connection is
+retired and inventory repair can restore that copy. The write result counts
+durable acknowledgments, not the number of attempted sends.
+
 The check prevents an already divergent member from counting toward a fresh write
 acknowledgment. It does not repair that member, establish cross-client linearizability
 or authenticate replies. Explicit repair is available through `repair_chunk` and
