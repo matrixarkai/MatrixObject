@@ -311,10 +311,16 @@ fn write_group_extents(
                     let extent = &manifest.extents[index];
                     let start = extent.object_offset as usize;
                     let bytes = &data[start..start + extent.length as usize];
+                    let digest_matches = if extent.data_sha256.is_empty() {
+                        // Older staged manifests have no recorded SHA digest.
+                        sha256.as_ref()
+                            == ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()
+                    } else {
+                        sha256.as_ref() == extent.data_sha256.as_slice()
+                    };
                     if sequence != 1
                         || actual_length != extent.length
-                        || sha256.as_ref()
-                            != ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()
+                        || !digest_matches
                     {
                         return Err(ObjectError::Corruption(
                             "written page verification failed".into(),
