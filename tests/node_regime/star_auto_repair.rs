@@ -27,6 +27,148 @@ fn worker_repairs_256_pages_across_metadata_failover_and_chunk_restart() {
     exercise(256, 16);
 }
 
+#[test]
+fn worker_discovers_two_star_groups_and_repairs_after_metadata_failover() {
+    exercise_all_groups(2);
+}
+
+#[test]
+#[ignore = "local multi-group repair scale run"]
+fn worker_repairs_eight_star_groups_across_metadata_failover() {
+    exercise_all_groups(8);
+}
+
+fn exercise_all_groups(group_count: usize) {
+    let reservations: Vec<_> = (0..group_count * 3)
+        .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let endpoints: Vec<_> = reservations
+        .iter()
+        .map(|listener| listener.local_addr().unwrap().to_string())
+        .collect();
+    let groups: Vec<_> = (0..group_count)
+        .map(|group| ChunkGroupConfig {
+            placement_id: format!("repair-group-{group}"),
+            failure_domain: format!("rack-{group}"),
+            identity: Some(ChunkGroupIdentity {
+                version: 3,
+                group_id: group as u64 + 1,
+                node_id: 1,
+                capacity_bytes: 1 << 28,
+                max_pages: 4096,
+                voters: vec![1, 2, 3],
+                peer_endpoints: Vec::new(),
+                bootstrap_voters: Vec::new(),
+                bootstrap_id: 0,
+            }),
+            api_endpoints: endpoints[group * 3..group * 3 + 3].to_vec(),
+            member_ids: (0..3)
+                .map(|member| format!("repair-{group}-{member}"))
+                .collect(),
+        })
+        .collect();
+    let catalog = ChunkGroupCatalog::new(groups).unwrap();
+    let mut metadata = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let journals: Vec<_> = (0..group_count * 3)
+        .map(|index| metadata.root.join(format!("repair-all-{index}.log")))
+        .collect();
+    drop(reservations);
+    let start = |index: usize| {
+        processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", &endpoints[index]),
+                (
+                    "MATRIXOBJECT_REPLICA_JOURNAL",
+                    journals[index].to_str().unwrap(),
+                ),
+            ],
+        )
+    };
+    let mut chunks: Vec<_> = (0..group_count * 3).map(start).collect();
+    let page = |group: usize| PageId {
+        chunk_id: ChunkId::new(1, group as u64 + 80).unwrap(),
+        page_index: 0,
+    };
+    let options = ReplicaClientOptions::default();
+    let write_sources = |group: usize| {
+        for member in 0..2 {
+            RemoteReplicaClient::connect(&endpoints[group * 3 + member], &options)
+                .unwrap()
+                .write_chunk(page(group), 0, &[group as u8 + 10; 64])
+                .unwrap();
+        }
+    };
+    write_sources(0);
+    let metadata_endpoints = metadata
+        .api_addresses
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut worker = RepairWorker(
+        Command::new(env!("CARGO_BIN_EXE_star_repaird"))
+            .env("MATRIXOBJECT_REPAIR_METADATA_ENDPOINTS", metadata_endpoints)
+            .env("MATRIXOBJECT_REPAIR_ALL_GROUPS", "1")
+            .env_remove("MATRIXOBJECT_REPAIR_GROUP")
+            .env("MATRIXOBJECT_REPAIR_WORKERS", "4")
+            .env("MATRIXOBJECT_REPAIR_BATCH_PAGES", "1")
+            .env("MATRIXOBJECT_REPAIR_INTERVAL_MS", "100")
+            .env("MATRIXOBJECT_REPAIR_SWEEP_INTERVAL_MS", "1000")
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    let mut wait_for = |group: usize| {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            assert!(
+                worker.0.try_wait().unwrap().is_none(),
+                "repair worker stopped"
+            );
+            if let Ok(mut destination) =
+                RemoteReplicaClient::connect(&endpoints[group * 3 + 2], &options)
+            {
+                if let Ok(read) = destination.read_chunk(&page(group), 0, 64) {
+                    assert_eq!(read.data, vec![group as u8 + 10; 64]);
+                    break;
+                }
+            }
+            assert!(Instant::now() < deadline, "group {group} was not repaired");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    };
+    wait_for(0);
+    let leader = metadata.leader();
+    metadata.kill(leader);
+    for group in 1..group_count {
+        write_sources(group);
+    }
+    for group in 1..group_count {
+        wait_for(group);
+    }
+    drop(worker);
+    chunks.clear();
+    chunks = (0..group_count * 3).map(start).collect();
+    for group in 0..group_count {
+        for member in 0..3 {
+            let mut reader =
+                RemoteReplicaClient::connect(&chunks[group * 3 + member].endpoint, &options)
+                    .unwrap();
+            assert_eq!(
+                reader.read_chunk(&page(group), 0, 64).unwrap().data,
+                vec![group as u8 + 10; 64]
+            );
+        }
+    }
+    println!(
+        "STAR_GROUP_REPAIR groups={group_count} chunk_processes={} verified_copies={}",
+        group_count * 3,
+        group_count * 3
+    );
+}
+
 fn exercise(pages: u64, batch_pages: usize) {
     let reservations: Vec<_> = (0..3)
         .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
@@ -103,6 +245,7 @@ fn exercise(pages: u64, batch_pages: usize) {
         Command::new(env!("CARGO_BIN_EXE_star_repaird"))
             .env("MATRIXOBJECT_REPAIR_METADATA_ENDPOINTS", metadata_endpoints)
             .env("MATRIXOBJECT_REPAIR_GROUP", "repair-group")
+            .env_remove("MATRIXOBJECT_REPAIR_ALL_GROUPS")
             .env("MATRIXOBJECT_REPAIR_BATCH_PAGES", batch_pages.to_string())
             .env("MATRIXOBJECT_REPAIR_INTERVAL_MS", "100")
             .env("MATRIXOBJECT_REPAIR_SWEEP_INTERVAL_MS", "1000")
