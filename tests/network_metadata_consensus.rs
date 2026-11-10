@@ -847,6 +847,21 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
         ..Default::default()
     };
     let first_bytes: Vec<u8> = (0..page_count * page_bytes).map(|index| index as u8).collect();
+    let base = client.write_object("star", "append", None, b"prefix", &options).unwrap();
+    let suffix = vec![0x7b; page_bytes + 1];
+    let appended = client.append_object(base.clone(), &suffix, &options).unwrap();
+    assert_eq!(&appended.extents[..base.extents.len()], &base.extents);
+    assert_eq!(appended.generation, base.generation + 1);
+    let mut append_bytes = b"prefix".to_vec();
+    append_bytes.extend_from_slice(&suffix);
+    assert_eq!(client.read_object("star", "append", append_bytes.len(), &options.replica)
+        .unwrap(), (appended.clone(), append_bytes.clone()));
+    assert_eq!(client.read_object_range("star", "append", 5, 2, 2, &options.replica)
+        .unwrap().1, [b'x', 0x7b]);
+    let mut bounded_append = options.clone();
+    bounded_append.max_object_bytes = append_bytes.len();
+    assert!(client.append_object(appended.clone(), b"limit", &bounded_append).is_err());
+    assert!(client.append_object(base, b"stale", &options).is_err());
     let started = Instant::now();
     let first = client
         .write_object("star", "first", None, &first_bytes, &options)
@@ -889,7 +904,7 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
         }
         after = repaired.resume_after;
     }
-    assert_eq!(repaired_pages, first.extents.len());
+    assert_eq!(repaired_pages, first.extents.len() + appended.extents.len());
 
     let extent = &first.extents[0];
     let page = PageId {
@@ -916,6 +931,8 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
 
     chunks[0].child.kill().unwrap();
     assert!(processes::reap_within(&mut chunks[0].child, Duration::from_secs(3)).is_some());
+    assert!(client.append_object(appended.clone(), b"unavailable", &options).is_err());
+    assert_eq!(client.read_manifest("star", "append").unwrap(), appended);
     drop(client);
     let mut client = connect_metadata();
     assert_eq!(

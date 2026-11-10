@@ -661,7 +661,24 @@ impl RemoteMetaClient {
         self.with_operation_deadline(options.replica.deadline, |client| {
             let mut bounded = options.clone();
             bounded.replica.deadline = client.operation_deadline();
-            client.write_object_inner(bucket, key, expected, data, &bounded)
+            client.write_object_inner(bucket, key, expected, data, &bounded, false)
+        })
+    }
+
+    /// Append fresh immutable pages and conditionally publish the next generation.
+    /// Existing pages are retained without reading or rewriting their payloads.
+    pub fn append_object(
+        &mut self,
+        expected: ObjectManifest,
+        data: &[u8],
+        options: &ObjectWriteOptions,
+    ) -> Result<ObjectManifest, ObjectWriteFailure> {
+        self.with_operation_deadline(options.replica.deadline, |client| {
+            let mut bounded = options.clone();
+            bounded.replica.deadline = client.operation_deadline();
+            let bucket = expected.bucket.clone();
+            let key = expected.key.clone();
+            client.write_object_inner(&bucket, &key, Some(expected), data, &bounded, true)
         })
     }
 
@@ -672,10 +689,21 @@ impl RemoteMetaClient {
         expected: Option<ObjectManifest>,
         data: &[u8],
         options: &ObjectWriteOptions,
+        append: bool,
     ) -> Result<ObjectManifest, ObjectWriteFailure> {
         self.check_operation_deadline().map_err(before)?;
         let (pages, generation) =
             preflight(bucket, key, expected.as_ref(), data.len(), options).map_err(before)?;
+        if append {
+            let previous = expected.as_ref().unwrap();
+            if previous.deleted || previous.format_version != 2
+                || previous.length.checked_add(data.len() as u64)
+                    .is_none_or(|length| length > options.max_object_bytes as u64)
+                || previous.extents.len() + pages as usize > 4096
+            {
+                return Err(before(invalid("invalid object append size or generation")));
+            }
+        }
         let count = options.target_groups.min(pages);
         let max_group_bytes = if count > 0 {
             let mut planned_group_bytes = vec![0u64; count as usize];
@@ -793,10 +821,22 @@ impl RemoteMetaClient {
                 });
             }
         }
-        let outcome = ManifestOutcome::decide(expected, manifest.clone()).map_err(before)?;
+        let published = if append {
+            let previous = expected.as_ref().unwrap();
+            let mut combined = manifest.clone();
+            combined.length += previous.length;
+            for extent in &mut combined.extents {
+                extent.object_offset += previous.length;
+            }
+            let mut extents = previous.extents.clone();
+            extents.extend(combined.extents);
+            combined.extents = extents;
+            combined
+        } else { manifest.clone() };
+        let outcome = ManifestOutcome::decide(expected, published.clone()).map_err(before)?;
         let staged_error = |error| ObjectWriteFailure::BeforePublication {
             error,
-            staged: Some(Box::new(manifest.clone())),
+            staged: Some(Box::new(published.clone())),
         };
         // Group I/O may overlap, but publication waits for every started group.
         // Visit the first target first and keep the manifest in object order.
@@ -887,8 +927,8 @@ impl RemoteMetaClient {
             Err(error) => {
                 // Never replay publication. Only the exact resulting value proves
                 // current visibility; a failed read or another value stays uncertain.
-                if self.read_manifest(bucket, key).ok().as_ref() == Some(&manifest) {
-                    Ok(manifest)
+                if self.read_manifest(bucket, key).ok().as_ref() == Some(&published) {
+                    Ok(published)
                 } else {
                     Err(ObjectWriteFailure::PublicationUnconfirmed {
                         error,

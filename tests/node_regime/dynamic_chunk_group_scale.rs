@@ -348,6 +348,29 @@ fn replacement_load(group_count: usize, writes: u64, concurrent: bool, rounds: u
     }
     group_usage(&metadata.api, &groups, &saved);
     verify_load(&metadata.api, &saved, true);
+    let (number, placement) = &saved[0];
+    let previous = meta.read_manifest(&placement.bucket, &placement.key).unwrap();
+    let options = matrixobjectstore_rs::cluster::ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 2,
+        replica: chunk_options(),
+        ..Default::default()
+    };
+    let suffix = vec![0x6d; 8193];
+    let appended = meta.append_object(previous.clone(), &suffix, &options).unwrap();
+    assert_eq!(&appended.extents[..previous.extents.len()], &previous.extents);
+    let mut expected = load_data_sized(*number, placement.length);
+    expected.extend_from_slice(&suffix);
+    let leader = metadata.api.iter().position(|a| a == meta.endpoint()).unwrap();
+    metadata.kill(leader);
+    for group in &mut groups {
+        let leader = group.leader();
+        group.kill(leader);
+    }
+    let mut meta = metadata.ready();
+    for group in &groups { group.leader(); }
+    assert_eq!(meta.read_object(&placement.bucket, &placement.key,
+        expected.len(), &chunk_options()).unwrap(), (appended, expected));
     println!(
         "DYNAMIC_GROUPS groups={group_count} peak_processes={} objects={} concurrent_reads={reads} concurrent_controllers={concurrent} peak_controllers={controller_peak} replacement_rounds={rounds}",
         group_count * 4 + 3,

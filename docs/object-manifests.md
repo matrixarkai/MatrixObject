@@ -1,5 +1,18 @@
 # Object manifest publication
 
+`RemoteMetaClient::append_object(expected, suffix, options)` retains the expected
+generation's immutable extents and writes fresh pages for the suffix. It publishes
+the combined manifest only after the new pages are durable. Existing payloads are
+neither fetched nor rewritten. A changed generation refuses publication; uncertain
+publication is resolved only by observing the exact resulting manifest.
+
+Append requires a live version-2 manifest. The total length must fit
+`max_object_bytes`, and the combined manifest retains the 4,096-extent and encoded
+size limits. An empty suffix still conditionally publishes the next generation.
+Failed writes can leave unpublished pages for later reclamation. The existing
+whole-object resume helper does not accept arbitrary append layouts; callers must
+inspect the failure and committed manifest before starting another operation.
+
 `RemoteMetaClient::read_object_range(bucket, key, offset, length, max_bytes, options)`
 reads a byte range from one committed generation. The requested length must fit
 the caller's byte limit, and the range must fit the object; an empty range at
