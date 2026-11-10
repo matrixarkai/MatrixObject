@@ -994,8 +994,6 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
         cursor = batch.resume_after;
     }
     drop(repair);
-    drop(client);
-    let mut client = connect_metadata();
     let unwritten = append_candidate.extents.last().unwrap();
     let unwritten_page = PageId {
         chunk_id: ChunkId::new(unwritten.volume_id, unwritten.chunk_id).unwrap(),
