@@ -977,6 +977,7 @@ fn read_only(request: &ReplicaRequest) -> bool {
         ReplicaRequest::Membership(command) => command.is_read(),
         ReplicaRequest::ReadChunk { .. }
         | ReplicaRequest::ReadChunkBatch { .. }
+        | ReplicaRequest::DigestChunkBatch { .. }
         | ReplicaRequest::DigestChunk { .. }
         | ReplicaRequest::ReadChunkStateRange { .. }
         | ReplicaRequest::HeadChunk { .. }

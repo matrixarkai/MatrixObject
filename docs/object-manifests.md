@@ -19,6 +19,11 @@ Staged probes request sequence, length and SHA-256 digests from the replicas,
 so successful verification transfers fixed-size replies instead of page payloads.
 Servers that reject the digest request use full-byte quorum verification within
 the original read deadline. Absence also requires the durable quorum.
+Up to eight staged ranges share one digest batch per member through replica
+opcode 24. It uses `ChunkReadBatch` and `ChunkDigestBatch` in
+`proto/conditional_requests.proto`. Successful batches vote on every page's
+digest. A missing-page or unsupported batch reply falls back to individual
+probes within the same deadline, so a batch error never marks all pages absent.
 
 `RemoteMetaClient::append_object(expected, suffix, options)` retains the expected
 generation's immutable extents and writes fresh pages for the suffix. It publishes

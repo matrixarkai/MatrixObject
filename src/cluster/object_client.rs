@@ -110,10 +110,7 @@ impl RemoteGroupClient {
     ) -> Result<Vec<Option<(u64, u64, [u8; 32])>>, ObjectError> {
         match self {
             Self::Raft(client) => client.probe_chunk_digests_pipelined(pages),
-            Self::Star(set) => pages
-                .iter()
-                .map(|(page, offset, length)| set.probe_written_chunk(page, *offset, *length))
-                .collect(),
+            Self::Star(set) => set.probe_written_chunks(pages),
         }
     }
 

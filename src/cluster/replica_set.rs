@@ -1579,13 +1579,49 @@ impl RemoteReplicaSet {
     }
 
     /// Verify staged bytes against the durable write threshold before publication.
-    pub(super) fn probe_written_chunk(
-        &mut self,
-        page_id: &PageId,
-        offset: u64,
-        length: u64,
-    ) -> Result<Option<(u64, u64, [u8; 32])>, ObjectError> {
+    pub(super) fn probe_written_chunks(
+        &mut self, pages: &[(PageId, u64, u64)],
+    ) -> Result<Vec<Option<(u64, u64, [u8; 32])>>, ObjectError> {
+        if pages.len() > 8 || pages.iter().any(|(_, _, length)| *length > 1024 * 1024) {
+            return Err(ObjectError::InvalidArgument("staged digest batch exceeds bounds".into()));
+        }
+        if pages.is_empty() { return Ok(Vec::new()); }
         let deadline = self.read_wave_deadline()?;
+        if pages.len() > 1 {
+            self.reconnect_failed();
+            let required = self.read_quorum.max(self.write_quorum);
+            if self.routed_reconnect.is_some() && self.replicas.len() < required {
+                self.collect_routed_reconnect(required);
+            }
+            let mut votes = vec![BTreeMap::new(); pages.len()];
+            self.fan_out_each_before(&ReplicaRequest::DigestChunkBatch { reads: pages.to_vec() },
+                None, deadline, None, |_, reply| {
+                    if let Ok(ReplicaReply::Digests(digests)) = reply {
+                        if digests.len() == votes.len() {
+                            for (page_votes, digest) in votes.iter_mut().zip(digests) {
+                                *page_votes.entry(digest).or_insert(0usize) += 1;
+                            }
+                        }
+                    }
+                });
+            let confirmed: Option<Vec<_>> = votes.into_iter().map(|votes|
+                votes.into_iter().find(|(_, count)| *count >= required).map(|(digest, _)| Some(digest))
+            ).collect();
+            if let Some(confirmed) = confirmed { return Ok(confirmed); }
+            // A batch absence does not identify the missing page. Probe each
+            // range separately before treating any staged page as absent.
+        }
+        pages.iter().map(|(page, offset, length)| self.probe_written_chunk_before(page, *offset, *length, deadline)).collect()
+    }
+
+    /// Verify one staged range, including absence, against the write threshold.
+    fn probe_written_chunk_before(
+        &mut self, page_id: &PageId, offset: u64, length: u64,
+        deadline: std::time::Instant,
+    ) -> Result<Option<(u64, u64, [u8; 32])>, ObjectError> {
+        if std::time::Instant::now() >= deadline {
+            return Err(ObjectError::PreconditionFailed("staged digest probe deadline expired".into()));
+        }
         self.reconnect_failed();
         let required = self.read_quorum.max(self.write_quorum);
         if self.routed_reconnect.is_some() && self.replicas.len() < required {
@@ -2274,6 +2310,19 @@ impl RemoteReplicaSet {
                 report.members.push(PageRepairStatus::Current);
                 continue;
             }
+            // A quorum source read can retire a slower member's unfinished
+            // reply. Reconnect before inspecting that member for repair; no
+            // installation has been submitted on this member in this pass.
+            if self.replicas[index].needs_standalone_reconnect() {
+                self.state_conditional_write = None;
+                self.conditional_write_limits = None;
+                self.read_batch_limits = None;
+                self.repair_head_batch = None;
+                if let Err(error) = self.replicas[index].reconnect_standalone_if_failed(&self.options) {
+                    report.members.push(PageRepairStatus::Deferred(error.to_string()));
+                    continue;
+                }
+            }
             let observed = match self.replicas[index].head_chunk(page_id) {
                 Ok(head) => Some(head),
                 Err(ObjectError::NotFound(_)) => None,
@@ -2880,7 +2929,7 @@ mod tests {
             }).collect();
             let mut set = RemoteReplicaSet::connect(&endpoints, 3, 1, &ReplicaClientOptions::default()).unwrap();
             let page = PageId { chunk_id: crate::ChunkId::new(1, 1).unwrap(), page_index: 0 };
-            let result = set.probe_written_chunk(&page, 0, 7);
+            let result = set.probe_written_chunks(&[(page, 0, 7)]).map(|mut values| values.remove(0));
             match mode {
                 0 | 3 => assert_eq!(result.unwrap(), Some((1, 7, digest))),
                 4 => assert_eq!(result.unwrap(), None),
@@ -2890,6 +2939,66 @@ mod tests {
             drop(set);
             let payload_reads: usize = workers.into_iter().map(|w| w.join().unwrap()).sum();
             assert_eq!(payload_reads, if mode == 3 { 3 } else { 0 });
+        }
+    }
+
+    #[test]
+    fn staged_star_digest_batches_distinguish_present_and_absent_pages() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        for mode in 0..3 {
+            let absent_second = mode == 1;
+            let listeners: Vec<_> = (0..3).map(|_| TcpListener::bind("127.0.0.1:0").unwrap()).collect();
+            let endpoints: Vec<_> = listeners.iter().map(|l| l.local_addr().unwrap().to_string()).collect();
+            let digest = [5; 32];
+            let workers: Vec<_> = listeners.into_iter().map(|listener| std::thread::spawn(move || {
+                let (mut peer, _) = listener.accept().unwrap();
+                peer.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                let mut batches = 0;
+                let mut scalars = 0;
+                loop {
+                    let mut header = [0; 6];
+                    if peer.read_exact(&mut header).is_err() { break; }
+                    let mut bytes = vec![0; u32::from_be_bytes(header[2..].try_into().unwrap()) as usize];
+                    peer.read_exact(&mut bytes).unwrap();
+                    let request = ReplicaRequest::decode(RequestCode::from_u8(header[1]).unwrap(), &bytes).unwrap();
+                    let missing = match request {
+                        ReplicaRequest::DigestChunkBatch { ref reads } => {
+                            batches += 1;
+                            assert_eq!(reads.len(), 2);
+                            absent_second
+                        }
+                        ReplicaRequest::DigestChunk { ref page_id, .. } => {
+                            scalars += 1;
+                            absent_second && page_id.page_index == 1
+                        }
+                        ref request => panic!("unexpected batch probe {request:?}"),
+                    };
+                    let bytes = if mode == 2 && matches!(&request, ReplicaRequest::DigestChunkBatch { .. }) {
+                        super::super::message::encode_failure(super::super::wire::StatusCode::UnknownRequest, "batch unavailable")
+                    } else if missing {
+                        super::super::message::encode_failure(super::super::wire::StatusCode::NotFound, "page absent")
+                    } else {
+                        let reply = match request {
+                            ReplicaRequest::DigestChunkBatch { .. } => ReplicaReply::Digests(vec![(1, 7, digest); 2]),
+                            _ => ReplicaReply::Digest { write_sequence: 1, length: 7, sha256: digest },
+                        };
+                        super::super::message::encode_reply(&reply)
+                    };
+                    peer.write_all(&bytes).unwrap();
+                }
+                (batches, scalars)
+            })).collect();
+            let mut set = RemoteReplicaSet::connect(&endpoints, 3, 1, &ReplicaClientOptions::default()).unwrap();
+            let pages: Vec<_> = (0..2).map(|index| (PageId {
+                chunk_id: crate::ChunkId::new(1, 1).unwrap(), page_index: index,
+            }, 0, 7)).collect();
+            assert_eq!(set.probe_written_chunks(&pages).unwrap(),
+                vec![Some((1, 7, digest)), if absent_second { None } else { Some((1, 7, digest)) }]);
+            drop(set);
+            for worker in workers {
+                assert_eq!(worker.join().unwrap(), (1, if mode == 0 { 0 } else { 2 }));
+            }
         }
     }
 

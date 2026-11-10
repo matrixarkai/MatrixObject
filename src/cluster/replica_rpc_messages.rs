@@ -265,6 +265,9 @@ pub enum ReplicaRequest {
     ReadChunkBatch {
         reads: Vec<(PageId, u64, u64)>,
     },
+    DigestChunkBatch {
+        reads: Vec<(PageId, u64, u64)>,
+    },
     DigestChunk {
         page_id: PageId,
         offset: u64,
@@ -314,6 +317,7 @@ impl ReplicaRequest {
             }
             ReplicaRequest::ReadChunk { .. } => RequestCode::ReadChunk,
             ReplicaRequest::ReadChunkBatch { .. } => RequestCode::ReadChunkBatch,
+            ReplicaRequest::DigestChunkBatch { .. } => RequestCode::DigestChunkBatch,
             ReplicaRequest::DigestChunk { .. } => RequestCode::DigestChunk,
             ReplicaRequest::HeadChunk { .. } => RequestCode::HeadChunk,
             ReplicaRequest::HeadChunkBatch { .. } => RequestCode::HeadChunkBatch,
@@ -421,7 +425,7 @@ impl ReplicaRequest {
                 );
                 return payload;
             }
-            ReplicaRequest::ReadChunkBatch { reads } => {
+            ReplicaRequest::ReadChunkBatch { reads } | ReplicaRequest::DigestChunkBatch { reads } => {
                 return super::conditional_requests::ChunkReadBatch {
                     version: 1,
                     reads: reads.iter().map(|(page_id, offset, length)| {
@@ -629,13 +633,14 @@ impl ReplicaRequest {
                 expected_state_checksum: value.expected_state_checksum,
             });
         }
-        if code == RequestCode::ReadChunkBatch {
+        if code == RequestCode::ReadChunkBatch || code == RequestCode::DigestChunkBatch {
             if payload.len() > 1024 {
                 return Err(ObjectError::InvalidArgument("read batch request exceeds size bound".into()));
             }
             let value: super::conditional_requests::ChunkReadBatch =
                 super::conditional_requests::decode(payload)?;
-            if value.version != 1 || value.reads.len() > 32 || value.reads.iter().any(|read|
+            let count_limit = if code == RequestCode::DigestChunkBatch { 8 } else { 32 };
+            if value.version != 1 || value.reads.len() > count_limit || value.reads.iter().any(|read|
                 read.version != 1 || read.length > 1024 * 1024)
             {
                 return Err(ObjectError::InvalidArgument("invalid read batch".into()));
@@ -645,7 +650,7 @@ impl ReplicaRequest {
             let framed = total
                 .checked_add(value.reads.len() as u64 * 64)
                 .ok_or_else(|| ObjectError::InvalidArgument("read batch length overflow".into()))?;
-            if framed > MAX_PAYLOAD_BYTES as u64 {
+            if code == RequestCode::ReadChunkBatch && framed > MAX_PAYLOAD_BYTES as u64 {
                 return Err(ObjectError::InvalidArgument("read batch exceeds byte bound".into()));
             }
             let reads = value.reads.into_iter().map(|read| Ok((
@@ -653,7 +658,8 @@ impl ReplicaRequest {
                 read.offset,
                 read.length,
             ))).collect::<Result<Vec<_>, ObjectError>>()?;
-            return Ok(Self::ReadChunkBatch { reads });
+            return Ok(if code == RequestCode::DigestChunkBatch { Self::DigestChunkBatch { reads } }
+                else { Self::ReadChunkBatch { reads } });
         }
         if code == RequestCode::HeadChunkBatch {
             if payload.len() > 2048 {
@@ -749,6 +755,7 @@ impl ReplicaRequest {
             RequestCode::Membership | RequestCode::StateInstall => unreachable!(),
             RequestCode::ReadChunkStateRange => unreachable!(),
             RequestCode::ReadChunkBatch => unreachable!(),
+            RequestCode::DigestChunkBatch => unreachable!(),
             RequestCode::HeadChunkBatch => unreachable!(),
             RequestCode::WriteChunkIfSequence
             | RequestCode::WriteChunkIfSequenceDigest
@@ -1067,7 +1074,7 @@ impl ReplicaReply {
             }
             return Ok(ReplicaReply::GroupIdentity(identity));
         }
-        if code == RequestCode::WriteChunkBatchIfSequenceDigest {
+        if code == RequestCode::WriteChunkBatchIfSequenceDigest || code == RequestCode::DigestChunkBatch {
             if payload.len() > 1024 {
                 return Err(ObjectError::Corruption(
                     "conditional write digest batch reply exceeds bound".into(),
@@ -1205,6 +1212,7 @@ impl ReplicaReply {
             RequestCode::GroupIdentity => unreachable!(),
             RequestCode::WriteChunkBatchIfSequenceDigest => unreachable!(),
             RequestCode::ReadChunkBatch => unreachable!(),
+            RequestCode::DigestChunkBatch => unreachable!(),
             RequestCode::HeadChunkBatch => unreachable!(),
             RequestCode::ConditionalWriteLimits => unreachable!(),
             RequestCode::WideConditionalWriteLimits => unreachable!(),

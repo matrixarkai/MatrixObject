@@ -1047,7 +1047,7 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     let mut cursor = None;
     loop {
         let batch = repair.repair_inventory_batch(cursor.as_ref(), 64).unwrap();
-        assert!(!batch.blocked);
+        assert!(!batch.blocked, "blocked candidate repair: {batch:?}");
         assert!(batch.pages.iter().all(|entry| entry.result.is_ok()));
         if !batch.has_more { break; }
         cursor = batch.resume_after;

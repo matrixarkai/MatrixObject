@@ -1005,6 +1005,19 @@ pub(super) fn apply_to_replica(
                 sha256,
             })
         }
+        ReplicaRequest::DigestChunkBatch { reads } => {
+            if reads.len() > 8 || reads.iter().any(|(_, _, length)| *length > 1024 * 1024) {
+                return Err(ObjectError::InvalidArgument("digest batch exceeds range bounds".into()));
+            }
+            let mut digests = Vec::with_capacity(reads.len());
+            for (page_id, offset, length) in reads {
+                let read = guard.read_chunk(&page_id, offset, length)?;
+                let mut sha256 = [0; 32];
+                sha256.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, &read.data).as_ref());
+                digests.push((read.write_sequence, read.data.len() as u64, sha256));
+            }
+            Ok(ReplicaReply::Digests(digests))
+        }
         ReplicaRequest::HeadChunk { page_id } => {
             Ok(ReplicaReply::Head(guard.head_chunk(&page_id)?))
         }

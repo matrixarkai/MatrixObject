@@ -105,6 +105,8 @@ pub enum RequestCode {
     ReadBatchLimits = 22,
     /// Report wider conditional-write framing without admitting a mutation.
     WideConditionalWriteLimits = 23,
+    /// Return up to eight range digests after one read confirmation.
+    DigestChunkBatch = 24,
 }
 
 impl RequestCode {
@@ -138,6 +140,7 @@ impl RequestCode {
             21 => Some(RequestCode::ConditionalWriteLimits),
             22 => Some(RequestCode::ReadBatchLimits),
             23 => Some(RequestCode::WideConditionalWriteLimits),
+            24 => Some(RequestCode::DigestChunkBatch),
             _ => None,
         }
     }
