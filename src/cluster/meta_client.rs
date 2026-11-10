@@ -948,6 +948,29 @@ impl RemoteMetaClient {
         })
     }
 
+    /// Read a bounded byte range from one committed object generation.
+    /// Only intersecting extents are fetched. Each selected extent is read in full
+    /// to verify its published digest before the requested bytes are returned.
+    #[cfg(feature = "replica-server")]
+    pub fn read_object_range(
+        &mut self,
+        bucket: &str,
+        key: &str,
+        offset: u64,
+        length: u64,
+        max_bytes: usize,
+        options: &super::ReplicaClientOptions,
+    ) -> Result<(crate::object_manifest::ObjectManifest, Vec<u8>), ObjectError> {
+        self.with_operation_deadline(options.deadline, |client| {
+            let mut bounded = options.clone();
+            bounded.deadline = client.operation_deadline();
+            let (manifest, _) = client.read_manifest_routes(bucket, key)?;
+            client.read_object_from_manifest_routes(
+                manifest, None, max_bytes, &bounded, Some((offset, length)),
+            )
+        })
+    }
+
     /// Read up to 32 complete objects after one linearizable metadata confirmation.
     /// The sum of caller-provided byte limits is bounded at 64 MiB, and an error
     /// returns no partial result.
@@ -978,6 +1001,7 @@ impl RemoteMetaClient {
                     Some(entry.routes),
                     *max_bytes,
                     &bounded,
+                    None,
                 )?);
             }
             Ok(results)
@@ -999,6 +1023,7 @@ impl RemoteMetaClient {
             bundled_routes,
             max_bytes,
             options,
+            None,
         )
     }
 
@@ -1009,13 +1034,18 @@ impl RemoteMetaClient {
         mut bundled_routes: Option<Vec<super::ChunkGroupRoute>>,
         max_bytes: usize,
         options: &super::ReplicaClientOptions,
+        range: Option<(u64, u64)>,
     ) -> Result<(crate::object_manifest::ObjectManifest, Vec<u8>), ObjectError> {
         self.check_operation_deadline()?;
         manifest.validate()?;
         if manifest.deleted {
             return Err(ObjectError::NotFound("object is deleted".into()));
         }
-        let length = usize::try_from(manifest.length)
+        let (range_start, range_length) = range.unwrap_or((0, manifest.length));
+        let range_end = range_start.checked_add(range_length)
+            .filter(|end| *end <= manifest.length)
+            .ok_or_else(|| ObjectError::InvalidArgument("object read range exceeds length".into()))?;
+        let length = usize::try_from(range_length)
             .ok()
             .filter(|length| *length <= max_bytes)
             .ok_or_else(|| ObjectError::PreconditionFailed("object exceeds read limit".into()))?;
@@ -1026,7 +1056,10 @@ impl RemoteMetaClient {
         // Visit each group once, bounding both sockets and catalog lookups.
         // Manifest validation proves every destination range is in this buffer.
         bytes.resize(length, 0);
-        let mut order: Vec<_> = manifest.extents.iter().collect();
+        let mut order: Vec<_> = manifest.extents.iter().filter(|extent| {
+            range_length != 0 && extent.object_offset < range_end
+                && extent.object_offset + extent.length > range_start
+        }).collect();
         order.sort_by(|left, right| left.group.cmp(&right.group));
         let mut groups = Vec::new();
         let mut cursor = 0;
@@ -1075,11 +1108,16 @@ impl RemoteMetaClient {
                             "object extent does not match manifest".into(),
                         ));
                     }
-                    let start = extent.object_offset as usize;
+                    let copy_start = extent.object_offset.max(range_start);
+                    let copy_end = (extent.object_offset + extent.length).min(range_end);
+                    let start = (copy_start - range_start) as usize;
+                    let source_start = (copy_start - extent.object_offset) as usize;
+                    let copy_length = (copy_end - copy_start) as usize;
                     let mut destination = output.lock().map_err(|_| {
                         ObjectError::Corruption("object read buffer lock failed".into())
                     })?;
-                    destination[start..start + read.data.len()].copy_from_slice(&read.data);
+                    destination[start..start + copy_length]
+                        .copy_from_slice(&read.data[source_start..source_start + copy_length]);
                 }
             }
             Ok::<super::object_client::RemoteGroupClient, ObjectError>(connection)

@@ -853,6 +853,18 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
         .unwrap();
     let write_elapsed = started.elapsed();
     assert_eq!(first.extents.len(), page_count);
+    for (offset, length) in [(0, 0), (1, page_bytes + 1), (first_bytes.len(), 0)] {
+        let (manifest, bytes) = client.read_object_range(
+            "star", "first", offset as u64, length as u64, length, &options.replica,
+        ).unwrap();
+        assert_eq!(manifest, first);
+        assert_eq!(bytes, first_bytes[offset..offset + length]);
+    }
+    for (offset, length, limit) in [(u64::MAX, 1, 1), (0, 2, 1), (first.length, 1, 1)] {
+        assert!(client.read_object_range(
+            "star", "first", offset, length, limit, &options.replica,
+        ).is_err());
+    }
     assert_eq!(
         client
             .read_object("star", "first", first_bytes.len(), &options.replica)
@@ -993,6 +1005,23 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
         write_elapsed.as_millis(),
         page_count * endpoints.len()
     );
+
+    // Damage an unrequested extent on the only surviving replica. A small
+    // range still succeeds, while reading the damaged extent must fail.
+    let last = first.extents.last().unwrap();
+    let last_page = PageId {
+        chunk_id: ChunkId::new(last.volume_id, last.chunk_id).unwrap(),
+        page_index: last.page_index,
+    };
+    let mut survivor = RemoteReplicaClient::connect(&endpoints[2], &options.replica).unwrap();
+    survivor.write_chunk(last_page, 0, b"damage").unwrap();
+    assert_eq!(minority.read_object_range(
+        "star", "first", 0, 1, 1, &options.replica,
+    ).unwrap().1, first_bytes[..1]);
+    assert!(minority.read_object_range(
+        "star", "first", last.object_offset, last.length, last.length as usize, &options.replica,
+    ).is_err());
+    drop(survivor);
 
     drop(minority);
     drop(metadata);
