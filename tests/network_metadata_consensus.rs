@@ -1076,8 +1076,36 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
         minority
             .read_object("star", &third_key, third_bytes.len(), &options.replica)
             .unwrap(),
-        (third, third_bytes)
+        (third.clone(), third_bytes.clone())
     );
+    chunks[2].child.kill().unwrap();
+    assert!(processes::reap_within(&mut chunks[2].child, Duration::from_secs(3)).is_some());
+    let copied = minority.copy_object(
+        "star", &third_key, "star", "copy", None, &options,
+    ).unwrap();
+    assert_eq!(copied.extents, third.extents);
+    assert_eq!(copied.length, third.length);
+    assert!(minority.copy_object(
+        "star", &third_key, "star", "copy", None, &options,
+    ).is_err());
+    let mut bounded_copy = options.clone();
+    bounded_copy.max_object_bytes = 0;
+    assert!(minority.copy_object(
+        "star", &third_key, "star", "too-large-copy", None, &bounded_copy,
+    ).is_err());
+    minority.delete_object("star", &third_key, 0).unwrap();
+    assert!(minority.copy_object(
+        "star", &third_key, "star", "deleted-copy", None, &options,
+    ).is_err());
+    chunks[2] = processes::start(
+        env!("CARGO_BIN_EXE_chunkserver"),
+        &[("MATRIXOBJECT_REPLICA_ADDR", &endpoints[2]),
+          ("MATRIXOBJECT_REPLICA_JOURNAL", journals[2].to_str().unwrap())],
+    );
+    drop(minority);
+    let mut minority = connect_metadata();
+    assert_eq!(minority.read_object("star", "copy", third_bytes.len(), &options.replica)
+        .unwrap(), (copied, third_bytes));
     println!(
         "STAR_OBJECT pages={page_count} page_bytes={page_bytes} write_ms={} repair_batches={repair_batches} verified_copies={}",
         write_elapsed.as_millis(),

@@ -361,6 +361,9 @@ fn replacement_load(group_count: usize, writes: u64, concurrent: bool, rounds: u
     assert_eq!(&appended.extents[..previous.extents.len()], &previous.extents);
     let mut expected = load_data_sized(*number, placement.length);
     expected.extend_from_slice(&suffix);
+    let copied = meta.copy_object(&placement.bucket, &placement.key,
+        &placement.bucket, "copied-object", None, &options).unwrap();
+    assert_eq!(copied.extents, appended.extents);
     let leader = metadata.api.iter().position(|a| a == meta.endpoint()).unwrap();
     metadata.kill(leader);
     for group in &mut groups {
@@ -370,7 +373,9 @@ fn replacement_load(group_count: usize, writes: u64, concurrent: bool, rounds: u
     let mut meta = metadata.ready();
     for group in &groups { group.leader(); }
     assert_eq!(meta.read_object(&placement.bucket, &placement.key,
-        expected.len(), &chunk_options()).unwrap(), (appended, expected));
+        expected.len(), &chunk_options()).unwrap(), (appended, expected.clone()));
+    assert_eq!(meta.read_object(&placement.bucket, "copied-object",
+        expected.len(), &chunk_options()).unwrap(), (copied, expected));
     println!(
         "DYNAMIC_GROUPS groups={group_count} peak_processes={} objects={} concurrent_reads={reads} concurrent_controllers={concurrent} peak_controllers={controller_peak} replacement_rounds={rounds}",
         group_count * 4 + 3,
