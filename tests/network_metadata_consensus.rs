@@ -744,7 +744,7 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     let mut repair_batches = 0;
     loop {
         let repaired = initial.repair_inventory_batch(after.as_ref(), 64).unwrap();
-        assert!(!repaired.blocked);
+        assert!(!repaired.blocked, "blocked repair: {repaired:?}");
         assert!(repaired.pages.iter().all(|entry| entry.result.is_ok()));
         repaired_pages += repaired.pages.len();
         repair_batches += 1;

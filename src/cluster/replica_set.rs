@@ -861,6 +861,48 @@ impl RemoteReplicaSet {
         }
     }
 
+    // A routed client may start with only a connected quorum. If that quorum
+    // disagrees on a page, wait for the remaining configured member up to the
+    // read deadline before declaring the page unreadable.
+    fn collect_routed_reconnect_before(&mut self, deadline: std::time::Instant) {
+        let Some(state) = self.routed_reconnect.as_ref() else {
+            return;
+        };
+        if state.pending.is_none() && !state.unavailable_endpoints.is_empty() {
+            self.start_routed_reconnect();
+        }
+        let Some(mut pending) = self.routed_reconnect.as_mut().unwrap().pending.take() else {
+            return;
+        };
+        let connected_before = self.replicas.len();
+        while self.replicas.len() == connected_before && !pending.endpoints.is_empty() {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let next = match pending.receiver.recv_timeout(remaining) {
+                Ok(next) => next,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    self.routed_reconnect.as_mut().unwrap().pending = Some(pending);
+                    return;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    self.finish_disconnected_routed_connect(pending);
+                    return;
+                }
+            };
+            pending.endpoints.remove(&next.0);
+            self.apply_routed_reconnect_result(next, &pending.options);
+        }
+        if pending.endpoints.is_empty() {
+            let state = self.routed_reconnect.as_mut().unwrap();
+            if state.unavailable_endpoints.is_empty() {
+                state.mark_complete();
+            } else {
+                state.retry_later();
+            }
+        } else {
+            self.routed_reconnect.as_mut().unwrap().pending = Some(pending);
+        }
+    }
+
     fn apply_routed_reconnect_result(
         &mut self,
         (endpoint, result): ReconnectResult,
@@ -1457,8 +1499,25 @@ impl RemoteReplicaSet {
         offset: u64,
         length: u64,
     ) -> Result<ReplicaReadResult, ObjectError> {
-        self.reconnect_failed();
         let operation_deadline = self.read_wave_deadline()?;
+        self.read_chunk_before(
+            page_id,
+            offset,
+            length,
+            operation_deadline,
+            self.configured_endpoints.len(),
+        )
+    }
+
+    fn read_chunk_before(
+        &mut self,
+        page_id: &PageId,
+        offset: u64,
+        length: u64,
+        operation_deadline: std::time::Instant,
+        reconnect_budget: usize,
+    ) -> Result<ReplicaReadResult, ObjectError> {
+        self.reconnect_failed();
         let replica_count = self.replicas.len();
         let read_quorum = self.read_quorum;
         let mut votes = ReadVoteCollector::default();
@@ -1558,6 +1617,23 @@ impl RemoteReplicaSet {
                             }
                         }
                     },
+                );
+            }
+        }
+        if !votes.has_quorum(read_quorum)
+            && not_found < read_quorum
+            && reconnect_budget > 0
+            && self.replicas.len() < self.configured_endpoints.len()
+        {
+            let connected_before = self.replicas.len();
+            self.collect_routed_reconnect_before(operation_deadline);
+            if self.replicas.len() > connected_before {
+                return self.read_chunk_before(
+                    page_id,
+                    offset,
+                    length,
+                    operation_deadline,
+                    reconnect_budget - 1,
                 );
             }
         }
@@ -1753,10 +1829,20 @@ impl RemoteReplicaSet {
         page_id: &PageId,
         quorum: usize,
     ) -> Result<crate::PageState, ObjectError> {
+        self.read_chunk_state_with_quorum_and_sources(page_id, quorum)
+            .map(|(state, _)| state)
+    }
+
+    fn read_chunk_state_with_quorum_and_sources(
+        &mut self,
+        page_id: &PageId,
+        quorum: usize,
+    ) -> Result<(crate::PageState, Vec<bool>), ObjectError> {
         let expected = self.head_chunk_with_quorum(page_id, quorum)?;
         let mut candidate: Option<crate::PageState> = None;
         let mut agreeing = 0;
-        for replica in &mut self.replicas {
+        let mut verified = vec![false; self.replicas.len()];
+        for (index, replica) in self.replicas.iter_mut().enumerate() {
             if let Ok(state) = replica.read_chunk_state_at(page_id, &expected) {
                 if let Some(candidate) = &candidate {
                     if candidate.data != state.data {
@@ -1767,6 +1853,7 @@ impl RemoteReplicaSet {
                 } else {
                     candidate = Some(state);
                 }
+                verified[index] = true;
                 agreeing += 1;
                 if agreeing == quorum {
                     break;
@@ -1783,7 +1870,9 @@ impl RemoteReplicaSet {
                 "page quorum changed during state transfer".into(),
             ));
         }
-        candidate.ok_or_else(|| ObjectError::Corruption("page state quorum has no payload".into()))
+        candidate
+            .map(|state| (state, verified))
+            .ok_or_else(|| ObjectError::Corruption("page state quorum has no payload".into()))
     }
 
     /// Read a page's metadata from a read quorum, voting on the whole head.
@@ -1881,7 +1970,8 @@ impl RemoteReplicaSet {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT_REPAIR: AtomicU64 = AtomicU64::new(0);
         let quorum = self.read_quorum.max(self.write_quorum);
-        let state = self.read_chunk_state_with_quorum(page_id, quorum)?;
+        let (state, verified_sources) =
+            self.read_chunk_state_with_quorum_and_sources(page_id, quorum)?;
         let checksum = state.checksum();
         let source = ReplicaHead {
             logical_length: state.logical_length,
@@ -1914,6 +2004,13 @@ impl RemoteReplicaSet {
             members: Vec::with_capacity(self.replicas.len()),
         };
         for index in 0..self.replicas.len() {
+            // These members already returned checksum-fenced complete state with
+            // exact bytes matching the selected source quorum. Writers must be
+            // fenced before a completed traversal is used for readmission.
+            if verified_sources[index] {
+                report.members.push(PageRepairStatus::Current);
+                continue;
+            }
             let observed = match self.replicas[index].head_chunk(page_id) {
                 Ok(head) => Some(head),
                 Err(ObjectError::NotFound(_)) => None,
