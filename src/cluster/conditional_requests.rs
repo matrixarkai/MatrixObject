@@ -520,6 +520,19 @@ mod tests {
     }
 
     #[test]
+    fn digest_batch_requests_bound_count_and_each_range_without_payload_transfer() {
+        let page = PageId { chunk_id: ChunkId::new(1, 2).unwrap(), page_index: 0 };
+        let reads = vec![(page.clone(), 0, 1024 * 1024); 8];
+        let request = ReplicaRequest::DigestChunkBatch { reads: reads.clone() };
+        assert_eq!(RequestCode::from_u8(24), Some(RequestCode::DigestChunkBatch));
+        assert_eq!(ReplicaRequest::decode(request.code(), &request.encode_payload()).unwrap(), request);
+        for reads in [vec![(page.clone(), 0, 1); 9], vec![(page, 0, 1024 * 1024 + 1)]] {
+            let request = ReplicaRequest::DigestChunkBatch { reads };
+            assert!(ReplicaRequest::decode(request.code(), &request.encode_payload()).is_err());
+        }
+    }
+
+    #[test]
     fn head_batches_use_canonical_bounded_protobuf() {
         let pages = vec![
             PageId {
