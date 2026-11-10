@@ -359,6 +359,20 @@ fn conditional_digest_batches_replicate_ordered_page_outcomes() {
         .write_chunks_if_sequence_with_digests(&writes)
         .unwrap();
     assert_eq!(digests.len(), writes.len());
+    let pages: Vec<_> = data.iter().enumerate()
+        .map(|(index, bytes)| (page(index as u64), 0, bytes.len() as u64)).collect();
+    let mut endpoints = vec![group.api_addresses[leader].to_string()];
+    endpoints.extend(group.api_addresses.iter().enumerate().filter(|(index, _)| *index != leader)
+        .map(|(_, address)| address.to_string()));
+    let mut routed = RemoteReplicaClient::connect_raft_catalog(&endpoints, group.group_id,
+        &ReplicaClientOptions { connect_timeout: Duration::from_millis(200),
+            read_timeout: Duration::from_secs(2), ..Default::default() }).unwrap();
+    assert_eq!(routed.digest_chunks_pipelined(&pages).unwrap(), digests);
+    let mut with_absent = pages.clone();
+    with_absent.push((page(99), 0, 7));
+    let probes = group.client(leader).probe_chunk_digests_pipelined(&with_absent).unwrap();
+    assert_eq!(&probes[..digests.len()], digests.iter().copied().map(Some).collect::<Vec<_>>());
+    assert_eq!(probes.last(), Some(&None));
     for ((sequence, length, sha256), bytes) in digests.iter().zip(&data) {
         assert_eq!(*sequence, 1);
         assert_eq!(*length, bytes.len() as u64);
@@ -369,6 +383,7 @@ fn conditional_digest_batches_replicate_ordered_page_outcomes() {
     }
     group.kill(leader);
     let next = group.leader();
+    assert_eq!(routed.digest_chunks_pipelined(&pages).unwrap(), digests);
     for (index, bytes) in data.iter().enumerate() {
         assert_eq!(
             group
@@ -379,6 +394,10 @@ fn conditional_digest_batches_replicate_ordered_page_outcomes() {
             *bytes
         );
     }
+    for index in 0..3 {
+        if index != next && group.nodes[index].is_some() { group.kill(index); }
+    }
+    assert!(group.client(next).digest_chunks_pipelined(&pages).is_err());
 }
 
 #[test]

@@ -96,6 +96,7 @@ pub struct RemoteReplicaClient {
     conditional_write_digest_batch: Option<bool>,
     conditional_write_eight: Option<bool>,
     read_batch: Option<bool>,
+    digest_batch: Option<bool>,
     last_exchange: Instant,
     read_timeout: Duration,
     write_timeout: Duration,
@@ -337,6 +338,7 @@ impl RemoteReplicaClient {
             conditional_write_digest_batch: None,
             conditional_write_eight: None,
             read_batch: None,
+            digest_batch: None,
             last_exchange: Instant::now(),
             read_timeout: options.read_timeout,
             write_timeout: options.write_timeout,
@@ -925,7 +927,33 @@ impl RemoteReplicaClient {
         }
     }
 
+    fn try_digest_batch(
+        &mut self, pages: &[(PageId, u64, u64)],
+    ) -> Result<Option<Vec<(u64, u64, [u8; 32])>>, ObjectError> {
+        if pages.iter().any(|(_, _, length)| *length > 1024 * 1024) {
+            return Err(ObjectError::InvalidArgument("digest range exceeds one MiB".into()));
+        }
+        if pages.len() <= 1 || self.digest_batch == Some(false) { return Ok(None); }
+        match self.call(ReplicaRequest::DigestChunkBatch { reads: pages.to_vec() }) {
+            Ok(ReplicaReply::Digests(digests)) if digests.len() == pages.len() => {
+                self.digest_batch = Some(true);
+                Ok(Some(digests))
+            }
+            Ok(ReplicaReply::Digests(_)) => Err(ObjectError::Corruption(
+                "digest batch reply count differs from request".into(),
+            )),
+            Err(ObjectError::PreconditionFailed(message))
+                if message.starts_with("the replica does not implement this request:") => {
+                    self.digest_batch = Some(false);
+                    Ok(None)
+                }
+            Ok(other) => Err(unexpected_reply("a chunk digest batch", &other)),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Probe up to eight staged pages on one group, retaining missing-page results.
+    /// Present pages use one batch; missing pages and older servers use scalar probes.
     /// An incomplete batch retires the socket before retrying read-only probes.
     pub fn probe_chunk_digests_pipelined(
         &mut self,
@@ -937,6 +965,11 @@ impl RemoteReplicaClient {
         let Some((page, offset, length)) = pages.first() else {
             return Ok(Vec::new());
         };
+        match self.try_digest_batch(pages) {
+            Ok(Some(digests)) => return Ok(digests.into_iter().map(Some).collect()),
+            Ok(None) | Err(ObjectError::NotFound(_)) => {}
+            Err(error) => return Err(error),
+        }
         let first = match self.digest_chunk(page, *offset, *length) {
             Ok(digest) => Some(digest),
             Err(ObjectError::NotFound(_)) => None,
@@ -992,7 +1025,7 @@ impl RemoteReplicaClient {
         Ok(digests)
     }
 
-    /// Probe the range digest verb, then pipeline the rest of a bounded batch.
+    /// Use one digest batch when supported, otherwise pipeline scalar requests.
     /// A failed batch retires the socket so callers can read back full bytes.
     pub fn digest_chunks_pipelined(
         &mut self,
@@ -1004,6 +1037,7 @@ impl RemoteReplicaClient {
         let Some((first_page, first_offset, first_length)) = pages.first() else {
             return Ok(Vec::new());
         };
+        if let Some(digests) = self.try_digest_batch(pages)? { return Ok(digests); }
         let first = self.digest_chunk(first_page, *first_offset, *first_length)?;
         if pages.len() == 1 {
             return Ok(vec![first]);
@@ -1443,6 +1477,7 @@ impl RemoteReplicaClient {
                 | ReplicaRequest::ReadChunk { .. }
                 | ReplicaRequest::ReadChunkBatch { .. }
                 | ReplicaRequest::DigestChunk { .. }
+                | ReplicaRequest::DigestChunkBatch { .. }
                 | ReplicaRequest::ReadChunkStateRange { .. }
                 | ReplicaRequest::HeadChunk { .. }
                 | ReplicaRequest::HeadChunkBatch { .. }
@@ -1799,6 +1834,67 @@ fn not_leader() -> ObjectError {
 mod pending_tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn raft_digest_batches_cache_unknown_verbs_and_preserve_absent_pages() {
+        for mode in 0..4 {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = listener.local_addr().unwrap().to_string();
+            let worker = std::thread::spawn(move || {
+                let (mut peer, _) = listener.accept().unwrap();
+                peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut batches = 0;
+                let mut scalars = 0;
+                loop {
+                    let mut header = [0; 6];
+                    if peer.read_exact(&mut header).is_err() { break; }
+                    let mut bytes = vec![0; u32::from_be_bytes(header[2..].try_into().unwrap()) as usize];
+                    peer.read_exact(&mut bytes).unwrap();
+                    let request = ReplicaRequest::decode(crate::cluster::wire::RequestCode::from_u8(header[1]).unwrap(), &bytes).unwrap();
+                    let reply = match request {
+                        ReplicaRequest::DigestChunkBatch { .. } => {
+                            batches += 1;
+                            if mode == 1 || mode == 2 {
+                                peer.write_all(&crate::cluster::message::encode_failure(
+                                    if mode == 1 { StatusCode::UnknownRequest } else { StatusCode::NotFound }, "batch unavailable",
+                                )).unwrap();
+                                continue;
+                            }
+                            ReplicaReply::Digests(vec![(1, 7, [2; 32]); if mode == 3 { 1 } else { 2 }])
+                        }
+                        ReplicaRequest::DigestChunk { page_id, .. } => {
+                            scalars += 1;
+                            if mode == 2 && page_id.page_index == 1 {
+                                peer.write_all(&crate::cluster::message::encode_failure(StatusCode::NotFound, "absent")).unwrap();
+                                continue;
+                            }
+                            ReplicaReply::Digest { write_sequence: 1, length: 7, sha256: [2; 32] }
+                        }
+                        request => panic!("unexpected digest request {request:?}"),
+                    };
+                    peer.write_all(&crate::cluster::message::encode_reply(&reply)).unwrap();
+                }
+                (batches, scalars)
+            });
+            let mut client = RemoteReplicaClient::connect(&endpoint, &ReplicaClientOptions::default()).unwrap();
+            let pages: Vec<_> = (0..2).map(|index| (PageId {
+                chunk_id: crate::ChunkId::new(1, 2).unwrap(), page_index: index,
+            }, 0, 7)).collect();
+            if mode == 3 {
+                assert!(client.probe_chunk_digests_pipelined(&pages).is_err());
+            } else {
+                let expected = vec![Some((1, 7, [2; 32])), if mode == 2 { None } else { Some((1, 7, [2; 32])) }];
+                assert_eq!(client.probe_chunk_digests_pipelined(&pages).unwrap(), expected);
+                if mode == 2 {
+                    assert_eq!(client.probe_chunk_digests_pipelined(&pages).unwrap(), expected);
+                } else {
+                    assert_eq!(client.digest_chunks_pipelined(&pages).unwrap(), vec![(1, 7, [2; 32]); 2]);
+                }
+            }
+            drop(client);
+            assert_eq!(worker.join().unwrap(), match mode { 0 => (2, 0), 1 => (1, 4), 2 => (2, 4), _ => (1, 0) });
+        }
+    }
 
     #[test]
     fn catalog_read_waits_briefly_for_a_new_leader_without_an_explicit_deadline() {

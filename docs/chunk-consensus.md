@@ -1,5 +1,13 @@
 # Chunk servers with independent Raft voters
 
+Client digest probes use replica opcode 24 for up to eight ranges under one
+confirmed Raft read. The existing pipelined APIs retain their return types.
+A missing-page batch falls back to individual probes when the caller needs
+per-page absence. An unknown opcode is cached for that socket and uses the
+scalar pipeline until reconnection. Other refusals and malformed reply counts
+remain errors. Batch reads participate in catalog leader routing and the
+caller's configured deadline; uncertain mutations are never replayed.
+
 Standalone chunk servers use coordinator-driven star writes by default. Build
 `chunkserver` with `--features chunk-consensus` and supply complete Raft
 configuration to run a consensus group. Each group process owns one MatrixRaft
