@@ -868,6 +868,23 @@ impl RemoteMetaClient {
         }
     }
 
+    /// List at most 32 summaries, including tombstones, after an exclusive key.
+    /// Each page is confirmed independently; concurrent changes can affect later pages.
+    pub fn list_manifests(
+        &mut self, bucket: &str, after: Option<&str>, limit: u32,
+    ) -> Result<crate::object_manifest::ManifestListPage, ObjectError> {
+        let request = crate::object_manifest::ManifestListRequest {
+            version: 1, bucket: bucket.into(), after: after.unwrap_or("").into(), limit,
+        };
+        request.validate()?;
+        match self.call(MetaRequest::ListManifests(request.clone()))? {
+            MetaReply::Manifests(page) if page.bucket == request.bucket
+                && page.entries.len() <= limit as usize
+                && page.entries.iter().all(|entry| entry.key > request.after) => Ok(page),
+            _ => Err(ObjectError::Corruption("manifest listing reply does not match request".into())),
+        }
+    }
+
     pub fn read_manifest(
         &mut self,
         bucket: &str,
@@ -1380,6 +1397,7 @@ impl RemoteMetaClient {
                 | MetaRequest::ReadChunkRoutes { .. }
                 | MetaRequest::ReadChunkRoutesWide { .. }
                 | MetaRequest::ListChunkRoutes { .. }
+                | MetaRequest::ListManifests(_)
         ) || matches!(&request, MetaRequest::Membership(command) if command.is_read());
         let mut last = not_leader();
         let mut saw_all_refused = false;

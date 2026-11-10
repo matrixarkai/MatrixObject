@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject;
+// Metadata opcode 91. Exclusive key cursor, one bucket, at most 32 summaries.
+message ManifestListRequest {
+  uint32 version = 1;
+  string bucket = 2;
+  string after = 3;
+  uint32 limit = 4;
+}
+message ManifestSummary {
+  string key = 1;
+  uint64 generation = 2;
+  uint64 length = 3;
+  bool deleted = 4;
+}
+message ManifestListPage {
+  uint32 version = 1;
+  string bucket = 2;
+  repeated ManifestSummary entries = 3;
+  bool has_more = 4;
+}

@@ -231,6 +231,76 @@ fn entry_size(value: &ObjectManifest) -> usize {
     }
     1 + delimiter + size
 }
+
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct ManifestListRequest {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(string, tag = "2")]
+    pub bucket: String,
+    #[prost(string, tag = "3")]
+    pub after: String,
+    #[prost(uint32, tag = "4")]
+    pub limit: u32,
+}
+impl ManifestListRequest {
+    pub(crate) fn validate(&self) -> Result<(), ObjectError> {
+        crate::validate_bucket(&self.bucket)?;
+        if !self.after.is_empty() { crate::validate_key(&self.after)?; }
+        if self.version != 1 || !(1..=32).contains(&self.limit) {
+            return Err(invalid("invalid manifest listing bounds"));
+        }
+        Ok(())
+    }
+    pub(crate) fn from_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
+        if bytes.len() > 65536 { return Err(invalid("manifest listing request too large")); }
+        let value = Self::decode(bytes).map_err(|_| invalid("invalid manifest listing protobuf"))?;
+        value.validate()?;
+        if value.encode_to_vec() != bytes { return Err(invalid("noncanonical manifest listing")); }
+        Ok(value)
+    }
+}
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct ManifestSummary {
+    #[prost(string, tag = "1")]
+    pub key: String,
+    #[prost(uint64, tag = "2")]
+    pub generation: u64,
+    #[prost(uint64, tag = "3")]
+    pub length: u64,
+    #[prost(bool, tag = "4")]
+    pub deleted: bool,
+}
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct ManifestListPage {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(string, tag = "2")]
+    pub bucket: String,
+    #[prost(message, repeated, tag = "3")]
+    pub entries: Vec<ManifestSummary>,
+    #[prost(bool, tag = "4")]
+    pub has_more: bool,
+}
+impl ManifestListPage {
+    pub(crate) fn from_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
+        if bytes.len() > 262144 { return Err(invalid("manifest listing reply too large")); }
+        let value = Self::decode(bytes).map_err(|_| invalid("invalid manifest listing reply"))?;
+        crate::validate_bucket(&value.bucket)?;
+        if value.version != 1 || value.entries.len() > 32
+            || (value.has_more && value.entries.is_empty())
+            || value.entries.windows(2).any(|pair| pair[0].key >= pair[1].key)
+        { return Err(invalid("invalid manifest listing reply bounds or order")); }
+        for entry in &value.entries {
+            crate::validate_key(&entry.key)?;
+            if entry.generation == 0 || (entry.deleted && entry.length != 0) {
+                return Err(invalid("invalid manifest summary"));
+            }
+        }
+        if value.encode_to_vec() != bytes { return Err(invalid("noncanonical manifest listing reply")); }
+        Ok(value)
+    }
+}
 #[derive(Clone, PartialEq, Message)]
 struct CatalogImage {
     #[prost(uint32, tag = "1")]
@@ -239,6 +309,18 @@ struct CatalogImage {
     objects: Vec<ObjectManifest>,
 }
 impl ManifestCatalog {
+    pub(crate) fn list_page(&self, request: &ManifestListRequest) -> Result<ManifestListPage, ObjectError> {
+        request.validate()?;
+        let start = ObjectId::new(request.bucket.clone(), request.after.clone());
+        let mut values = self.objects.range((std::ops::Bound::Excluded(start), std::ops::Bound::Unbounded))
+            .take_while(|(id, _)| id.bucket.as_str() == request.bucket);
+        let entries = values.by_ref().take(request.limit as usize).map(|(_, manifest)| ManifestSummary {
+            key: manifest.key.clone(), generation: manifest.generation,
+            length: manifest.length, deleted: manifest.deleted,
+        }).collect();
+        Ok(ManifestListPage { version: 1, bucket: request.bucket.clone(), entries,
+            has_more: values.next().is_some() })
+    }
     #[cfg(feature = "metadata-consensus")]
     pub(crate) fn restore_entry(&mut self, id: ObjectId, previous: Option<ObjectManifest>) {
         if let Some(current) = self.objects.remove(&id) {
@@ -367,6 +449,35 @@ fn unframe<T: Message + Default>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn manifest_listing_is_bounded_ordered_and_bucket_scoped() {
+        let mut catalog = ManifestCatalog::default();
+        for (bucket, key, deleted) in [("a", "z", false), ("b", "a", false),
+            ("b", "b", true), ("b", "c", false), ("c", "a", false)] {
+            let value = ObjectManifest { format_version: 2, bucket: bucket.into(), key: key.into(),
+                generation: 1, length: 0, extents: Vec::new(), deleted };
+            catalog.apply(&ManifestOutcome::decide(None, value).unwrap()).unwrap();
+        }
+        let request = ManifestListRequest { version: 1, bucket: "b".into(), after: String::new(), limit: 2 };
+        let first = catalog.list_page(&request).unwrap();
+        assert_eq!(first.entries.iter().map(|entry| entry.key.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        assert!(first.entries[1].deleted);
+        assert!(first.has_more);
+        assert_eq!(ManifestListPage::from_payload(&first.encode_to_vec()).unwrap(), first);
+        let second = catalog.list_page(&ManifestListRequest { after: "b".into(), ..request.clone() }).unwrap();
+        assert_eq!(second.entries[0].key, "c");
+        assert!(!second.has_more);
+        for limit in [0, 33] {
+            assert!(ManifestListRequest::from_payload(&ManifestListRequest { limit, ..request.clone() }.encode_to_vec()).is_err());
+        }
+        let mut invalid = first.clone();
+        invalid.entries.reverse();
+        assert!(ManifestListPage::from_payload(&invalid.encode_to_vec()).is_err());
+        let long = ManifestListPage { version: 1, bucket: "b".into(), has_more: false,
+            entries: (0..32).map(|index| ManifestSummary { key: format!("{index:02}{}", "x".repeat(4094)),
+                generation: 1, length: 0, deleted: false }).collect() };
+        assert!(ManifestListPage::from_payload(&long.encode_to_vec()).is_ok());
+    }
     fn manifest(generation: u64) -> ObjectManifest {
         ObjectManifest {
             format_version: 1,
