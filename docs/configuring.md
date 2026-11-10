@@ -318,6 +318,9 @@ readmission. Completion does not automatically change node health or metadata
 placement eligibility. Background scheduling and operator decisions remain
 separate from the bounded traversal API.
 
+The [scheduled Star repair worker](star-repair-worker.md) performs bounded
+periodic traversals using the metadata-confirmed group route.
+
 
 ## Standalone maintenance mode
 
