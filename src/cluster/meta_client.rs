@@ -1063,6 +1063,79 @@ impl RemoteMetaClient {
         })
     }
 
+    /// Retain one current generation durably until explicitly released.
+    /// A lost creation reply can leave a handle listed in the metadata catalog.
+    pub fn retain_manifest(&mut self, bucket: &str, key: &str, generation: u64)
+        -> Result<crate::manifest_retention::RetainedManifest, ObjectError> {
+        let reply = self.retention_call(crate::manifest_retention::ManifestRetentionRequest {
+            version: 1, action: 1, bucket: bucket.into(), key: key.into(), generation,
+            ..Default::default()
+        })?;
+        let retained = reply.retained.ok_or_else(|| ObjectError::Corruption("retention reply lacks handle".into()))?;
+        let manifest = retained.manifest.as_ref().unwrap();
+        if manifest.bucket != bucket || manifest.key != key || manifest.generation != generation {
+            return Err(ObjectError::Corruption("retained manifest differs from requested generation".into()));
+        }
+        Ok(retained)
+    }
+
+    pub fn read_retained_manifest(&mut self, retention_id: u64)
+        -> Result<crate::manifest_retention::RetainedManifest, ObjectError> {
+        let reply = self.retention_call(crate::manifest_retention::ManifestRetentionRequest {
+            version: 1, action: 3, retention_id, ..Default::default()
+        })?;
+        let retained = reply.retained.filter(|record| record.retention_id == retention_id)
+            .ok_or_else(|| ObjectError::Corruption("retention reply names another handle".into()))?;
+        Ok(retained)
+    }
+
+    /// Release only after every read using the handle has finished. Repetition is safe.
+    pub fn release_manifest(&mut self, retention_id: u64) -> Result<(), ObjectError> {
+        let reply = self.retention_call(crate::manifest_retention::ManifestRetentionRequest {
+            version: 1, action: 2, retention_id, ..Default::default()
+        })?;
+        if reply.retained.is_some() || !reply.retention_ids.is_empty() || reply.has_more {
+            return Err(ObjectError::Corruption("unexpected release reply".into()));
+        }
+        Ok(())
+    }
+
+    /// List explicit handles for recovery and operator-directed release.
+    pub fn list_retained_manifests(&mut self, after: u64, limit: u32)
+        -> Result<(Vec<u64>, bool), ObjectError> {
+        let reply = self.retention_call(crate::manifest_retention::ManifestRetentionRequest {
+            version: 1, action: 4, retention_id: after, limit, ..Default::default()
+        })?;
+        if reply.retained.is_some() || reply.retention_ids.len() > limit as usize
+            || reply.retention_ids.iter().any(|id| *id <= after) {
+            return Err(ObjectError::Corruption("retention listing exceeds cursor or limit".into()));
+        }
+        Ok((reply.retention_ids, reply.has_more))
+    }
+
+    fn retention_call(&mut self, command: crate::manifest_retention::ManifestRetentionRequest)
+        -> Result<crate::manifest_retention::ManifestRetentionReply, ObjectError> {
+        command.validate()?;
+        match self.call(MetaRequest::ManifestRetention(command))? {
+            MetaReply::ManifestRetention(reply) => Ok(reply),
+            other => Err(unexpected_reply("a manifest retention result", &other)),
+        }
+    }
+
+    /// Read the retained generation even if the current object was overwritten or deleted.
+    /// The caller owns the handle and must keep it retained until this call completes.
+    #[cfg(feature = "replica-server")]
+    pub fn read_retained_object(&mut self, retention_id: u64, max_bytes: usize,
+        options: &super::ReplicaClientOptions)
+        -> Result<(crate::object_manifest::ObjectManifest, Vec<u8>), ObjectError> {
+        self.with_operation_deadline(options.deadline, |client| {
+            let mut bounded = options.clone();
+            bounded.deadline = client.operation_deadline();
+            let retained = client.read_retained_manifest(retention_id)?;
+            client.read_object_from_manifest_routes(retained.manifest.unwrap(), None, max_bytes, &bounded, None)
+        })
+    }
+
     #[cfg(feature = "replica-server")]
     fn read_object_inner(
         &mut self,
@@ -1434,7 +1507,8 @@ impl RemoteMetaClient {
                 | MetaRequest::ReadChunkRoutesWide { .. }
                 | MetaRequest::ListChunkRoutes { .. }
                 | MetaRequest::ListManifests(_)
-        ) || matches!(&request, MetaRequest::Membership(command) if command.is_read());
+        ) || matches!(&request, MetaRequest::Membership(command) if command.is_read())
+          || matches!(&request, MetaRequest::ManifestRetention(command) if command.is_read());
         let mut last = not_leader();
         let mut saw_all_refused = false;
         let mut unadmitted = true;
