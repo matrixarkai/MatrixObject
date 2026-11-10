@@ -861,18 +861,19 @@ On pushes to `main` and on every pull request, four jobs:
 
 - **build & docs** -- `cargo build --all-targets` and `cargo doc`, each for the
   default features and for `--all-features`, with warnings denied.
-- **format and rollback guards** -- each guard run on its own with `--exact`, and
-  its output checked for `test result: ok. 1 passed`, because `cargo test` exits 0
+- **format and rollback guards** -- selected library guards use `--exact`;
+  explicit integration and binary targets run their selected harnesses. Each
+  command checks its expected passed-test count because `cargo test` exits 0
   when a filter matches nothing. The guards over
   [replica processes](#replicas-in-their-own-processes) check their output for
   `running 1 test` as well: they name a test of an integration target rather than a
   `tests::` filter, so a rename would leave the filter matching nothing and the
   `1 passed` line absent rather than wrong.
 
-- **network metadata consensus** -- twenty-one named routing, process, recovery, storage, and
+- **network metadata consensus** -- named routing, process, recovery, storage, and
   checkpoint tests with the optional consensus feature enabled.
 
-- **network chunk consensus** -- twenty-one named checks of independently durable chunk
+- **network chunk consensus** -- named checks of independently durable chunk
   voters, leader loss, restart recovery, capacity, shutdown, and metadata health.
   See [chunk consensus configuration](docs/chunk-consensus.md).
 
