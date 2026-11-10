@@ -41,3 +41,18 @@ Tokens belong to one metadata history. Use a pinned metadata catalog when
 continuing across endpoints. A successful scan does not block subsequent
 publication or protect older readers, so its token alone still cannot authorize
 data reclamation.
+
+## Global traversal
+
+`list_manifest_catalog(after, limit, expected_revision)` opts into version 3
+and traverses all buckets in `(bucket, key)` order. Start with `after=None`,
+then pass both names from the final returned entry as the exclusive cursor.
+Every summary includes its bucket. Keep the first page's revision on later
+pages to detect publication anywhere in the catalog. Both cursor names must
+be supplied together. The same 32-entry and 256-KiB bounds apply.
+
+Global traversal is needed when examining pages shared by cross-bucket copies:
+a bucket-only scan cannot establish whether another bucket still names a page.
+The API enumerates metadata and retains tombstones; it does not reclaim data or
+protect in-progress writes and readers. Version-1 and version-2 messages omit
+the new cursor and summary fields, preserving their existing encodings.
