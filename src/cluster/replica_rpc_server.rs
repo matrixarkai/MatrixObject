@@ -688,6 +688,29 @@ fn apply_locked(
     if let ReplicaRequest::StateInstall(request) = request {
         return apply_state_install(guard, request);
     }
+    if let ReplicaRequest::FenceNamespace(fence) = request {
+        let outcome = crate::chunk_namespace_fence::NamespaceFenceOutcome::decide(&guard.service, fence)?;
+        crate::cluster::message::check_reply_size(prost::Message::encoded_len(outcome.after.as_ref().unwrap()), max_payload_bytes)?;
+        let journal = guard.journal.as_mut().ok_or_else(|| ObjectError::PreconditionFailed(
+            "namespace fencing requires durable replica storage".into()))?;
+        if let Err(error) = journal.append_namespace_fence_deferred(&outcome)
+            .and_then(|()| if sync_journal { journal.sync_deferred() } else { Ok(()) }) {
+            guard.failed = true;
+            return Err(ObjectError::Corruption(error.to_string()));
+        }
+        if let Err(error) = outcome.apply(&mut guard.service) {
+            guard.failed = true;
+            return Err(error);
+        }
+        if sync_journal && guard.journal.as_ref().unwrap().checkpoint_due(guard.journal_checkpoint_after_bytes) {
+            let NodeReplica { service, journal, .. } = guard;
+            if let Err(error) = journal.as_mut().unwrap().checkpoint(service) {
+                guard.failed = true;
+                return Err(ObjectError::Corruption(error.to_string()));
+            }
+        }
+        return Ok(ReplicaReply::NamespaceFence(outcome.after.unwrap()));
+    }
     if let ReplicaRequest::ReadChunkStateRange { length, .. } = &request {
         let size = usize::try_from(*length)
             .unwrap_or(usize::MAX)
@@ -857,6 +880,8 @@ fn apply_state_install(
             }
             let page = request.page_id()?;
             let head = request.head.as_ref().unwrap();
+            node.service.validate_namespace_install_shape(&page, head.logical_length,
+                head.data_length, head.write_sequence, !head.discarded_ranges.is_empty())?;
             check_install_destination(
                 node,
                 &page,
@@ -935,6 +960,15 @@ pub(super) fn apply_to_replica(
     max_pages: usize,
 ) -> Result<ReplicaReply, ObjectError> {
     match request {
+        ReplicaRequest::FenceNamespace(fence) => {
+            let outcome = crate::chunk_namespace_fence::NamespaceFenceOutcome::decide(guard, fence)?;
+            outcome.apply(guard)?;
+            Ok(ReplicaReply::NamespaceFence(outcome.after.unwrap()))
+        }
+        ReplicaRequest::ReadNamespaceFence { namespace } => {
+            guard.namespace_fence(&namespace).cloned().map(ReplicaReply::NamespaceFence)
+                .ok_or_else(|| ObjectError::NotFound("namespace fence is missing".into()))
+        }
         ReplicaRequest::StateInstall(_) => Err(ObjectError::PreconditionFailed(
             "state installation requires a standalone node".into(),
         )),

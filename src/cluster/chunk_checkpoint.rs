@@ -49,6 +49,30 @@ mod tests {
     fn id() -> LogId {
         LogId { index: 19, term: 3 }
     }
+    #[test]
+    fn namespace_fences_survive_streamed_checkpoint_and_keep_repair_immutable() {
+        use crate::chunk_namespace_fence::{ImmutablePage, NamespaceFence, NamespaceFenceOutcome};
+        let mut service = MatrixReplicaService::new();
+        service.set_capacity_bytes(16384).unwrap();
+        service.write_chunk(page(0), 0, b"immutable").unwrap();
+        let state = service.read_chunk_state(&page(0)).unwrap();
+        let fence = NamespaceFence { version: 1, volume_id: 1, chunk_id: 2, generation: 1,
+            pages: vec![ImmutablePage::from_state(0, &state).unwrap()] };
+        NamespaceFenceOutcome::decide(&service, fence.clone()).unwrap().apply(&mut service).unwrap();
+        let expected = service.export_snapshot();
+        let mut stream = capture(expected.clone(), id()).unwrap().unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).unwrap();
+        let restored = restore(&mut Cursor::new(&bytes), bytes.len() as u64, id(), 16384, 64).unwrap();
+        let mut recovered = MatrixReplicaService::new();
+        recovered.install_validated_snapshot(restored).unwrap();
+        assert_eq!(recovered.export_snapshot(), expected);
+        assert!(recovered.write_chunk(page(0), 0, b"stale").is_err());
+        recovered.install_chunk_state(page(0), state.clone()).unwrap();
+        let retired = NamespaceFence { generation: 2, pages: Vec::new(), ..fence };
+        NamespaceFenceOutcome::decide(&recovered, retired).unwrap().apply(&mut recovered).unwrap();
+        assert!(recovered.install_chunk_state(page(0), state).is_err());
+    }
     fn page(index: u64) -> PageId {
         PageId {
             chunk_id: ChunkId::new(1, 2).unwrap(),

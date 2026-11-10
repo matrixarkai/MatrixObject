@@ -7,7 +7,7 @@ impl ReplicaServiceSnapshot {
         let version = magic
             .strip_prefix("MOSRSCHUNK")
             .and_then(|suffix| suffix.parse::<u64>().ok())
-            .filter(|version| (1..=22).contains(version))
+            .filter(|version| (1..=23).contains(version))
             .ok_or_else(|| {
                 ObjectError::Corruption("chunk service snapshot byte magic mismatch".to_string())
             })?;
@@ -307,6 +307,11 @@ impl ReplicaServiceSnapshot {
                     .insert(idempotency_key, read_chunk_repair_receipt(&mut cursor)?);
             }
         }
+        let namespace_fences = if version >= 23 {
+            let catalog = crate::chunk_namespace_fence::NamespaceFenceCatalog::from_bytes(cursor.read_blob()?)?;
+            if catalog.is_empty() { return Err(ObjectError::Corruption("empty namespace fence catalog in version 23".into())); }
+            catalog
+        } else { Default::default() };
         let checksum = cursor.read_string()?;
         let checksum_end = cursor.position();
         let envelope_checksum = cursor.read_string()?;
@@ -322,6 +327,7 @@ impl ReplicaServiceSnapshot {
         }
         let mut snapshot = Self {
             pages,
+            namespace_fences,
             receipt_retention,
             write_request_receipts: std::sync::Arc::new(write_request_receipts),
             discard_request_receipts: std::sync::Arc::new(discard_request_receipts),

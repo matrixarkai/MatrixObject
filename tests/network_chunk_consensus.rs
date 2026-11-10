@@ -343,6 +343,53 @@ fn chunk_processes_commit_binary_outcomes_survive_leader_loss_and_total_restart(
 }
 
 #[test]
+fn namespace_fences_transfer_to_lagging_voters_and_survive_leader_loss_and_total_restart() {
+    use matrixobjectstore_rs::chunk_namespace_fence::{ImmutablePage, NamespaceFence};
+    let mut group = Group::configured(65536);
+    group.checkpoint_bytes = 1024;
+    for index in 0..3 { group.start(index); }
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    let page = PageId { chunk_id: ChunkId::new(1, 90).unwrap(), page_index: 0 };
+    client.write_chunk(page.clone(), 0, b"immutable").unwrap();
+    let state = client.read_chunk_state(&page).unwrap();
+    let lagging = (leader + 1) % 3;
+    group.kill(lagging);
+    let fence = NamespaceFence { version: 1, volume_id: 1, chunk_id: 90, generation: 1,
+        pages: vec![ImmutablePage::from_state(0, &state).unwrap()] };
+    assert_eq!(client.fence_namespace(fence.clone()).unwrap(), fence);
+    let wal = group.root.join(leader.to_string()).join("chunk.peer.wal");
+    let fence_commit = node_regime::checkpoints::committed_index(&wal);
+    assert!(fence_commit > 0);
+    assert!(client.write_chunk(page.clone(), 0, b"stale").is_err());
+    assert!(client.discard_chunk(&page, 0, 1).is_err());
+    let other = PageId { chunk_id: ChunkId::new(1, 91).unwrap(), page_index: 0 };
+    for value in 1..=12 { client.write_chunk(other.clone(), 0, &vec![value; 1024]).unwrap(); }
+    node_regime::checkpoints::wait_for_checkpoint_index(&wal, fence_commit);
+    group.start(lagging);
+    node_regime::checkpoints::wait_for_checkpoint_index(
+        &group.root.join(lagging.to_string()).join("chunk.peer.wal"), fence_commit);
+    group.kill(leader);
+    let mut client = group.client(group.leader());
+    assert_eq!(client.read_namespace_fence(&page.chunk_id).unwrap(), fence);
+    assert_eq!(client.read_chunk(&page, 0, 9).unwrap().data, b"immutable");
+    for index in 0..3 { if group.nodes[index].is_some() { group.kill(index); } }
+    for index in 0..3 { group.start(index); }
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    assert_eq!(client.read_namespace_fence(&page.chunk_id).unwrap(), fence);
+    assert!(client.write_chunk_if_sequence(page.clone(), 0, b"late", 1).is_err());
+    let retired = NamespaceFence { generation: 2, pages: Vec::new(), ..fence.clone() };
+    client.fence_namespace(retired.clone()).unwrap();
+    assert!(client.fence_namespace(NamespaceFence { generation: 3, ..fence }).is_err());
+    assert_eq!(client.read_namespace_fence(&page.chunk_id).unwrap(), retired);
+    for index in 0..3 { if index != leader { group.kill(index); } }
+    assert!(client.read_namespace_fence(&page.chunk_id).is_err());
+    assert!(client.fence_namespace(NamespaceFence { version: 1, volume_id: 1, chunk_id: 92,
+        generation: 1, pages: Vec::new() }).is_err());
+}
+
+#[test]
 fn conditional_digest_batches_replicate_ordered_page_outcomes() {
     let mut group = Group::new();
     let leader = group.leader();

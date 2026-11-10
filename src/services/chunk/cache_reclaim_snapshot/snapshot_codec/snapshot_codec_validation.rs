@@ -21,6 +21,7 @@ impl ReplicaServiceSnapshot {
         validate_storage_receipt_retention(self.receipt_retention)?;
         if self.checksum != self.checksum_material_hash()
             && (!self.accepting_writes
+                || !self.namespace_fences.is_empty()
                 || self.draining
                 || self.frozen
                 || self.capacity_bytes != 0

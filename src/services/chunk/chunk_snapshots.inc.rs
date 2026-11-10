@@ -61,6 +61,9 @@ impl MatrixReplicaService {
             self.mutation_qos_state.throttled_bytes,
         );
         let _ = write!(stamp, ":qoscfg:{:?}", self.mutation_qos_config);
+        if !self.namespace_fences.is_empty() {
+            let _ = write!(stamp, ":namespace-fences:{}", self.namespace_fences.revision());
+        }
         for key in self.write_request_receipts.keys() {
             stamp.push_str("|wr:");
             stamp.push_str(key);
@@ -190,6 +193,7 @@ impl MatrixReplicaService {
     ) -> ReplicaServiceSnapshot {
         ReplicaServiceSnapshot {
             pages,
+            namespace_fences: self.namespace_fences.clone(),
             receipt_retention: self.receipt_retention,
             write_request_receipts: self.write_request_receipts.clone(),
             discard_request_receipts: self.discard_request_receipts.clone(),
@@ -384,6 +388,7 @@ impl MatrixReplicaService {
             }
         }
         self.pages = snapshot.pages;
+        self.namespace_fences = snapshot.namespace_fences;
         // EVERY page was replaced, so there is no per-page delta to apply.
         self.recount_page_totals();
         self.receipt_retention = snapshot.receipt_retention;

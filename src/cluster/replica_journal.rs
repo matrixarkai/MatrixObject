@@ -137,10 +137,15 @@ impl ReplicaJournal {
                 return Err(invalid("replica journal payload checksum mismatch"));
             }
             if &header[..4] == b"MOR2" {
-                crate::outcome::PageOutcome::from_payload(&payload)
+                if payload.starts_with(crate::chunk_namespace_fence::MAGIC) {
+                    crate::chunk_namespace_fence::NamespaceFenceOutcome::from_payload(&payload)
+                        .and_then(|outcome| outcome.apply(service)).map_err(invalid)?;
+                } else {
+                    crate::outcome::PageOutcome::from_payload(&payload)
                     .map_err(invalid)?
                     .apply(service, max_pages)
                     .map_err(invalid)?;
+                }
             } else {
                 let code = RequestCode::from_u8(payload[0])
                     .ok_or_else(|| invalid("unknown replica journal operation"))?;
@@ -218,6 +223,17 @@ impl ReplicaJournal {
         outcome: &crate::outcome::PageOutcome,
     ) -> io::Result<()> {
         let payload = outcome.to_payload().map_err(invalid)?;
+        self.append_payload_deferred(&payload)
+    }
+
+    pub(super) fn append_namespace_fence_deferred(
+        &mut self, outcome: &crate::chunk_namespace_fence::NamespaceFenceOutcome,
+    ) -> io::Result<()> {
+        let payload = outcome.to_payload().map_err(invalid)?;
+        self.append_payload_deferred(&payload)
+    }
+
+    fn append_payload_deferred(&mut self, payload: &[u8]) -> io::Result<()> {
         let header = outcome_header(&payload)?;
         let next_bytes = self
             .bytes_since_checkpoint

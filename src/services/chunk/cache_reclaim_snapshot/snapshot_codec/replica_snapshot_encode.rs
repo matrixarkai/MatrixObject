@@ -66,6 +66,9 @@ impl ReplicaServiceSnapshot {
                 .saturating_add(encoded_string_len(key))
                 .saturating_add(chunk_repair_receipt_encoded_len(receipt));
         }
+        if !self.namespace_fences.is_empty() {
+            bytes = bytes.saturating_add(8 + self.namespace_fences.encoded_len());
+        }
         bytes.saturating_add(128)
     }
 
@@ -78,7 +81,7 @@ impl ReplicaServiceSnapshot {
 
     pub(crate) fn append_to_bytes(&self, mut out: &mut Vec<u8>) {
         let snapshot_start = out.len();
-        append_string(&mut out, "MOSRSCHUNK22");
+        append_string(&mut out, if self.namespace_fences.is_empty() { "MOSRSCHUNK22" } else { "MOSRSCHUNK23" });
         append_u64(&mut out, self.accepting_writes as u64);
         append_u64(&mut out, self.draining as u64);
         append_u64(&mut out, self.frozen as u64);
@@ -167,6 +170,11 @@ impl ReplicaServiceSnapshot {
         for (idempotency_key, receipt) in self.repair_request_receipts.iter() {
             append_string(&mut out, idempotency_key);
             append_chunk_repair_receipt(&mut out, receipt);
+        }
+        if !self.namespace_fences.is_empty() {
+            let fences = self.namespace_fences.to_bytes();
+            append_u64(&mut out, fences.len() as u64);
+            out.extend_from_slice(&fences);
         }
         append_string(&mut out, &self.checksum);
         let envelope_checksum = etag(&out[snapshot_start..]);

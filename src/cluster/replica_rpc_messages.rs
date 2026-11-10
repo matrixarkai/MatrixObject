@@ -213,6 +213,8 @@ pub(crate) fn encode_conditional_write_batch_frame<'a>(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReplicaRequest {
+    FenceNamespace(crate::chunk_namespace_fence::NamespaceFence),
+    ReadNamespaceFence { namespace: crate::ChunkId },
     Membership(super::MembershipRequest),
     StateInstall(super::state_install::StateInstall),
     ReadChunkStateRange {
@@ -299,6 +301,8 @@ pub enum ReplicaRequest {
 impl ReplicaRequest {
     pub fn code(&self) -> RequestCode {
         match self {
+            Self::FenceNamespace(_) => RequestCode::FenceNamespace,
+            Self::ReadNamespaceFence { .. } => RequestCode::ReadNamespaceFence,
             ReplicaRequest::Membership(_) => RequestCode::Membership,
             ReplicaRequest::StateInstall(_) => RequestCode::StateInstall,
             ReplicaRequest::ReadChunkStateRange { .. } => RequestCode::ReadChunkStateRange,
@@ -336,6 +340,10 @@ impl ReplicaRequest {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            Self::FenceNamespace(fence) => return fence.encode_to_vec(),
+            Self::ReadNamespaceFence { namespace } => return crate::chunk_namespace_fence::NamespaceFenceQuery {
+                version: 1, volume_id: namespace.volume_id(), chunk_id: namespace.id()
+            }.encode_to_vec(),
             ReplicaRequest::Membership(value) => return value.encode_to_vec(),
             ReplicaRequest::StateInstall(value) => return value.encode_to_vec(),
             ReplicaRequest::ReadChunkStateRange {
@@ -508,6 +516,12 @@ impl ReplicaRequest {
     /// the wrong place -- a page address read one field short still parses into a valid
     /// `PageId`, naming a page nobody asked about.
     pub fn decode(code: RequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == RequestCode::FenceNamespace {
+            return Ok(Self::FenceNamespace(crate::chunk_namespace_fence::NamespaceFence::from_payload(payload)?));
+        }
+        if code == RequestCode::ReadNamespaceFence {
+            return Ok(Self::ReadNamespaceFence { namespace: crate::chunk_namespace_fence::NamespaceFenceQuery::from_payload(payload)? });
+        }
         if code == RequestCode::Membership {
             if payload.len() > 128 {
                 return Err(ObjectError::Corruption(
@@ -752,6 +766,7 @@ impl ReplicaRequest {
         }
         let mut cursor = Cursor::new(payload);
         let request = match code {
+            RequestCode::FenceNamespace | RequestCode::ReadNamespaceFence => unreachable!(),
             RequestCode::Membership | RequestCode::StateInstall => unreachable!(),
             RequestCode::ReadChunkStateRange => unreachable!(),
             RequestCode::ReadChunkBatch => unreachable!(),
@@ -848,6 +863,7 @@ impl ReplicaRequest {
 /// A decoded reply, including a typed pre-admission refusal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReplicaReply {
+    NamespaceFence(crate::chunk_namespace_fence::NamespaceFence),
     Membership(super::MembershipStatus),
     StateRange(super::state_transfer::ChunkStateRange),
     /// This voter did not admit the request; a catalog may try another voter.
@@ -886,6 +902,7 @@ pub enum ReplicaReply {
 impl ReplicaReply {
     pub(crate) fn payload_len(&self) -> usize {
         match self {
+            Self::NamespaceFence(fence) => fence.encoded_len(),
             Self::StateRange(value) => value.encoded_len(),
             Self::Applied | Self::NotLeader => 0,
             Self::Capabilities { .. } => 8,
@@ -944,6 +961,7 @@ impl ReplicaReply {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            ReplicaReply::NamespaceFence(value) => return value.encode_to_vec(),
             ReplicaReply::StateRange(value) => return value.encode_to_vec(),
             ReplicaReply::Applied | ReplicaReply::NotLeader => {}
             ReplicaReply::Membership(value) => return value.encode_to_vec(),
@@ -1036,6 +1054,9 @@ impl ReplicaReply {
     /// whose shape is read from the reply itself can be read as the wrong shape. The caller
     /// knows what it asked.
     pub fn decode(code: RequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if matches!(code, RequestCode::FenceNamespace | RequestCode::ReadNamespaceFence) {
+            return Ok(Self::NamespaceFence(crate::chunk_namespace_fence::NamespaceFence::from_payload(payload)?));
+        }
         if code == RequestCode::Membership {
             if payload.len() > 2048 {
                 return Err(ObjectError::Corruption(
@@ -1207,6 +1228,7 @@ impl ReplicaReply {
         }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
+            RequestCode::FenceNamespace | RequestCode::ReadNamespaceFence => unreachable!(),
             RequestCode::Membership | RequestCode::StateInstall => unreachable!(),
             RequestCode::ReadChunkStateRange => unreachable!(),
             RequestCode::GroupIdentity => unreachable!(),

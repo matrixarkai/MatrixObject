@@ -588,6 +588,10 @@ fn run(
                         return Err(RaftError::Storage("invalid chunk consensus entry".into()));
                     }
                     if !entry.outcome.is_empty() {
+                        if entry.outcome.starts_with(crate::chunk_namespace_fence::MAGIC) {
+                            crate::chunk_namespace_fence::NamespaceFenceOutcome::from_payload(&entry.outcome)
+                                .and_then(|outcome| outcome.apply(&mut node.service)).map_err(storage)?;
+                        } else {
                         let outcome = PageOutcome::from_payload(&entry.outcome)
                             .map_err(|e| RaftError::Storage(e.to_string()))?;
                         let page = outcome
@@ -605,6 +609,7 @@ fn run(
                             .ok_or_else(|| {
                                 RaftError::Storage("chunk usage accounting overflow".into())
                             })?;
+                        }
                     }
                 }
                 applied_term.set(id.term);
@@ -974,6 +979,8 @@ fn restore_snapshot(
 }
 fn read_only(request: &ReplicaRequest) -> bool {
     match request {
+        ReplicaRequest::ReadNamespaceFence { .. } => true,
+        ReplicaRequest::FenceNamespace(_) => false,
         ReplicaRequest::Membership(command) => command.is_read(),
         ReplicaRequest::ReadChunk { .. }
         | ReplicaRequest::ReadChunkBatch { .. }
@@ -1044,6 +1051,14 @@ fn prepare_candidate(
     max_pages: usize,
     limit: usize,
 ) -> Result<(Vec<u8>, Option<ReplicaReply>, Option<MatrixReplicaService>), ObjectError> {
+    if let ReplicaRequest::FenceNamespace(fence) = request {
+        let outcome = crate::chunk_namespace_fence::NamespaceFenceOutcome::decide(service, fence.clone())?;
+        crate::cluster::message::check_reply_size(outcome.after.as_ref().unwrap().encoded_len(), limit)?;
+        let mut candidate = service.clone_for_raft_preparation();
+        outcome.apply(&mut candidate)?;
+        let bytes = outcome.to_payload()?;
+        return Ok((bytes, Some(ReplicaReply::NamespaceFence(outcome.after.unwrap())), Some(candidate)));
+    }
     if matches!(request, ReplicaRequest::StateInstall(_)) {
         return Err(ObjectError::PreconditionFailed(
             "standalone state installation is unavailable on Raft nodes".into(),

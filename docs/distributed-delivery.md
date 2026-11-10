@@ -43,8 +43,10 @@ Explicit owned allocation, publication, resume and abort are available through
 `staged-object-writes.md`. A durable publication fence and atomic live-source
 copy are available through `publication-admission.md`. Opt-in staged deadlines,
 renewal and bounded automatic cleanup are available through `staged-ownership-leases.md`.
-Data-node fencing, allocation request identity and automatic reader-session integration remain
-unfinished. Keep reclamation disabled while completing them.
+Explicit durable chunk namespace closure and immutable repair pins are available
+through `chunk-namespace-fences.md`. Automatic fence propagation, allocation
+request identity and automatic reader-session integration remain unfinished.
+Keep reclamation disabled while completing them.
 
 Choose and document failover semantics before adding deletion: either restore
 protection durably or invalidate old sessions and wait out their protection
@@ -118,6 +120,36 @@ Client publication allocation measurements and outcome reuse are recorded in
 `publication-allocations.md`; they do not measure durable write amplification.
 Compression, erasure-coded placement, tiering and raw-device storage require
 separate durability and recovery designs before being advertised remotely.
+
+## Delivery ledger
+
+Each row describes the remote path. Local helper functions alone do not satisfy
+the acceptance condition. Complete the safety rows before enabling reclamation;
+measure performance at the same replication thresholds before tuning them.
+
+| Workstream | Current status | Next deliverable and acceptance |
+|---|---|---|
+| Write topology and durability | Star is the default, `N=3, W=3, R=1`; Raft is optional | Preserve durable acknowledgements under one stopped member; report refused publication and uncertain writes separately |
+| Chunk sizing and append boundaries | Page and extent limits exist; a page is not a storage chunk | Add an explicit configurable chunk policy with 64 MiB default and up to 512 MiB, without splitting an atomic append across chunks; test rollover and restart |
+| Bounded asynchronous I/O | Connection reuse and bounded batches exist | Audit client admission independently: configurable 16 in-flight requests and 100 queued requests; refuse overload before allocating or mutating |
+| Writer ownership | Durable owned staging, deadlines and automatic expiry exist | Add allocation request identity so a lost reply cannot leak a second allocation; test duplicate requests after leader loss |
+| Reader sessions | Explicit generation handles exist | Connect ordinary reads to bounded renewable protection; hold a read across overwrite, delete, leader loss and full restart |
+| Sealing and final length | Explicit namespace fences and exact repair pins exist | Have metadata durably drive closure to every participating data node before release; isolate stale nodes until their fence state catches up |
+| Garbage collection | Inventory and ownership records exist; deletion remains disabled | Reconcile live objects, cross-bucket copies, retained generations and staging; persist retryable deletion decisions and recover every interrupted phase |
+| Registration and expansion | Routing and membership checks exist; repair discovery is startup-only | Refresh group discovery while workers run; add generation-bound node registration and reject stale identities after restart |
+| Placement and draining | Remote placement admission exists | Enforce host/rack/disk separation and capacity budgets during movement; interrupt transfers and verify no ownership loss |
+| Integrity and recovery | Digest probes, EC sidecars, repair and checkpoints exist | Keep immutable repair identities through all repair paths; distinguish local EC sidecars from distributed erasure-coded placement |
+| Object API and access policy | Remote manifests, append, copy and listing exist | Inventory conditional delete, multipart, retained versions, ownership and access policy; add each through public clients with conflict and recovery tests |
+| Operations | Health, TLS, bounded workers and recovery checks exist | Exercise per-tenant quotas, repair bandwidth, draining and observability under concurrent foreground load |
+| Storage format and tiering | Durable journals and binary protobuf outcomes exist | Design aligned block storage, compaction, compression, distributed EC and tier movement separately; do not claim raw-device support from in-memory pages |
+| Cost and scale | Publication allocation measurements exist | Measure p50/p95/p99, QPS, CPU, allocations, network, journal and physical bytes with checkpoint/repair interference |
+| TemporalStore integration | Binary outcome and suffix-write paths exist | Run one-append workloads at increasing prefix sizes; report encoded outcome, transferred suffix and durable bytes for local and replicated modes |
+
+The immediate sequence is allocation request identity, automatic read protection,
+metadata-driven namespace closure, stale-node readmission, and only then physical
+reclamation. Placement expansion and the workload harness can progress without
+granting deletion authority. Each implementation should ship with bounded wire
+contracts, restart tests and an update to this ledger.
 
 ## Cross-service validation
 

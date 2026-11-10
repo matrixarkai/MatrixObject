@@ -107,6 +107,8 @@ pub enum RequestCode {
     WideConditionalWriteLimits = 23,
     /// Return up to eight range digests after one read confirmation.
     DigestChunkBatch = 24,
+    FenceNamespace = 25,
+    ReadNamespaceFence = 26,
 }
 
 impl RequestCode {
@@ -141,6 +143,8 @@ impl RequestCode {
             22 => Some(RequestCode::ReadBatchLimits),
             23 => Some(RequestCode::WideConditionalWriteLimits),
             24 => Some(RequestCode::DigestChunkBatch),
+            25 => Some(RequestCode::FenceNamespace),
+            26 => Some(RequestCode::ReadNamespaceFence),
             _ => None,
         }
     }
