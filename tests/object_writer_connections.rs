@@ -1080,7 +1080,7 @@ fn sequential_object_reads_reuse_one_verified_group_connection() {
         })
     };
     let manifest = ObjectManifest {
-        format_version: 1,
+        format_version: 2,
         bucket: "bucket".into(),
         key: "key".into(),
         generation: 1,
@@ -1096,6 +1096,9 @@ fn sequential_object_reads_reuse_one_verified_group_connection() {
                 length: 4,
                 write_sequence: 1,
                 data_checksum: checksum(&data[..4]),
+                data_sha256: ring::digest::digest(&ring::digest::SHA256, &data[..4])
+                    .as_ref()
+                    .to_vec(),
             },
             ObjectExtent {
                 group: group.placement_id.clone(),
@@ -1107,6 +1110,9 @@ fn sequential_object_reads_reuse_one_verified_group_connection() {
                 length: 4,
                 write_sequence: 1,
                 data_checksum: checksum(&data[4..]),
+                data_sha256: ring::digest::digest(&ring::digest::SHA256, &data[4..])
+                    .as_ref()
+                    .to_vec(),
             },
         ],
         deleted: false,
@@ -1121,7 +1127,7 @@ fn sequential_object_reads_reuse_one_verified_group_connection() {
                 group.identity.unwrap(),
             )))
             .unwrap();
-        for _ in 0..2 {
+        for _ in 0..3 {
             let ReplicaRequest::ReadChunkBatch { reads } = replica(&mut stream) else {
                 panic!("object read batch missing");
             };
@@ -1156,15 +1162,19 @@ fn sequential_object_reads_reuse_one_verified_group_connection() {
     let metadata_manifest = manifest.clone();
     let metadata_worker = thread::spawn(move || {
         let mut stream = accept(&metadata_socket);
-        for _ in 0..2 {
+        for pass in 0..3 {
             assert!(matches!(
                 meta(&mut stream),
                 MetaRequest::ReadManifestRoutesWide { .. }
             ));
+            let mut manifest = metadata_manifest.clone();
+            if pass == 2 {
+                manifest.extents[0].data_sha256[0] ^= 1;
+            }
             reply(
                 &mut stream,
                 MetaReply::ManifestRoutes {
-                    manifest: metadata_manifest.clone(),
+                    manifest,
                     routes: vec![route.clone()],
                 },
             );
@@ -1180,6 +1190,10 @@ fn sequential_object_reads_reuse_one_verified_group_connection() {
         assert_eq!(read_manifest, manifest);
         assert_eq!(bytes, data);
     }
+    assert!(matches!(
+        client.read_object("bucket", "key", data.len(), &ReplicaClientOptions::default()),
+        Err(matrixobjectstore_rs::ObjectError::Corruption(_))
+    ));
     drop(client);
     metadata_worker.join().unwrap();
     assert_eq!(data_worker.join().unwrap(), manifest);

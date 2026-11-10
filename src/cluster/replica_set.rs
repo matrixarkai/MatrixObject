@@ -42,6 +42,8 @@ const LARGE_MUTATION_QUORUM_DRAIN: std::time::Duration =
     std::time::Duration::from_millis(25);
 const LARGE_MUTATION_FRAME_BYTES: usize = 1024 * 1024;
 const READ_QUORUM_HEDGE_DRAIN: std::time::Duration = std::time::Duration::from_millis(25);
+const AUTHENTICATED_READ_HEDGE_BASE: std::time::Duration =
+    std::time::Duration::from_millis(250);
 const MAX_PARALLEL_RECONNECTS: usize = 8;
 const ROUTED_RECONNECT_MIN_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
 const ROUTED_RECONNECT_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
@@ -75,6 +77,22 @@ fn conditional_write_frame_count(
             .saturating_add(write.data.len());
     }
     frames + usize::from(frame_writes > 0)
+}
+
+fn authenticated_read_attempt_deadline(
+    deadline: std::time::Instant,
+    bytes: u64,
+    has_fallback: bool,
+) -> std::time::Instant {
+    if !has_fallback {
+        return deadline;
+    }
+    let hedge = AUTHENTICATED_READ_HEDGE_BASE
+        .saturating_add(std::time::Duration::from_millis(bytes / (64 * 1024)));
+    std::time::Instant::now()
+        .checked_add(hedge)
+        .unwrap_or(deadline)
+        .min(deadline)
 }
 
 type ReconnectResult = (String, Result<RemoteReplicaClient, ObjectError>);
@@ -1667,6 +1685,147 @@ impl RemoteReplicaSet {
         votes.finish(replica_count, read_quorum)
     }
 
+    /// Read published object pages from one verified member in the healthy case.
+    /// The committed manifest supplies a sequence and SHA-256 digest for each
+    /// range. A write quorum and the connected read quorum intersect, so a
+    /// matching copy is sufficient; a missing or stale member is tried only
+    /// for the pages it could not prove. Older manifests keep quorum reads.
+    pub(super) fn read_chunks_verified(
+        &mut self,
+        reads: &[(PageId, u64, u64, u64, [u8; 32])],
+    ) -> Result<Vec<ReplicaReadResult>, ObjectError> {
+        if reads.len() > 32 || reads.iter().any(|(_, _, length, _, _)| *length > 1024 * 1024) {
+            return Err(ObjectError::InvalidArgument(
+                "authenticated star read exceeds batch bounds".into(),
+            ));
+        }
+        if reads.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.reconnect_failed();
+        if self.replicas.len() < self.read_quorum {
+            return Err(ObjectError::Corruption(
+                "authenticated star read has no connected read quorum".into(),
+            ));
+        }
+        // The current wire bound is safe without an all-member capability
+        // exchange on the read path. Older members can reject a wide batch;
+        // the scalar probe below still verifies their returned bytes.
+        let (max_reads, max_reply_bytes) = self.read_batch_limits.unwrap_or((
+            32,
+            self.options.max_payload_bytes.saturating_sub(1024),
+        ));
+        let max_reads = max_reads.max(1);
+        let mut output = Vec::with_capacity(reads.len());
+        let mut completed = 0usize;
+        while completed < reads.len() {
+            let mut end = completed;
+            let mut frame_bytes = 0u64;
+            while end < reads.len() && end - completed < max_reads {
+                let Some(next_bytes) = frame_bytes.checked_add(reads[end].2) else {
+                    break;
+                };
+                if end > completed
+                    && next_bytes.saturating_add((end + 1 - completed) as u64 * 64)
+                        > max_reply_bytes as u64
+                {
+                    break;
+                }
+                frame_bytes = next_bytes;
+                end += 1;
+            }
+            let frame = &reads[completed..end];
+            let deadline = self.read_wave_deadline()?;
+            let (primary, _) = self.next_read_waves(1);
+            let start = primary.iter().position(|selected| *selected).unwrap_or(0);
+            let members = self.replicas.len();
+            let mut found: Vec<Option<ReplicaReadResult>> = vec![None; frame.len()];
+            for step in 0..members {
+                if found.iter().all(Option::is_some) {
+                    break;
+                }
+                let member = (start + step) % members;
+                let missing: Vec<_> = found
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, read)| read.is_none().then_some(index))
+                    .collect();
+                let request = ReplicaRequest::ReadChunkBatch {
+                    reads: missing
+                        .iter()
+                        .map(|index| {
+                            let (page, offset, length, _, _) = &frame[*index];
+                            (page.clone(), *offset, *length)
+                        })
+                        .collect(),
+                };
+                let mut selected = vec![false; members];
+                selected[member] = true;
+                let mut answer = None;
+                let attempt_deadline = authenticated_read_attempt_deadline(
+                    deadline,
+                    missing.iter().map(|index| frame[*index].2).sum(),
+                    step + 1 < members,
+                );
+                self.fan_out_each_before(&request, Some(&selected), attempt_deadline, None, |_, reply| {
+                    answer = Some(reply);
+                });
+                if let Some(Ok(ReplicaReply::Reads(replies))) = answer {
+                    if replies.len() == missing.len() {
+                        for (index, read) in missing.iter().copied().zip(replies) {
+                            if verified_object_page(&read, &frame[index]) {
+                                found[index] = Some(read);
+                            }
+                        }
+                    }
+                }
+            }
+            // Batch replies are all-or-nothing on older nodes and when a page
+            // is absent. Probe only the unresolved pages before reporting loss.
+            for (index, slot) in found.iter_mut().enumerate() {
+                if slot.is_some() {
+                    continue;
+                }
+                let (page, offset, length, _, _) = &frame[index];
+                let request = ReplicaRequest::ReadChunk {
+                    page_id: page.clone(),
+                    offset: *offset,
+                    length: *length,
+                };
+                for step in 0..members {
+                    let member = (start + step) % members;
+                    let mut selected = vec![false; members];
+                    selected[member] = true;
+                    let mut answer = None;
+                    let attempt_deadline = authenticated_read_attempt_deadline(
+                        deadline,
+                        *length,
+                        step + 1 < members,
+                    );
+                    self.fan_out_each_before(&request, Some(&selected), attempt_deadline, None, |_, reply| {
+                        answer = Some(reply);
+                    });
+                    if let Some(Ok(ReplicaReply::Read(read))) = answer {
+                        if verified_object_page(&read, &frame[index]) {
+                            *slot = Some(read);
+                            break;
+                        }
+                    }
+                }
+            }
+            for read in found {
+                output.push(read.ok_or_else(|| {
+                    ObjectError::Corruption(
+                        "no connected replica returned a page matching the published digest"
+                            .into(),
+                    )
+                })?);
+            }
+            completed = end;
+        }
+        Ok(output)
+    }
+
     /// Read up to 32 independent ranges through quorum-voted star fan-out.
     /// Standalone nodes pack seven one-MiB ranges inside one bounded reply. A
     /// rotating quorum is contacted first and remaining members are used only
@@ -2214,6 +2373,16 @@ fn heads_have_quorum(answered: &[ReplicaHead], read_quorum: usize) -> bool {
     })
 }
 
+fn verified_object_page(
+    read: &ReplicaReadResult,
+    expected: &(PageId, u64, u64, u64, [u8; 32]),
+) -> bool {
+    read.write_sequence == expected.3
+        && read.data.len() as u64 == expected.2
+        && ring::digest::digest(&ring::digest::SHA256, &read.data).as_ref()
+            == expected.4.as_slice()
+}
+
 // Keep exact sequence/checksum/byte voting while moving each received payload
 // directly into the vote table. Matching allocations are released as replies
 // complete, so retained bytes scale with distinct copies rather than responders.
@@ -2277,6 +2446,127 @@ impl ReadVoteCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authenticated_star_pages_read_one_member_and_retry_stale_or_slow_bytes() {
+        use crate::cluster::message::{encode_reply, ReplicaReply, ReplicaRequest};
+        use crate::cluster::wire::RequestCode;
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        for first_member in ["healthy", "stale", "slow"] {
+            let listeners: Vec<_> = (0..3)
+                .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+                .collect();
+            let endpoints: Vec<_> = listeners
+                .iter()
+                .map(|listener| listener.local_addr().unwrap().to_string())
+                .collect();
+            let batches = Arc::new(std::array::from_fn::<_, 3, _>(|_| AtomicUsize::new(0)));
+            let scalars = Arc::new(std::array::from_fn::<_, 3, _>(|_| AtomicUsize::new(0)));
+            let workers: Vec<_> = listeners
+                .into_iter()
+                .enumerate()
+                .map(|(index, listener)| {
+                    let batches = batches.clone();
+                    let scalars = scalars.clone();
+                    std::thread::spawn(move || {
+                        let (mut stream, _) = listener.accept().unwrap();
+                        stream
+                            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                            .unwrap();
+                        loop {
+                            let mut header = [0; 6];
+                            if stream.read_exact(&mut header).is_err() {
+                                break;
+                            }
+                            let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                            let mut bytes = vec![0; length];
+                            stream.read_exact(&mut bytes).unwrap();
+                            let request = ReplicaRequest::decode(
+                                RequestCode::from_u8(header[1]).unwrap(),
+                                &bytes,
+                            )
+                            .unwrap();
+                            let reply = match request {
+                                ReplicaRequest::ReadChunkBatch { reads } => {
+                                    batches[index].fetch_add(1, Ordering::SeqCst);
+                                    if index == 0 && first_member == "slow" {
+                                        std::thread::sleep(std::time::Duration::from_secs(2));
+                                    }
+                                    ReplicaReply::Reads(
+                                        reads
+                                            .into_iter()
+                                            .map(|_| ReplicaReadResult {
+                                                data: if index == 0 && first_member == "stale" {
+                                                    b"stale".to_vec()
+                                                } else {
+                                                    b"fresh".to_vec()
+                                                },
+                                                write_sequence: 1,
+                                                checksum: "valid".into(),
+                                            })
+                                            .collect(),
+                                    )
+                                }
+                                ReplicaRequest::ReadChunk { .. } => {
+                                    scalars[index].fetch_add(1, Ordering::SeqCst);
+                                    ReplicaReply::Read(ReplicaReadResult {
+                                        data: b"fresh".to_vec(),
+                                        write_sequence: 1,
+                                        checksum: "valid".into(),
+                                    })
+                                }
+                                _ => panic!("unexpected authenticated read request"),
+                            };
+                            if stream.write_all(&encode_reply(&reply)).is_err() {
+                                break;
+                            }
+                        }
+                    })
+                })
+                .collect();
+            let mut set = RemoteReplicaSet::connect(
+                &endpoints,
+                2,
+                2,
+                &ReplicaClientOptions::default(),
+            )
+            .unwrap();
+            let mut digest = [0; 32];
+            digest.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, b"fresh").as_ref());
+            let pages: Vec<_> = (0..2)
+                .map(|index| {
+                    (
+                        PageId {
+                            chunk_id: crate::ChunkId::new(1, 2).unwrap(),
+                            page_index: index,
+                        },
+                        0,
+                        5,
+                        1,
+                        digest,
+                    )
+                })
+                .collect();
+            let started = std::time::Instant::now();
+            let reads = set.read_chunks_verified(&pages).unwrap();
+            if first_member == "slow" {
+                assert!(started.elapsed() < std::time::Duration::from_millis(1500));
+            }
+            assert!(reads.iter().all(|read| read.data == b"fresh"));
+            drop(set);
+            for worker in workers {
+                worker.join().unwrap();
+            }
+            assert_eq!(batches[0].load(Ordering::SeqCst), 1);
+            assert_eq!(batches[1].load(Ordering::SeqCst), usize::from(first_member != "healthy"));
+            assert_eq!(batches[2].load(Ordering::SeqCst), 0);
+            assert_eq!(scalars.iter().map(|value| value.load(Ordering::SeqCst)).sum::<usize>(), 0);
+        }
+    }
 
     #[test]
     fn failed_member_work_runs_concurrently_in_bounded_waves() {

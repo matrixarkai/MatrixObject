@@ -120,9 +120,51 @@ impl RemoteGroupClient {
     pub(super) fn read_chunks(
         &mut self,
         pages: &[(crate::PageId, u64, u64)],
+        extents: &[&ObjectExtent],
     ) -> Result<Vec<crate::ReplicaReadResult>, ObjectError> {
+        if pages.len() != extents.len() {
+            return Err(ObjectError::Corruption(
+                "object read page and extent counts differ".into(),
+            ));
+        }
         match self {
-            Self::Raft(client) => client.read_chunks_pipelined(pages),
+            Self::Raft(client) => {
+                let reads = client.read_chunks_pipelined(pages)?;
+                if reads.len() != extents.len() {
+                    return Err(ObjectError::Corruption(
+                        "object read reply count differs from extent count".into(),
+                    ));
+                }
+                for (read, extent) in reads.iter().zip(extents) {
+                    if !extent.data_sha256.is_empty()
+                        && (read.write_sequence != extent.write_sequence
+                            || read.data.len() as u64 != extent.length
+                            || ring::digest::digest(&ring::digest::SHA256, &read.data).as_ref()
+                                != extent.data_sha256.as_slice())
+                    {
+                        return Err(ObjectError::Corruption(
+                            "object extent does not match published digest".into(),
+                        ));
+                    }
+                }
+                Ok(reads)
+            }
+            Self::Star(set) if extents.iter().all(|extent| extent.data_sha256.len() == 32) => {
+                let verified: Vec<_> = pages
+                    .iter()
+                    .zip(extents)
+                    .map(|((page, offset, length), extent)| {
+                        (
+                            page.clone(),
+                            *offset,
+                            *length,
+                            extent.write_sequence,
+                            extent.data_sha256.as_slice().try_into().unwrap(),
+                        )
+                    })
+                    .collect();
+                set.read_chunks_verified(&verified)
+            }
             Self::Star(set) => set.read_chunks(pages),
         }
     }
@@ -429,6 +471,9 @@ impl RemoteMetaClient {
                         || extent.length != bytes.len() as u64
                         || extent.write_sequence != 1
                         || extent.data_checksum != crate::fnv1a64(bytes)
+                        || (!extent.data_sha256.is_empty()
+                            && extent.data_sha256
+                                != ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
                 })
         {
             return Err(staged_error(invalid(
@@ -611,7 +656,7 @@ impl RemoteMetaClient {
             )));
         }
         let mut manifest = ObjectManifest {
-            format_version: 1,
+            format_version: 2,
             bucket: bucket.into(),
             key: key.into(),
             generation,
@@ -693,6 +738,9 @@ impl RemoteMetaClient {
                     length: bytes.len() as u64,
                     write_sequence: 1,
                     data_checksum: crate::fnv1a64(bytes),
+                    data_sha256: ring::digest::digest(&ring::digest::SHA256, bytes)
+                        .as_ref()
+                        .to_vec(),
                 });
             }
         }
@@ -895,6 +943,7 @@ mod tests {
                 length: 4,
                 write_sequence: 1,
                 data_checksum: 0,
+                data_sha256: Vec::new(),
             }],
             deleted: false,
         };

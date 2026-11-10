@@ -663,6 +663,8 @@ page batches from a matching source quorum. Returning nodes can remain in mainte
 excluded from placement and ordinary writes, until an operator explicitly resumes them.
 The [five-replica repair workload](docs/star-repair-scale.md) verifies this sequence through
 metadata failover and full process restart. Automatic repair scheduling remains unfinished.
+New object writes use [authenticated object reads](docs/authenticated-object-reads.md)
+to accept one digest-matching star copy and retry a missing, stale, or slow member.
 Replicated metadata uses the separate [MatrixRaft configuration](docs/metadata-consensus.md).
 
 ### Metadata restart recovery
