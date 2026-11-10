@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, IoSlice, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use super::message::ReplicaRequest;
@@ -25,6 +25,19 @@ pub(super) struct ReplicaJournal {
 
 fn invalid(message: impl ToString) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_string())
+}
+
+fn outcome_header(payload: &[u8]) -> io::Result<[u8; HEADER_LEN]> {
+    if payload.is_empty() || payload.len() > MAX_PAYLOAD_BYTES + 1 {
+        return Err(invalid("replica outcome exceeds its length bound"));
+    }
+    let mut header = [0; HEADER_LEN];
+    header[..4].copy_from_slice(b"MOR2");
+    header[4..8].copy_from_slice(&(payload.len() as u32).to_be_bytes());
+    let header_checksum = fnv1a64(&header[..8]);
+    header[8..16].copy_from_slice(&header_checksum.to_be_bytes());
+    header[16..24].copy_from_slice(&fnv1a64(payload).to_be_bytes());
+    Ok(header)
 }
 
 impl ReplicaJournal {
@@ -182,24 +195,56 @@ impl ReplicaJournal {
         Ok(record)
     }
 
+    #[cfg(test)]
     pub(super) fn encode_outcome(outcome: &crate::outcome::PageOutcome) -> io::Result<Vec<u8>> {
         let payload = outcome.to_payload().map_err(invalid)?;
-        let mut record = b"MOR2".to_vec();
-        record.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-        record.extend_from_slice(&fnv1a64(&record).to_be_bytes());
-        record.extend_from_slice(&fnv1a64(&payload).to_be_bytes());
+        let header = outcome_header(&payload)?;
+        let mut record = Vec::with_capacity(HEADER_LEN + payload.len());
+        record.extend_from_slice(&header);
         record.extend_from_slice(&payload);
         Ok(record)
     }
 
+    pub(super) fn append_outcome(&mut self, outcome: &crate::outcome::PageOutcome) -> io::Result<()> {
+        self.append_outcome_deferred(outcome)?;
+        self.sync_deferred()
+    }
+
+    /// Keep the outcome payload in its serialized buffer while writing its
+    /// checksum header and payload as two slices. A bounded batch syncs once
+    /// after all of its outcomes have been appended.
+    pub(super) fn append_outcome_deferred(
+        &mut self,
+        outcome: &crate::outcome::PageOutcome,
+    ) -> io::Result<()> {
+        let payload = outcome.to_payload().map_err(invalid)?;
+        let header = outcome_header(&payload)?;
+        let next_bytes = self
+            .bytes_since_checkpoint
+            .checked_add(HEADER_LEN as u64 + payload.len() as u64)
+            .ok_or_else(|| invalid("journal length overflow"))?;
+        let mut slices = [IoSlice::new(&header), IoSlice::new(&payload)];
+        let mut remaining = &mut slices[..];
+        while !remaining.is_empty() {
+            match self.file.write_vectored(remaining) {
+                Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero)),
+                Ok(written) => IoSlice::advance_slices(&mut remaining, written),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        self.bytes_since_checkpoint = next_bytes;
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(super) fn append(&mut self, record: &[u8]) -> io::Result<()> {
         self.append_deferred(record)?;
         self.sync_deferred()
     }
 
-    /// Append one complete outcome without acknowledging its durability yet.
-    /// The bounded standalone batch path uses this for every member, then calls
-    /// `sync_deferred` once before it returns a reply.
+    /// Append a prebuilt record for recovery tests.
+    #[cfg(test)]
     pub(super) fn append_deferred(&mut self, record: &[u8]) -> io::Result<()> {
         self.file.write_all(record)?;
         self.bytes_since_checkpoint = self
@@ -512,8 +557,12 @@ mod outcome_tests {
             let mut recovered = MatrixReplicaService::new();
             let mut journal = ReplicaJournal::open(&path, &mut recovered).unwrap();
             assert_eq!(recovered.read_chunk_state(&page).unwrap(), before);
-            journal.append(&second).unwrap();
+            journal.append_outcome(&outcome).unwrap();
             drop(journal);
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                [first.as_slice(), second.as_slice()].concat()
+            );
             let mut recovered = MatrixReplicaService::new();
             drop(ReplicaJournal::open(&path, &mut recovered).unwrap());
             assert_eq!(
@@ -587,9 +636,7 @@ mod checkpoint_tests {
         )
         .unwrap()
         .with_counters(counters, crate::outcome::PageOutcome::counters(service));
-        journal
-            .append(&ReplicaJournal::encode_outcome(&outcome).unwrap())
-            .unwrap();
+        journal.append_outcome(&outcome).unwrap();
     }
 
     #[test]

@@ -780,13 +780,11 @@ fn apply_locked(
                     counters,
                     crate::outcome::PageOutcome::counters(&guard.service),
                 );
-            let record = ReplicaJournal::encode_outcome(&outcome)
-                .map_err(|err| ObjectError::Corruption(err.to_string()))?;
             let journal = guard.journal.as_mut().unwrap();
             if sync_journal {
-                journal.append(&record)
+                journal.append_outcome(&outcome)
             } else {
-                journal.append_deferred(&record)
+                journal.append_outcome_deferred(&outcome)
             }
             .map_err(|err| ObjectError::Corruption(err.to_string()))
         })();
