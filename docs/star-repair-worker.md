@@ -24,9 +24,11 @@ cargo run --release --features metadata-consensus --bin star_repaird
 connections. The worker checks the metadata route before each batch and starts
 at the beginning when membership changes. Every configured chunk member must
 answer its inventory before a batch can mutate a page. A missing member or
-metadata quorum causes a logged retry. Routine sweeps compare complete page
-heads on every member. Matching heads avoid payload transfer; differing or
-missing heads enter the validated repair path. A scheduled scrub reads and
+metadata quorum causes a logged retry. Routine sweeps compare up to eight
+complete page heads per request on every member. Older members use individual
+head requests. Matching heads avoid payload transfer; differing or missing
+heads enter the validated repair path. Routine matches report `HeadMatched`
+rather than the byte-validated `Current` status. A scheduled scrub reads and
 validates page payloads on every member. Its timer restarts after completion.
 Repeated connection failures back off from the batch interval to at most 30
 seconds. Healthy batches report one summary at the end of the sweep.

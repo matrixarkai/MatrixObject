@@ -314,6 +314,7 @@ pub struct RemoteReplicaSet {
     state_conditional_write: Option<bool>,
     conditional_write_limits: Option<(usize, usize)>,
     read_batch_limits: Option<(usize, usize)>,
+    repair_head_batch: Option<bool>,
     options: ReplicaClientOptions,
 }
 
@@ -322,6 +323,8 @@ pub struct RemoteReplicaSet {
 pub enum PageRepairStatus {
     /// Exact validated bytes already matched the selected source state.
     Current,
+    /// Complete stored heads match; payload bytes were not read in this sweep.
+    HeadMatched,
     /// The node acknowledged durable installation (or atomic in-memory installation).
     Installed,
     /// No commit was sent. A best-effort abort may leave staging until expiry.
@@ -445,6 +448,7 @@ impl RemoteReplicaSet {
             state_conditional_write: None,
             conditional_write_limits: None,
             read_batch_limits: None,
+            repair_head_batch: None,
             options: options.clone(),
         })
     }
@@ -525,6 +529,7 @@ impl RemoteReplicaSet {
             state_conditional_write: None,
             conditional_write_limits: None,
             read_batch_limits: None,
+            repair_head_batch: None,
             options: options.clone(),
         })
     }
@@ -845,6 +850,7 @@ impl RemoteReplicaSet {
                 self.state_conditional_write = None;
                 self.conditional_write_limits = None;
                 self.read_batch_limits = None;
+                self.repair_head_batch = None;
             }
             return;
         }
@@ -861,6 +867,7 @@ impl RemoteReplicaSet {
             self.state_conditional_write = None;
             self.conditional_write_limits = None;
             self.read_batch_limits = None;
+            self.repair_head_batch = None;
         }
     }
 
@@ -2361,33 +2368,97 @@ impl RemoteReplicaSet {
             has_more,
             blocked: false,
         };
-        for page in selected {
-            let result = if head_first {
-                self.repair_chunk_head_first(&page)
+        let pages: Vec<_> = selected.into_iter().collect();
+        for group in pages.chunks(8) {
+            let uniform = if head_first {
+                self.uniform_heads_batch(group).ok().flatten()
             } else {
-                self.repair_chunk(&page)
+                None
+            };
+            for (position, page) in group.iter().enumerate() {
+                let result = match uniform.as_ref() {
+                    Some(heads) => match &heads[position] {
+                        Some(source) => Ok(PageRepairReport {
+                            source: source.clone(),
+                            members: vec![PageRepairStatus::HeadMatched; self.replicas.len()],
+                        }),
+                        None => self.repair_chunk(page),
+                    },
+                    None if head_first => self.repair_chunk_head_first(page),
+                    None => self.repair_chunk(page),
+                }
+                .map_err(|error| error.to_string());
+                let resolved = result.as_ref().is_ok_and(|report| {
+                    report.members.iter().all(|status| {
+                        matches!(
+                            status,
+                            PageRepairStatus::Current
+                                | PageRepairStatus::HeadMatched
+                                | PageRepairStatus::Installed
+                        )
+                    })
+                });
+                batch.pages.push(PageRepairEntry {
+                    page: page.clone(),
+                    result,
+                });
+                if !resolved {
+                    batch.blocked = true;
+                    batch.has_more = true;
+                    return Ok(batch);
+                }
+                batch.resume_after = Some(page.clone());
             }
-            .map_err(|error| error.to_string());
-            let resolved = result.as_ref().is_ok_and(|report| {
-                report.members.iter().all(|status| {
-                    matches!(
-                        status,
-                        PageRepairStatus::Current | PageRepairStatus::Installed
-                    )
-                })
-            });
-            batch.pages.push(PageRepairEntry {
-                page: page.clone(),
-                result,
-            });
-            if !resolved {
-                batch.blocked = true;
-                batch.has_more = true;
-                break;
-            }
-            batch.resume_after = Some(page);
         }
         Ok(batch)
+    }
+
+    fn uniform_heads_batch(
+        &mut self,
+        pages: &[PageId],
+    ) -> Result<Option<Vec<Option<ReplicaHead>>>, ObjectError> {
+        if self.repair_head_batch == Some(false) {
+            return Ok(None);
+        }
+        let deadline = self.read_wave_deadline()?;
+        let request = ReplicaRequest::HeadChunkBatch {
+            pages: pages.to_vec(),
+        };
+        let mut answers = vec![None; self.replicas.len()];
+        let mut unsupported = false;
+        self.fan_out_each_before(&request, None, deadline, None, |index, reply| {
+            match reply {
+                Ok(ReplicaReply::Heads(heads)) if heads.len() == pages.len() => {
+                    answers[index] = Some(heads);
+                }
+                Err(ObjectError::PreconditionFailed(message))
+                    if message.starts_with("the replica does not implement this request:") =>
+                {
+                    unsupported = true;
+                }
+                Err(ObjectError::InvalidArgument(_)) => unsupported = true,
+                _ => {}
+            }
+        });
+        if unsupported {
+            self.repair_head_batch = Some(false);
+            return Ok(None);
+        }
+        self.repair_head_batch = Some(true);
+        let mut uniform = vec![None; pages.len()];
+        if answers.iter().any(Option::is_none) {
+            return Ok(Some(uniform));
+        }
+        for (position, slot) in uniform.iter_mut().enumerate() {
+            if let Some(source) = answers[0].as_ref().unwrap()[position].as_ref() {
+                if answers.iter().all(|answer| {
+                    answer.as_ref().unwrap()[position].as_ref() == Some(source)
+                }) {
+                    *slot = Some(source.clone());
+                }
+            }
+        }
+        Ok(Some(uniform))
     }
 
     fn repair_chunk_head_first(
@@ -2409,7 +2480,7 @@ impl RemoteReplicaSet {
             if heads.iter().all(|head| head.as_ref() == Some(source)) {
                 return Ok(PageRepairReport {
                     source: source.clone(),
-                    members: vec![PageRepairStatus::Current; self.replicas.len()],
+                    members: vec![PageRepairStatus::HeadMatched; self.replicas.len()],
                 });
             }
         }
