@@ -107,6 +107,7 @@ pub struct RemoteMetaClient {
     writer: super::api_tls::ApiSocket,
     max_payload_bytes: usize,
     live: bool,
+    reconnect_options: MetaClientOptions,
     group_identity: Option<super::MetaGroupIdentity>,
     read_timeout: Duration,
     write_timeout: Duration,
@@ -181,6 +182,7 @@ impl RemoteMetaClient {
             writer,
             max_payload_bytes: options.max_payload_bytes,
             live: true,
+            reconnect_options: options.clone(),
             group_identity: None,
             read_timeout: options.read_timeout,
             write_timeout: options.write_timeout,
@@ -1328,7 +1330,32 @@ impl RemoteMetaClient {
     }
 
     fn try_call_admission(&mut self, request: MetaRequest) -> (MetaCallOutcome, bool) {
+        // Detect a completed idle close before sending any application bytes.
+        // A close racing with this check still follows normal uncertainty rules.
+        if self.live && self.peer_has_closed().unwrap_or(true) {
+            self.retire();
+        }
         let Some((endpoints, options)) = self.catalog.clone() else {
+            if !self.live {
+                let mut options = self.reconnect_options.clone();
+                options.deadline = self.deadline;
+                let mut next = match Self::connect(&self.endpoint, &options) {
+                    Ok(next) => next,
+                    Err(error) => return (MetaCallOutcome::Unreachable(error), true),
+                };
+                if let Some(expected) = &self.group_identity {
+                    match next.metadata_group_identity() {
+                        Ok(actual) if expected.same_group(&actual) => {
+                            next.group_identity = Some(expected.clone());
+                        }
+                        Ok(_) => return (MetaCallOutcome::Refused(ObjectError::PreconditionFailed(
+                            "metadata voter configuration changed before reconnect".into(),
+                        )), true),
+                        Err(error) => return (MetaCallOutcome::Unreachable(error), true),
+                    }
+                }
+                self.adopt_connection(next);
+            }
             return self.call_one_admission(&request);
         };
         let start = endpoints
@@ -1412,7 +1439,7 @@ impl RemoteMetaClient {
                                 }
                             }
                             next.catalog = Some((endpoints.clone(), options.clone()));
-                            *self = next;
+                            self.adopt_connection(next);
                         }
                         Err(error) => {
                             last = MetaCallOutcome::Unreachable(error);
@@ -1459,6 +1486,18 @@ impl RemoteMetaClient {
 
     fn call_one(&mut self, request: &MetaRequest) -> MetaCallOutcome {
         self.call_one_admission(request).0
+    }
+
+    fn adopt_connection(&mut self, mut next: Self) {
+        #[cfg(feature = "replica-server")]
+        {
+            // Cached data sockets are still checked against each fresh route.
+            next.object_connections = std::mem::take(&mut self.object_connections);
+            if self.group_identity.is_some() {
+                next.object_page_lease = self.object_page_lease.take();
+            }
+        }
+        *self = next;
     }
 
     fn call_one_admission(&mut self, request: &MetaRequest) -> (MetaCallOutcome, bool) {
@@ -2132,6 +2171,55 @@ mod operation_deadline_tests {
         });
         assert!(client.list_placement_nodes().unwrap().is_empty());
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn idle_metadata_close_reconnects_before_allocation_without_replaying_uncertainty() {
+        for catalog in [false, true] {
+            for lose_reply in [false, true] {
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let endpoint = listener.local_addr().unwrap().to_string();
+                let options = MetaClientOptions {
+                    read_timeout: Duration::from_secs(2),
+                    ..Default::default()
+                };
+                let mut client = if catalog {
+                    RemoteMetaClient::connect_catalog(&[endpoint], &options).unwrap()
+                } else { RemoteMetaClient::connect(&endpoint, &options).unwrap() };
+                let (idle, _) = listener.accept().unwrap();
+                idle.shutdown(Shutdown::Both).unwrap();
+                drop(idle);
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while !client.peer_has_closed().unwrap() {
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let worker = std::thread::spawn(move || {
+                    let (mut server, _) = listener.accept().unwrap();
+                    server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                    let expected = encode_meta_request(&MetaRequest::AllocateObjectPages { page_count: 1 });
+                    let mut bytes = vec![0; expected.len()];
+                    server.read_exact(&mut bytes).unwrap();
+                    assert_eq!(bytes, expected);
+                    if !lose_reply {
+                        server.write_all(&super::super::meta_message::encode_meta_reply(
+                            &MetaReply::ObjectPages(crate::object_manifest::ObjectPageAllocation {
+                                format_version: 1, allocation_id: 9, page_count: 1,
+                            }),
+                        )).unwrap();
+                    }
+                    drop(server);
+                    listener
+                });
+                let result = client.allocate_object_pages(1);
+                if lose_reply { assert!(result.is_err()); }
+                else { assert_eq!(result.unwrap().allocation_id, 9); }
+                let listener = worker.join().unwrap();
+                listener.set_nonblocking(true).unwrap();
+                assert!(matches!(listener.accept(), Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock));
+            }
+        }
     }
 
     #[test]

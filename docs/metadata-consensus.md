@@ -1,5 +1,12 @@
 # Network metadata consensus
 
+Metadata clients detect completed idle socket closes before sending the next
+application request and reconnect with the original TLS and timeout settings. Pinned groups
+are verified again before application requests. Catalog reconnection retains
+cached data sockets, which are checked against fresh routes before reuse; page
+allocation leases survive only when the metadata group identity is pinned.
+A close racing with a submitted mutation remains uncertain and is never replayed.
+
 Build the metaserver with `cargo build --features metadata-consensus --bin metaserver`.
 This feature needs Rust 1.89 or newer and protocol build tools (Protobuf compiler,
 Autoconf, Automake, and Libtool). One process hosts one durable MatrixRaft voter.
