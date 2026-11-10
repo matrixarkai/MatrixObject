@@ -14,6 +14,7 @@ message ObjectExtent {
   uint64 length = 7;
   uint64 write_sequence = 8;
   fixed64 data_checksum = 9;
+  bytes data_sha256 = 10; // required with format_version 2
 }
 message ObjectManifest {
   uint32 format_version = 1;
@@ -32,6 +33,11 @@ message ManifestOutcome {
 message ManifestCatalogImage {
   uint32 format_version = 1;
   repeated ObjectManifest objects = 2;
+  repeated RetainedManifest retained = 3; // catalog version 2
+}
+message RetainedManifest {
+  uint64 retention_id = 1;
+  ObjectManifest manifest = 2;
 }
 
 // Unique within one retained metadata history. Page indexes are 0..page_count-1.

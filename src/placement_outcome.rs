@@ -119,6 +119,8 @@ pub struct PlacementOutcome {
     pub placements: Vec<PlacementChange>,
     #[prost(message, optional, tag = "6")]
     pub manifest: Option<ManifestOutcome>,
+    #[prost(message, optional, tag = "7")]
+    pub retention: Option<crate::manifest_retention::ManifestRetentionChange>,
 }
 fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
@@ -153,6 +155,18 @@ fn matches_manifest(placement: &PlacementValue, manifest: &ObjectManifest) -> bo
 }
 impl PlacementOutcome {
     fn validate_manifest_binding(&self) -> Result<(), ObjectError> {
+        if let Some(change) = &self.retention {
+            if self.version != 3 || self.manifest.is_some() || !self.nodes.is_empty() || !self.placements.is_empty()
+                || self.before_index.checked_add(1) != Some(self.after_index) {
+                return Err(invalid("invalid retention outcome binding"));
+            }
+            match (&change.before, &change.after) {
+                (None, Some(after)) if after.retention_id == self.after_index => after.validate(),
+                (Some(before), None) if before.retention_id <= self.before_index => before.validate(),
+                _ => Err(invalid("invalid retention outcome transition")),
+            }?;
+            return Ok(());
+        }
         match (self.version, &self.manifest) {
             (1, None) => Ok(()),
             (2, Some(manifest)) => {
@@ -247,6 +261,7 @@ impl PlacementOutcome {
                 after: Some(placement),
             }],
             manifest: Some(manifest),
+            retention: None,
         };
         outcome.validate_manifest_binding()?;
         outcome.validate_publication(service, true)?;
@@ -362,6 +377,7 @@ impl PlacementOutcome {
             nodes: changes,
             placements,
             manifest: None,
+            retention: None,
         })
     }
     pub fn finish(mut self, service: &MatrixMetaService) -> Result<Self, ObjectError> {
@@ -430,7 +446,8 @@ impl PlacementOutcome {
                 || (self.after_index == self.before_index
                     && self.nodes.is_empty()
                     && self.placements.is_empty()
-                    && self.manifest.is_none()))
+                    && self.manifest.is_none()
+                    && self.retention.is_none()))
         {
             return Err(invalid("placement outcome index mismatch"));
         }
@@ -475,6 +492,9 @@ impl PlacementOutcome {
             {
                 return Err(invalid("placement outcome object state mismatch"));
             }
+        }
+        if let Some(retention) = &self.retention {
+            service.object_manifests.apply_retention(retention)?;
         }
         if let Some(manifest) = &self.manifest {
             self.validate_publication(service, false)?;

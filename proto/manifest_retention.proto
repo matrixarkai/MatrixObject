@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject;
+import "object_manifest.proto";
+
+// Metadata opcode 92. Handles persist until an explicit release.
+message ManifestRetentionRequest {
+  uint32 version = 1;
+  uint32 action = 2; // 1 retain, 2 release, 3 read, 4 list
+  string bucket = 3;
+  string key = 4;
+  uint64 generation = 5;
+  uint64 retention_id = 6; // exclusive cursor for list
+  uint32 limit = 7;
+}
+message ManifestRetentionReply {
+  uint32 version = 1;
+  RetainedManifest retained = 2;
+  repeated uint64 retention_ids = 3;
+  bool has_more = 4;
+}
+message ManifestRetentionChange {
+  RetainedManifest before = 1;
+  RetainedManifest after = 2;
+}

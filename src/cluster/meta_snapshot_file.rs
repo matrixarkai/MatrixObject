@@ -213,4 +213,41 @@ mod tests {
         );
         drop(storage);
     }
+
+    #[test]
+    fn standalone_retention_journal_recovers_create_and_release() {
+        let directory = std::env::temp_dir().join(format!("metadata-retention-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+        let _cleanup = Cleanup(directory.clone());
+        let mut service = MatrixMetaService::new();
+        let (mut storage, _) = MetaSnapshotFile::open(&directory, &mut service).unwrap();
+        let live = ObjectManifest { format_version: 2, bucket: "bucket".into(), key: "retained".into(),
+            generation: 1, length: 0, extents: Vec::new(), deleted: false };
+        service.object_manifests.apply(&ManifestOutcome::decide(None, live.clone()).unwrap()).unwrap();
+        storage.persist(&service, &Default::default()).unwrap();
+        let request = crate::manifest_retention::ManifestRetentionRequest { version: 1, action: 1,
+            bucket: "bucket".into(), key: "retained".into(), generation: 1, ..Default::default() };
+        let (retain, _) = super::super::meta_server::decide_retention(&service, &request, 65536).unwrap();
+        let id = retain.after_index;
+        storage.append_outcome(&retain).unwrap();
+        retain.apply(&mut service).unwrap();
+        drop(storage);
+        let mut service = MatrixMetaService::new();
+        let (mut storage, recovered) = MetaSnapshotFile::open(&directory, &mut service).unwrap();
+        assert!(recovered);
+        assert_eq!(service.object_manifests.retained_manifest(id).unwrap().manifest, Some(live));
+        let request = crate::manifest_retention::ManifestRetentionRequest { version: 1, action: 2,
+            retention_id: id, ..Default::default() };
+        let (release, _) = super::super::meta_server::decide_retention(&service, &request, 65536).unwrap();
+        storage.append_outcome(&release).unwrap();
+        release.apply(&mut service).unwrap();
+        drop(storage);
+        let mut service = MatrixMetaService::new();
+        let (storage, recovered) = MetaSnapshotFile::open(&directory, &mut service).unwrap();
+        assert!(recovered);
+        assert!(service.object_manifests.retained_manifest(id).is_none());
+        drop(storage);
+    }
 }

@@ -220,11 +220,13 @@ impl ManifestOutcome {
 pub struct ManifestCatalog {
     objects: BTreeMap<ObjectId, ObjectManifest>,
     body_bytes: usize,
+    retained: BTreeMap<u64, crate::manifest_retention::RetainedManifest>,
+    retention_bytes: usize,
     // Tombstones retain every generation advance. Rebuild this sum on restore;
     // 100,000 retained u64 generations fit without overflow in u128.
     revision: u128,
 }
-fn entry_size(value: &ObjectManifest) -> usize {
+fn entry_size(value: &impl Message) -> usize {
     let size = value.encoded_len();
     let mut remaining = size;
     let mut delimiter = 1;
@@ -336,8 +338,58 @@ struct CatalogImage {
     format_version: u32,
     #[prost(message, repeated, tag = "2")]
     objects: Vec<ObjectManifest>,
+    #[prost(message, repeated, tag = "3")]
+    retained: Vec<crate::manifest_retention::RetainedManifest>,
 }
 impl ManifestCatalog {
+    pub fn retained_manifest(&self, id: u64) -> Option<&crate::manifest_retention::RetainedManifest> {
+        self.retained.get(&id)
+    }
+    pub(crate) fn max_retention_id(&self) -> u64 {
+        self.retained.last_key_value().map_or(0, |(id, _)| *id)
+    }
+    pub(crate) fn retention_ids(&self, after: u64, limit: usize) -> (Vec<u64>, bool) {
+        let mut ids = self.retained.range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded));
+        let page = ids.by_ref().take(limit).map(|(id, _)| *id).collect();
+        (page, ids.next().is_some())
+    }
+    pub(crate) fn check_retention(&self, change: &crate::manifest_retention::ManifestRetentionChange) -> Result<(), ObjectError> {
+        let record = match (&change.before, &change.after) {
+            (None, Some(after)) => after,
+            (Some(before), None) => before,
+            _ => return Err(invalid("retention must create or remove one handle")),
+        };
+        record.validate()?;
+        if self.retained.get(&record.retention_id) != change.before.as_ref() {
+            return Err(ObjectError::PreconditionFailed("retention prior state mismatch".into()));
+        }
+        if change.after.is_some() {
+            if self.retained.len() >= crate::manifest_retention::MAX_RETAINED_MANIFESTS
+                || self.body_bytes + self.retention_bytes + entry_size(record) > MAX_SNAPSHOT - 2 {
+                return Err(ObjectError::PreconditionFailed("retention catalog capacity exceeded".into()));
+            }
+            let manifest = record.manifest.as_ref().unwrap();
+            if self.get(&manifest.object_id()) != Some(manifest) {
+                return Err(ObjectError::PreconditionFailed("manifest changed before retention".into()));
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn apply_retention(&mut self, change: &crate::manifest_retention::ManifestRetentionChange) -> Result<(), ObjectError> {
+        self.check_retention(change)?;
+        let id = change.before.as_ref().or(change.after.as_ref()).unwrap().retention_id;
+        self.restore_retention(id, change.after.clone());
+        Ok(())
+    }
+    pub(crate) fn restore_retention(&mut self, id: u64, value: Option<crate::manifest_retention::RetainedManifest>) {
+        if let Some(previous) = self.retained.remove(&id) {
+            self.retention_bytes -= entry_size(&previous);
+        }
+        if let Some(value) = value {
+            self.retention_bytes += entry_size(&value);
+            self.retained.insert(id, value);
+        }
+    }
     pub(crate) fn list_page(&self, request: &ManifestListRequest) -> Result<ManifestListPage, ObjectError> {
         request.validate()?;
         if request.version >= 2 && !request.expected_revision.is_empty()
@@ -371,7 +423,7 @@ impl ManifestCatalog {
         }
     }
     pub(crate) fn encoded_size(&self) -> usize {
-        self.body_bytes + 2 + 12
+        self.body_bytes + self.retention_bytes + 2 + 12
     }
 
     pub fn is_empty(&self) -> bool {
@@ -406,7 +458,7 @@ impl ManifestCatalog {
             return Err(invalid("manifest catalog exceeds object bound"));
         }
         let body_bytes = self.body_bytes - current.map_or(0, entry_size) + entry_size(after);
-        if body_bytes > MAX_SNAPSHOT - 2 {
+        if body_bytes + self.retention_bytes > MAX_SNAPSHOT - 2 {
             return Err(invalid(
                 "manifest publication exceeds checkpoint size bound",
             ));
@@ -425,14 +477,18 @@ impl ManifestCatalog {
     }
     pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
         let image = CatalogImage {
-            format_version: 1,
+            format_version: if self.retained.is_empty() { 1 } else { 2 },
             objects: self.objects.values().cloned().collect(),
+            retained: self.retained.values().cloned().collect(),
         };
         frame(b"MOMC", &image, MAX_SNAPSHOT)
     }
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ObjectError> {
         let image: CatalogImage = unframe(b"MOMC", bytes, MAX_SNAPSHOT)?;
-        if image.format_version != 1 || image.objects.len() > MAX_OBJECTS {
+        if !(1..=2).contains(&image.format_version) || image.objects.len() > MAX_OBJECTS
+            || (image.format_version == 1 && !image.retained.is_empty())
+            || (image.format_version == 2 && image.retained.is_empty())
+            || image.retained.len() > crate::manifest_retention::MAX_RETAINED_MANIFESTS {
             return Err(invalid("manifest catalog version or count mismatch"));
         }
         let mut result = Self::default();
@@ -447,6 +503,20 @@ impl ManifestCatalog {
             result.body_bytes += entry_size(&value);
             result.revision += u128::from(value.generation);
             result.objects.insert(id, value);
+        }
+        let mut previous = 0;
+        for retained in image.retained {
+            retained.validate()?;
+            if retained.retention_id <= previous { return Err(invalid("retention handles are not ordered")); }
+            let manifest = retained.manifest.as_ref().unwrap();
+            let current = result.get(&manifest.object_id())
+                .ok_or_else(|| invalid("retained object is missing from catalog"))?;
+            if manifest.generation > current.generation
+                || (manifest.generation == current.generation && manifest != current) {
+                return Err(invalid("retained generation exceeds or conflicts with current state"));
+            }
+            previous = retained.retention_id;
+            result.restore_retention(retained.retention_id, Some(retained));
         }
         Ok(result)
     }
@@ -703,6 +773,7 @@ mod tests {
         let duplicate = CatalogImage {
             format_version: 1,
             objects: vec![manifest(1), manifest(1)],
+            retained: Vec::new(),
         };
         assert!(
             ManifestCatalog::from_bytes(&frame(b"MOMC", &duplicate, MAX_SNAPSHOT).unwrap())

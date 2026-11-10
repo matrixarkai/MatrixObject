@@ -354,6 +354,59 @@ fn manifest_listing_continues_after_leader_loss_and_preserves_tombstones() {
 }
 
 #[test]
+fn retained_generations_survive_overwrite_deletion_failover_and_checkpoint_restart() {
+    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
+    let mut group = Group::with_catalog_checkpoints(None, None, None, 1024);
+    let mut client = group.client(group.leader());
+    let original = ObjectManifest { format_version: 2, bucket: "bucket".into(), key: "retained".into(),
+        generation: 1, length: 0, extents: Vec::new(), deleted: false };
+    client.publish_manifest(ManifestOutcome::decide(None, original.clone()).unwrap(), 0).unwrap();
+    let mut handles = Vec::new();
+    for _ in 0..20 { handles.push(client.retain_manifest("bucket", "retained", 1).unwrap()); }
+    assert!(handles.windows(2).all(|pair| pair[0].retention_id < pair[1].retention_id));
+    let mut changed = original.clone();
+    changed.generation = 2;
+    client.publish_manifest(ManifestOutcome::decide(Some(original.clone()), changed).unwrap(), 1).unwrap();
+    assert!(client.retain_manifest("bucket", "retained", 1).is_err());
+    client.delete_object("bucket", "retained", 2).unwrap();
+    assert!(client.retain_manifest("bucket", "retained", 3).is_err());
+    node_regime::checkpoints::wait_for_checkpoint(
+        &group.root.join(group.leader().to_string()).join("metadata.peer.wal"), 4,
+    );
+    group.kill(group.leader());
+    let mut client = group.client(group.leader());
+    assert_eq!(client.read_retained_manifest(handles[0].retention_id).unwrap(), handles[0]);
+    let (first, more) = client.list_retained_manifests(0, 7).unwrap();
+    assert!(more);
+    assert_eq!(first, handles[..7].iter().map(|record| record.retention_id).collect::<Vec<_>>());
+    let (rest, more) = client.list_retained_manifests(*first.last().unwrap(), 32).unwrap();
+    assert!(!more);
+    assert_eq!(rest.len(), 13);
+    for index in 0..3 { if group.nodes[index].is_some() { group.kill(index); } }
+    for index in 0..3 { group.start(index); }
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    assert_eq!(client.read_retained_manifest(handles[19].retention_id).unwrap(), handles[19]);
+    #[cfg(feature = "replica-server")]
+    assert_eq!(client.read_retained_object(handles[0].retention_id, 0,
+        &matrixobjectstore_rs::cluster::ReplicaClientOptions::default()).unwrap(), (original, Vec::new()));
+    client.release_manifest(handles[0].retention_id).unwrap();
+    client.release_manifest(handles[0].retention_id).unwrap();
+    assert!(client.read_retained_manifest(handles[0].retention_id).is_err());
+    assert_eq!(client.list_retained_manifests(0, 32).unwrap().0.len(), 19);
+    for index in 0..3 { group.kill(index); }
+    for index in 0..3 { group.start(index); }
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    assert!(client.read_retained_manifest(handles[0].retention_id).is_err());
+    assert_eq!(client.list_retained_manifests(0, 32).unwrap().0.len(), 19);
+    for index in 0..3 { if index != leader { group.kill(index); } }
+    assert!(client.read_retained_manifest(handles[1].retention_id).is_err());
+    assert!(client.list_retained_manifests(0, 32).is_err());
+    assert!(client.release_manifest(handles[1].retention_id).is_err());
+}
+
+#[test]
 fn process_quorum_preserves_outcomes_across_leader_loss_and_total_restart() {
     let mut group = Group::new();
     let first = group.leader();
@@ -1149,6 +1202,7 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     );
     chunks[2].child.kill().unwrap();
     assert!(processes::reap_within(&mut chunks[2].child, Duration::from_secs(3)).is_some());
+    let retained = minority.retain_manifest("star", &third_key, third.generation).unwrap();
     let copied = minority.copy_object(
         "star", &third_key, "star", "copy", None, &options,
     ).unwrap();
@@ -1173,6 +1227,11 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     );
     drop(minority);
     let mut minority = connect_metadata();
+    assert_eq!(minority.read_retained_object(retained.retention_id, third_bytes.len(), &options.replica)
+        .unwrap(), (third.clone(), third_bytes.clone()));
+    assert!(minority.read_retained_object(retained.retention_id, 0, &options.replica).is_err());
+    minority.release_manifest(retained.retention_id).unwrap();
+    assert!(minority.read_retained_object(retained.retention_id, third_bytes.len(), &options.replica).is_err());
     assert_eq!(minority.read_object("star", "copy", third_bytes.len(), &options.replica)
         .unwrap(), (copied, third_bytes));
     println!(

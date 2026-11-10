@@ -692,6 +692,12 @@ fn apply(
     }
     let request = super::health_report::stamp(request, &guard.service)?;
     let decision = match &request {
+        MetaRequest::ManifestRetention(command) if !command.is_read() => {
+            if guard.storage.is_none() {
+                return Err(ObjectError::PreconditionFailed("retention requires durable metadata storage".into()));
+            }
+            Some(decide_retention(&guard.service, command, max_payload_bytes)?)
+        }
         MetaRequest::AllocateObjectPages { page_count } => {
             if guard.storage.is_none() {
                 return Err(ObjectError::PreconditionFailed(
@@ -721,7 +727,7 @@ fn apply(
     if let Some((decided, reply)) = decision {
         if guard.storage.is_some() {
             // Preflight the local snapshot bound before persisting an outcome.
-            if decided.manifest.is_some() {
+            if decided.manifest.is_some() || decided.retention.is_some() {
                 let mut preview = guard.service.clone();
                 decided.apply(&mut preview)?;
                 if super::chunk_groups::encode_bootstrap(&preview, &guard.groups)?.len()
@@ -864,6 +870,7 @@ pub(super) fn decide_allocation(
         nodes: vec![],
         placements: vec![],
         manifest: None,
+        retention: None,
     };
     outcome.to_payload()?;
     Ok((outcome, reply))
@@ -885,6 +892,50 @@ pub(super) fn decide_manifest(
     Ok((decided, reply))
 }
 
+pub(super) fn decide_retention(
+    service: &MatrixMetaService,
+    command: &crate::manifest_retention::ManifestRetentionRequest,
+    limit: usize,
+) -> Result<(crate::placement_outcome::PlacementOutcome, MetaReply), ObjectError> {
+    use crate::manifest_retention::{ManifestRetentionChange, ManifestRetentionReply, RetainedManifest};
+    command.validate()?;
+    let mut outcome = crate::placement_outcome::PlacementOutcome::capture(service, Vec::new(), None)?;
+    let mut reply = ManifestRetentionReply { version: 1, ..Default::default() };
+    let change = match command.action {
+        1 => {
+            let manifest = service.object_manifests.get(&super::meta_message::object_id(&command.bucket, &command.key))
+                .filter(|manifest| !manifest.deleted && manifest.generation == command.generation)
+                .cloned().ok_or_else(|| ObjectError::PreconditionFailed("current manifest generation cannot be retained".into()))?;
+            let record = RetainedManifest {
+                retention_id: service.placement_commit_index.checked_add(1)
+                    .ok_or_else(|| ObjectError::PreconditionFailed("retention identity exhausted".into()))?,
+                manifest: Some(manifest),
+            };
+            reply.retained = Some(record.clone());
+            Some(ManifestRetentionChange { before: None, after: Some(record) })
+        }
+        2 => {
+            if command.retention_id > service.placement_commit_index {
+                return Err(ObjectError::PreconditionFailed("retention handle is from a future position".into()));
+            }
+            service.object_manifests.retained_manifest(command.retention_id).cloned()
+                .map(|record| ManifestRetentionChange { before: Some(record), after: None })
+        }
+        _ => return Err(ObjectError::InvalidArgument("retention decision requires mutation".into())),
+    };
+    if let Some(change) = change {
+        service.object_manifests.check_retention(&change)?;
+        outcome.version = 3;
+        outcome.after_index = outcome.before_index.checked_add(1)
+            .ok_or_else(|| ObjectError::PreconditionFailed("metadata position exhausted".into()))?;
+        outcome.retention = Some(change);
+    }
+    outcome.to_payload()?;
+    let reply = MetaReply::ManifestRetention(reply);
+    crate::cluster::message::check_reply_size(reply.payload_len(), limit)?;
+    Ok((outcome, reply))
+}
+
 pub(super) fn apply_with_groups(
     service: &mut MatrixMetaService,
     request: MetaRequest,
@@ -892,6 +943,13 @@ pub(super) fn apply_with_groups(
     groups: &super::ChunkGroupCatalog,
 ) -> Result<MetaReply, ObjectError> {
     groups.check_request(&request)?;
+    if let MetaRequest::ManifestRetention(command) = &request {
+        if !command.is_read() {
+            let (outcome, reply) = decide_retention(service, command, limit)?;
+            outcome.apply(service)?;
+            return Ok(reply);
+        }
+    }
     if let MetaRequest::PlanObjectPlacementRoutes { bucket, key, length, replica_count }
     | MetaRequest::PlanObjectWriteRoutes { bucket, key, length, replica_count }
     | MetaRequest::PlanObjectWriteRoutesWide { bucket, key, length, replica_count } = &request {
@@ -1069,6 +1127,19 @@ pub(super) fn apply_to_meta(
     max_payload_bytes: usize,
 ) -> Result<MetaReply, ObjectError> {
     match request {
+        MetaRequest::ManifestRetention(command) => {
+            command.validate()?;
+            let mut value = crate::manifest_retention::ManifestRetentionReply { version: 1, ..Default::default() };
+            match command.action {
+                3 => value.retained = Some(guard.object_manifests.retained_manifest(command.retention_id)
+                    .cloned().ok_or_else(|| ObjectError::NotFound("retained manifest missing".into()))?),
+                4 => (value.retention_ids, value.has_more) = guard.object_manifests.retention_ids(command.retention_id, command.limit as usize),
+                _ => return Err(ObjectError::InvalidArgument("retention mutation requires durable dispatch".into())),
+            }
+            let reply = MetaReply::ManifestRetention(value);
+            crate::cluster::message::check_reply_size(reply.payload_len(), max_payload_bytes)?;
+            Ok(reply)
+        }
         MetaRequest::ChunkCatalog(_) => Err(ObjectError::InvalidArgument("catalog update requires durable dispatch".into())),
         MetaRequest::AllocateObjectPages { .. } => Err(ObjectError::InvalidArgument(
             "allocation requires durable dispatch".into(),
@@ -1692,3 +1763,7 @@ mod catalog_recovery_tests;
 #[cfg(test)]
 #[path = "meta_catalog_command_tests.rs"]
 mod catalog_command_tests;
+
+#[cfg(test)]
+#[path = "manifest_retention_tests.rs"]
+mod manifest_retention_tests;

@@ -34,6 +34,12 @@ expiry. A writer must retain allocated pages until publication is confirmed or
 its fenced staging ownership expires. Retried operations must distinguish an
 unconfirmed publication from a refused publication.
 
+Explicit durable generation handles are now available through
+`retain_manifest` and `read_retained_object`; see `manifest-retention.md`.
+These handles require explicit release and do not change ordinary reads.
+Staged-write ownership, expiry and automatic reader-session integration remain
+unfinished. Keep reclamation disabled while completing them.
+
 Choose and document failover semantics before adding deletion: either restore
 protection durably or invalidate old sessions and wait out their protection
 window before permitting reclamation. A namespace's exclusive mutation lease

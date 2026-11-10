@@ -143,6 +143,7 @@ mod tests {
             nodes: vec![],
             placements: vec![],
             manifest: None,
+            retention: None,
         };
         let second = PlacementOutcome {
             before_index: base + 1,

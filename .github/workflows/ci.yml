@@ -442,6 +442,31 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus manifest_listing_continues_after_leader_loss_and_preserves_tombstones -- --exact | tee /tmp/manifest-listing.log
           grep -q 'test result: ok. 1 passed' /tmp/manifest-listing.log
 
+      - name: retention formats outcomes and preparation preserve state
+        run: |
+          set -o pipefail
+          for test in \
+            manifest_retention::tests::retention_wire_refuses_truncation_unknown_fields_and_conflicting_actions \
+            cluster::meta_server::manifest_retention_tests::retention_outcomes_bound_capacity_preserve_versions_and_never_reuse_handles \
+            cluster::meta_consensus::tests::retention_batch_preparation_restores_handles_before_committing_ordered_changes \
+            cluster::meta_snapshot_file::tests::standalone_retention_journal_recovers_create_and_release
+          do
+            cargo test --locked --all-features --lib "$test" -- --exact | tee /tmp/manifest-retention.log
+            grep -q 'test result: ok. 1 passed' /tmp/manifest-retention.log
+          done
+
+      - name: retained generations survive overwrite delete and metadata recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_metadata_consensus retained_generations_survive_overwrite_deletion_failover_and_checkpoint_restart -- --exact | tee /tmp/manifest-retention.log
+          grep -q 'test result: ok. 1 passed' /tmp/manifest-retention.log
+
+      - name: retained payloads remain readable on restarted Star replicas
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_metadata_consensus metadata_routes_object_writes_through_a_standalone_star_quorum -- --exact | tee /tmp/manifest-retention.log
+          grep -q 'test result: ok. 1 passed' /tmp/manifest-retention.log
+
       - name: sequential writes reuse one freshly routed group connection
         run: |
           set -o pipefail

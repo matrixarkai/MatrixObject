@@ -693,6 +693,7 @@ fn restore_snapshot(
 }
 fn read_only(request: &MetaRequest) -> bool {
     match request {
+        MetaRequest::ManifestRetention(command) => command.is_read(),
         MetaRequest::Membership(command) => command.is_read(),
         MetaRequest::ReadManifest { .. }
         | MetaRequest::ReadManifestRoutes { .. }
@@ -945,7 +946,22 @@ fn propose_batch(
         .into_iter()
         .filter(|id| service.nodes.contains_key(id))
         .collect();
-    let draft = PlacementDraft::with_records(service, nodes, objects.into_iter().collect());
+    let mut draft = PlacementDraft::with_records(service, nodes, objects.into_iter().collect());
+    let mut retention_ids = BTreeSet::new();
+    for request in queued.iter().take(PROPOSALS_PER_BATCH) {
+        if let MetaRequest::ManifestRetention(command) = &request.request {
+            if command.action == 2 { retention_ids.insert(command.retention_id); }
+            if command.action == 1 {
+                // Any earlier request can advance the metadata index once.
+                for distance in 1..=PROPOSALS_PER_BATCH as u64 {
+                    if let Some(id) = draft.index.checked_add(distance) { retention_ids.insert(id); }
+                }
+            }
+        }
+    }
+    draft.retentions = retention_ids.into_iter().map(|id| {
+        (id, draft.service.object_manifests.retained_manifest(id).cloned())
+    }).collect();
     let mut bytes = 0usize;
     let mut payloads = Vec::new();
     let mut prepared = Vec::new();
@@ -1023,6 +1039,12 @@ fn prepare(
     };
     let request = stamped.as_ref().unwrap_or(request);
     groups.check_request(request)?;
+    if let MetaRequest::ManifestRetention(command) = request {
+        if !command.is_read() {
+            let (outcome, reply) = super::meta_server::decide_retention(service, command, limit)?;
+            return Ok((outcome.to_payload()?, Some(reply)));
+        }
+    }
     if let MetaRequest::AllocateObjectPages { page_count } = request {
         let (decided, reply) = super::meta_server::decide_allocation(service, *page_count, limit)?;
         return Ok((decided.to_payload()?, Some(reply)));
@@ -1082,6 +1104,7 @@ struct PlacementDraft<'a> {
         Option<crate::object_manifest::ObjectManifest>,
     )>,
     index: u64,
+    retentions: Vec<(u64, Option<crate::manifest_retention::RetainedManifest>)>,
 }
 impl<'a> PlacementDraft<'a> {
     fn new(
@@ -1111,11 +1134,15 @@ impl<'a> PlacementDraft<'a> {
             nodes,
             objects,
             index,
+            retentions: Vec::new(),
         }
     }
 }
 impl Drop for PlacementDraft<'_> {
     fn drop(&mut self) {
+        for (id, previous) in self.retentions.drain(..) {
+            self.service.object_manifests.restore_retention(id, previous);
+        }
         for node in self.nodes.drain(..) {
             self.service.nodes.insert(node.node_id.clone(), node);
         }
@@ -2284,6 +2311,41 @@ mod tests {
             Some(&second)
         );
         assert_eq!(service.nodes["group-0"].committed_bytes, 4);
+    }
+
+    #[test]
+    fn retention_batch_preparation_restores_handles_before_committing_ordered_changes() {
+        use crate::manifest_retention::ManifestRetentionRequest;
+        use crate::object_manifest::{ManifestOutcome, ObjectManifest};
+        let (_files, mut peer) = batch_peer();
+        let (mut service, groups) = fixture(1, 0);
+        let live = ObjectManifest { format_version: 2, bucket: "bucket".into(), key: "retained".into(),
+            generation: 1, length: 0, extents: Vec::new(), deleted: false };
+        service.object_manifests.apply(&ManifestOutcome::decide(None, live).unwrap()).unwrap();
+        let retain = ManifestRetentionRequest { version: 1, action: 1, bucket: "bucket".into(),
+            key: "retained".into(), generation: 1, ..Default::default() };
+        let first_id = service.placement_commit_index + 1;
+        let release = ManifestRetentionRequest { version: 1, action: 2, retention_id: first_id, ..Default::default() };
+        let mut stale = retain.clone();
+        stale.generation = 99;
+        let saved = service.export_snapshot().to_bytes().unwrap();
+        let mut pending = VecDeque::new();
+        let mut requests = VecDeque::new();
+        let mut receivers = Vec::new();
+        for command in [retain.clone(), retain, release, stale] {
+            let (request, rx) = queued(MetaRequest::ManifestRetention(command), Instant::now() + Duration::from_secs(10));
+            requests.push_back(request);
+            receivers.push(rx);
+        }
+        propose_batch(&mut peer, &mut service, &groups, 65536, &mut requests, &mut pending).unwrap();
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
+        assert!(receivers.iter().all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
+        peer.process_ready(|id, bytes| apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)).unwrap();
+        assert!(receivers[..3].iter().all(|rx| rx.try_recv().unwrap().is_ok()));
+        assert!(receivers[3].try_recv().unwrap().is_err());
+        assert!(service.object_manifests.retained_manifest(first_id).is_none());
+        assert!(service.object_manifests.retained_manifest(first_id + 1).is_some());
+        assert_eq!(service.placement_commit_index, first_id + 2);
     }
     #[test]
     fn object_allocations_commit_unique_namespaces_and_restore_speculative_batches() {
