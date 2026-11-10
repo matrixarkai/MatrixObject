@@ -1120,7 +1120,12 @@ impl RemoteReplicaSet {
         &mut self,
         writes: &[(PageId, u64, &[u8])],
     ) -> Result<Vec<usize>, ObjectError> {
-        self.write_chunks_inner(writes, None)
+        self.write_chunks_inner(
+            writes
+                .iter()
+                .map(|(page, offset, data)| (page, *offset, *data, None)),
+            false,
+        )
     }
 
     /// Apply ordered writes only when each selected quorum state has the caller's
@@ -1129,38 +1134,32 @@ impl RemoteReplicaSet {
         &mut self,
         writes: &[(PageId, u64, &[u8], u64)],
     ) -> Result<Vec<usize>, ObjectError> {
-        let plain: Vec<_> = writes
-            .iter()
-            .map(|(page, offset, data, _)| (page.clone(), *offset, *data))
-            .collect();
-        let expected: Vec<_> = writes.iter().map(|(_, _, _, sequence)| *sequence).collect();
-        self.write_chunks_inner(&plain, Some(&expected))
+        self.write_chunks_inner(
+            writes
+                .iter()
+                .map(|(page, offset, data, sequence)| (page, *offset, *data, Some(*sequence))),
+            true,
+        )
     }
 
-    fn write_chunks_inner(
+    fn write_chunks_inner<'a>(
         &mut self,
-        writes: &[(PageId, u64, &[u8])],
-        required_sequences: Option<&[u64]>,
+        writes: impl Clone + ExactSizeIterator<Item = (&'a PageId, u64, &'a [u8], Option<u64>)>,
+        conditional: bool,
     ) -> Result<Vec<usize>, ObjectError> {
         if writes.len() > 32 {
             return Err(ObjectError::InvalidArgument(
                 "star write batch exceeds thirty-two writes".into(),
             ));
         }
-        if writes.is_empty() {
+        if writes.len() == 0 {
             return Ok(Vec::new());
         }
-        if writes.iter().any(|(_, _, data)| data.len() > 1024 * 1024) {
+        if writes.clone().any(|(_, _, data, _)| data.len() > 1024 * 1024) {
             return Err(ObjectError::InvalidArgument(
                 "star write page exceeds one MiB".into(),
             ));
         }
-        if required_sequences.is_some_and(|required| required.len() != writes.len()) {
-            return Err(ObjectError::InvalidArgument(
-                "star write sequence count changed".into(),
-            ));
-        }
-
         // A successful conditional insert from a write quorum is also proof that
         // the quorum held the absent state. Fresh whole pages therefore need no
         // separate head exchange. Send to every connected member concurrently and
@@ -1168,23 +1167,21 @@ impl RemoteReplicaSet {
         // require repair. Repeated, partial, or nonzero-sequence writes keep the
         // exact head vote because equal sequences can hold different bytes.
         let mut fresh_pages = BTreeSet::new();
-        let fresh_whole_pages = required_sequences.is_some_and(|required| {
-            required.iter().all(|sequence| *sequence == 0)
-                && writes.iter().all(|(page, offset, _)| {
-                    *offset == 0 && fresh_pages.insert(page.clone())
-                })
-        });
+        let fresh_whole_pages = conditional
+            && writes.clone().all(|(page, offset, _, sequence)| {
+                sequence == Some(0) && offset == 0 && fresh_pages.insert(page.clone())
+            });
         if fresh_whole_pages {
             self.reconnect_failed();
             let group = writes
-                .iter()
+                .clone()
                 .enumerate()
-                .map(|(index, (page_id, offset, data))| {
+                .map(|(index, (page_id, offset, data, _))| {
                     (
                         index,
                         ConditionalChunkWrite {
                             page_id: page_id.clone(),
-                            offset: *offset,
+                            offset,
                             data: data.to_vec(),
                             expected_sequence: 0,
                         },
@@ -1198,7 +1195,7 @@ impl RemoteReplicaSet {
 
         let mut page_indexes = BTreeMap::new();
         let mut page_ids = Vec::new();
-        for (page, _, _) in writes {
+        for (page, _, _, _) in writes.clone() {
             if !page_indexes.contains_key(page) {
                 page_indexes.insert(page.clone(), page_ids.len());
                 page_ids.push(page.clone());
@@ -1210,10 +1207,10 @@ impl RemoteReplicaSet {
             .map(|(expected, _)| expected.as_ref().map_or(0, |head| head.write_sequence))
             .collect();
         let mut groups: BTreeMap<Vec<bool>, Vec<(usize, ConditionalChunkWrite)>> = BTreeMap::new();
-        for (index, (page_id, offset, data)) in writes.iter().enumerate() {
+        for (index, (page_id, offset, data, required_sequence)) in writes.clone().enumerate() {
             let page_index = page_indexes[page_id];
             let expected_sequence = next_sequences[page_index];
-            if required_sequences.is_some_and(|required| required[index] != expected_sequence) {
+            if required_sequence.is_some_and(|required| required != expected_sequence) {
                 return Err(ObjectError::PreconditionFailed(
                     "star write sequence precondition changed".into(),
                 ));
@@ -1228,7 +1225,7 @@ impl RemoteReplicaSet {
                     index,
                     ConditionalChunkWrite {
                         page_id: page_id.clone(),
-                        offset: *offset,
+                        offset,
                         data: data.to_vec(),
                         expected_sequence,
                     },
