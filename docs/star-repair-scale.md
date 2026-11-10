@@ -13,3 +13,11 @@ cargo test --release --locked --features chunk-consensus,metadata-consensus,api-
 ```
 
 These tests cover bounded repair traversal and recovery across independent local processes. They do not certify sustained throughput, independent-host failures, automatic repair scheduling, or the separate multi-group Raft membership workload.
+
+The metadata-routed object case also has an explicit WSL scale run:
+
+```sh
+cargo test --locked --features metadata-consensus,replica-server --test network_metadata_consensus standalone_star_quorum_writes_and_recovers_256_object_pages -- --exact --ignored --nocapture --test-threads=1
+```
+
+It writes a 16 MiB object as 256 independent 64 KiB pages through three journal-backed star members and three metadata voters, reads the committed object, repairs all 256 pages in four bounded passes, verifies all 768 copies, then checks a member loss, rejoin, and minority refusal. One local debug run completed the initial write in 3.0 seconds and the complete scenario in 343.7 seconds. The complete duration includes repair, process restarts, and reads; it is not a sustained write throughput figure. Automatic repair scheduling and independent-host failure testing remain open work.
