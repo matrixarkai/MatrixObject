@@ -243,6 +243,7 @@ fn star_repair_aborts_changed_sources_and_never_replays_uncertain_commits() {
         let finished = Arc::new(AtomicBool::new(false));
         let commits = Arc::new(AtomicUsize::new(0));
         let aborts = Arc::new(AtomicUsize::new(0));
+        let source_ranges = Arc::new([AtomicUsize::new(0), AtomicUsize::new(0)]);
         let listeners: Vec<_> = (0..3)
             .map(|_| {
                 let l = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -264,6 +265,7 @@ fn star_repair_aborts_changed_sources_and_never_replays_uncertain_commits() {
                 let finished = finished.clone();
                 let commits = commits.clone();
                 let aborts = aborts.clone();
+                let source_ranges = source_ranges.clone();
                 std::thread::spawn(move || {
                     let deadline = Instant::now() + Duration::from_secs(10);
                     let mut stream = loop {
@@ -320,6 +322,7 @@ fn star_repair_aborts_changed_sources_and_never_replays_uncertain_commits() {
                                 ..
                             } => {
                                 assert!(index < 2);
+                                source_ranges[index].fetch_add(1, Ordering::SeqCst);
                                 assert_eq!(expected_state_checksum, original.state_checksum);
                                 encode_reply(&ReplicaReply::StateRange(ChunkStateRange {
                                     version: 1,
@@ -401,6 +404,8 @@ fn star_repair_aborts_changed_sources_and_never_replays_uncertain_commits() {
             &report.members[..2],
             &[PageRepairStatus::Current, PageRepairStatus::Current]
         );
+        assert_eq!(source_ranges[0].load(Ordering::SeqCst), 3);
+        assert_eq!(source_ranges[1].load(Ordering::SeqCst), 3);
         if change_source {
             assert!(matches!(report.members[2], PageRepairStatus::Deferred(_)));
             assert_eq!(commits.load(Ordering::SeqCst), 0);
