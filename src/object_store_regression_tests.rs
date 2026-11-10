@@ -48535,7 +48535,8 @@ fn the_readme_describes_the_continuous_integration_it_has() {
     const BASELINE: &str = include_str!("../tools/known_failures.txt");
 
     // 1. The jobs the README names are the jobs the workflow declares.
-    for job in ["build & docs", "format and rollback guards"] {
+    for job in ["build & docs", "format and rollback guards",
+        "network metadata consensus", "network chunk consensus"] {
         assert!(
             README.contains(job),
             "the README should name the {job:?} job"
@@ -48584,34 +48585,10 @@ fn the_readme_describes_the_continuous_integration_it_has() {
     // and that comment contains the words this looks for -- it flagged itself first time.
     let is_command = |line: &&String| !line.trim_start().starts_with('#');
 
-    // THE CLAIM IS THAT NO STEP RUNS THE FAILING LIBRARY SUITE, and there are two bounded
-    // shapes that satisfy it, so the check admits exactly those two:
-    //
-    //   * a `tests::` filter -- the library suite is 21 failures deep, so an unfiltered run
-    //     of it would be red on arrival;
-    //   * `--test <target> <name>` -- an integration target, which links no library tests at
-    //     all and so cannot pull that suite in however it is filtered.
-    //
-    // THE SECOND SHAPE WAS ADDED WHEN THE FIRST INTEGRATION TARGET ARRIVED, and this guard
-    // flagged it: four new steps met the claim -- none of them can run a library test -- while
-    // failing a check that only knew the one spelling which used to achieve it. Widened to
-    // assert the claim rather than the spelling, because the spelling was never the point.
-    // AND THE SPELLING WAS NOT THE POINT A THIRD TIME. The two shapes above refused nine steps
-    // that all satisfy the claim:
-    //
-    //   * `--lib cluster::chunk_group_route::tests` carries a filter and cannot reach the whole
-    //     suite, but it spells `::tests` rather than `tests::`;
-    //   * `--test chunk_membership_controller` runs one integration target, which the comment on
-    //     the old predicate says "links no library tests at all" -- and which that predicate then
-    //     refused anyway, for having no test named after the target.
-    //
-    // So this asks the claim directly: does the command reach the whole library suite? A `--lib`
-    // run with a filter after it does not. A `--test` target links no library tests, filtered or
-    // not. Anything else -- a bare `cargo test`, `--all-targets` -- builds and runs the suite.
-    // The filter is a POSITIONAL argument, and it is not necessarily the word after `--lib`:
-    // `cargo test --lib --features matrix-raft <name>` puts two flags between them. So walk
-    // cargo's own arguments, skipping flags and the values they take, and stop at the `--` that
-    // hands the rest to the test harness. Whatever positional survives is the filter.
+    // A named integration or binary target excludes the library harness, unless
+    // --lib or --all-targets is also selected. A positional filter limits every
+    // selected harness. Inspect Cargo arguments before the harness separator or
+    // shell pipeline, skipping values belonging to flags.
     let takes_a_value = |flag: &str| {
         matches!(
             flag,
@@ -48647,17 +48624,26 @@ fn the_readme_describes_the_continuous_integration_it_has() {
         false
     };
     let runs_the_whole_library_suite = |command: &str| {
-        if command.split_whitespace().any(|word| word == "--test") {
-            // An integration target links no library tests, filtered or not.
+        if has_a_filter(command) {
             return false;
         }
-        if !command.split_whitespace().any(|word| word == "--lib") {
-            // Neither `--lib` nor `--test`: a bare `cargo test` or `--all-targets` builds and
-            // runs the library suite along with everything else.
+        let args: Vec<_> = command.split_whitespace()
+            .skip_while(|word| *word != "test").skip(1)
+            .take_while(|word| *word != "--" && *word != "|").collect();
+        if args.iter().any(|word| matches!(*word, "--lib" | "--all-targets")) {
             return true;
         }
-        !has_a_filter(command)
+        !args.iter().any(|word| matches!(*word, "--test" | "--bin"))
     };
+    for command in ["cargo test --bin star_repaird", "cargo test --test automatic_staged_expiry",
+        "cargo test --lib --features metadata-consensus selected_test"] {
+        assert!(!runs_the_whole_library_suite(command), "scoped command rejected: {command}");
+    }
+    for command in ["cargo test", "cargo test --lib", "cargo test --all-targets",
+        "cargo test --lib --bin star_repaird", "cargo test --all-targets --test automatic_staged_expiry",
+        "cargo test -- --bin star_repaird"] {
+        assert!(runs_the_whole_library_suite(command), "unfiltered library run admitted: {command}");
+    }
     let filters_a_library_run = |command: &str| {
         command.split_whitespace().any(|word| word == "--lib")
             && !runs_the_whole_library_suite(command)
@@ -48674,7 +48660,7 @@ fn the_readme_describes_the_continuous_integration_it_has() {
     assert!(
         unfiltered.is_empty(),
         "every cargo test in the workflow must stop short of the whole library suite, by \
-         filtering a `--lib` run or by running a `--test` target, and these do neither: \
+         filtering the library harness or selecting only a `--test`/`--bin` target: \
          {unfiltered:?}"
     );
     // NOT VACUOUS: if the join produced nothing, the filter above would find nothing either.
@@ -48702,6 +48688,9 @@ fn the_readme_describes_the_continuous_integration_it_has() {
             command.contains("cargo test") && uses_an_integration_target(command)
         })
         .count();
+    let binary_named = joined.iter().filter(is_command).filter(|command| {
+        command.contains("cargo test") && command.split_whitespace().any(|word| word == "--bin")
+    }).count();
     assert!(
         library_filtered >= 20,
         "only {library_filtered} steps run a filtered `--lib`, so that clause is not carrying \
@@ -48712,6 +48701,7 @@ fn the_readme_describes_the_continuous_integration_it_has() {
         "no step runs a `--test` target, so the clause admitting that shape is admitting \
          nothing and could be removed without failing anything"
     );
+    assert!(binary_named >= 1, "no binary target exercises the binary-selection clause");
 
     // 4. When it runs.
     assert!(
@@ -48724,8 +48714,8 @@ fn the_readme_describes_the_continuous_integration_it_has() {
     );
 
     println!(
-        "READMECI jobs=2 recorded={recorded} cargo_test_commands={test_commands} \
-         library_filtered={library_filtered} integration_named={integration_named} unfiltered=0"
+        "READMECI jobs=4 recorded={recorded} cargo_test_commands={test_commands} \
+         library_filtered={library_filtered} integration_named={integration_named} binary_named={binary_named} unfiltered=0"
     );
 }
 
