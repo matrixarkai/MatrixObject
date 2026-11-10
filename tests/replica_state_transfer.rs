@@ -23,6 +23,42 @@ fn client(node: &processes::NodeProcess) -> RemoteReplicaClient {
 }
 
 #[test]
+fn nine_star_processes_write_and_read_with_a_five_member_quorum() {
+    let mut nodes: Vec<_> = (0..9).map(|_| Some(start())).collect();
+    let endpoints: Vec<_> = nodes
+        .iter()
+        .map(|node| node.as_ref().unwrap().endpoint.clone())
+        .collect();
+    let mut set =
+        RemoteReplicaSet::connect(&endpoints, 5, 5, &ReplicaClientOptions::default()).unwrap();
+    let payload = vec![29; 64 * 1024];
+    let acknowledgements = set
+        .write_chunks_if_sequence(&[(page(90), 0, &payload, 0)])
+        .unwrap();
+    assert!((5..=9).contains(&acknowledgements[0]));
+    assert_eq!(
+        set.read_chunk(&page(90), 0, payload.len() as u64)
+            .unwrap()
+            .data,
+        payload
+    );
+    for node in &mut nodes[..4] {
+        drop(node.take());
+    }
+    assert_eq!(
+        set.write_chunks_if_sequence(&[(page(91), 0, &payload, 0)])
+            .unwrap(),
+        vec![5]
+    );
+    assert_eq!(
+        set.read_chunk(&page(91), 0, payload.len() as u64)
+            .unwrap()
+            .data,
+        payload
+    );
+}
+
+#[test]
 fn page_state_transfer_preserves_discarded_ranges_and_refuses_stale_chunks() {
     let node = start();
     let mut writer = client(&node);
