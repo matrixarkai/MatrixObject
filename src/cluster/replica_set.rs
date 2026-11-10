@@ -239,14 +239,34 @@ fn wait_for_pending(pending: &[Option<super::client::PendingReplicaReply<'_>>]) 
     use std::os::fd::AsRawFd;
 
     let mut deadline = None;
-    let mut descriptors = Vec::with_capacity(pending.len());
+    let mut inline = [libc::pollfd {
+        fd: -1,
+        events: 0,
+        revents: 0,
+    }; 8];
+    let mut overflow = Vec::new();
+    let descriptors = if pending.len() <= inline.len() {
+        &mut inline[..pending.len()]
+    } else {
+        overflow.resize(
+            pending.len(),
+            libc::pollfd {
+                fd: -1,
+                events: 0,
+                revents: 0,
+            },
+        );
+        overflow.as_mut_slice()
+    };
+    let mut active = 0usize;
     for reply in pending.iter().flatten() {
         let (socket, events) = reply.readiness();
-        descriptors.push(libc::pollfd {
+        descriptors[active] = libc::pollfd {
             fd: socket.as_raw_fd(),
             events,
             revents: 0,
-        });
+        };
+        active += 1;
         deadline = Some(
             deadline.map_or(reply.deadline(), |current: std::time::Instant| {
                 current.min(reply.deadline())
@@ -268,7 +288,7 @@ fn wait_for_pending(pending: &[Option<super::client::PendingReplicaReply<'_>>]) 
     let result = unsafe {
         libc::poll(
             descriptors.as_mut_ptr(),
-            descriptors.len() as libc::nfds_t,
+            active as libc::nfds_t,
             milliseconds,
         )
     };
