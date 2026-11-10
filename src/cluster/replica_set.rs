@@ -1584,12 +1584,51 @@ impl RemoteReplicaSet {
         page_id: &PageId,
         offset: u64,
         length: u64,
-    ) -> Result<ReplicaReadResult, ObjectError> {
+    ) -> Result<Option<(u64, u64, [u8; 32])>, ObjectError> {
+        let deadline = self.read_wave_deadline()?;
+        self.reconnect_failed();
+        let required = self.read_quorum.max(self.write_quorum);
+        if self.routed_reconnect.is_some() && self.replicas.len() < required {
+            self.collect_routed_reconnect(required);
+        }
+        let mut votes = BTreeMap::new();
+        let mut absent = 0;
+        let mut unsupported = false;
+        let request = ReplicaRequest::DigestChunk { page_id: page_id.clone(), offset, length };
+        self.fan_out_each_before(&request, None, deadline, None, |_, reply| {
+            match reply {
+                Ok(ReplicaReply::Digest { write_sequence, length, sha256 }) => {
+                    *votes.entry((write_sequence, length, sha256)).or_insert(0usize) += 1;
+                }
+                Err(ObjectError::NotFound(_)) => absent += 1,
+                Err(ObjectError::InvalidArgument(_) | ObjectError::PreconditionFailed(_)) => unsupported = true,
+                Ok(_) => unsupported = true,
+                Err(_) => {}
+            }
+        });
+        if let Some((digest, _)) = votes.into_iter().find(|(_, count)| *count >= required) {
+            return Ok(Some(digest));
+        }
+        if absent >= required { return Ok(None); }
+        if !unsupported || std::time::Instant::now() >= deadline {
+            return Err(ObjectError::PreconditionFailed(
+                "staged page digest does not satisfy durable write quorum".into(),
+            ));
+        }
         let read_quorum = self.read_quorum;
-        self.read_quorum = read_quorum.max(self.write_quorum);
-        let result = self.read_chunk(page_id, offset, length);
+        self.read_quorum = required;
+        let result = self.read_chunk_before(page_id, offset, length, deadline,
+            self.configured_endpoints.len());
         self.read_quorum = read_quorum;
-        result
+        match result {
+            Ok(read) => {
+                let mut digest = [0; 32];
+                digest.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, &read.data).as_ref());
+                Ok(Some((read.write_sequence, read.data.len() as u64, digest)))
+            }
+            Err(ObjectError::NotFound(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     fn read_chunk_before(
@@ -2786,6 +2825,71 @@ mod tests {
             assert_eq!(batches[1].load(Ordering::SeqCst), usize::from(first_member != "healthy"));
             assert_eq!(batches[2].load(Ordering::SeqCst), 0);
             assert_eq!(scalars.iter().map(|value| value.load(Ordering::SeqCst)).sum::<usize>(), 0);
+        }
+    }
+
+    #[test]
+    fn staged_star_digest_probes_require_write_copies_and_avoid_payload_replies() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        for mode in 0..5 {
+            let listeners: Vec<_> = (0..3).map(|_| TcpListener::bind("127.0.0.1:0").unwrap()).collect();
+            let endpoints: Vec<_> = listeners.iter().map(|l| l.local_addr().unwrap().to_string()).collect();
+            let mut digest = [0; 32];
+            digest.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, b"payload").as_ref());
+            let workers: Vec<_> = listeners.into_iter().enumerate().map(|(index, listener)| {
+                std::thread::spawn(move || {
+                    let (mut peer, _) = listener.accept().unwrap();
+                    peer.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                    let mut payload_reads = 0;
+                    loop {
+                        let mut header = [0; 6];
+                        if peer.read_exact(&mut header).is_err() { break; }
+                        let mut bytes = vec![0; u32::from_be_bytes(header[2..].try_into().unwrap()) as usize];
+                        peer.read_exact(&mut bytes).unwrap();
+                        let request = ReplicaRequest::decode(RequestCode::from_u8(header[1]).unwrap(), &bytes).unwrap();
+                        let reply = match request {
+                            ReplicaRequest::DigestChunk { .. } if mode == 4 || (mode == 1 && index == 2) => {
+                                peer.write_all(&super::super::message::encode_failure(
+                                    super::super::wire::StatusCode::NotFound, "page absent",
+                                )).unwrap();
+                                continue;
+                            }
+                            ReplicaRequest::DigestChunk { .. } if mode == 3 => {
+                                peer.write_all(&super::super::message::encode_failure(
+                                    super::super::wire::StatusCode::UnknownRequest, "digest unavailable",
+                                )).unwrap();
+                                continue;
+                            }
+                            ReplicaRequest::DigestChunk { .. } => ReplicaReply::Digest {
+                                write_sequence: 1, length: 7,
+                                sha256: if mode == 2 && index == 2 { [9; 32] } else { digest },
+                            },
+                            ReplicaRequest::ReadChunk { .. } if mode == 3 => {
+                                payload_reads += 1;
+                                ReplicaReply::Read(ReplicaReadResult {
+                                    data: b"payload".to_vec(), write_sequence: 1, checksum: "valid".into(),
+                                })
+                            }
+                            request => panic!("unexpected staged probe {request:?}"),
+                        };
+                        peer.write_all(&super::super::message::encode_reply(&reply)).unwrap();
+                    }
+                    payload_reads
+                })
+            }).collect();
+            let mut set = RemoteReplicaSet::connect(&endpoints, 3, 1, &ReplicaClientOptions::default()).unwrap();
+            let page = PageId { chunk_id: crate::ChunkId::new(1, 1).unwrap(), page_index: 0 };
+            let result = set.probe_written_chunk(&page, 0, 7);
+            match mode {
+                0 | 3 => assert_eq!(result.unwrap(), Some((1, 7, digest))),
+                4 => assert_eq!(result.unwrap(), None),
+                _ => assert!(result.is_err()),
+            }
+            assert_eq!(set.read_quorum(), 1);
+            drop(set);
+            let payload_reads: usize = workers.into_iter().map(|w| w.join().unwrap()).sum();
+            assert_eq!(payload_reads, if mode == 3 { 3 } else { 0 });
         }
     }
 

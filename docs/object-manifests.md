@@ -15,6 +15,10 @@ Resuming an unpublished Star write verifies staged pages against the write
 threshold, even when ordinary committed-object reads need only one copy. A
 partially replicated candidate cannot become visible through resume. Restore
 and repair the required copies before retrying the caller-retained candidate.
+Staged probes request sequence, length and SHA-256 digests from the replicas,
+so successful verification transfers fixed-size replies instead of page payloads.
+Servers that reject the digest request use full-byte quorum verification within
+the original read deadline. Absence also requires the durable quorum.
 
 `RemoteMetaClient::append_object(expected, suffix, options)` retains the expected
 generation's immutable extents and writes fresh pages for the suffix. It publishes
