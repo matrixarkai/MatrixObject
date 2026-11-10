@@ -121,7 +121,11 @@ impl Group {
                 "MATRIXOBJECT_METASERVER_RAFT_STATE_DIR",
                 path.to_str().unwrap(),
             ),
-            ("MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS", "700"),
+            // Membership recovery writes can include checkpoint I/O on loaded hosts.
+            (
+                "MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS",
+                if self.membership { "3000" } else { "700" },
+            ),
             (
                 "MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES",
                 checkpoint_bytes.as_str(),
@@ -1968,10 +1972,25 @@ fn metadata_membership_replaces_a_lost_voter_with_a_new_process() {
     client
         .metadata_membership(command(Op::Remove, first as u64 + 1))
         .unwrap();
-    let final_status = client
-        .metadata_membership(command(Op::LeaveJoint, 0))
-        .unwrap();
     let expected: Vec<_> = (1..=4).filter(|id| *id != first as u64 + 1).collect();
+    let final_status = match client.metadata_membership(command(Op::LeaveJoint, 0)) {
+        Ok(status) => status,
+        Err(error) if error.to_string().contains("write outcome may be committed; do not replay") => {
+            // Confirmation can time out after the configuration has committed.
+            // Resolve the outcome with reads; never submit the mutation again.
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                if let Ok(status) = client.metadata_membership(command(Op::Read, 0)) {
+                    if status.voters == expected && status.outgoing_voters.is_empty() {
+                        break status;
+                    }
+                }
+                assert!(Instant::now() < deadline, "membership outcome remained uncertain: {error}");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        Err(error) => panic!("final membership change failed: {error}"),
+    };
     assert_eq!(final_status.voters, expected);
     assert!(final_status.outgoing_voters.is_empty());
     // Remove another original process: successful reads now require the new voter.

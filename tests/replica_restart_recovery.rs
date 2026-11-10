@@ -950,6 +950,13 @@ fn star_repair_restores_a_full_256_mib_page_and_three_member_writes() {
         ]
     );
     assert!((2..=3).contains(&set.write_chunk(&page(0), 128, &[42]).unwrap()));
+    // A quorum write can return before the optional third copy is current.
+    // Repair it explicitly before checking every member after a total restart.
+    let repaired = set.repair_chunk(&page(0)).unwrap();
+    assert!(repaired.members.iter().all(|member| matches!(
+        member,
+        PageRepairStatus::Current | PageRepairStatus::Installed
+    )));
     let expected = set.head_chunk(&page(0)).unwrap();
     assert_eq!(expected.write_sequence, original.write_sequence + 1);
     drop(set);
