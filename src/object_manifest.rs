@@ -247,12 +247,22 @@ pub struct ManifestListRequest {
     pub limit: u32,
     #[prost(bytes = "vec", tag = "5")]
     pub expected_revision: Vec<u8>,
+    #[prost(string, tag = "6")]
+    pub after_bucket: String,
 }
 impl ManifestListRequest {
     pub(crate) fn validate(&self) -> Result<(), ObjectError> {
-        crate::validate_bucket(&self.bucket)?;
+        if self.version == 3 {
+            if !self.bucket.is_empty() || self.after_bucket.is_empty() != self.after.is_empty() {
+                return Err(invalid("invalid global manifest cursor"));
+            }
+            if !self.after_bucket.is_empty() { crate::validate_bucket(&self.after_bucket)?; }
+        } else {
+            crate::validate_bucket(&self.bucket)?;
+            if !self.after_bucket.is_empty() { return Err(invalid("unexpected manifest cursor bucket")); }
+        }
         if !self.after.is_empty() { crate::validate_key(&self.after)?; }
-        if !(1..=2).contains(&self.version) || !(1..=32).contains(&self.limit)
+        if !(1..=3).contains(&self.version) || !(1..=32).contains(&self.limit)
             || (self.version == 1 && !self.expected_revision.is_empty())
             || (!self.expected_revision.is_empty() && self.expected_revision.len() != 16) {
             return Err(invalid("invalid manifest listing bounds"));
@@ -277,6 +287,8 @@ pub struct ManifestSummary {
     pub length: u64,
     #[prost(bool, tag = "4")]
     pub deleted: bool,
+    #[prost(string, tag = "5")]
+    pub bucket: String,
 }
 #[derive(Clone, PartialEq, Eq, Message)]
 pub struct ManifestListPage {
@@ -295,14 +307,20 @@ impl ManifestListPage {
     pub(crate) fn from_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
         if bytes.len() > 262144 { return Err(invalid("manifest listing reply too large")); }
         let value = Self::decode(bytes).map_err(|_| invalid("invalid manifest listing reply"))?;
-        crate::validate_bucket(&value.bucket)?;
-        if !(1..=2).contains(&value.version) || value.entries.len() > 32
+        if value.version == 3 {
+            if !value.bucket.is_empty() { return Err(invalid("unexpected global page bucket")); }
+        } else { crate::validate_bucket(&value.bucket)?; }
+        if !(1..=3).contains(&value.version) || value.entries.len() > 32
             || (value.version == 1 && !value.revision.is_empty())
-            || (value.version == 2 && value.revision.len() != 16)
+            || (value.version >= 2 && value.revision.len() != 16)
             || (value.has_more && value.entries.is_empty())
-            || value.entries.windows(2).any(|pair| pair[0].key >= pair[1].key)
+            || value.entries.windows(2).any(|pair| if value.version == 3 {
+                (&pair[0].bucket, &pair[0].key) >= (&pair[1].bucket, &pair[1].key)
+            } else { pair[0].key >= pair[1].key })
         { return Err(invalid("invalid manifest listing reply bounds or order")); }
         for entry in &value.entries {
+            if value.version == 3 { crate::validate_bucket(&entry.bucket)?; }
+            else if !entry.bucket.is_empty() { return Err(invalid("unexpected manifest summary bucket")); }
             crate::validate_key(&entry.key)?;
             if entry.generation == 0 || (entry.deleted && entry.length != 0) {
                 return Err(invalid("invalid manifest summary"));
@@ -322,21 +340,23 @@ struct CatalogImage {
 impl ManifestCatalog {
     pub(crate) fn list_page(&self, request: &ManifestListRequest) -> Result<ManifestListPage, ObjectError> {
         request.validate()?;
-        if request.version == 2 && !request.expected_revision.is_empty()
+        if request.version >= 2 && !request.expected_revision.is_empty()
             && request.expected_revision != self.revision.to_be_bytes()
         {
             return Err(ObjectError::PreconditionFailed("manifest catalog changed during listing".into()));
         }
-        let start = ObjectId::new(request.bucket.clone(), request.after.clone());
+        let start = ObjectId::new(if request.version == 3 { request.after_bucket.clone() }
+            else { request.bucket.clone() }, request.after.clone());
         let mut values = self.objects.range((std::ops::Bound::Excluded(start), std::ops::Bound::Unbounded))
-            .take_while(|(id, _)| id.bucket.as_str() == request.bucket);
+            .take_while(|(id, _)| request.version == 3 || id.bucket.as_str() == request.bucket);
         let entries = values.by_ref().take(request.limit as usize).map(|(_, manifest)| ManifestSummary {
             key: manifest.key.clone(), generation: manifest.generation,
             length: manifest.length, deleted: manifest.deleted,
+            bucket: if request.version == 3 { manifest.bucket.clone() } else { String::new() },
         }).collect();
         Ok(ManifestListPage { version: request.version, bucket: request.bucket.clone(), entries,
             has_more: values.next().is_some(),
-            revision: if request.version == 2 { self.revision.to_be_bytes().to_vec() } else { Vec::new() } })
+            revision: if request.version >= 2 { self.revision.to_be_bytes().to_vec() } else { Vec::new() } })
     }
     #[cfg(feature = "metadata-consensus")]
     pub(crate) fn restore_entry(&mut self, id: ObjectId, previous: Option<ObjectManifest>) {
@@ -479,7 +499,7 @@ mod tests {
                 generation: 1, length: 0, extents: Vec::new(), deleted };
             catalog.apply(&ManifestOutcome::decide(None, value).unwrap()).unwrap();
         }
-        let request = ManifestListRequest { version: 1, bucket: "b".into(), after: String::new(), limit: 2, expected_revision: Vec::new() };
+        let request = ManifestListRequest { version: 1, bucket: "b".into(), after: String::new(), limit: 2, expected_revision: Vec::new(), after_bucket: String::new() };
         let first = catalog.list_page(&request).unwrap();
         assert_eq!(first.entries.iter().map(|entry| entry.key.as_str()).collect::<Vec<_>>(), ["a", "b"]);
         assert!(first.entries[1].deleted);
@@ -497,8 +517,29 @@ mod tests {
         let long = ManifestListPage { version: 1, bucket: "b".into(), has_more: false,
             revision: Vec::new(),
             entries: (0..32).map(|index| ManifestSummary { key: format!("{index:02}{}", "x".repeat(4094)),
-                generation: 1, length: 0, deleted: false }).collect() };
+                generation: 1, length: 0, deleted: false, bucket: String::new() }).collect() };
         assert!(ManifestListPage::from_payload(&long.encode_to_vec()).is_ok());
+        let global_request = ManifestListRequest { version: 3, bucket: String::new(), ..request.clone() };
+        let global = catalog.list_page(&global_request).unwrap();
+        assert_eq!(global.entries.iter().map(|entry| (entry.bucket.as_str(), entry.key.as_str()))
+            .collect::<Vec<_>>(), [("a", "z"), ("b", "a")]);
+        assert_eq!(ManifestListPage::from_payload(&global.encode_to_vec()).unwrap(), global);
+        let next_request = ManifestListRequest { after_bucket: "b".into(), after: "a".into(),
+            expected_revision: global.revision.clone(), ..global_request.clone() };
+        let next = catalog.list_page(&next_request).unwrap();
+        assert!(next.entries[0].deleted);
+        assert_eq!(next.entries[1].key, "c");
+        let last = catalog.list_page(&ManifestListRequest { after: "c".into(), ..next_request }).unwrap();
+        assert_eq!(last.entries[0].bucket, "c");
+        assert!(!last.has_more);
+        assert!(ManifestListRequest { after_bucket: "b".into(), ..global_request.clone() }.validate().is_err());
+        assert!(ManifestListRequest { after: "a".into(), ..global_request }.validate().is_err());
+        let mut long_global = long;
+        long_global.version = 3;
+        long_global.bucket.clear();
+        long_global.revision = vec![0; 16];
+        for entry in &mut long_global.entries { entry.bucket = "b".repeat(255); }
+        assert!(ManifestListPage::from_payload(&long_global.encode_to_vec()).is_ok());
     }
     fn manifest(generation: u64) -> ObjectManifest {
         ObjectManifest {
@@ -526,7 +567,7 @@ mod tests {
     fn manifest_listing_revision_tracks_publications_and_survives_restore() {
         let mut catalog = ManifestCatalog::default();
         let request = ManifestListRequest { version: 2, bucket: "bucket".into(),
-            after: String::new(), limit: 2, expected_revision: Vec::new() };
+            after: String::new(), limit: 2, expected_revision: Vec::new(), after_bucket: String::new() };
         let empty = catalog.list_page(&request).unwrap();
         assert_eq!(empty.revision.len(), 16);
         let created = manifest(1);

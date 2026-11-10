@@ -876,6 +876,7 @@ impl RemoteMetaClient {
         let request = crate::object_manifest::ManifestListRequest {
             version: 1, bucket: bucket.into(), after: after.unwrap_or("").into(), limit,
             expected_revision: Vec::new(),
+            after_bucket: String::new(),
         };
         self.list_manifests_request(request)
     }
@@ -889,8 +890,20 @@ impl RemoteMetaClient {
         let request = crate::object_manifest::ManifestListRequest {
             version: 2, bucket: bucket.into(), after: after.unwrap_or("").into(), limit,
             expected_revision: expected_revision.unwrap_or(&[]).to_vec(),
+            after_bucket: String::new(),
         };
         self.list_manifests_request(request)
+    }
+
+    /// Enumerate the complete catalog in (bucket, key) order at one retained revision.
+    pub fn list_manifest_catalog(
+        &mut self, after: Option<(&str, &str)>, limit: u32, expected_revision: Option<&[u8]>,
+    ) -> Result<crate::object_manifest::ManifestListPage, ObjectError> {
+        let (bucket, key) = after.unwrap_or(("", ""));
+        self.list_manifests_request(crate::object_manifest::ManifestListRequest {
+            version: 3, bucket: String::new(), after_bucket: bucket.into(), after: key.into(),
+            limit, expected_revision: expected_revision.unwrap_or(&[]).to_vec(),
+        })
     }
 
     fn list_manifests_request(
@@ -901,7 +914,9 @@ impl RemoteMetaClient {
             MetaReply::Manifests(page) if page.bucket == request.bucket && page.version == request.version
                 && (request.expected_revision.is_empty() || page.revision == request.expected_revision)
                 && page.entries.len() <= request.limit as usize
-                && page.entries.iter().all(|entry| entry.key > request.after) => Ok(page),
+                && page.entries.iter().all(|entry| if request.version == 3 {
+                    (&entry.bucket, &entry.key) > (&request.after_bucket, &request.after)
+                } else { entry.key > request.after }) => Ok(page),
             _ => Err(ObjectError::Corruption("manifest listing reply does not match request".into())),
         }
     }

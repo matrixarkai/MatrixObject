@@ -305,6 +305,10 @@ fn manifest_listing_continues_after_leader_loss_and_preserves_tombstones() {
     assert_eq!(commit_index(&mut client), before);
     assert!(first.revision.is_empty());
     let fenced = client.list_manifests_at_revision("bucket", None, 2, None).unwrap();
+    let global = client.list_manifest_catalog(None, 3, None).unwrap();
+    assert_eq!(global.entries.iter().map(|entry| (entry.bucket.as_str(), entry.key.as_str()))
+        .collect::<Vec<_>>(), [("a", "z"), ("bucket", "a"), ("bucket", "b")]);
+    assert_eq!(global.revision, fenced.revision);
     assert_eq!(fenced.entries, first.entries);
     client.allocate_object_pages(1).unwrap();
     assert_eq!(first.entries.iter().map(|entry| entry.key.as_str()).collect::<Vec<_>>(), ["a", "b"]);
@@ -314,6 +318,10 @@ fn manifest_listing_continues_after_leader_loss_and_preserves_tombstones() {
     group.kill(group.leader());
     let mut client = group.client(group.leader());
     let second = client.list_manifests("bucket", Some("b"), 2).unwrap();
+    let global_next = client.list_manifest_catalog(Some(("bucket", "b")), 3, Some(&global.revision)).unwrap();
+    assert_eq!(global_next.entries.iter().map(|entry| (entry.bucket.as_str(), entry.key.as_str()))
+        .collect::<Vec<_>>(), [("bucket", "c"), ("z", "a")]);
+    assert!(!global_next.has_more);
     assert_eq!(client.list_manifests_at_revision("bucket", Some("b"), 2,
         Some(&fenced.revision)).unwrap().entries, second.entries);
     assert_eq!(second.entries[0].key, "c");
@@ -328,6 +336,7 @@ fn manifest_listing_continues_after_leader_loss_and_preserves_tombstones() {
     let restored = client.list_manifests("bucket", None, 32).unwrap();
     assert_eq!(restored.entries.len(), 3);
     assert!(restored.entries[1].deleted);
+    assert_eq!(client.list_manifest_catalog(None, 32, Some(&global.revision)).unwrap().entries.len(), 5);
     assert_eq!(client.list_manifests_at_revision("bucket", None, 32,
         Some(&fenced.revision)).unwrap().revision, fenced.revision);
     client.publish_manifest(ManifestOutcome::decide(None, ObjectManifest {
@@ -339,6 +348,7 @@ fn manifest_listing_continues_after_leader_loss_and_preserves_tombstones() {
     let changed = client.list_manifests_at_revision("bucket", None, 32, None).unwrap();
     assert_eq!(changed.entries.len(), 4);
     assert_ne!(changed.revision, fenced.revision);
+    assert!(client.list_manifest_catalog(None, 32, Some(&global.revision)).is_err());
     for index in 0..3 { if index != leader { group.kill(index); } }
     assert!(client.list_manifests("bucket", None, 2).is_err());
 }

@@ -2,26 +2,31 @@
 // Copyright 2026 MatrixArkAI
 syntax = "proto3";
 package matrixobject;
-// Metadata opcode 91. Exclusive key cursor, one bucket, at most 32 summaries.
+// Metadata opcode 91. Exclusive cursors and at most 32 summaries per page.
 message ManifestListRequest {
   uint32 version = 1;
+  // Required in versions 1 and 2; empty for version-3 global traversal.
   string bucket = 2;
   string after = 3;
   uint32 limit = 4;
-  // Version 2 only: empty starts a scan; otherwise exactly 16 opaque bytes.
+  // Versions 2 and 3: empty starts a scan; otherwise exactly 16 opaque bytes.
   bytes expected_revision = 5;
+  // Version 3 scans all buckets; after_bucket and after form an exclusive cursor.
+  string after_bucket = 6;
 }
 message ManifestSummary {
   string key = 1;
   uint64 generation = 2;
   uint64 length = 3;
   bool deleted = 4;
+  // Version 3 only; omitted in bucket-scoped versions 1 and 2.
+  string bucket = 5;
 }
 message ManifestListPage {
   uint32 version = 1;
   string bucket = 2;
   repeated ManifestSummary entries = 3;
   bool has_more = 4;
-  // Version 2 returns a 16-byte catalog revision; version 1 omits it.
+  // Versions 2 and 3 return a 16-byte catalog revision; version 1 omits it.
   bytes revision = 5;
 }
