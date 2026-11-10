@@ -111,7 +111,7 @@ pub(super) struct PendingReplicaReply<'a> {
     code: crate::cluster::wire::RequestCode,
     deadline: Instant,
     absolute_deadline: Option<Instant>,
-    request: Option<std::sync::Arc<[u8]>>,
+    request: Option<std::sync::Arc<Vec<u8>>>,
     request_written: usize,
     header: [u8; HEADER_BYTES],
     header_read: usize,
@@ -1553,7 +1553,10 @@ impl RemoteReplicaClient {
         &mut self,
         request: &ReplicaRequest,
     ) -> Result<PendingReplicaReply<'_>, ObjectError> {
-        let mut pending = self.begin_encoded(request.code(), encode_request(request).into())?;
+        let mut pending = self.begin_encoded(
+            request.code(),
+            std::sync::Arc::new(encode_request(request)),
+        )?;
         pending.send_pending()?;
         Ok(pending)
     }
@@ -1563,7 +1566,7 @@ impl RemoteReplicaClient {
     pub(super) fn begin_encoded(
         &mut self,
         code: crate::cluster::wire::RequestCode,
-        frame: std::sync::Arc<[u8]>,
+        frame: std::sync::Arc<Vec<u8>>,
     ) -> Result<PendingReplicaReply<'_>, ObjectError> {
         self.begin_encoded_before(code, frame, None)
     }
@@ -1571,7 +1574,7 @@ impl RemoteReplicaClient {
     pub(super) fn begin_encoded_before(
         &mut self,
         code: crate::cluster::wire::RequestCode,
-        frame: std::sync::Arc<[u8]>,
+        frame: std::sync::Arc<Vec<u8>>,
         operation_deadline: Option<Instant>,
     ) -> Result<PendingReplicaReply<'_>, ObjectError> {
         if self.catalog.is_some() || !self.connection_usable {
