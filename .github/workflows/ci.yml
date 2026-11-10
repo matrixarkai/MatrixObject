@@ -517,6 +517,12 @@ jobs:
             grep -q 'test result: ok. 1 passed' /tmp/publication-admission.log
           done
 
+      - name: publication retains original outcomes across response failures
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_client::operation_deadline_tests::publication_keeps_original_outcome_after_success_lost_reply_and_mismatch -- --exact | tee /tmp/publication-outcome.log
+          grep -q 'test result: ok. 1 passed' /tmp/publication-outcome.log
+
       - name: fenced publication and atomic copy survive metadata recovery
         run: |
           set -o pipefail

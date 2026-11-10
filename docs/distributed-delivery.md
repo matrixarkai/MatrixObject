@@ -113,6 +113,8 @@ clients. Keep raw results outside the source tree unless deliberately curated.
 Retain bounded batching and connection reuse. Optimize rollback copying,
 checkpoint stalls and scan allocations only after the relevant counters identify
 them as costs. Local WSL results do not establish multi-host latency or throughput.
+Client publication allocation measurements and outcome reuse are recorded in
+`publication-allocations.md`; they do not measure durable write amplification.
 Compression, erasure-coded placement, tiering and raw-device storage require
 separate durability and recovery designs before being advertised remotely.
 

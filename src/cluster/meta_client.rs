@@ -1082,7 +1082,7 @@ impl RemoteMetaClient {
             Some(before) => before.generation.checked_add(1)
                 .ok_or_else(|| AtomicCopyFailure::Refused(ObjectError::PreconditionFailed("copy generation exhausted".into())))?,
         };
-        let (reply, unadmitted) = self.try_call_admission(MetaRequest::CopyManifest(command));
+        let (reply, unadmitted) = self.try_call_admission(&MetaRequest::CopyManifest(command));
         let result = reply.into_result().and_then(|reply| match reply {
             MetaReply::Manifest(value) if value.bucket == bucket && value.key == key && value.generation == generation
                 && !value.deleted && value.length <= max_bytes => Ok(value),
@@ -1168,17 +1168,7 @@ impl RemoteMetaClient {
     pub(super) fn publish_staged_manifest_attempt(&mut self, allocation_id: u64,
         outcome: crate::object_manifest::ManifestOutcome, update_time_ms: u64)
         -> (Result<crate::object_manifest::ObjectManifest, ObjectError>, bool) {
-        if let Err(error) = outcome.validate() { return (Err(error), true); }
-        let expected = outcome.after.clone().unwrap();
-        let command = crate::staged_allocation::StagedAllocationRequest {
-            version: 1, action: 4, allocation_id, outcome: Some(outcome), update_time_ms, ..Default::default()
-        };
-        if let Err(error) = command.validate() { return (Err(error), true); }
-        let (reply, unadmitted) = self.try_call_admission(MetaRequest::StagedAllocation(command));
-        let result = reply.into_result().and_then(|reply| match reply {
-            MetaReply::StagedAllocation(reply) if reply.manifest.as_ref() == Some(&expected) => Ok(expected),
-            _ => Err(ObjectError::Corruption("unexpected staged publication reply".into())),
-        });
+        let (result, unadmitted, _) = self.publish_preserving_outcome(outcome, Some(allocation_id), update_time_ms);
         (result, unadmitted)
     }
 
@@ -1559,19 +1549,51 @@ impl RemoteMetaClient {
         Result<crate::object_manifest::ObjectManifest, ObjectError>,
         bool,
     ) {
-        if let Err(error) = outcome.validate() {
-            return (Err(error), true);
-        }
-        let expected = outcome.after.clone().unwrap();
-        let (reply, unadmitted) = self.try_call_admission(MetaRequest::PublishManifest {
-            outcome,
-            update_time_ms,
-        });
-        let result = reply.into_result().and_then(|reply| match reply {
-            MetaReply::Manifest(value) if value == expected => Ok(value),
-            _ => Err(ObjectError::Corruption("unexpected manifest reply".into())),
-        });
+        let (result, unadmitted, _) = self.publish_preserving_outcome(outcome, None, update_time_ms);
         (result, unadmitted)
+    }
+
+    /// Keep the original outcome for uncertain publication without cloning its manifests.
+    pub(super) fn publish_preserving_outcome(
+        &mut self, outcome: crate::object_manifest::ManifestOutcome,
+        allocation_id: Option<u64>, update_time_ms: u64,
+    ) -> (Result<crate::object_manifest::ObjectManifest, ObjectError>, bool,
+        crate::object_manifest::ManifestOutcome) {
+        if let Err(error) = outcome.validate() { return (Err(error), true, outcome); }
+        let request = match allocation_id {
+            Some(allocation_id) => MetaRequest::StagedAllocation(crate::staged_allocation::StagedAllocationRequest {
+                version: 1, action: 4, allocation_id, outcome: Some(outcome), update_time_ms,
+                ..Default::default()
+            }),
+            None => MetaRequest::PublishManifest { outcome, update_time_ms },
+        };
+        let (result, unadmitted) = {
+            let (expected, validation) = match &request {
+                MetaRequest::PublishManifest { outcome, .. } => (outcome.after.as_ref().unwrap(), Ok(())),
+                MetaRequest::StagedAllocation(command) =>
+                    (command.outcome.as_ref().unwrap().after.as_ref().unwrap(), command.validate()),
+                _ => unreachable!(),
+            };
+            match validation {
+                Err(error) => (Err(error), true),
+                Ok(()) => {
+                    let (reply, unadmitted) = self.try_call_admission(&request);
+                    let result = reply.into_result().and_then(|reply| match reply {
+                        MetaReply::Manifest(value) if allocation_id.is_none() && &value == expected => Ok(value),
+                        MetaReply::StagedAllocation(reply) if allocation_id.is_some()
+                            && reply.manifest.as_ref() == Some(expected) => Ok(reply.manifest.unwrap()),
+                        _ => Err(ObjectError::Corruption("unexpected manifest publication reply".into())),
+                    });
+                    (result, unadmitted)
+                }
+            }
+        };
+        let outcome = match request {
+            MetaRequest::PublishManifest { outcome, .. } => outcome,
+            MetaRequest::StagedAllocation(command) => command.outcome.unwrap(),
+            _ => unreachable!(),
+        };
+        (result, unadmitted, outcome)
     }
 
     fn call(&mut self, request: MetaRequest) -> Result<MetaReply, ObjectError> {
@@ -1580,10 +1602,10 @@ impl RemoteMetaClient {
 
     /// Make a call and say which of the three things happened.
     pub fn try_call(&mut self, request: MetaRequest) -> MetaCallOutcome {
-        self.try_call_admission(request).0
+        self.try_call_admission(&request).0
     }
 
-    fn try_call_admission(&mut self, request: MetaRequest) -> (MetaCallOutcome, bool) {
+    fn try_call_admission(&mut self, request: &MetaRequest) -> (MetaCallOutcome, bool) {
         // Detect a completed idle close before sending any application bytes.
         // A close racing with this check still follows normal uncertainty rules.
         if self.live && self.peer_has_closed().unwrap_or(true) {
@@ -2663,5 +2685,55 @@ mod operation_deadline_tests {
         listener.set_nonblocking(true).unwrap();
         assert!(RemoteMetaClient::connect(&listener.local_addr().unwrap().to_string(), &options).is_err());
         assert!(matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock));
+    }
+
+    #[test]
+    fn publication_keeps_original_outcome_after_success_lost_reply_and_mismatch() {
+        for allocation in [None, Some(1)] {
+            for mode in 0..3 {
+                let (_, placement, _) = crate::tests::manifest_publication_fixture();
+                let outcome = placement.manifest.unwrap();
+                let saved = outcome.to_bytes().unwrap();
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let endpoint = listener.local_addr().unwrap().to_string();
+                let worker = std::thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    let mut header = [0; HEADER_BYTES];
+                    stream.read_exact(&mut header).unwrap();
+                    let mut payload = vec![0; u32::from_be_bytes(header[2..].try_into().unwrap()) as usize];
+                    stream.read_exact(&mut payload).unwrap();
+                    let request = MetaRequest::decode(MetaRequestCode::from_u8(header[1]).unwrap(), &payload).unwrap();
+                    let mut value = match request {
+                        MetaRequest::PublishManifest { outcome, .. } if allocation.is_none() => outcome.after.unwrap(),
+                        MetaRequest::StagedAllocation(command) if allocation.is_some() => {
+                            assert_eq!(command.allocation_id, allocation.unwrap());
+                            command.outcome.unwrap().after.unwrap()
+                        }
+                        _ => panic!("unexpected publication request"),
+                    };
+                    if mode != 0 {
+                        if mode == 1 { value.generation += 1; }
+                        let reply = if allocation.is_some() {
+                            MetaReply::StagedAllocation(crate::staged_allocation::StagedAllocationReply {
+                                version: 1, manifest: Some(value), ..Default::default()
+                            })
+                        } else { MetaReply::Manifest(value) };
+                        stream.write_all(&super::super::meta_message::encode_meta_reply(&reply)).unwrap();
+                    }
+                    drop(stream);
+                    listener.set_nonblocking(true).unwrap();
+                    std::thread::sleep(Duration::from_millis(100));
+                    assert!(matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock));
+                });
+                let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+                let (result, unadmitted, original) = client.publish_preserving_outcome(outcome, allocation, 0);
+                assert!(!unadmitted);
+                assert_eq!(result.is_ok(), mode == 2);
+                assert_eq!(original.to_bytes().unwrap(), saved);
+                drop(client);
+                worker.join().unwrap();
+            }
+        }
     }
 }
