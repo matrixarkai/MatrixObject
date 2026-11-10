@@ -35,7 +35,7 @@ message PlacementOutcome {
   repeated PlacementChange placements = 5;
   matrixobject.ManifestOutcome manifest = 6; // version 2 only
   matrixobject.ManifestRetentionChange retention = 7; // version 3 only
-  matrixobject.StagedAllocationChange staging = 8; // version 4 only
+  matrixobject.StagedAllocationChange staging = 8; // version 4; version 7 renews a lease
   matrixobject.PublicationFenceChange publication_fence = 9; // version 5 only
   matrixobject.LiveCopySource copy_source = 10; // version 6 only
 }

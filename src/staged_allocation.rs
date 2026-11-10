@@ -26,6 +26,9 @@ pub struct StagedAllocation {
     pub expected_generation: u64,
     #[prost(bool, tag = "7")]
     pub append: bool,
+    /// Absolute metadata-server deadline; zero is the permanent version-1 mode.
+    #[prost(uint64, tag = "8")]
+    pub expires_at_ms: u64,
 }
 
 impl StagedAllocation {
@@ -40,7 +43,7 @@ impl StagedAllocation {
     pub fn validate(&self) -> Result<(), ObjectError> {
         crate::validate_bucket(&self.bucket)?;
         crate::validate_key(&self.key)?;
-        if self.version != 1
+        if !matches!((self.version, self.expires_at_ms), (1, 0) | (2, 1..))
             || self.allocation_id == 0
             || !(1..=4096).contains(&self.page_count)
             || (self.append && self.expected_generation == 0)
@@ -48,6 +51,13 @@ impl StagedAllocation {
             return Err(invalid("invalid staged allocation"));
         }
         Ok(())
+    }
+    pub(crate) fn renews(&self, before: &Self) -> bool {
+        self.version == 2 && before.version == 2
+            && self.expires_at_ms > before.expires_at_ms
+            && self.allocation_id == before.allocation_id && self.page_count == before.page_count
+            && self.bucket == before.bucket && self.key == before.key
+            && self.expected_generation == before.expected_generation && self.append == before.append
     }
     pub(crate) fn check_publication(&self, outcome: &ManifestOutcome) -> Result<(), ObjectError> {
         self.validate()?;
@@ -112,7 +122,7 @@ pub struct StagedAllocationChange {
 pub struct StagedAllocationRequest {
     #[prost(uint32, tag = "1")]
     pub version: u32,
-    /// 1 allocate, 2 read, 3 abort, 4 publish, 5 list, 6 fence, 7 read fence.
+    /// 1 allocate, 2 read, 3 abort, 4 publish, 5 list, 6 fence, 7 read fence, 8 renew, 9 expire.
     #[prost(uint32, tag = "2")]
     pub action: u32,
     #[prost(uint64, tag = "3")]
@@ -133,6 +143,10 @@ pub struct StagedAllocationRequest {
     pub update_time_ms: u64,
     #[prost(uint32, tag = "11")]
     pub limit: u32,
+    #[prost(uint64, tag = "12")]
+    pub ttl_ms: u64,
+    #[prost(uint64, tag = "13")]
+    pub expected_expiry_ms: u64,
 }
 
 impl StagedAllocationRequest {
@@ -140,7 +154,23 @@ impl StagedAllocationRequest {
         matches!(self.action, 2 | 5 | 7)
     }
     pub(crate) fn validate(&self) -> Result<(), ObjectError> {
-        if self.version != 1 {
+        if self.version == 2 {
+            if !matches!(self.action, 1 | 8 | 9)
+                || (self.action != 9 && !(1_000..=3_600_000).contains(&self.ttl_ms))
+                || (self.action == 9 && self.ttl_ms != 0)
+                || (self.action == 1 && self.expected_expiry_ms != 0)
+                || (self.action != 1 && self.expected_expiry_ms == 0) {
+                return Err(invalid("invalid staged lease fields"));
+            }
+            if self.action != 1 {
+                if self.allocation_id == 0 || self.page_count != 0 || !self.bucket.is_empty()
+                    || !self.key.is_empty() || self.expected_generation != 0 || self.append
+                    || self.outcome.is_some() || self.update_time_ms != 0 || self.limit != 0 {
+                    return Err(invalid("invalid staged lease handle"));
+                }
+                return Ok(());
+            }
+        } else if self.version != 1 || self.ttl_ms != 0 || self.expected_expiry_ms != 0 {
             return Err(invalid("unsupported staged request version"));
         }
         if self.action == 1 {
@@ -152,6 +182,7 @@ impl StagedAllocationRequest {
                 key: self.key.clone(),
                 expected_generation: self.expected_generation,
                 append: self.append,
+                expires_at_ms: 0,
             }
             .validate()?;
             if self.allocation_id != 0
@@ -276,6 +307,27 @@ pub(crate) fn invalid(message: &str) -> ObjectError {
 mod tests {
     use super::*;
     #[test]
+    fn leased_staging_codec_bounds_ttl_and_preserves_deadline_identity() {
+        let request = StagedAllocationRequest { version: 2, action: 1, page_count: 1,
+            bucket: "bucket".into(), key: "key".into(), ttl_ms: 1000, ..Default::default() };
+        assert_eq!(StagedAllocationRequest::from_payload(&request.encode_to_vec()).unwrap(), request);
+        for ttl_ms in [0, 999, 3_600_001, u64::MAX] {
+            assert!(StagedAllocationRequest { ttl_ms, ..request.clone() }.validate().is_err());
+        }
+        assert!(StagedAllocationRequest { version: 1, ..request.clone() }.validate().is_err());
+        let renew = StagedAllocationRequest { version: 2, action: 8, allocation_id: 1,
+            expected_expiry_ms: 2000, ttl_ms: 1000, ..Default::default() };
+        assert_eq!(StagedAllocationRequest::from_payload(&renew.encode_to_vec()).unwrap(), renew);
+        assert!(StagedAllocationRequest { expected_expiry_ms: 0, ..renew.clone() }.validate().is_err());
+        assert!(StagedAllocationRequest { version: 1, ..renew.clone() }.validate().is_err());
+        assert!(StagedAllocationRequest { action: 9, ..renew }.validate().is_err());
+        let leased = StagedAllocation { version: 2, allocation_id: 1, page_count: 1,
+            bucket: "bucket".into(), key: "key".into(), expires_at_ms: 2000, ..Default::default() };
+        leased.validate().unwrap();
+        assert!(StagedAllocation { version: 1, ..leased.clone() }.validate().is_err());
+        assert!(StagedAllocation { expires_at_ms: 0, ..leased }.validate().is_err());
+    }
+    #[test]
     fn staged_codec_and_ownership_reject_malformed_requests_and_foreign_pages() {
         let request = StagedAllocationRequest {
             version: 1,
@@ -304,6 +356,7 @@ mod tests {
             key: "key".into(),
             expected_generation: 0,
             append: false,
+            expires_at_ms: 0,
         };
         let mut manifest = crate::object_manifest::ObjectManifest {
             format_version: 2,

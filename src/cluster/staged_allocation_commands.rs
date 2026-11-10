@@ -15,6 +15,19 @@ pub(super) fn prepare(
     command: &StagedAllocationRequest,
     limit: usize,
 ) -> Result<(PlacementOutcome, MetaReply), ObjectError> {
+    let timed = command.version == 2 || (command.action == 4 && service.object_manifests
+        .staged_allocation(command.allocation_id).is_some_and(|record| record.expires_at_ms != 0));
+    let now = if timed {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| ObjectError::PreconditionFailed("metadata clock precedes epoch".into()))?
+            .as_millis().try_into().map_err(|_| ObjectError::PreconditionFailed("metadata clock exceeds lease range".into()))?
+    } else { 0 };
+    prepare_at(service, groups, command, limit, now)
+}
+
+pub(super) fn prepare_at(service: &MatrixMetaService, groups: &ChunkGroupCatalog,
+    command: &StagedAllocationRequest, limit: usize, now: u64)
+    -> Result<(PlacementOutcome, MetaReply), ObjectError> {
     command.validate()?;
     let mut outcome = PlacementOutcome::capture(service, Vec::new(), None)?;
     let mut reply = StagedAllocationReply {
@@ -24,7 +37,7 @@ pub(super) fn prepare(
     let change = match command.action {
         1 => {
             let record = StagedAllocation {
-                version: 1,
+                version: command.version,
                 allocation_id: service
                     .placement_commit_index
                     .checked_add(1)
@@ -38,6 +51,10 @@ pub(super) fn prepare(
                 key: command.key.clone(),
                 expected_generation: command.expected_generation,
                 append: command.append,
+                expires_at_ms: if command.ttl_ms == 0 { 0 } else {
+                    if now == 0 { return Err(ObjectError::PreconditionFailed("metadata lease clock is zero".into())); }
+                    now.checked_add(command.ttl_ms).ok_or_else(|| ObjectError::PreconditionFailed("staged deadline overflow".into()))?
+                },
             };
             reply.allocation = Some(record.clone());
             Some(StagedAllocationChange {
@@ -69,6 +86,9 @@ pub(super) fn prepare(
                     ObjectError::PreconditionFailed("staged allocation is no longer active".into())
                 })?;
             let manifest = command.outcome.clone().unwrap();
+            if allocation.expires_at_ms != 0 && (now == 0 || now >= allocation.expires_at_ms) {
+                return Err(ObjectError::PreconditionFailed("staged allocation lease expired".into()));
+            }
             allocation.check_publication(&manifest)?;
             groups.check_manifest(&manifest)?;
             outcome = PlacementOutcome::publish_staged_manifest(
@@ -79,6 +99,39 @@ pub(super) fn prepare(
             )?;
             reply.manifest = outcome.manifest.as_ref().unwrap().after.clone();
             None
+        }
+        8 | 9 => {
+            let before = service.object_manifests.staged_allocation(command.allocation_id).cloned();
+            if command.allocation_id > service.placement_commit_index {
+                return Err(ObjectError::PreconditionFailed("staged lease is from a future position".into()));
+            }
+            match before {
+                None if command.action == 9 => None,
+                None => return Err(ObjectError::NotFound("staged allocation missing".into())),
+                Some(before) => {
+                    if now == 0 || before.version != 2 || before.expires_at_ms != command.expected_expiry_ms {
+                        return Err(ObjectError::PreconditionFailed("staged lease deadline changed".into()));
+                    }
+                    if command.action == 9 {
+                        if now < before.expires_at_ms {
+                            return Err(ObjectError::PreconditionFailed("staged lease has not expired".into()));
+                        }
+                        Some(StagedAllocationChange { before: Some(before), after: None })
+                    } else {
+                        if now >= before.expires_at_ms {
+                            return Err(ObjectError::PreconditionFailed("staged allocation lease expired".into()));
+                        }
+                        let mut after = before.clone();
+                        after.expires_at_ms = now.checked_add(command.ttl_ms)
+                            .ok_or_else(|| ObjectError::PreconditionFailed("staged deadline overflow".into()))?;
+                        if !after.renews(&before) {
+                            return Err(ObjectError::PreconditionFailed("renewal must extend the deadline".into()));
+                        }
+                        reply.allocation = Some(after.clone());
+                        Some(StagedAllocationChange { before: Some(before), after: Some(after) })
+                    }
+                }
+            }
         }
         6 => {
             let current = service.object_manifests.publication_fence();
@@ -115,7 +168,7 @@ pub(super) fn prepare(
     };
     if let Some(change) = change {
         service.object_manifests.check_staging(&change)?;
-        outcome.version = 4;
+        outcome.version = if change.before.is_some() && change.after.is_some() { 7 } else { 4 };
         outcome.after_index = outcome
             .before_index
             .checked_add(1)
@@ -167,6 +220,99 @@ pub(super) fn read(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn staged_leases_enforce_deadlines_renewal_and_capacity_without_clocked_replay() {
+        let mut service = MatrixMetaService::new();
+        let groups = Default::default();
+        let reserve = StagedAllocationRequest { version: 2, ttl_ms: 1000, ..request() };
+        assert!(prepare_at(&service, &groups, &reserve, 8192, 1000).is_err());
+        let enable = StagedAllocationRequest { version: 1, action: 6, ..Default::default() };
+        prepare_at(&service, &groups, &enable, 8192, 1000).unwrap().0.apply(&mut service).unwrap();
+        let mut first = None;
+        for _ in 0..crate::staged_allocation::MAX_STAGED_ALLOCATIONS {
+            let (outcome, _) = prepare_at(&service, &groups, &reserve, 8192, 1000).unwrap();
+            first.get_or_insert(outcome.after_index);
+            outcome.apply(&mut service).unwrap();
+        }
+        assert!(prepare_at(&service, &groups, &reserve, 8192, 1000).is_err());
+        let id = first.unwrap();
+        let original = service.object_manifests.staged_allocation(id).unwrap().clone();
+        assert_eq!(original.expires_at_ms, 2000);
+        let renew = StagedAllocationRequest { version: 2, action: 8, allocation_id: id,
+            expected_expiry_ms: 2000, ttl_ms: 2000, ..Default::default() };
+        let (outcome, _) = prepare_at(&service, &groups, &renew, 8192, 1500).unwrap();
+        assert_eq!(outcome.version, 7);
+        let mut forged = outcome.clone();
+        forged.staging.as_mut().unwrap().after.as_mut().unwrap().page_count += 1;
+        assert!(forged.to_payload().is_err());
+        PlacementOutcome::from_payload(&outcome.to_payload().unwrap()).unwrap().apply(&mut service).unwrap();
+        let renewed = service.object_manifests.staged_allocation(id).unwrap().clone();
+        assert_eq!(renewed.expires_at_ms, 3500);
+        assert!(prepare_at(&service, &groups, &renew, 8192, 1600).is_err());
+        let mut expire = StagedAllocationRequest { version: 2, action: 9, allocation_id: id,
+            expected_expiry_ms: 2000, ..Default::default() };
+        assert!(prepare_at(&service, &groups, &expire, 8192, 4000).is_err());
+        expire.expected_expiry_ms = 3500;
+        assert!(prepare_at(&service, &groups, &expire, 8192, 3499).is_err());
+        let publish = StagedAllocationRequest { version: 1, action: 4, allocation_id: id,
+            outcome: Some(ManifestOutcome::decide(None, empty()).unwrap()), ..Default::default() };
+        // Admission at the boundary refuses publication and renewal.
+        assert!(prepare_at(&service, &groups, &publish, 8192, 3500).is_err());
+        let renew = StagedAllocationRequest { expected_expiry_ms: 3500, ..renew };
+        assert!(prepare_at(&service, &groups, &renew, 8192, 3500).is_err());
+        // Decided state restores without consulting wall time or expiring other owners.
+        let snapshot = crate::MetaSnapshot::from_bytes(&service.export_snapshot().to_bytes().unwrap()).unwrap();
+        assert_eq!(snapshot.object_manifests.staged_allocation(id), Some(&renewed));
+        prepare_at(&service, &groups, &expire, 8192, 3500).unwrap().0.apply(&mut service).unwrap();
+        assert!(service.object_manifests.staged_allocation(id).is_none());
+        assert_eq!(prepare_at(&service, &groups, &expire, 8192, 3501).unwrap().0.after_index,
+            service.placement_commit_index);
+        assert!(prepare_at(&service, &groups, &publish, 8192, 3501).is_err());
+        let (next, _) = prepare_at(&service, &groups, &reserve, 8192, 4000).unwrap();
+        assert!(next.after_index > id);
+        next.apply(&mut service).unwrap();
+    }
+
+    #[test]
+    fn staged_lease_journal_recovers_renewal_and_decided_expiry() {
+        let root = std::env::temp_dir().join(format!("staging-lease-journal-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+        let _cleanup = Cleanup(root.clone());
+        let mut service = MatrixMetaService::new();
+        let (mut storage, _) = super::super::meta_snapshot_file::MetaSnapshotFile::open(&root, &mut service).unwrap();
+        storage.persist(&service, &Default::default()).unwrap();
+        let enable = StagedAllocationRequest { version: 1, action: 6, ..Default::default() };
+        let reserve = StagedAllocationRequest { version: 2, ttl_ms: 1000, ..request() };
+        for command in [enable, reserve] {
+            let (outcome, _) = prepare_at(&service, &Default::default(), &command, 8192, 1000).unwrap();
+            storage.append_outcome(&outcome).unwrap();
+            outcome.apply(&mut service).unwrap();
+        }
+        let id = service.placement_commit_index;
+        let renew = StagedAllocationRequest { version: 2, action: 8, allocation_id: id,
+            ttl_ms: 2000, expected_expiry_ms: 2000, ..Default::default() };
+        let (outcome, _) = prepare_at(&service, &Default::default(), &renew, 8192, 1500).unwrap();
+        storage.append_outcome(&outcome).unwrap();
+        outcome.apply(&mut service).unwrap();
+        drop(storage);
+        let mut service = MatrixMetaService::new();
+        let (mut storage, recovered) = super::super::meta_snapshot_file::MetaSnapshotFile::open(&root, &mut service).unwrap();
+        assert!(recovered);
+        assert_eq!(service.object_manifests.staged_allocation(id).unwrap().expires_at_ms, 3500);
+        let expire = StagedAllocationRequest { version: 2, action: 9, allocation_id: id,
+            expected_expiry_ms: 3500, ..Default::default() };
+        let (outcome, _) = prepare_at(&service, &Default::default(), &expire, 8192, 3500).unwrap();
+        storage.append_outcome(&outcome).unwrap();
+        outcome.apply(&mut service).unwrap();
+        drop(storage);
+        let mut service = MatrixMetaService::new();
+        let (storage, recovered) = super::super::meta_snapshot_file::MetaSnapshotFile::open(&root, &mut service).unwrap();
+        assert!(recovered);
+        assert!(service.object_manifests.staged_allocation(id).is_none());
+        drop(storage);
+    }
     #[test]
     fn publication_fence_is_durable_one_way_and_rejects_retired_namespace_publication() {
         let (mut service, create, _) = crate::tests::manifest_publication_fixture();

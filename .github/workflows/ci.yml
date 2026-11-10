@@ -523,6 +523,21 @@ jobs:
           cargo test --locked --all-features --lib cluster::meta_client::operation_deadline_tests::publication_keeps_original_outcome_after_success_lost_reply_and_mismatch -- --exact | tee /tmp/publication-outcome.log
           grep -q 'test result: ok. 1 passed' /tmp/publication-outcome.log
 
+      - name: staged leases preserve deadline and recovery decisions
+        run: |
+          set -o pipefail
+          for test in \
+            cluster::staged_allocation_commands::tests::staged_leases_enforce_deadlines_renewal_and_capacity_without_clocked_replay \
+            cluster::staged_allocation_commands::tests::staged_lease_journal_recovers_renewal_and_decided_expiry \
+            cluster::meta_consensus::tests::leased_staging_batch_restores_renewal_before_commit_and_refuses_stale_expiry \
+            staged_allocation::tests::leased_staging_codec_bounds_ttl_and_preserves_deadline_identity
+          do
+            cargo test --locked --all-features --lib "$test" -- --exact | tee /tmp/staged-lease.log
+            grep -q 'test result: ok. 1 passed' /tmp/staged-lease.log
+          done
+          cargo test --locked --all-features --test network_metadata_consensus staged_lease_deadlines_and_renewals_survive_failover_restart_and_quorum_loss -- --exact | tee /tmp/staged-lease.log
+          grep -q 'test result: ok. 1 passed' /tmp/staged-lease.log
+
       - name: fenced publication and atomic copy survive metadata recovery
         run: |
           set -o pipefail
