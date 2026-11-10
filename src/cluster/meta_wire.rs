@@ -106,6 +106,7 @@ pub enum MetaRequestCode {
     ListChunkRoutes = 90,
     ListManifests = 91,
     ManifestRetention = 92,
+    StagedAllocation = 93,
 }
 
 impl MetaRequestCode {
@@ -145,6 +146,7 @@ impl MetaRequestCode {
             90 => Some(MetaRequestCode::ListChunkRoutes),
             91 => Some(MetaRequestCode::ListManifests),
             92 => Some(MetaRequestCode::ManifestRetention),
+            93 => Some(MetaRequestCode::StagedAllocation),
             _ => None,
         }
     }
@@ -181,6 +183,7 @@ impl MetaRequestCode {
             MetaRequestCode::ListChunkRoutes,
             MetaRequestCode::ListManifests,
             MetaRequestCode::ManifestRetention,
+            MetaRequestCode::StagedAllocation,
         ]
     }
 }

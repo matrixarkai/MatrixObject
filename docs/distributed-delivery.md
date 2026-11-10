@@ -37,7 +37,9 @@ unconfirmed publication from a refused publication.
 Explicit durable generation handles are now available through
 `retain_manifest` and `read_retained_object`; see `manifest-retention.md`.
 These handles require explicit release and do not change ordinary reads.
-Staged-write ownership, expiry and automatic reader-session integration remain
+Explicit owned allocation, publication, resume and abort are available through
+`staged-object-writes.md`. Global publication fencing after ownership removal,
+data-node fencing, expiry and automatic reader-session integration remain
 unfinished. Keep reclamation disabled while completing them.
 
 Choose and document failover semantics before adding deletion: either restore

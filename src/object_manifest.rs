@@ -222,6 +222,8 @@ pub struct ManifestCatalog {
     body_bytes: usize,
     retained: BTreeMap<u64, crate::manifest_retention::RetainedManifest>,
     retention_bytes: usize,
+    staged: BTreeMap<u64, crate::staged_allocation::StagedAllocation>,
+    staged_bytes: usize,
     // Tombstones retain every generation advance. Rebuild this sum on restore;
     // 100,000 retained u64 generations fit without overflow in u128.
     revision: u128,
@@ -340,8 +342,55 @@ struct CatalogImage {
     objects: Vec<ObjectManifest>,
     #[prost(message, repeated, tag = "3")]
     retained: Vec<crate::manifest_retention::RetainedManifest>,
+    #[prost(message, repeated, tag = "4")]
+    staged: Vec<crate::staged_allocation::StagedAllocation>,
 }
 impl ManifestCatalog {
+    pub fn staged_allocation(&self, id: u64) -> Option<&crate::staged_allocation::StagedAllocation> {
+        self.staged.get(&id)
+    }
+    pub(crate) fn staged_ids(&self, after: u64, limit: usize) -> (Vec<u64>, bool) {
+        let mut rows = self.staged.range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded));
+        let ids = rows.by_ref().take(limit).map(|(id, _)| *id).collect();
+        (ids, rows.next().is_some())
+    }
+    pub(crate) fn max_staged_id(&self) -> u64 { self.staged.last_key_value().map_or(0, |(id, _)| *id) }
+    pub(crate) fn check_staging(&self, change: &crate::staged_allocation::StagedAllocationChange) -> Result<(), ObjectError> {
+        let record = match (&change.before, &change.after) {
+            (None, Some(after)) => after,
+            (Some(before), None) => before,
+            _ => return Err(invalid("staging must create or remove one allocation")),
+        };
+        record.validate()?;
+        if self.staged.get(&record.allocation_id) != change.before.as_ref() {
+            return Err(ObjectError::PreconditionFailed("staging prior state mismatch".into()));
+        }
+        if change.after.is_some() {
+            if self.staged.len() >= crate::staged_allocation::MAX_STAGED_ALLOCATIONS
+                || self.body_bytes + self.retention_bytes + self.staged_bytes + entry_size(record) > MAX_SNAPSHOT - 2 {
+                return Err(ObjectError::PreconditionFailed("staged allocation capacity exceeded".into()));
+            }
+            let current = self.get(&ObjectId::new(record.bucket.clone(), record.key.clone()));
+            if current.map_or(0, |manifest| manifest.generation) != record.expected_generation
+                || (record.append && current.is_none_or(|manifest| manifest.deleted || manifest.format_version != 2)) {
+                return Err(ObjectError::PreconditionFailed("object changed before staging".into()));
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn apply_staging(&mut self, change: &crate::staged_allocation::StagedAllocationChange) -> Result<(), ObjectError> {
+        self.check_staging(change)?;
+        let id = change.before.as_ref().or(change.after.as_ref()).unwrap().allocation_id;
+        self.restore_staging(id, change.after.clone());
+        Ok(())
+    }
+    pub(crate) fn restore_staging(&mut self, id: u64, value: Option<crate::staged_allocation::StagedAllocation>) {
+        if let Some(before) = self.staged.remove(&id) { self.staged_bytes -= entry_size(&before); }
+        if let Some(value) = value {
+            self.staged_bytes += entry_size(&value);
+            self.staged.insert(id, value);
+        }
+    }
     pub fn retained_manifest(&self, id: u64) -> Option<&crate::manifest_retention::RetainedManifest> {
         self.retained.get(&id)
     }
@@ -365,7 +414,7 @@ impl ManifestCatalog {
         }
         if change.after.is_some() {
             if self.retained.len() >= crate::manifest_retention::MAX_RETAINED_MANIFESTS
-                || self.body_bytes + self.retention_bytes + entry_size(record) > MAX_SNAPSHOT - 2 {
+                || self.body_bytes + self.retention_bytes + self.staged_bytes + entry_size(record) > MAX_SNAPSHOT - 2 {
                 return Err(ObjectError::PreconditionFailed("retention catalog capacity exceeded".into()));
             }
             let manifest = record.manifest.as_ref().unwrap();
@@ -423,11 +472,11 @@ impl ManifestCatalog {
         }
     }
     pub(crate) fn encoded_size(&self) -> usize {
-        self.body_bytes + self.retention_bytes + 2 + 12
+        self.body_bytes + self.retention_bytes + self.staged_bytes + 2 + 12
     }
 
     pub fn is_empty(&self) -> bool {
-        self.objects.is_empty()
+        self.objects.is_empty() && self.staged.is_empty()
     }
     pub fn len(&self) -> usize {
         self.objects.len()
@@ -441,6 +490,11 @@ impl ManifestCatalog {
     pub(crate) fn check_outcome(
         &self,
         outcome: &ManifestOutcome,
+    ) -> Result<Option<usize>, ObjectError> {
+        self.check_outcome_with_staging(outcome, None)
+    }
+    pub(crate) fn check_outcome_with_staging(
+        &self, outcome: &ManifestOutcome, allocation_id: Option<u64>,
     ) -> Result<Option<usize>, ObjectError> {
         outcome.validate()?;
         let after = outcome.after.as_ref().unwrap();
@@ -458,7 +512,17 @@ impl ManifestCatalog {
             return Err(invalid("manifest catalog exceeds object bound"));
         }
         let body_bytes = self.body_bytes - current.map_or(0, entry_size) + entry_size(after);
-        if body_bytes + self.retention_bytes > MAX_SNAPSHOT - 2 {
+        if !self.staged.is_empty() {
+            for extent in &after.extents {
+                let id = extent.volume_id.checked_shl(32).filter(|_| extent.volume_id <= u32::MAX as u64)
+                    .and_then(|volume| if extent.chunk_id <= u32::MAX as u64 { Some(volume | extent.chunk_id) } else { None });
+                if id.is_some_and(|id| self.staged.contains_key(&id) && Some(id) != allocation_id) {
+                    return Err(ObjectError::PreconditionFailed("owned pages require staged publication".into()));
+                }
+            }
+        }
+        let released = allocation_id.and_then(|id| self.staged.get(&id)).map_or(0, entry_size);
+        if body_bytes + self.retention_bytes + self.staged_bytes - released > MAX_SNAPSHOT - 2 {
             return Err(invalid(
                 "manifest publication exceeds checkpoint size bound",
             ));
@@ -477,18 +541,21 @@ impl ManifestCatalog {
     }
     pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
         let image = CatalogImage {
-            format_version: if self.retained.is_empty() { 1 } else { 2 },
+            format_version: if !self.staged.is_empty() { 3 } else if self.retained.is_empty() { 1 } else { 2 },
             objects: self.objects.values().cloned().collect(),
             retained: self.retained.values().cloned().collect(),
+            staged: self.staged.values().cloned().collect(),
         };
         frame(b"MOMC", &image, MAX_SNAPSHOT)
     }
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ObjectError> {
         let image: CatalogImage = unframe(b"MOMC", bytes, MAX_SNAPSHOT)?;
-        if !(1..=2).contains(&image.format_version) || image.objects.len() > MAX_OBJECTS
-            || (image.format_version == 1 && !image.retained.is_empty())
-            || (image.format_version == 2 && image.retained.is_empty())
-            || image.retained.len() > crate::manifest_retention::MAX_RETAINED_MANIFESTS {
+        if !(1..=3).contains(&image.format_version) || image.objects.len() > MAX_OBJECTS
+            || (image.format_version == 1 && (!image.retained.is_empty() || !image.staged.is_empty()))
+            || (image.format_version == 2 && (image.retained.is_empty() || !image.staged.is_empty()))
+            || (image.format_version == 3 && image.staged.is_empty())
+            || image.retained.len() > crate::manifest_retention::MAX_RETAINED_MANIFESTS
+            || image.staged.len() > crate::staged_allocation::MAX_STAGED_ALLOCATIONS {
             return Err(invalid("manifest catalog version or count mismatch"));
         }
         let mut result = Self::default();
@@ -517,6 +584,20 @@ impl ManifestCatalog {
             }
             previous = retained.retention_id;
             result.restore_retention(retained.retention_id, Some(retained));
+        }
+        let mut previous = 0;
+        for record in image.staged {
+            record.validate()?;
+            if record.allocation_id <= previous { return Err(invalid("staged allocations are not ordered")); }
+            if result.retained.contains_key(&record.allocation_id) {
+                return Err(invalid("protection identities overlap"));
+            }
+            if record.expected_generation > 0 && result.get(&ObjectId::new(record.bucket.clone(), record.key.clone()))
+                .is_none_or(|manifest| manifest.generation < record.expected_generation) {
+                return Err(invalid("staged target generation exceeds current history"));
+            }
+            previous = record.allocation_id;
+            result.restore_staging(record.allocation_id, Some(record));
         }
         Ok(result)
     }
@@ -774,6 +855,7 @@ mod tests {
             format_version: 1,
             objects: vec![manifest(1), manifest(1)],
             retained: Vec::new(),
+            staged: Vec::new(),
         };
         assert!(
             ManifestCatalog::from_bytes(&frame(b"MOMC", &duplicate, MAX_SNAPSHOT).unwrap())

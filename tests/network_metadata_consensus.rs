@@ -407,6 +407,55 @@ fn retained_generations_survive_overwrite_deletion_failover_and_checkpoint_resta
 }
 
 #[test]
+fn staged_allocations_survive_failover_and_restart_and_fence_aborted_publication() {
+    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
+    let mut group = Group::with_catalog_checkpoints(None, None, None, 1024);
+    let mut client = group.client(group.leader());
+    let mut records = Vec::new();
+    for _ in 0..24 { records.push(client.allocate_staged_object("bucket", "owned", None, 1, false).unwrap()); }
+    assert!(client.allocate_staged_object("bucket", "owned", Some(1), 1, false).is_err());
+    node_regime::checkpoints::wait_for_checkpoint(
+        &group.root.join(group.leader().to_string()).join("metadata.peer.wal"), 4,
+    );
+    assert!(client.read_manifest("bucket", "owned").is_err());
+    let (first, more) = client.list_staged_allocations(0, 7).unwrap();
+    assert!(more);
+    assert_eq!(first, records[..7].iter().map(|record| record.allocation_id).collect::<Vec<_>>());
+    group.kill(group.leader());
+    let mut client = group.client(group.leader());
+    assert_eq!(client.read_staged_allocation(records[0].allocation_id).unwrap(), records[0]);
+    for index in 0..3 { if group.nodes[index].is_some() { group.kill(index); } }
+    for index in 0..3 { group.start(index); }
+    let mut client = group.client(group.leader());
+    assert_eq!(client.read_staged_allocation(records[23].allocation_id).unwrap(), records[23]);
+    client.abort_staged_allocation(records[0].allocation_id).unwrap();
+    client.abort_staged_allocation(records[0].allocation_id).unwrap();
+    let live = ObjectManifest { format_version: 2, bucket: "bucket".into(), key: "owned".into(),
+        generation: 1, length: 0, extents: Vec::new(), deleted: false };
+    let outcome = ManifestOutcome::decide(None, live.clone()).unwrap();
+    assert!(client.publish_staged_manifest(records[0].allocation_id, outcome.clone(), 0).is_err());
+    assert_eq!(client.publish_staged_manifest(records[1].allocation_id, outcome.clone(), 0).unwrap(), live);
+    assert!(client.read_staged_allocation(records[1].allocation_id).is_err());
+    assert!(client.publish_staged_manifest(records[2].allocation_id, outcome.clone(), 0).is_err());
+    let reader = client.retain_manifest("bucket", "owned", live.generation).unwrap();
+    for index in 0..3 { group.kill(index); }
+    for index in 0..3 { group.start(index); }
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    assert!(client.read_staged_allocation(records[0].allocation_id).is_err());
+    assert!(client.read_staged_allocation(records[1].allocation_id).is_err());
+    assert_eq!(client.read_manifest("bucket", "owned").unwrap(), live);
+    assert_eq!(client.read_retained_manifest(reader.retention_id).unwrap(), reader);
+    client.release_manifest(reader.retention_id).unwrap();
+    assert_eq!(client.list_staged_allocations(0, 32).unwrap().0.len(), 22);
+    assert!(client.publish_staged_manifest(records[0].allocation_id, outcome, 0).is_err());
+    for index in 0..3 { if index != leader { group.kill(index); } }
+    assert!(client.read_staged_allocation(records[2].allocation_id).is_err());
+    assert!(client.list_staged_allocations(0, 32).is_err());
+    assert!(client.abort_staged_allocation(records[2].allocation_id).is_err());
+}
+
+#[test]
 fn process_quorum_preserves_outcomes_across_leader_loss_and_total_restart() {
     let mut group = Group::new();
     let first = group.leader();
@@ -1089,6 +1138,27 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     ).is_err());
     assert!(client.read_manifest("star", "second").is_err());
 
+    let owned_payload = vec![0x6d; page_bytes * 33 + 1];
+    let owned_bytes = owned_payload.as_slice();
+    let owned = client.allocate_staged_object("star", "owned-pending", None,
+        owned_bytes.len().div_ceil(page_bytes) as u32, false).unwrap();
+    let owned_candidate = match client.write_staged_object(&owned, None, owned_bytes, &options).unwrap_err() {
+        matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication { staged: Some(candidate), .. } => *candidate,
+        error => panic!("missing owned candidate: {error:?}"),
+    };
+    assert_eq!(client.read_staged_allocation(owned.allocation_id).unwrap(), owned);
+    assert!(client.publish_manifest(matrixobjectstore_rs::object_manifest::ManifestOutcome::decide(
+        None, owned_candidate.clone()).unwrap(), 0).is_err());
+    assert!(client.resume_staged_object(&owned, None, owned_candidate.clone(), owned_bytes, &options).is_err());
+    let aborted = client.allocate_staged_object("star", "owned-aborted", None,
+        owned_bytes.len().div_ceil(page_bytes) as u32, false).unwrap();
+    let aborted_candidate = match client.write_staged_object(&aborted, None, owned_bytes, &options).unwrap_err() {
+        matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication { staged: Some(candidate), .. } => *candidate,
+        error => panic!("missing aborted candidate: {error:?}"),
+    };
+    client.abort_staged_allocation(aborted.allocation_id).unwrap();
+    assert!(client.resume_staged_object(&aborted, None, aborted_candidate.clone(), owned_bytes, &options).is_err());
+
     chunks[0] = processes::start(
         env!("CARGO_BIN_EXE_chunkserver"),
         &[
@@ -1134,6 +1204,19 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     let resumed = client.resume_unpublished_append(
         appended.clone(), append_candidate.clone(), &pending_suffix, &options,
     ).unwrap();
+    assert_eq!(client.resume_staged_object(&owned, None, owned_candidate.clone(), owned_bytes, &options)
+        .unwrap(), owned_candidate);
+    assert!(client.read_staged_allocation(owned.allocation_id).is_err());
+    assert_eq!(client.resume_staged_object(&owned, None, owned_candidate.clone(), owned_bytes, &options)
+        .unwrap(), owned_candidate);
+    assert!(client.resume_staged_object(&aborted, None, aborted_candidate, owned_bytes, &options).is_err());
+    let owned_append = client.allocate_staged_object("star", "owned-pending", Some(owned_candidate.generation), 1, true).unwrap();
+    let owned_updated = client.write_staged_object(&owned_append, Some(owned_candidate.clone()), b"!", &options).unwrap();
+    assert_eq!(&owned_updated.extents[..owned_candidate.extents.len()], &owned_candidate.extents);
+    let mut owned_expected = owned_bytes.to_vec();
+    owned_expected.push(b'!');
+    assert_eq!(client.read_object("star", "owned-pending", owned_expected.len(), &options.replica).unwrap(),
+        (owned_updated, owned_expected));
     assert_eq!(resumed, append_candidate);
     assert_eq!(&resumed.extents[..appended.extents.len()], &appended.extents);
     append_bytes.extend_from_slice(&pending_suffix);

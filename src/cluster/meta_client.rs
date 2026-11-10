@@ -1063,6 +1063,84 @@ impl RemoteMetaClient {
         })
     }
 
+    /// Reserve an owned namespace before writing any object data.
+    pub fn allocate_staged_object(&mut self, bucket: &str, key: &str, expected_generation: Option<u64>,
+        page_count: u32, append: bool) -> Result<crate::staged_allocation::StagedAllocation, ObjectError> {
+        if expected_generation == Some(0) { return Err(ObjectError::InvalidArgument("zero object generation".into())); }
+        let reply = self.staged_call(crate::staged_allocation::StagedAllocationRequest {
+            version: 1, action: 1, bucket: bucket.into(), key: key.into(),
+            expected_generation: expected_generation.unwrap_or(0), page_count, append, ..Default::default()
+        })?;
+        let allocation = reply.allocation.ok_or_else(|| ObjectError::Corruption("staged reply lacks allocation".into()))?;
+        if allocation.bucket != bucket || allocation.key != key || allocation.page_count != page_count
+            || allocation.expected_generation != expected_generation.unwrap_or(0) || allocation.append != append {
+            return Err(ObjectError::Corruption("staged reply differs from requested ownership".into()));
+        }
+        Ok(allocation)
+    }
+
+    pub fn read_staged_allocation(&mut self, allocation_id: u64)
+        -> Result<crate::staged_allocation::StagedAllocation, ObjectError> {
+        self.staged_call(crate::staged_allocation::StagedAllocationRequest {
+            version: 1, action: 2, allocation_id, ..Default::default()
+        })?.allocation.filter(|record| record.allocation_id == allocation_id)
+            .ok_or_else(|| ObjectError::Corruption("staged reply names another allocation".into()))
+    }
+
+    /// Abort an active namespace. This does not undo an already committed object.
+    pub fn abort_staged_allocation(&mut self, allocation_id: u64) -> Result<(), ObjectError> {
+        let reply = self.staged_call(crate::staged_allocation::StagedAllocationRequest {
+            version: 1, action: 3, allocation_id, ..Default::default()
+        })?;
+        if reply.allocation.is_some() || reply.manifest.is_some() || !reply.allocation_ids.is_empty() || reply.has_more {
+            return Err(ObjectError::Corruption("unexpected staged abort reply".into()));
+        }
+        Ok(())
+    }
+
+    pub fn list_staged_allocations(&mut self, after: u64, limit: u32) -> Result<(Vec<u64>, bool), ObjectError> {
+        let reply = self.staged_call(crate::staged_allocation::StagedAllocationRequest {
+            version: 1, action: 5, allocation_id: after, limit, ..Default::default()
+        })?;
+        if reply.allocation.is_some() || reply.manifest.is_some() || reply.allocation_ids.len() > limit as usize
+            || reply.allocation_ids.iter().any(|id| *id <= after) {
+            return Err(ObjectError::Corruption("staged listing exceeds cursor or limit".into()));
+        }
+        Ok((reply.allocation_ids, reply.has_more))
+    }
+
+    /// Caller must verify data durability before publishing. Ownership is consumed atomically.
+    pub fn publish_staged_manifest(&mut self, allocation_id: u64, outcome: crate::object_manifest::ManifestOutcome,
+        update_time_ms: u64) -> Result<crate::object_manifest::ObjectManifest, ObjectError> {
+        self.publish_staged_manifest_attempt(allocation_id, outcome, update_time_ms).0
+    }
+
+    pub(super) fn publish_staged_manifest_attempt(&mut self, allocation_id: u64,
+        outcome: crate::object_manifest::ManifestOutcome, update_time_ms: u64)
+        -> (Result<crate::object_manifest::ObjectManifest, ObjectError>, bool) {
+        if let Err(error) = outcome.validate() { return (Err(error), true); }
+        let expected = outcome.after.clone().unwrap();
+        let command = crate::staged_allocation::StagedAllocationRequest {
+            version: 1, action: 4, allocation_id, outcome: Some(outcome), update_time_ms, ..Default::default()
+        };
+        if let Err(error) = command.validate() { return (Err(error), true); }
+        let (reply, unadmitted) = self.try_call_admission(MetaRequest::StagedAllocation(command));
+        let result = reply.into_result().and_then(|reply| match reply {
+            MetaReply::StagedAllocation(reply) if reply.manifest.as_ref() == Some(&expected) => Ok(expected),
+            _ => Err(ObjectError::Corruption("unexpected staged publication reply".into())),
+        });
+        (result, unadmitted)
+    }
+
+    fn staged_call(&mut self, request: crate::staged_allocation::StagedAllocationRequest)
+        -> Result<crate::staged_allocation::StagedAllocationReply, ObjectError> {
+        request.validate()?;
+        match self.call(MetaRequest::StagedAllocation(request))? {
+            MetaReply::StagedAllocation(reply) => Ok(reply),
+            other => Err(unexpected_reply("a staged allocation result", &other)),
+        }
+    }
+
     /// Retain one current generation durably until explicitly released.
     /// A lost creation reply can leave a handle listed in the metadata catalog.
     pub fn retain_manifest(&mut self, bucket: &str, key: &str, generation: u64)
@@ -1508,7 +1586,8 @@ impl RemoteMetaClient {
                 | MetaRequest::ListChunkRoutes { .. }
                 | MetaRequest::ListManifests(_)
         ) || matches!(&request, MetaRequest::Membership(command) if command.is_read())
-          || matches!(&request, MetaRequest::ManifestRetention(command) if command.is_read());
+          || matches!(&request, MetaRequest::ManifestRetention(command) if command.is_read())
+          || matches!(&request, MetaRequest::StagedAllocation(command) if command.is_read());
         let mut last = not_leader();
         let mut saw_all_refused = false;
         let mut unadmitted = true;

@@ -2051,6 +2051,10 @@ mod coupled_groups {
         let first = meta
             .write_object("written", "object", None, b"abcdefghijklmnopq", &options)
             .unwrap();
+        let owned = meta.allocate_staged_object("written", "owned", None, 4, false).unwrap();
+        let owned_base = meta.write_staged_object(&owned, None, b"owned raft bytes", &options).unwrap();
+        assert!(meta.read_staged_allocation(owned.allocation_id).is_err());
+        let pending_owned = meta.allocate_staged_object("written", "owned", Some(owned_base.generation), 2, true).unwrap();
         assert_eq!(first.extents.len(), 5);
         assert_ne!(first.extents[0].group, first.extents[1].group);
         assert_eq!(
@@ -2130,6 +2134,8 @@ mod coupled_groups {
                 &options,
             )
             .unwrap();
+        let owned_updated = meta.write_staged_object(&pending_owned, Some(owned_base.clone()), b"+tail", &options).unwrap();
+        assert_eq!(&owned_updated.extents[..owned_base.extents.len()], &owned_base.extents);
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
         let mut racers = Vec::new();
         for payload in [b"racer-a".to_vec(), b"racer-b".to_vec()] {
@@ -2186,6 +2192,9 @@ mod coupled_groups {
                 .unwrap(),
             winning
         );
+        assert_eq!(meta.read_object("written", "owned", 100, &options.replica).unwrap(),
+            (owned_updated, b"owned raft bytes+tail".to_vec()));
+        assert!(meta.read_staged_allocation(pending_owned.allocation_id).is_err());
     }
 
     #[test]

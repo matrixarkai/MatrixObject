@@ -693,6 +693,7 @@ fn restore_snapshot(
 }
 fn read_only(request: &MetaRequest) -> bool {
     match request {
+        MetaRequest::StagedAllocation(command) => command.is_read(),
         MetaRequest::ManifestRetention(command) => command.is_read(),
         MetaRequest::Membership(command) => command.is_read(),
         MetaRequest::ReadManifest { .. }
@@ -913,6 +914,14 @@ fn propose_batch(
     let mut objects = BTreeSet::new();
     for request in queued.iter() {
         match &request.request {
+            MetaRequest::StagedAllocation(command) if command.action == 4 => {
+                if let Some(outcome) = &command.outcome {
+                    for manifest in outcome.before.iter().chain(outcome.after.iter()) {
+                        nodes.extend(manifest.extents.iter().map(|extent| extent.group.clone()));
+                        objects.insert(manifest.object_id());
+                    }
+                }
+            }
             MetaRequest::PublishManifest { outcome, .. } => {
                 for manifest in outcome.before.iter().chain(outcome.after.iter()) {
                     nodes.extend(manifest.extents.iter().map(|e| e.group.clone()));
@@ -961,6 +970,20 @@ fn propose_batch(
     }
     draft.retentions = retention_ids.into_iter().map(|id| {
         (id, draft.service.object_manifests.retained_manifest(id).cloned())
+    }).collect();
+    let mut staged_ids = BTreeSet::new();
+    for request in queued.iter().take(PROPOSALS_PER_BATCH) {
+        if let MetaRequest::StagedAllocation(command) = &request.request {
+            if matches!(command.action, 3 | 4) { staged_ids.insert(command.allocation_id); }
+            if command.action == 1 {
+                for distance in 1..=PROPOSALS_PER_BATCH as u64 {
+                    if let Some(id) = draft.index.checked_add(distance) { staged_ids.insert(id); }
+                }
+            }
+        }
+    }
+    draft.staging_allocations = staged_ids.into_iter().map(|id| {
+        (id, draft.service.object_manifests.staged_allocation(id).cloned())
     }).collect();
     let mut bytes = 0usize;
     let mut payloads = Vec::new();
@@ -1039,6 +1062,12 @@ fn prepare(
     };
     let request = stamped.as_ref().unwrap_or(request);
     groups.check_request(request)?;
+    if let MetaRequest::StagedAllocation(command) = request {
+        if !command.is_read() {
+            let (outcome, reply) = super::staged_allocation_commands::prepare(service, groups, command, limit)?;
+            return Ok((outcome.to_payload()?, Some(reply)));
+        }
+    }
     if let MetaRequest::ManifestRetention(command) = request {
         if !command.is_read() {
             let (outcome, reply) = super::meta_server::decide_retention(service, command, limit)?;
@@ -1105,6 +1134,7 @@ struct PlacementDraft<'a> {
     )>,
     index: u64,
     retentions: Vec<(u64, Option<crate::manifest_retention::RetainedManifest>)>,
+    staging_allocations: Vec<(u64, Option<crate::staged_allocation::StagedAllocation>)>,
 }
 impl<'a> PlacementDraft<'a> {
     fn new(
@@ -1135,11 +1165,15 @@ impl<'a> PlacementDraft<'a> {
             objects,
             index,
             retentions: Vec::new(),
+            staging_allocations: Vec::new(),
         }
     }
 }
 impl Drop for PlacementDraft<'_> {
     fn drop(&mut self) {
+        for (id, previous) in self.staging_allocations.drain(..) {
+            self.service.object_manifests.restore_staging(id, previous);
+        }
         for (id, previous) in self.retentions.drain(..) {
             self.service.object_manifests.restore_retention(id, previous);
         }
@@ -2346,6 +2380,40 @@ mod tests {
         assert!(service.object_manifests.retained_manifest(first_id).is_none());
         assert!(service.object_manifests.retained_manifest(first_id + 1).is_some());
         assert_eq!(service.placement_commit_index, first_id + 2);
+    }
+
+    #[test]
+    fn staging_batch_restores_reservations_and_objects_before_atomic_commit() {
+        use crate::staged_allocation::StagedAllocationRequest;
+        use crate::object_manifest::{ManifestOutcome, ObjectManifest};
+        let (_files, mut peer) = batch_peer();
+        let (mut service, groups) = fixture(1, 0);
+        let first_id = service.placement_commit_index + 1;
+        let reserve = StagedAllocationRequest { version: 1, action: 1, page_count: 1,
+            bucket: "bucket".into(), key: "owned".into(), ..Default::default() };
+        let live = ObjectManifest { format_version: 2, bucket: "bucket".into(), key: "owned".into(),
+            generation: 1, length: 0, extents: Vec::new(), deleted: false };
+        let publish = StagedAllocationRequest { version: 1, action: 4, allocation_id: first_id,
+            outcome: Some(ManifestOutcome::decide(None, live.clone()).unwrap()), ..Default::default() };
+        let next = StagedAllocationRequest { expected_generation: 1, append: true, ..reserve.clone() };
+        let abort = StagedAllocationRequest { version: 1, action: 3, allocation_id: first_id + 2, ..Default::default() };
+        let saved = service.export_snapshot().to_bytes().unwrap();
+        let mut requests = VecDeque::new();
+        let mut receivers = Vec::new();
+        let mut pending = VecDeque::new();
+        for command in [reserve, publish, next, abort] {
+            let (request, receiver) = queued(MetaRequest::StagedAllocation(command), Instant::now() + Duration::from_secs(10));
+            requests.push_back(request);
+            receivers.push(receiver);
+        }
+        propose_batch(&mut peer, &mut service, &groups, 65536, &mut requests, &mut pending).unwrap();
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
+        assert!(receivers.iter().all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
+        peer.process_ready(|id, bytes| apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)).unwrap();
+        assert!(receivers.iter().all(|rx| rx.try_recv().unwrap().is_ok()));
+        assert!(service.object_manifests.staged_allocation(first_id).is_none());
+        assert!(service.object_manifests.staged_allocation(first_id + 2).is_none());
+        assert_eq!(service.object_manifests.get(&live.object_id()), Some(&live));
     }
     #[test]
     fn object_allocations_commit_unique_namespaces_and_restore_speculative_batches() {

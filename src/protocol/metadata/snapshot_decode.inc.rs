@@ -340,8 +340,8 @@ impl MetaSnapshot {
         let object_manifests = if version >= 19 {
             let bytes = cursor.read_owned_blob(64 * 1024 * 1024 + 12)?;
             let catalog = crate::object_manifest::ManifestCatalog::from_bytes(&bytes)?;
-            if catalog.max_retention_id() > placement_commit_index {
-                return Err(ObjectError::Corruption("retention handle exceeds metadata position".into()));
+            if catalog.max_retention_id().max(catalog.max_staged_id()) > placement_commit_index {
+                return Err(ObjectError::Corruption("protection handle exceeds metadata position".into()));
             }
             if catalog.is_empty() {
                 return Err(ObjectError::Corruption("metadata snapshot manifest catalog is empty".into()));
