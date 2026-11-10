@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 pub(crate) fn validate_chunk_state(state: &PageState) -> Result<(), ObjectError> {
+    validate_chunk_state_with_data_etag(state).map(|_| ())
+}
+
+pub(crate) fn validate_chunk_state_with_data_etag(
+    state: &PageState,
+) -> Result<String, ObjectError> {
     if state.logical_length as usize > state.data.len() {
         return Err(ObjectError::Corruption(
             "chunk state logical length exceeds payload".to_string(),
         ));
     }
-    if state.checksum() != etag(&state.data) {
+    let data_etag = etag(&state.data);
+    if state.checksum() != data_etag {
         return Err(ObjectError::Corruption(
             "chunk state checksum mismatch".to_string(),
         ));
@@ -24,7 +31,7 @@ pub(crate) fn validate_chunk_state(state: &PageState) -> Result<(), ObjectError>
             ));
         }
     }
-    Ok(())
+    Ok(data_etag)
 }
 
 /// How many data shards a payload of `len` bytes is split into.
