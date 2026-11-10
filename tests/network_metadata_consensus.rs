@@ -285,6 +285,48 @@ fn object_tombstone_survives_metadata_failover_and_restart() {
 }
 
 #[test]
+fn manifest_listing_continues_after_leader_loss_and_preserves_tombstones() {
+    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
+    let mut group = Group::new();
+    let mut client = group.client(group.leader());
+    for (bucket, key) in [("a", "z"), ("bucket", "a"), ("bucket", "b"), ("bucket", "c"), ("z", "a")] {
+        client.publish_manifest(ManifestOutcome::decide(None, ObjectManifest {
+            format_version: 2, bucket: bucket.into(), key: key.into(), generation: 1,
+            length: 0, extents: Vec::new(), deleted: false,
+        }).unwrap(), 1).unwrap();
+    }
+    client.delete_object("bucket", "b", 2).unwrap();
+    let commit_index = |client: &mut RemoteMetaClient| match client.probe().into_result().unwrap() {
+        matrixobjectstore_rs::cluster::MetaReply::Pong { commit_index, .. } => commit_index,
+        reply => panic!("unexpected metadata status: {reply:?}"),
+    };
+    let before = commit_index(&mut client);
+    let first = client.list_manifests("bucket", None, 2).unwrap();
+    assert_eq!(commit_index(&mut client), before);
+    assert_eq!(first.entries.iter().map(|entry| entry.key.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    assert!(first.entries[1].deleted);
+    assert_eq!(first.entries[1].generation, 2);
+    assert!(first.has_more);
+    group.kill(group.leader());
+    let mut client = group.client(group.leader());
+    let second = client.list_manifests("bucket", Some("b"), 2).unwrap();
+    assert_eq!(second.entries[0].key, "c");
+    assert!(!second.has_more);
+    assert!(client.list_manifests("bucket", Some("c"), 2).unwrap().entries.is_empty());
+    assert!(client.list_manifests("missing", None, 2).unwrap().entries.is_empty());
+    assert!(client.list_manifests("bucket", None, 33).is_err());
+    for index in 0..3 { if group.nodes[index].is_some() { group.kill(index); } }
+    for index in 0..3 { group.start(index); }
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    let restored = client.list_manifests("bucket", None, 32).unwrap();
+    assert_eq!(restored.entries.len(), 3);
+    assert!(restored.entries[1].deleted);
+    for index in 0..3 { if index != leader { group.kill(index); } }
+    assert!(client.list_manifests("bucket", None, 2).is_err());
+}
+
+#[test]
 fn process_quorum_preserves_outcomes_across_leader_loss_and_total_restart() {
     let mut group = Group::new();
     let first = group.leader();

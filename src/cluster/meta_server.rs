@@ -1076,6 +1076,11 @@ pub(super) fn apply_to_meta(
         MetaRequest::PublishManifest { .. } => Err(ObjectError::InvalidArgument(
             "publication requires a chunk catalog".into(),
         )),
+        MetaRequest::ListManifests(request) => {
+            let reply = MetaReply::Manifests(guard.object_manifests.list_page(&request)?);
+            crate::cluster::message::check_reply_size(reply.payload_len(), max_payload_bytes)?;
+            Ok(reply)
+        }
         MetaRequest::ReadManifest { bucket, key } => {
             crate::validate_bucket(&bucket)?;
             crate::validate_key(&key)?;

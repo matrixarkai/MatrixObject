@@ -104,6 +104,7 @@ pub enum MetaRequestCode {
     ReadManifestRoutesWide = 89,
     /// List a bounded page of quorum-confirmed chunk routes.
     ListChunkRoutes = 90,
+    ListManifests = 91,
 }
 
 impl MetaRequestCode {
@@ -141,6 +142,7 @@ impl MetaRequestCode {
             88 => Some(MetaRequestCode::PlanObjectWriteRoutesWide),
             89 => Some(MetaRequestCode::ReadManifestRoutesWide),
             90 => Some(MetaRequestCode::ListChunkRoutes),
+            91 => Some(MetaRequestCode::ListManifests),
             _ => None,
         }
     }
@@ -175,6 +177,7 @@ impl MetaRequestCode {
             MetaRequestCode::PlanObjectWriteRoutesWide,
             MetaRequestCode::ReadManifestRoutesWide,
             MetaRequestCode::ListChunkRoutes,
+            MetaRequestCode::ListManifests,
         ]
     }
 }

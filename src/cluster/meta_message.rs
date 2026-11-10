@@ -207,6 +207,7 @@ pub fn object_id(bucket: &str, key: &str) -> ObjectId {
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaRequest {
+    ListManifests(crate::object_manifest::ManifestListRequest),
     Membership(super::MembershipRequest),
     ChunkCatalog(super::ChunkCatalogCommand),
     ReadChunkRoute { placement_id: String },
@@ -322,6 +323,7 @@ impl MetaRequest {
             MetaRequest::ReadChunkRoutes { .. } => MetaRequestCode::ReadChunkRoutes,
             MetaRequest::ReadChunkRoutesWide { .. } => MetaRequestCode::ReadChunkRoutesWide,
             MetaRequest::ListChunkRoutes { .. } => MetaRequestCode::ListChunkRoutes,
+            MetaRequest::ListManifests(_) => MetaRequestCode::ListManifests,
             MetaRequest::GroupIdentity => MetaRequestCode::GroupIdentity,
             MetaRequest::HeartbeatRootNode { .. } => MetaRequestCode::HeartbeatRootNode,
             MetaRequest::ReportChunkNode { .. } => MetaRequestCode::ReportChunkNode,
@@ -393,6 +395,7 @@ impl MetaRequest {
             MetaRequest::ReadChunkRoutes { placement_ids }
             | MetaRequest::ReadChunkRoutesWide { placement_ids } => return super::chunk_group_route::RouteReads { version: 1, placement_ids: placement_ids.clone() }.encode_to_vec(),
             MetaRequest::ListChunkRoutes { after, limit } => return super::chunk_group_route::RoutePageRead { version: 1, after: after.clone(), limit: *limit }.encode_to_vec(),
+            MetaRequest::ListManifests(request) => return request.encode_to_vec(),
             MetaRequest::GroupIdentity => {}
             MetaRequest::CommitObjectPlacementIfCurrent {
                 placement,
@@ -529,6 +532,9 @@ impl MetaRequest {
             let request = super::chunk_group_route::RouteReads::from_wide_payload(payload)?;
             return Ok(Self::ReadChunkRoutesWide { placement_ids: request.placement_ids });
         }
+        if code == MetaRequestCode::ListManifests {
+            return crate::object_manifest::ManifestListRequest::from_payload(payload).map(Self::ListManifests);
+        }
         if code == MetaRequestCode::ListChunkRoutes {
             let request = super::chunk_group_route::RoutePageRead::from_payload(payload)?;
             return Ok(Self::ListChunkRoutes { after: request.after, limit: request.limit });
@@ -658,6 +664,7 @@ impl MetaRequest {
             | MetaRequestCode::ReadChunkRoutes
             | MetaRequestCode::ReadChunkRoutesWide
             | MetaRequestCode::ListChunkRoutes
+            | MetaRequestCode::ListManifests
             | MetaRequestCode::ReportChunkNode
             | MetaRequestCode::AllocateObjectPages
             | MetaRequestCode::ReadManifest
@@ -816,6 +823,7 @@ fn validate_manifest_route_payload(
 /// Reply contents, including a pre-admission leader-routing response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaReply {
+    Manifests(crate::object_manifest::ManifestListPage),
     Membership(super::MembershipStatus),
     ObjectPages(crate::object_manifest::ObjectPageAllocation),
     Manifest(crate::object_manifest::ObjectManifest),
@@ -873,6 +881,7 @@ impl MetaReply {
             Self::ChunkRoute(route) => route.encoded_len(),
             Self::ChunkRoutes(routes) => routes.encoded_len(),
             Self::ChunkRoutePage(page) => page.encoded_len(),
+            Self::Manifests(page) => page.encoded_len(),
             Self::PlacementNode(node) => node_payload_len(
                 &node.node_id,
                 &node.endpoint,
@@ -948,6 +957,7 @@ impl MetaReply {
             MetaReply::ChunkRoute(route) => return route.encode_to_vec(),
             MetaReply::ChunkRoutes(routes) => return routes.encode_to_vec(),
             MetaReply::ChunkRoutePage(page) => return page.encode_to_vec(),
+            MetaReply::Manifests(page) => return page.encode_to_vec(),
             MetaReply::PlacementNode(node) => put_node(&mut out, node),
             MetaReply::RootNodes(nodes) => {
                 put_u64(&mut out, nodes.len() as u64);
@@ -1133,6 +1143,9 @@ impl MetaReply {
             return super::chunk_group_route::RouteBatch::from_wide_payload(payload)
                 .map(Self::ChunkRoutes);
         }
+        if code == MetaRequestCode::ListManifests {
+            return crate::object_manifest::ManifestListPage::from_payload(payload).map(Self::Manifests);
+        }
         if code == MetaRequestCode::ListChunkRoutes {
             return super::chunk_group_route::RoutePage::from_payload(payload)
                 .map(Self::ChunkRoutePage);
@@ -1171,6 +1184,7 @@ impl MetaReply {
             | MetaRequestCode::ReadChunkRoutes
             | MetaRequestCode::ReadChunkRoutesWide
             | MetaRequestCode::ListChunkRoutes
+            | MetaRequestCode::ListManifests
             | MetaRequestCode::GroupIdentity => unreachable!(),
             MetaRequestCode::ChunkCatalog
             | MetaRequestCode::ReportChunkNode
