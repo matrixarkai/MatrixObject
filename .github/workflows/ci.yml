@@ -93,6 +93,14 @@ jobs:
           set -o pipefail
           cargo test --locked --all-features --lib cluster::meta_consensus::tests::catalog_batches -- --test-threads=1 | tee /tmp/catalog-batches.log
           grep -q 'test result: ok. 4 passed' /tmp/catalog-batches.log
+      - name: Check bounded Star repair connections and retained scan progress
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --bin star_repaird | tee /tmp/repair-connections.log
+          grep -q 'test result: ok. 1 passed' /tmp/repair-connections.log
+          cargo test --locked --all-features --test network_metadata_consensus star_auto_repair::worker_discovers_two_star_groups_and_repairs_after_metadata_failover -- --exact | tee /tmp/repair-progress.log
+          grep -q 'test result: ok. 1 passed' /tmp/repair-progress.log
       - name: Check verified membership controller refresh
         shell: bash
         run: |

@@ -26,6 +26,7 @@ cargo run --release --features metadata-consensus --bin star_repaird
 | `MATRIXOBJECT_REPAIR_GROUP` | required in single-group mode | fixed Star group ID, 1–128 characters |
 | `MATRIXOBJECT_REPAIR_ALL_GROUPS` | unset | set to 1 instead of GROUP to discover fixed Star groups |
 | `MATRIXOBJECT_REPAIR_WORKERS` | 4 | 1–16 threads in all-groups mode |
+| `MATRIXOBJECT_REPAIR_ACTIVE_GROUPS` | 32 | 1–128 connected groups per worker thread |
 | `MATRIXOBJECT_REPAIR_BATCH_PAGES` | 16 | 1–64 pages |
 | `MATRIXOBJECT_REPAIR_INTERVAL_MS` | 500 | 100–60,000 ms between batches and retries |
 | `MATRIXOBJECT_REPAIR_SWEEP_INTERVAL_MS` | 300,000 | 1,000–86,400,000 ms after a completed sweep |
@@ -43,8 +44,21 @@ rather than the byte-validated `Current` status. A scheduled scrub reads and
 validates page payloads on every member. Its timer restarts after completion.
 All-groups mode discovers group IDs at startup and shares one metadata
 connection per worker thread. Restart the process after changing the catalog
-inventory. Each thread retains its groups' chunk connections during a sweep;
-size the worker count and open-file limit for the configured group count.
+inventory. Each thread retains at most `MATRIXOBJECT_REPAIR_ACTIVE_GROUPS`
+groups' chunk connections, including the group currently executing a batch.
+On a cache miss at the limit, the least recently used connections close before
+replacement sockets open. A later batch reconnects using the freshly checked
+metadata route. Eviction preserves the inventory cursor, sweep counters and
+scrub state; a changed route resets the cursor. Stopped groups remain stopped
+and cannot be restarted by a cache miss.
+
+For fixed three-member groups, the default four workers retain at most 384
+chunk connections plus one metadata connection per worker. Actual counts depend
+on group membership and successful connections. Plaintext clients duplicate each
+socket's read and write handles, so allow two file descriptors per connection.
+Reduce the active-group budget
+when open-file limits are tighter; increasing it can reduce reconnect work when
+many groups need frequent batches. Thread count still bounds concurrent batches.
 Repeated connection failures back off from the batch interval to at most 30
 seconds. Healthy batches report one summary at the end of the sweep.
 
@@ -76,7 +90,10 @@ cargo test --features chunk-consensus,metadata-consensus \
 ```
 
 The all-groups process test runs three metadata voters and 24 chunk servers,
-loses the metadata leader, then verifies all eight groups after chunk restart:
+repairs four pages per group with one connected group per worker, loses the
+metadata leader during traversal, then verifies 96 copies after chunk restart.
+Every worker rotates between groups, exercising cursor preservation across
+connection eviction:
 
 ```sh
 cargo test --features chunk-consensus,metadata-consensus \

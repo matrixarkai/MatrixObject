@@ -13,7 +13,12 @@ fn main() {
 }
 
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
+#[path = "star_repair_worker/connection_cache.rs"]
+mod connection_cache;
+
+#[cfg(all(feature = "meta-server", feature = "replica-server"))]
 mod worker {
+    use super::connection_cache::ConnectionCache;
     use matrixobjectstore_rs::cluster::{
         ApiTlsConfig, MetaClientOptions, PageRepairStatus, RemoteMetaClient, RemoteReplicaSet,
         ReplicaClientOptions,
@@ -29,6 +34,7 @@ mod worker {
         group: Option<String>,
         all_groups: bool,
         workers: usize,
+        active_groups: usize,
         batch_pages: usize,
         interval: Duration,
         sweep_interval: Duration,
@@ -85,6 +91,7 @@ mod worker {
                 return Err("invalid repair group".into());
             }
             let workers = number("MATRIXOBJECT_REPAIR_WORKERS", 4, 1, 16)? as usize;
+            let active_groups = number("MATRIXOBJECT_REPAIR_ACTIVE_GROUPS", 32, 1, 128)? as usize;
             let batch_pages = number("MATRIXOBJECT_REPAIR_BATCH_PAGES", 16, 1, 64)? as usize;
             let interval =
                 Duration::from_millis(number("MATRIXOBJECT_REPAIR_INTERVAL_MS", 500, 100, 60_000)?);
@@ -118,6 +125,7 @@ mod worker {
                 group,
                 all_groups,
                 workers,
+                active_groups,
                 batch_pages,
                 interval,
                 sweep_interval,
@@ -128,10 +136,10 @@ mod worker {
         }
     }
 
-    struct ActiveGroup {
+    #[derive(PartialEq, Eq)]
+    struct GroupRoute {
         endpoints: Vec<String>,
         quorum: usize,
-        replicas: RemoteReplicaSet,
     }
 
     enum StepError {
@@ -150,7 +158,8 @@ mod worker {
         config: &Config,
         group: &str,
         metadata: &mut Option<RemoteMetaClient>,
-        active: &mut Option<ActiveGroup>,
+        active: &mut Option<RemoteReplicaSet>,
+        binding: &mut Option<GroupRoute>,
         cursor: &mut Option<PageId>,
         scrub: bool,
     ) -> Result<StepReport, StepError> {
@@ -172,21 +181,23 @@ mod worker {
             .map_err(|error| StepError::Stop(error.to_string()))?
             .ok_or_else(|| StepError::Stop("repair group is not fixed Star membership".into()))?;
         let quorum = endpoints.len() / 2 + 1;
-        if active
+        if binding
             .as_ref()
             .is_none_or(|current| current.endpoints != endpoints || current.quorum != quorum)
         {
             *active = None;
             *cursor = None;
-            let replicas = RemoteReplicaSet::connect(&endpoints, quorum, quorum, &config.replica)
-                .map_err(|error| StepError::Retry(error.to_string()))?;
-            *active = Some(ActiveGroup {
-                endpoints,
+            *binding = Some(GroupRoute {
+                endpoints: endpoints.clone(),
                 quorum,
-                replicas,
             });
         }
-        let replicas = &mut active.as_mut().unwrap().replicas;
+        if active.is_none() {
+            let replicas = RemoteReplicaSet::connect(&endpoints, quorum, quorum, &config.replica)
+                .map_err(|error| StepError::Retry(error.to_string()))?;
+            *active = Some(replicas);
+        }
+        let replicas = active.as_mut().unwrap();
         let batch = if scrub {
             replicas.repair_inventory_batch(cursor.as_ref(), config.batch_pages)
         } else {
@@ -234,7 +245,7 @@ mod worker {
 
     struct GroupState {
         group: String,
-        active: Option<ActiveGroup>,
+        binding: Option<GroupRoute>,
         cursor: Option<PageId>,
         sweep_scanned: usize,
         sweep_installed: usize,
@@ -251,7 +262,7 @@ mod worker {
             let now = Instant::now();
             Self {
                 group,
-                active: None,
+                binding: None,
                 cursor: None,
                 sweep_scanned: 0,
                 sweep_installed: 0,
@@ -268,12 +279,14 @@ mod worker {
             &mut self,
             config: &Config,
             metadata: &mut Option<RemoteMetaClient>,
+            active: &mut Option<RemoteReplicaSet>,
         ) -> Result<(), String> {
             let wait = match step(
                 config,
                 &self.group,
                 metadata,
-                &mut self.active,
+                active,
+                &mut self.binding,
                 &mut self.cursor,
                 self.scrub,
             ) {
@@ -364,28 +377,33 @@ mod worker {
         remaining: Arc<AtomicUsize>,
     ) -> Result<(), String> {
         let mut metadata = None;
+        let mut connections = ConnectionCache::new(config.active_groups);
         let mut states: Vec<_> = groups
             .into_iter()
             .map(|group| GroupState::new(group, &config))
             .collect();
         loop {
             let mut next_at = Instant::now() + Duration::from_secs(1);
-            for state in &mut states {
+            // Partition slots are stable, so cache lookup needs no allocated group key.
+            for (index, state) in states.iter_mut().enumerate() {
                 if state.stopped {
                     continue;
                 }
                 if Instant::now() >= state.next_at {
-                    if let Err(error) = state.advance(&config, &mut metadata) {
+                    let mut active = connections.take(index);
+                    if let Err(error) = state.advance(&config, &mut metadata, &mut active) {
                         if !config.all_groups {
                             return Err(error);
                         }
                         eprintln!("star repair stopped: {error}");
                         state.stopped = true;
-                        state.active = None;
                         if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
                             return Err("all repair groups stopped".into());
                         }
                         continue;
+                    }
+                    if let Some(active) = active {
+                        connections.put(index, active);
                     }
                 }
                 next_at = next_at.min(state.next_at);
