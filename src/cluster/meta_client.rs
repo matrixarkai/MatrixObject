@@ -964,9 +964,9 @@ impl RemoteMetaClient {
         self.with_operation_deadline(options.deadline, |client| {
             let mut bounded = options.clone();
             bounded.deadline = client.operation_deadline();
-            let (manifest, _) = client.read_manifest_routes(bucket, key)?;
+            let (manifest, routes) = client.read_manifest_routes(bucket, key)?;
             client.read_object_from_manifest_routes(
-                manifest, None, max_bytes, &bounded, Some((offset, length)),
+                manifest, routes, max_bytes, &bounded, Some((offset, length)),
             )
         })
     }
@@ -1073,6 +1073,17 @@ impl RemoteMetaClient {
             cursor = end;
         }
         let output = std::sync::Mutex::new(bytes.as_mut_slice());
+        if range.is_some() {
+            // A range can skip groups covered by the manifest's route bundle.
+            // Retain the available prefix of selected groups so only missing
+            // routes require another metadata confirmation.
+            bundled_routes = bundled_routes.map(|routes| {
+                groups.iter().map_while(|(id, _, _)| {
+                    routes.iter().find(|route| route.group.as_ref()
+                        .is_some_and(|group| &group.placement_id == id)).cloned()
+                }).collect()
+            });
+        }
         let read_group = |route: &super::ChunkGroupRoute,
                           connection: Option<super::object_client::RemoteGroupClient>,
                           extents: &[&crate::object_manifest::ObjectExtent]| {
