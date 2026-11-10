@@ -211,6 +211,79 @@ impl Drop for Group {
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
+
+#[test]
+fn object_tombstone_survives_metadata_failover_and_restart() {
+    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
+
+    let mut group = Group::new();
+    let mut client = group.client(group.leader());
+    let live = ObjectManifest {
+        format_version: 2,
+        bucket: "bucket".into(),
+        key: "deleted-object".into(),
+        generation: 1,
+        length: 0,
+        extents: Vec::new(),
+        deleted: false,
+    };
+    assert_eq!(
+        client
+            .publish_manifest(ManifestOutcome::decide(None, live.clone()).unwrap(), 1)
+            .unwrap(),
+        live
+    );
+    let tombstone = client.delete_object("bucket", "deleted-object", 2).unwrap();
+    assert!(tombstone.deleted);
+    assert_eq!(tombstone.generation, 2);
+    assert_eq!(
+        client.delete_object("bucket", "deleted-object", 3).unwrap(),
+        tombstone
+    );
+    #[cfg(feature = "replica-server")]
+    assert!(matches!(
+        client.read_object(
+            "bucket",
+            "deleted-object",
+            0,
+            &matrixobjectstore_rs::cluster::ReplicaClientOptions::default(),
+        ),
+        Err(matrixobjectstore_rs::ObjectError::NotFound(_))
+    ));
+
+    let former_leader = group.leader();
+    group.kill(former_leader);
+    let mut client = group.client(group.leader());
+    assert_eq!(
+        client.read_manifest("bucket", "deleted-object").unwrap(),
+        tombstone
+    );
+    for index in 0..3 {
+        if group.nodes[index].is_some() {
+            group.kill(index);
+        }
+    }
+    for index in 0..3 {
+        group.start(index);
+    }
+    let mut client = group.client(group.leader());
+    assert_eq!(
+        client.read_manifest("bucket", "deleted-object").unwrap(),
+        tombstone
+    );
+    let mut recreated = live;
+    recreated.generation = 3;
+    assert_eq!(
+        client
+            .publish_manifest(
+                ManifestOutcome::decide(Some(tombstone), recreated.clone()).unwrap(),
+                4,
+            )
+            .unwrap(),
+        recreated
+    );
+}
+
 #[test]
 fn process_quorum_preserves_outcomes_across_leader_loss_and_total_restart() {
     let mut group = Group::new();

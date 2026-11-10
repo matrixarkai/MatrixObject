@@ -96,6 +96,13 @@ manifest. Requests and replies use bounded canonical binary protobuf
 (`proto/manifest_requests.proto`), rejecting unknown fields and malformed values.
 The reply is checked against the requested object or resulting manifest.
 
+`RemoteMetaClient::delete_object` reads the current manifest and conditionally
+publishes the next generation as a tombstone. Repeating a confirmed delete
+returns that tombstone without advancing the generation. A concurrent update
+refuses the stale publication; an uncertain response requires a confirmed
+manifest read before another action. Deletion hides the object but does not
+reclaim data pages still needed by older readers.
+
 Raft reads use the quorum read barrier. Publication is acknowledged only after
 committed apply. Speculative batches save and restore only affected manifest
 entries along with placement and node records, including catalog size accounting.
