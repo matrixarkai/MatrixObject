@@ -219,6 +219,17 @@ never guess the lost ID from metadata status. Allocation does not reserve capaci
 create data pages, or publish an object. It does not automatically replay an
 uncertain request, garbage-collect unused IDs, or reclaim abandoned data writes.
 
+`write_object` amortizes this metadata mutation across sequential calls on one
+client. By default it reserves 64 page indexes at once, then consumes disjoint
+ranges before any data write. A failed write still consumes its range, so a later
+write never reuses a candidate page. A metadata reconnection discards the unused
+tail and obtains a new durable namespace. Objects that need more than the configured
+lease reserve their exact page count. Set
+`ObjectWriteOptions::page_allocation_lease_pages` to 1 to request an allocation
+for each object. The public `allocate_object_pages(count)` API still returns one
+exact-count allocation per call. A lease reserves identifiers only; it does not
+reserve chunk capacity or keep data alive after the client exits.
+
 Uniqueness belongs to one authoritative metadata history. Do not reset or clone
 that history while retaining its data groups; recovering both planes must preserve
 their committed state. Raw page writes are still available and can mutate existing

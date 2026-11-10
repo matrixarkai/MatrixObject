@@ -5,11 +5,19 @@ use super::{
     ChunkGroupRoute, RemoteMetaClient, RemoteReplicaClient, RemoteReplicaSet,
     ReplicaClientOptions,
 };
-use crate::object_manifest::{ManifestOutcome, ObjectExtent, ObjectManifest};
+use crate::object_manifest::{ManifestOutcome, ObjectExtent, ObjectManifest, ObjectPageAllocation};
 use crate::ObjectError;
 
 const MAX_CACHED_GROUP_CONNECTIONS: usize = 8;
 const MAX_RETAINED_WRITE_CONNECTIONS: usize = 32;
+const DEFAULT_OBJECT_PAGE_LEASE_PAGES: u32 = 64;
+
+#[derive(Debug)]
+pub(super) struct ObjectPageLease {
+    allocation: ObjectPageAllocation,
+    next_index: u32,
+    configured_size: u32,
+}
 
 #[derive(Debug)]
 pub(super) struct CachedGroupConnection {
@@ -179,6 +187,9 @@ pub struct ObjectWriteOptions {
     pub target_groups: u32,
     /// Maximum data groups written concurrently, from 1 through 4.
     pub max_parallel_groups: usize,
+    /// Durable page IDs reserved per metadata call for repeated writes on one client.
+    /// Set to 1 to reserve exactly the pages needed for each object.
+    pub page_allocation_lease_pages: u32,
     pub update_time_ms: u64,
     /// The replica deadline also bounds metadata work for this object operation.
     pub replica: ReplicaClientOptions,
@@ -190,6 +201,7 @@ impl Default for ObjectWriteOptions {
             page_bytes: 1024 * 1024,
             target_groups: 1,
             max_parallel_groups: 4,
+            page_allocation_lease_pages: DEFAULT_OBJECT_PAGE_LEASE_PAGES,
             update_time_ms: 0,
             replica: ReplicaClientOptions::default(),
         }
@@ -244,6 +256,7 @@ fn preflight(
         || !(1..=1024 * 1024).contains(&options.page_bytes)
         || !(1..=4096).contains(&options.target_groups)
         || !(1..=4).contains(&options.max_parallel_groups)
+        || !(1..=4096).contains(&options.page_allocation_lease_pages)
         || options.replica.max_payload_bytes < options.page_bytes + 256
     {
         return Err(invalid("invalid object write size or options"));
@@ -334,6 +347,32 @@ fn write_group_extents(
 }
 
 impl RemoteMetaClient {
+    fn take_object_page_range(
+        &mut self,
+        pages: u32,
+        configured_size: u32,
+    ) -> Result<(ObjectPageAllocation, u32), ObjectError> {
+        if let Some(lease) = &mut self.object_page_lease {
+            if lease.configured_size == configured_size
+                && lease.next_index + pages <= lease.allocation.page_count
+            {
+                let first = lease.next_index;
+                lease.next_index += pages;
+                return Ok((lease.allocation.clone(), first));
+            }
+        }
+        // A discarded tail has never been handed to a writer and is never reused.
+        self.object_page_lease = None;
+        let allocation = self.allocate_object_pages(pages.max(configured_size))?;
+        allocation.validate()?;
+        self.object_page_lease = Some(ObjectPageLease {
+            allocation: allocation.clone(),
+            next_index: pages,
+            configured_size,
+        });
+        Ok((allocation, 0))
+    }
+
     pub(super) fn take_group_connection(
         &mut self,
         group: &str,
@@ -731,9 +770,11 @@ impl RemoteMetaClient {
                     }
                 }
             }
-            let allocation = self.allocate_object_pages(pages).map_err(before)?;
+            let (allocation, first_page) = self
+                .take_object_page_range(pages, options.page_allocation_lease_pages)
+                .map_err(before)?;
             for (index, bytes) in data.chunks(options.page_bytes).enumerate() {
-                let page = allocation.page(index as u32).map_err(before)?;
+                let page = allocation.page(first_page + index as u32).map_err(before)?;
                 manifest.extents.push(ObjectExtent {
                     group: plan.node_ids[index % plan.node_ids.len()].clone(),
                     volume_id: page.chunk_id.volume_id(),
@@ -906,6 +947,43 @@ mod tests {
             &payload,
         )
         .unwrap()
+    }
+    #[test]
+    fn page_lease_renews_without_reusing_candidate_pages() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            for (allocation_id, page_count) in [(7, 64), (8, 64), (9, 1)] {
+                assert!(matches!(
+                    receive(&mut stream),
+                    MetaRequest::AllocateObjectPages { page_count: requested }
+                        if requested == page_count
+                ));
+                stream
+                    .write_all(&crate::cluster::meta_message::encode_meta_reply(
+                        &MetaReply::ObjectPages(ObjectPageAllocation {
+                            format_version: 1,
+                            allocation_id,
+                            page_count,
+                        }),
+                    ))
+                    .unwrap();
+            }
+            assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+        });
+        let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+        for index in 0..65 {
+            let (allocation, first) = client.take_object_page_range(1, 64).unwrap();
+            let page = allocation.page(first).unwrap();
+            assert_eq!(page.chunk_id.id(), if index < 64 { 7 } else { 8 });
+            assert_eq!(page.page_index, if index < 64 { index } else { 0 });
+        }
+        let (allocation, first) = client.take_object_page_range(1, 1).unwrap();
+        assert_eq!(allocation.page(first).unwrap().chunk_id.id(), 9);
+        drop(client);
+        worker.join().unwrap();
     }
     #[test]
     fn mismatched_page_digest_refuses_staged_write() {
