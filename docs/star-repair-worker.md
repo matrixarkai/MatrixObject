@@ -1,9 +1,10 @@
 # Scheduled Star repair
 
-`star_repaird` reads one fixed Star group route from the metadata quorum and
-repairs its chunk members in bounded inventory batches. Run one worker for each
-group that needs scheduled repair. The worker starts a new scan after the full
-sweep cooldown, so a page skipped because it lacked a source quorum is revisited.
+`star_repaird` reads fixed Star routes from the metadata quorum and repairs
+their chunk members in bounded inventory batches. It can run one named group or
+discover all fixed Star groups and divide them across a bounded thread pool.
+The worker starts a new scan after the full sweep cooldown, so a page skipped
+because it lacked a source quorum is revisited.
 
 ```sh
 MATRIXOBJECT_REPAIR_METADATA_ENDPOINTS=127.0.0.1:17201,127.0.0.1:17202,127.0.0.1:17203 \
@@ -11,10 +12,20 @@ MATRIXOBJECT_REPAIR_GROUP=group-a \
 cargo run --release --features metadata-consensus --bin star_repaird
 ```
 
+For one process covering every fixed Star group in the current catalog:
+
+```sh
+MATRIXOBJECT_REPAIR_METADATA_ENDPOINTS=127.0.0.1:17201,127.0.0.1:17202,127.0.0.1:17203 \
+MATRIXOBJECT_REPAIR_ALL_GROUPS=1 MATRIXOBJECT_REPAIR_WORKERS=4 \
+cargo run --release --features metadata-consensus --bin star_repaird
+```
+
 | Setting | Default | Bound |
 |---|---:|---:|
 | `MATRIXOBJECT_REPAIR_METADATA_ENDPOINTS` | required | 1–7 distinct metadata API sockets |
-| `MATRIXOBJECT_REPAIR_GROUP` | required | fixed Star group ID, 1–128 characters |
+| `MATRIXOBJECT_REPAIR_GROUP` | required in single-group mode | fixed Star group ID, 1–128 characters |
+| `MATRIXOBJECT_REPAIR_ALL_GROUPS` | unset | set to 1 instead of GROUP to discover fixed Star groups |
+| `MATRIXOBJECT_REPAIR_WORKERS` | 4 | 1–16 threads in all-groups mode |
 | `MATRIXOBJECT_REPAIR_BATCH_PAGES` | 16 | 1–64 pages |
 | `MATRIXOBJECT_REPAIR_INTERVAL_MS` | 500 | 100–60,000 ms between batches and retries |
 | `MATRIXOBJECT_REPAIR_SWEEP_INTERVAL_MS` | 300,000 | 1,000–86,400,000 ms after a completed sweep |
@@ -30,12 +41,18 @@ head requests. Matching heads avoid payload transfer; differing or missing
 heads enter the validated repair path. Routine matches report `HeadMatched`
 rather than the byte-validated `Current` status. A scheduled scrub reads and
 validates page payloads on every member. Its timer restarts after completion.
+All-groups mode discovers group IDs at startup and shares one metadata
+connection per worker thread. Restart the process after changing the catalog
+inventory. Each thread retains its groups' chunk connections during a sweep;
+size the worker count and open-file limit for the configured group count.
 Repeated connection failures back off from the batch interval to at most 30
 seconds. Healthy batches report one summary at the end of the sweep.
 
 An unresolved page is skipped only for the current sweep, allowing later pages
-to make progress. A response that leaves a repair commit unconfirmed stops the
-worker; inspect that destination before restarting it. The worker does not
+to make progress. A response that leaves a repair commit unconfirmed stops its
+group; inspect that destination before restarting repair for the group. In
+single-group mode the process exits. In all-groups mode other groups continue,
+and the process exits if every group stops. The worker does not
 certify a consistent cluster snapshot, admit maintenance nodes for placement,
 or reclaim old pages. Live writes can change pages already scanned, so the
 next sweep revisits them. Payload scrubs can consume substantial network and
@@ -55,5 +72,15 @@ pages and verifies 771 persisted copies:
 cargo test --features chunk-consensus,metadata-consensus \
   --test network_metadata_consensus \
   star_auto_repair::worker_repairs_256_pages_across_metadata_failover_and_chunk_restart \
+  -- --exact --ignored --nocapture --test-threads=1
+```
+
+The all-groups process test runs three metadata voters and 24 chunk servers,
+loses the metadata leader, then verifies all eight groups after chunk restart:
+
+```sh
+cargo test --features chunk-consensus,metadata-consensus \
+  --test network_metadata_consensus \
+  star_auto_repair::worker_repairs_eight_star_groups_across_metadata_failover \
   -- --exact --ignored --nocapture --test-threads=1
 ```
