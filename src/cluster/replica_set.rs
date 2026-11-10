@@ -1272,10 +1272,20 @@ impl RemoteReplicaSet {
         // return after a durable quorum; an optional member may finish later or
         // require repair. Repeated, partial, or nonzero-sequence writes keep the
         // exact head vote because equal sequences can hold different bytes.
-        let mut fresh_pages = BTreeSet::new();
+        // The batch bound keeps duplicate detection on the stack.
+        let mut fresh_pages = [None::<&PageId>; 32];
+        let mut fresh_count = 0;
         let fresh_whole_pages = conditional
             && writes.clone().all(|(page, offset, _, sequence)| {
-                sequence == Some(0) && offset == 0 && fresh_pages.insert(page.clone())
+                if sequence != Some(0)
+                    || offset != 0
+                    || fresh_pages[..fresh_count].contains(&Some(page))
+                {
+                    return false;
+                }
+                fresh_pages[fresh_count] = Some(page);
+                fresh_count += 1;
+                true
             });
         if fresh_whole_pages {
             self.reconnect_failed();
