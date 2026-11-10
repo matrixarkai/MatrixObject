@@ -638,6 +638,18 @@ fn configured_placement_writes_real_chunk_processes_and_recovers_after_failover(
 #[cfg(feature = "replica-server")]
 #[test]
 fn metadata_routes_object_writes_through_a_standalone_star_quorum() {
+    exercise_star_object_route(40, 4);
+}
+
+#[cfg(feature = "replica-server")]
+#[test]
+#[ignore = "explicit local distributed object scale run"]
+fn standalone_star_quorum_writes_and_recovers_256_object_pages() {
+    exercise_star_object_route(256, 64 * 1024);
+}
+
+#[cfg(feature = "replica-server")]
+fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     use matrixobjectstore_rs::cluster::{
         ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ObjectWriteOptions,
         RemoteReplicaClient, RemoteReplicaSet, ReplicaClientOptions,
@@ -681,7 +693,18 @@ fn metadata_routes_object_writes_through_a_standalone_star_quorum() {
     };
     let catalog = ChunkGroupCatalog::new(vec![config]).unwrap();
     let metadata = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
-    let mut client = metadata.client(metadata.leader());
+    let connect_metadata = || {
+        RemoteMetaClient::connect(
+            &metadata.nodes[metadata.leader()].as_ref().unwrap().endpoint,
+            &MetaClientOptions {
+                read_timeout: Duration::from_secs(10),
+                write_timeout: Duration::from_secs(10),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    };
+    let mut client = connect_metadata();
     for member in &members {
         client
             .heartbeat_placement_node(member, 0, 1 << 28, false, true, 100)
@@ -689,20 +712,22 @@ fn metadata_routes_object_writes_through_a_standalone_star_quorum() {
     }
 
     let options = ObjectWriteOptions {
-        page_bytes: 4,
+        page_bytes,
         target_groups: 1,
         replica: ReplicaClientOptions {
-            read_timeout: Duration::from_secs(2),
-            write_timeout: Duration::from_secs(2),
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
             ..Default::default()
         },
         ..Default::default()
     };
-    let first_bytes: Vec<u8> = (0..160).collect();
+    let first_bytes: Vec<u8> = (0..page_count * page_bytes).map(|index| index as u8).collect();
+    let started = Instant::now();
     let first = client
         .write_object("star", "first", None, &first_bytes, &options)
         .unwrap();
-    assert_eq!(first.extents.len(), 40);
+    let write_elapsed = started.elapsed();
+    assert_eq!(first.extents.len(), page_count);
     assert_eq!(
         client
             .read_object("star", "first", first_bytes.len(), &options.replica)
@@ -714,11 +739,21 @@ fn metadata_routes_object_writes_through_a_standalone_star_quorum() {
     // subsets for different pages. Repair the initial object across the full
     // membership so the failure below exercises routing, not that variation.
     let mut initial = RemoteReplicaSet::connect(&endpoints, 2, 2, &options.replica).unwrap();
-    let repaired = initial.repair_inventory_batch(None, 64).unwrap();
-    assert!(!repaired.blocked);
-    assert!(!repaired.has_more);
-    assert_eq!(repaired.pages.len(), first.extents.len());
-    assert!(repaired.pages.iter().all(|entry| entry.result.is_ok()));
+    let mut after = None;
+    let mut repaired_pages = 0;
+    let mut repair_batches = 0;
+    loop {
+        let repaired = initial.repair_inventory_batch(after.as_ref(), 64).unwrap();
+        assert!(!repaired.blocked);
+        assert!(repaired.pages.iter().all(|entry| entry.result.is_ok()));
+        repaired_pages += repaired.pages.len();
+        repair_batches += 1;
+        if !repaired.has_more {
+            break;
+        }
+        after = repaired.resume_after;
+    }
+    assert_eq!(repaired_pages, first.extents.len());
 
     let extent = &first.extents[0];
     let page = PageId {
@@ -746,7 +781,7 @@ fn metadata_routes_object_writes_through_a_standalone_star_quorum() {
     chunks[0].child.kill().unwrap();
     assert!(processes::reap_within(&mut chunks[0].child, Duration::from_secs(3)).is_some());
     drop(client);
-    let mut client = metadata.client(metadata.leader());
+    let mut client = connect_metadata();
     assert_eq!(
         client
             .read_object("star", "first", first_bytes.len(), &options.replica)
@@ -817,10 +852,15 @@ fn metadata_routes_object_writes_through_a_standalone_star_quorum() {
         assert!(processes::reap_within(&mut node.child, Duration::from_secs(3)).is_some());
     }
     drop(client);
-    let mut minority = metadata.client(metadata.leader());
+    let mut minority = connect_metadata();
     assert!(minority
         .read_object("star", &third_key, third_bytes.len(), &options.replica)
         .is_err());
+    println!(
+        "STAR_OBJECT pages={page_count} page_bytes={page_bytes} write_ms={} repair_batches={repair_batches} verified_copies={}",
+        write_elapsed.as_millis(),
+        page_count * endpoints.len()
+    );
 
     drop(minority);
     drop(metadata);
