@@ -413,6 +413,7 @@ fn run(
         outgoing,
     } = channels;
     let mut tick = Instant::now();
+    let mut lease_sweep = Instant::now();
     let mut pending: VecDeque<Pending> = VecDeque::new();
     let mut queued = VecDeque::new();
     let mut pending_read: Option<(u64, Vec<Request>)> = None;
@@ -575,11 +576,36 @@ fn run(
                 })
             })?;
             progress.mark(WorkerPhase::Requests);
-            while queued.len() < PROPOSALS_PER_BATCH {
+            let mut expiry = Vec::new();
+            if peer.is_leader() && applied_term.get() == peer.term()
+                && lease_sweep.elapsed() >= super::staged_lease_sweeper::INTERVAL
+                && queued.len() < PROPOSALS_PER_BATCH {
+                lease_sweep = Instant::now();
+                if let Ok(now) = super::staged_lease_sweeper::now_ms() {
+                    expiry = super::staged_lease_sweeper::commands(service, now);
+                    // A selected deadline can already be queued behind foreground
+                    // work. Do not accumulate repeated cleanup for the same owner.
+                    expiry.retain(|command| !queued.iter().any(|request: &Request|
+                        matches!(&request.request, MetaRequest::StagedAllocation(queued)
+                            if queued.action == 9 && queued.allocation_id == command.allocation_id)));
+                    expiry.truncate(PROPOSALS_PER_BATCH - queued.len());
+                }
+            }
+            // Cleanup reserves at most half a batch; foreground work keeps the
+            // other slots under sustained load. Existing queued work stays first.
+            while queued.len() < PROPOSALS_PER_BATCH - expiry.len() {
                 match requests.try_recv() {
                     Ok(request) => queued.push_back(request),
                     Err(_) => break,
                 }
+            }
+            for command in expiry {
+                let (reply, _) = mpsc::sync_channel(1);
+                queued.push_back(Request {
+                    request: MetaRequest::StagedAllocation(command), reply,
+                    deadline: Instant::now() + Duration::from_secs(30),
+                    progress: RequestProgress::new(false),
+                });
             }
             admitted = !queued.is_empty();
             if !peer.is_leader() || applied_term.get() != peer.term() {

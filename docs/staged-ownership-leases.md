@@ -21,19 +21,34 @@ has not yet been removed. An already prepared publication may commit after its
 deadline: consensus order, rather than replay-time wall-clock checks, determines
 the decided result.
 
-## Explicit expiry and recovery
+## Automatic cleanup and recovery
 
 `expire_staged_allocation(&record)` removes that exact expired deadline. It is
 idempotent once the allocation is absent, refuses future identities and never
 removes a renewed deadline. Active deadlines and permanent reservations cannot
 be expired through this API. An expired allocation ID is never reused.
 
-Expiry is an explicit controller operation. Expired records remain listed and
-count toward the shared 128-reservation capacity until expired or aborted.
-Controllers can enumerate at most 32 IDs per page, read their records and submit
-expiry against each recorded deadline. Concurrent renewal causes a refusal,
-requiring a fresh read. Repeated empty expiry does not advance placement state.
-This change does not install an automatic sweeper or allocation request identity.
+Durable metadata automatically selects up to four expired reservations on each
+one-second scheduling pass. Replicated metadata selects work only on a leader
+that has applied its current-term barrier, and submits ordinary expiry commands
+through the bounded proposal path. Cleanup reserves at most four of the eight
+batch slots, leaving foreground capacity. Existing queued requests stay first,
+and already queued expiry identities are not selected again. Consensus backlog,
+election and quorum loss can delay cleanup; expiry becomes visible only after
+the removal commits.
+
+Standalone durable metadata uses the same expiry decisions from a local timer.
+It journals removals before applying them. In-memory metadata starts no cleanup
+thread. No automatic sweep submits a command when there is no expired candidate,
+so empty passes append no application records. Live leases, renewed deadlines
+and permanent reservations remain protected. Shutdown interrupts the timer wait.
+
+Expired records remain listed and count toward the shared 128-reservation
+capacity until removal commits or an explicit abort succeeds. The explicit
+expiry API remains available to controllers. Enumeration returns at most 32 IDs
+per page; read each record and submit its exact deadline. Concurrent renewal
+causes a refusal, requiring a fresh read. Allocation request identity remains
+unfinished.
 
 Deadlines use the admitting metadata server's Unix clock. Deployments must keep
 metadata clocks synchronized; this is not a clock-skew-tolerant data-node lease.
@@ -61,4 +76,6 @@ interruption-safe physical deletion remain unfinished. Keep reclamation disabled
 Validation covers exact deadline boundaries, TTL bounds, renewal at full
 reservation capacity, stale cleanup, forged renewal identity, snapshot and
 journal recovery, batch rollback, metadata leader loss, total restart, quorum
-loss, and leased object writes through both Star and Raft data groups.
+loss, and leased object writes through both Star and Raft data groups. Automatic
+cleanup tests verify outage recovery, renewal protection, permanent owners and
+idle journal/WAL stability in both durable modes.

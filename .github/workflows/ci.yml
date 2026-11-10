@@ -544,6 +544,16 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus publication_fence_and_atomic_copy_survive_checkpoint_restart_and_quorum_loss -- --exact | tee /tmp/publication-admission.log
           grep -q 'test result: ok. 1 passed' /tmp/publication-admission.log
 
+      - name: automatic staged cleanup stays bounded and survives durable restart
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::staged_lease_sweeper::tests::automatic_expiry_selection_is_bounded_preserves_live_and_permanent_owners_and_drains -- --exact | tee /tmp/automatic-staged-expiry.log
+          grep -q 'test result: ok. 1 passed' /tmp/automatic-staged-expiry.log
+          cargo test --locked --all-features --test automatic_staged_expiry | tee /tmp/automatic-staged-expiry.log
+          grep -q 'test result: ok. 1 passed' /tmp/automatic-staged-expiry.log
+          cargo test --locked --all-features --test network_metadata_consensus automatic_staged_expiry_resumes_after_outage_requires_quorum_and_keeps_idle_wal_stable -- --exact | tee /tmp/automatic-staged-expiry.log
+          grep -q 'test result: ok. 1 passed' /tmp/automatic-staged-expiry.log
+
       - name: sequential writes reuse one freshly routed group connection
         run: |
           set -o pipefail
