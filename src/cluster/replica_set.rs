@@ -557,25 +557,61 @@ impl RemoteReplicaSet {
         self.fan_out_until_applied(request, selected, None)
     }
 
-    fn fan_out_write_quorum(
+    fn count_applied_write_quorum(
         &mut self,
         request: &ReplicaRequest,
         selected: Option<&[bool]>,
-    ) -> Vec<Result<ReplicaReply, ObjectError>> {
-        self.fan_out_until_applied(request, selected, Some(self.write_quorum))
+    ) -> (usize, Option<ObjectError>) {
+        let mut acknowledged = 0;
+        let mut first_error: Option<(usize, ObjectError)> = None;
+        self.fan_out_each_until_applied(
+            request,
+            selected,
+            Some(self.write_quorum),
+            None,
+            None,
+            |index, result| match applied(result) {
+                Ok(()) => acknowledged += 1,
+                Err(error)
+                    if first_error
+                        .as_ref()
+                        .is_none_or(|(previous, _)| index < *previous) =>
+                {
+                    first_error = Some((index, error));
+                }
+                Err(_) => {}
+            },
+        );
+        (acknowledged, first_error.map(|(_, error)| error))
     }
 
-    fn fan_out_encoded_write_quorum(
+    fn count_applied_encoded_write_quorum(
         &mut self,
         frame: std::sync::Arc<Vec<u8>>,
         selected: Option<&[bool]>,
-    ) -> Vec<Result<ReplicaReply, ObjectError>> {
-        self.fan_out_encoded_until_applied(
+    ) -> (usize, Option<ObjectError>) {
+        let mut acknowledged = 0;
+        let mut first_error: Option<(usize, ObjectError)> = None;
+        self.fan_out_each_encoded_until_applied(
             RequestCode::WriteChunkBatchIfSequence,
             frame,
             selected,
             Some(self.write_quorum),
-        )
+            None,
+            None,
+            |index, result| match applied(result) {
+                Ok(()) => acknowledged += 1,
+                Err(error)
+                    if first_error
+                        .as_ref()
+                        .is_none_or(|(previous, _)| index < *previous) =>
+                {
+                    first_error = Some((index, error));
+                }
+                Err(_) => {}
+            },
+        );
+        (acknowledged, first_error.map(|(_, error)| error))
     }
 
     fn supports_state_conditional_write(&mut self) -> bool {
@@ -1160,15 +1196,7 @@ impl RemoteReplicaSet {
         request: &ReplicaRequest,
         selected: Option<&[bool]>,
     ) -> Result<usize, ObjectError> {
-        let mut acknowledged = 0usize;
-        let mut first_error: Option<ObjectError> = None;
-        for result in self.fan_out_write_quorum(request, selected) {
-            match applied(result) {
-                Ok(()) => acknowledged += 1,
-                Err(err) if first_error.is_none() => first_error = Some(err),
-                Err(_) => {}
-            }
-        }
+        let (acknowledged, first_error) = self.count_applied_write_quorum(request, selected);
         if acknowledged < self.write_quorum {
             return Err(first_error.unwrap_or_else(|| {
                 ObjectError::Corruption(format!(
@@ -1367,15 +1395,8 @@ impl RemoteReplicaSet {
                 frame.iter().map(|(_, write)| *write),
                 RequestCode::WriteChunkBatchIfSequence,
             );
-            let mut acknowledged = 0usize;
-            let mut first_error = None;
-            for result in self.fan_out_encoded_write_quorum(std::sync::Arc::new(encoded), selected) {
-                match applied(result) {
-                    Ok(()) => acknowledged += 1,
-                    Err(error) if first_error.is_none() => first_error = Some(error),
-                    Err(_) => {}
-                }
-            }
+            let (acknowledged, first_error) =
+                self.count_applied_encoded_write_quorum(std::sync::Arc::new(encoded), selected);
             if acknowledged < self.write_quorum {
                 return Err(first_error.unwrap_or_else(|| {
                     ObjectError::Corruption(format!(
@@ -2501,21 +2522,14 @@ impl RemoteReplicaSet {
         let (expected, observed) = self.mutation_state(page_id)?;
         let expected =
             expected.ok_or_else(|| ObjectError::NotFound("no quorum page to discard".into()))?;
-        let mut acknowledged = 0usize;
-        let mut first_error: Option<ObjectError> = None;
         let request = ReplicaRequest::DiscardChunkIfSequence {
             page_id: page_id.clone(),
             offset,
             length,
             expected_sequence: expected.write_sequence,
         };
-        for result in self.fan_out_write_quorum(&request, Some(&observed)) {
-            match applied(result) {
-                Ok(()) => acknowledged += 1,
-                Err(err) if first_error.is_none() => first_error = Some(err),
-                Err(_) => {}
-            }
-        }
+        let (acknowledged, first_error) =
+            self.count_applied_write_quorum(&request, Some(&observed));
         if acknowledged < self.write_quorum {
             return Err(first_error.unwrap_or_else(|| {
                 ObjectError::Corruption(format!(
