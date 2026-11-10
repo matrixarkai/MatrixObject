@@ -542,7 +542,7 @@ impl RemoteReplicaSet {
 
     fn fan_out_encoded_write_quorum(
         &mut self,
-        frame: std::sync::Arc<[u8]>,
+        frame: std::sync::Arc<Vec<u8>>,
         selected: Option<&[bool]>,
     ) -> Vec<Result<ReplicaReply, ObjectError>> {
         self.fan_out_encoded_until_applied(
@@ -649,7 +649,7 @@ impl RemoteReplicaSet {
     ) -> Vec<Result<ReplicaReply, ObjectError>> {
         self.fan_out_encoded_until_applied(
             request.code(),
-            super::message::encode_request(request).into(),
+            std::sync::Arc::new(super::message::encode_request(request)),
             selected,
             return_after_applied,
         )
@@ -658,7 +658,7 @@ impl RemoteReplicaSet {
     fn fan_out_encoded_until_applied(
         &mut self,
         code: RequestCode,
-        frame: std::sync::Arc<[u8]>,
+        frame: std::sync::Arc<Vec<u8>>,
         selected: Option<&[bool]>,
         return_after_applied: Option<usize>,
     ) -> Vec<Result<ReplicaReply, ObjectError>> {
@@ -714,7 +714,7 @@ impl RemoteReplicaSet {
     {
         self.fan_out_each_encoded_until_applied(
             request.code(),
-            super::message::encode_request(request).into(),
+            std::sync::Arc::new(super::message::encode_request(request)),
             selected,
             return_after_applied,
             operation_deadline,
@@ -726,7 +726,7 @@ impl RemoteReplicaSet {
     fn fan_out_each_encoded_until_applied<F>(
         &mut self,
         code: RequestCode,
-        frame: std::sync::Arc<[u8]>,
+        frame: std::sync::Arc<Vec<u8>>,
         selected: Option<&[bool]>,
         return_after_applied: Option<usize>,
         operation_deadline: Option<std::time::Instant>,
@@ -1346,7 +1346,7 @@ impl RemoteReplicaSet {
             );
             let mut acknowledged = 0usize;
             let mut first_error = None;
-            for result in self.fan_out_encoded_write_quorum(encoded.into(), selected) {
+            for result in self.fan_out_encoded_write_quorum(std::sync::Arc::new(encoded), selected) {
                 match applied(result) {
                     Ok(()) => acknowledged += 1,
                     Err(error) if first_error.is_none() => first_error = Some(error),
@@ -2753,7 +2753,7 @@ mod send_progress_tests {
             client
                 .begin_encoded(
                     request.code(),
-                    super::super::message::encode_request(&request).into(),
+                    std::sync::Arc::new(super::super::message::encode_request(&request)),
                 )
                 .unwrap(),
         );
