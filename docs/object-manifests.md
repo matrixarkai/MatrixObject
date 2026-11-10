@@ -649,6 +649,28 @@ peak resource use, or production latency. No controlled comparison with earlier
 runs was performed. The measured write throughput remains modest and requires
 profiling before making performance commitments.
 
+On November 10, 2026, commit `91cc9e6a5f3709e2f0e3477bb7f15d5246b4c50e`
+passed the same 51-process release scenario four times on one WSL host. Each
+run wrote 1,024 initial objects, stopped the metadata leader and every data
+leader, wrote 256 more, restarted all processes and verified all 1,280 objects.
+All writes completed without retries. The initial write samples were:
+
+| Run | Initial writes/s | Write p50 / p99 | Writes/s after leader loss |
+|---|---:|---:|---:|
+| 1 | 110.5 | 67.2 / 142.4 ms | 122.3 |
+| 2 | 108.2 | 68.1 / 154.6 ms | 152.0 |
+| 3 | 78.4 | 92.0 / 288.5 ms | 113.1 |
+| 4 | 111.8 | 68.2 / 144.6 ms | 139.4 |
+
+The 1,024-object read checks after leader loss took 0.37–0.53 seconds; the
+1,280-object read checks after full restart took 0.56–1.59 seconds.
+The fourth run's command-level resource report was 32.62 seconds wall time,
+8.18 seconds user CPU and 28.02 seconds system CPU. These values include the
+test harness and its local processes; they do not isolate metadata, replica
+transport or durable storage work. The spread across runs shows host-load
+sensitivity. This is a current-code local scale observation, not a controlled
+before-and-after comparison or a production throughput claim.
+
 The connection-count regression uses 32 alternating extents across two groups,
 including a partial final page. It requires three total write-side connections
 (including preflight), two read-side connections, and exactly one metadata lookup
