@@ -19,7 +19,7 @@ mod worker {
         ReplicaClientOptions,
     };
     use matrixobjectstore_rs::PageId;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     struct Config {
         metadata_endpoints: Vec<String>,
@@ -27,6 +27,7 @@ mod worker {
         batch_pages: usize,
         interval: Duration,
         sweep_interval: Duration,
+        scrub_interval: Duration,
         metadata: MetaClientOptions,
         replica: ReplicaClientOptions,
     }
@@ -78,6 +79,12 @@ mod worker {
                 1_000,
                 86_400_000,
             )?);
+            let scrub_interval = Duration::from_secs(number(
+                "MATRIXOBJECT_REPAIR_SCRUB_INTERVAL_SECS",
+                86_400,
+                3_600,
+                604_800,
+            )?);
             let tls = ApiTlsConfig::from_env("MATRIXOBJECT_CLIENT")
                 .map_err(|error| format!("invalid repair TLS configuration: {error}"))?;
             let metadata = MetaClientOptions {
@@ -97,6 +104,7 @@ mod worker {
                 batch_pages,
                 interval,
                 sweep_interval,
+                scrub_interval,
                 metadata,
                 replica,
             })
@@ -126,6 +134,7 @@ mod worker {
         metadata: &mut Option<RemoteMetaClient>,
         active: &mut Option<ActiveGroup>,
         cursor: &mut Option<PageId>,
+        scrub: bool,
     ) -> Result<StepReport, StepError> {
         if metadata.is_none() {
             *metadata = Some(
@@ -158,12 +167,13 @@ mod worker {
                 replicas,
             });
         }
-        let batch = active
-            .as_mut()
-            .unwrap()
-            .replicas
-            .repair_inventory_batch(cursor.as_ref(), config.batch_pages)
-            .map_err(|error| StepError::Retry(error.to_string()))?;
+        let replicas = &mut active.as_mut().unwrap().replicas;
+        let batch = if scrub {
+            replicas.repair_inventory_batch(cursor.as_ref(), config.batch_pages)
+        } else {
+            replicas.repair_inventory_batch_head_first(cursor.as_ref(), config.batch_pages)
+        }
+        .map_err(|error| StepError::Retry(error.to_string()))?;
         if batch.pages.iter().any(|entry| {
             entry.result.as_ref().is_ok_and(|report| {
                 report
@@ -212,8 +222,10 @@ mod worker {
         let mut sweep_installed = 0usize;
         let mut sweep_blocked = 0usize;
         let mut retry_delay = config.interval;
+        let mut next_scrub = Instant::now() + config.scrub_interval;
+        let mut scrub = false;
         loop {
-            let wait = match step(&config, &mut metadata, &mut active, &mut cursor) {
+            let wait = match step(&config, &mut metadata, &mut active, &mut cursor, scrub) {
                 Ok(report) => {
                     retry_delay = config.interval;
                     sweep_scanned = sweep_scanned.saturating_add(report.scanned);
@@ -227,12 +239,18 @@ mod worker {
                     }
                     if report.completed {
                         println!(
-                            "star repair sweep group={} scanned={} installed={} blocked={}",
-                            config.group, sweep_scanned, sweep_installed, sweep_blocked
+                            "star repair sweep group={} scrub={} scanned={} installed={} blocked={}",
+                            config.group, scrub, sweep_scanned, sweep_installed, sweep_blocked
                         );
                         sweep_scanned = 0;
                         sweep_installed = 0;
                         sweep_blocked = 0;
+                        if scrub {
+                            next_scrub = Instant::now() + config.scrub_interval;
+                            scrub = false;
+                        } else if Instant::now() >= next_scrub {
+                            scrub = true;
+                        }
                         config.sweep_interval
                     } else {
                         config.interval

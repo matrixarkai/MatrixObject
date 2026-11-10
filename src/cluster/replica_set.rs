@@ -2270,6 +2270,27 @@ impl RemoteReplicaSet {
         after: Option<&PageId>,
         limit: usize,
     ) -> Result<PageRepairBatch, ObjectError> {
+        self.repair_inventory_batch_inner(after, limit, false)
+    }
+
+    /// Scan complete member inventories using heads before reading payloads.
+    /// Equal heads avoid a full page transfer; differing or missing heads still
+    /// use the validated repair path. This is a repair discovery pass, not an
+    /// integrity scrub: matching stored heads cannot reveal silent payload damage.
+    pub fn repair_inventory_batch_head_first(
+        &mut self,
+        after: Option<&PageId>,
+        limit: usize,
+    ) -> Result<PageRepairBatch, ObjectError> {
+        self.repair_inventory_batch_inner(after, limit, true)
+    }
+
+    fn repair_inventory_batch_inner(
+        &mut self,
+        after: Option<&PageId>,
+        limit: usize,
+        head_first: bool,
+    ) -> Result<PageRepairBatch, ObjectError> {
         if !(1..=64).contains(&limit) {
             return Err(ObjectError::InvalidArgument(
                 "repair batch limit must be between 1 and 64".into(),
@@ -2343,7 +2364,12 @@ impl RemoteReplicaSet {
             blocked: false,
         };
         for page in selected {
-            let result = self.repair_chunk(&page).map_err(|error| error.to_string());
+            let result = if head_first {
+                self.repair_chunk_head_first(&page)
+            } else {
+                self.repair_chunk(&page)
+            }
+            .map_err(|error| error.to_string());
             let resolved = result.as_ref().is_ok_and(|report| {
                 report.members.iter().all(|status| {
                     matches!(
@@ -2364,6 +2390,32 @@ impl RemoteReplicaSet {
             batch.resume_after = Some(page);
         }
         Ok(batch)
+    }
+
+    fn repair_chunk_head_first(
+        &mut self,
+        page_id: &PageId,
+    ) -> Result<PageRepairReport, ObjectError> {
+        let deadline = self.read_wave_deadline()?;
+        let request = ReplicaRequest::HeadChunk {
+            page_id: page_id.clone(),
+        };
+        let mut heads = vec![None; self.replicas.len()];
+        self.fan_out_each_before(&request, None, deadline, None, |index, reply| {
+            heads[index] = match reply {
+                Ok(ReplicaReply::Head(head)) => Some(head),
+                _ => None,
+            };
+        });
+        if let Some(source) = heads.first().and_then(Option::as_ref) {
+            if heads.iter().all(|head| head.as_ref() == Some(source)) {
+                return Ok(PageRepairReport {
+                    source: source.clone(),
+                    members: vec![PageRepairStatus::Current; self.replicas.len()],
+                });
+            }
+        }
+        self.repair_chunk(page_id)
     }
 
     /// Conditionally discard on replicas matching a quorum-agreed existing page.
