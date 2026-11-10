@@ -875,11 +875,32 @@ impl RemoteMetaClient {
     ) -> Result<crate::object_manifest::ManifestListPage, ObjectError> {
         let request = crate::object_manifest::ManifestListRequest {
             version: 1, bucket: bucket.into(), after: after.unwrap_or("").into(), limit,
+            expected_revision: Vec::new(),
         };
+        self.list_manifests_request(request)
+    }
+
+    /// Version-2 listing refuses continuation if a manifest publication changed
+    /// the retained catalog. Pass the first page's revision to subsequent pages.
+    pub fn list_manifests_at_revision(
+        &mut self, bucket: &str, after: Option<&str>, limit: u32,
+        expected_revision: Option<&[u8]>,
+    ) -> Result<crate::object_manifest::ManifestListPage, ObjectError> {
+        let request = crate::object_manifest::ManifestListRequest {
+            version: 2, bucket: bucket.into(), after: after.unwrap_or("").into(), limit,
+            expected_revision: expected_revision.unwrap_or(&[]).to_vec(),
+        };
+        self.list_manifests_request(request)
+    }
+
+    fn list_manifests_request(
+        &mut self, request: crate::object_manifest::ManifestListRequest,
+    ) -> Result<crate::object_manifest::ManifestListPage, ObjectError> {
         request.validate()?;
         match self.call(MetaRequest::ListManifests(request.clone()))? {
-            MetaReply::Manifests(page) if page.bucket == request.bucket
-                && page.entries.len() <= limit as usize
+            MetaReply::Manifests(page) if page.bucket == request.bucket && page.version == request.version
+                && (request.expected_revision.is_empty() || page.revision == request.expected_revision)
+                && page.entries.len() <= request.limit as usize
                 && page.entries.iter().all(|entry| entry.key > request.after) => Ok(page),
             _ => Err(ObjectError::Corruption("manifest listing reply does not match request".into())),
         }

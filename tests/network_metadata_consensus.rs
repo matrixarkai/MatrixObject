@@ -303,6 +303,10 @@ fn manifest_listing_continues_after_leader_loss_and_preserves_tombstones() {
     let before = commit_index(&mut client);
     let first = client.list_manifests("bucket", None, 2).unwrap();
     assert_eq!(commit_index(&mut client), before);
+    assert!(first.revision.is_empty());
+    let fenced = client.list_manifests_at_revision("bucket", None, 2, None).unwrap();
+    assert_eq!(fenced.entries, first.entries);
+    client.allocate_object_pages(1).unwrap();
     assert_eq!(first.entries.iter().map(|entry| entry.key.as_str()).collect::<Vec<_>>(), ["a", "b"]);
     assert!(first.entries[1].deleted);
     assert_eq!(first.entries[1].generation, 2);
@@ -310,6 +314,8 @@ fn manifest_listing_continues_after_leader_loss_and_preserves_tombstones() {
     group.kill(group.leader());
     let mut client = group.client(group.leader());
     let second = client.list_manifests("bucket", Some("b"), 2).unwrap();
+    assert_eq!(client.list_manifests_at_revision("bucket", Some("b"), 2,
+        Some(&fenced.revision)).unwrap().entries, second.entries);
     assert_eq!(second.entries[0].key, "c");
     assert!(!second.has_more);
     assert!(client.list_manifests("bucket", Some("c"), 2).unwrap().entries.is_empty());
@@ -322,6 +328,17 @@ fn manifest_listing_continues_after_leader_loss_and_preserves_tombstones() {
     let restored = client.list_manifests("bucket", None, 32).unwrap();
     assert_eq!(restored.entries.len(), 3);
     assert!(restored.entries[1].deleted);
+    assert_eq!(client.list_manifests_at_revision("bucket", None, 32,
+        Some(&fenced.revision)).unwrap().revision, fenced.revision);
+    client.publish_manifest(ManifestOutcome::decide(None, ObjectManifest {
+        format_version: 2, bucket: "bucket".into(), key: "d".into(), generation: 1,
+        length: 0, extents: Vec::new(), deleted: false,
+    }).unwrap(), 3).unwrap();
+    assert!(client.list_manifests_at_revision("bucket", Some("b"), 2,
+        Some(&fenced.revision)).is_err());
+    let changed = client.list_manifests_at_revision("bucket", None, 32, None).unwrap();
+    assert_eq!(changed.entries.len(), 4);
+    assert_ne!(changed.revision, fenced.revision);
     for index in 0..3 { if index != leader { group.kill(index); } }
     assert!(client.list_manifests("bucket", None, 2).is_err());
 }

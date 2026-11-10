@@ -8,6 +8,8 @@ message ManifestListRequest {
   string bucket = 2;
   string after = 3;
   uint32 limit = 4;
+  // Version 2 only: empty starts a scan; otherwise exactly 16 opaque bytes.
+  bytes expected_revision = 5;
 }
 message ManifestSummary {
   string key = 1;
@@ -20,4 +22,6 @@ message ManifestListPage {
   string bucket = 2;
   repeated ManifestSummary entries = 3;
   bool has_more = 4;
+  // Version 2 returns a 16-byte catalog revision; version 1 omits it.
+  bytes revision = 5;
 }
