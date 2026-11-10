@@ -418,11 +418,29 @@ jobs:
           cargo test --locked --all-features --test object_writer_connections chunk_route_reply_must_name_the_requested_placement -- --exact | tee /tmp/object-connections.log
           grep -q 'test result: ok. 1 passed' /tmp/object-connections.log
 
-      - name: writer reuses preflight connection and only looks up each group once
+      - name: object writers preserve connection reuse and fallback compatibility
         run: |
           set -o pipefail
-          cargo test --locked --all-features --test object_writer_connections writer_reuses_preflight_connection_and_only_looks_up_each_group_once -- --exact | tee /tmp/object-connections.log
-          grep -q 'test result: ok. 1 passed' /tmp/object-connections.log
+          cargo test --locked --all-features --test object_writer_connections -- --test-threads=1 | tee /tmp/object-connections.log
+          grep -Eq 'test result: ok\. [1-9][0-9]* passed' /tmp/object-connections.log
+
+      - name: digest batching retains old-server fallback and absent-page results
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::client::pending_tests::raft_digest_batches_cache_unknown_verbs_and_preserve_absent_pages -- --exact | tee /tmp/digest-batching.log
+          grep -q 'test result: ok. 1 passed' /tmp/digest-batching.log
+
+      - name: digest batches survive data leader loss and refuse isolated reads
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus conditional_digest_batches_replicate_ordered_page_outcomes -- --exact | tee /tmp/digest-batching.log
+          grep -q 'test result: ok. 1 passed' /tmp/digest-batching.log
+
+      - name: manifest listing survives metadata failover with revision fences
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_metadata_consensus manifest_listing_continues_after_leader_loss_and_preserves_tombstones -- --exact | tee /tmp/manifest-listing.log
+          grep -q 'test result: ok. 1 passed' /tmp/manifest-listing.log
 
       - name: sequential writes reuse one freshly routed group connection
         run: |

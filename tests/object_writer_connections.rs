@@ -1318,6 +1318,17 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                             if index == 0 {
                                 continue;
                             }
+                            if batch_index == 0 {
+                                assert!(matches!(
+                                    replica(&mut stream),
+                                    ReplicaRequest::DigestChunkBatch { reads }
+                                        if reads.len() == batch.len()
+                                ));
+                                stream.write_all(&message::encode_failure(
+                                    StatusCode::UnknownRequest,
+                                    "older peer",
+                                )).unwrap();
+                            }
                             assert!(matches!(replica(&mut stream), ReplicaRequest::DigestChunk { .. }));
                             stream.write_all(&message::encode_failure(
                                 StatusCode::UnknownRequest,
