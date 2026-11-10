@@ -115,6 +115,25 @@ pub struct ConditionalChunkWrite {
     pub expected_sequence: u64,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ConditionalChunkWriteRef<'a> {
+    pub page_id: &'a PageId,
+    pub offset: u64,
+    pub data: &'a [u8],
+    pub expected_sequence: u64,
+}
+
+impl<'a> From<&'a ConditionalChunkWrite> for ConditionalChunkWriteRef<'a> {
+    fn from(write: &'a ConditionalChunkWrite) -> Self {
+        Self {
+            page_id: &write.page_id,
+            offset: write.offset,
+            data: &write.data,
+            expected_sequence: write.expected_sequence,
+        }
+    }
+}
+
 fn encoded_uint64_len(tag: u32, value: u64) -> usize {
     if value == 0 {
         0
@@ -129,7 +148,7 @@ fn encode_uint64(tag: u32, value: u64, out: &mut Vec<u8>) {
     }
 }
 
-fn conditional_write_len(write: &ConditionalChunkWrite) -> usize {
+fn conditional_write_len(write: ConditionalChunkWriteRef<'_>) -> usize {
     let mut len = encoded_uint64_len(1, 1)
         + encoded_uint64_len(2, write.page_id.chunk_id.volume_id())
         + encoded_uint64_len(3, write.page_id.chunk_id.id())
@@ -144,10 +163,9 @@ fn conditional_write_len(write: &ConditionalChunkWrite) -> usize {
     len
 }
 
-fn conditional_write_batch_len(writes: &[ConditionalChunkWrite]) -> usize {
+fn conditional_write_batch_len<'a>(writes: impl Iterator<Item = ConditionalChunkWriteRef<'a>>) -> usize {
     encoded_uint64_len(1, 1)
         + writes
-            .iter()
             .map(|write| {
                 let len = conditional_write_len(write);
                 prost::encoding::key_len(2)
@@ -157,7 +175,10 @@ fn conditional_write_batch_len(writes: &[ConditionalChunkWrite]) -> usize {
             .sum::<usize>()
 }
 
-fn encode_conditional_write_batch(writes: &[ConditionalChunkWrite], out: &mut Vec<u8>) {
+fn encode_conditional_write_batch<'a>(
+    writes: impl Iterator<Item = ConditionalChunkWriteRef<'a>>,
+    out: &mut Vec<u8>,
+) {
     use prost::encoding::{encode_key, encode_varint, WireType};
 
     encode_uint64(1, 1, out);
@@ -176,6 +197,18 @@ fn encode_conditional_write_batch(writes: &[ConditionalChunkWrite], out: &mut Ve
             out.extend_from_slice(&write.data);
         }
     }
+}
+
+pub(crate) fn encode_conditional_write_batch_frame<'a>(
+    writes: impl Clone + Iterator<Item = ConditionalChunkWriteRef<'a>>,
+    code: RequestCode,
+) -> Vec<u8> {
+    let payload_len = conditional_write_batch_len(writes.clone());
+    let mut frame = Vec::with_capacity(crate::cluster::wire::HEADER_BYTES + payload_len);
+    crate::cluster::wire::put_header(&mut frame, code as u8, payload_len);
+    encode_conditional_write_batch(writes, &mut frame);
+    debug_assert_eq!(frame.len(), crate::cluster::wire::HEADER_BYTES + payload_len);
+    frame
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -379,8 +412,13 @@ impl ReplicaRequest {
             }
             ReplicaRequest::WriteChunkBatchIfSequence { writes }
             | ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } => {
-                let mut payload = Vec::with_capacity(conditional_write_batch_len(writes));
-                encode_conditional_write_batch(writes, &mut payload);
+                let mut payload = Vec::with_capacity(conditional_write_batch_len(
+                    writes.iter().map(ConditionalChunkWriteRef::from),
+                ));
+                encode_conditional_write_batch(
+                    writes.iter().map(ConditionalChunkWriteRef::from),
+                    &mut payload,
+                );
                 return payload;
             }
             ReplicaRequest::ReadChunkBatch { reads } => {
@@ -1379,12 +1417,10 @@ pub fn encode_request(request: &ReplicaRequest) -> Vec<u8> {
     if let ReplicaRequest::WriteChunkBatchIfSequence { writes }
     | ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } = request
     {
-        let payload_len = conditional_write_batch_len(writes);
-        let mut frame = Vec::with_capacity(crate::cluster::wire::HEADER_BYTES + payload_len);
-        crate::cluster::wire::put_header(&mut frame, request.code() as u8, payload_len);
-        encode_conditional_write_batch(writes, &mut frame);
-        debug_assert_eq!(frame.len(), crate::cluster::wire::HEADER_BYTES + payload_len);
-        return frame;
+        return encode_conditional_write_batch_frame(
+            writes.iter().map(ConditionalChunkWriteRef::from),
+            request.code(),
+        );
     }
     let payload = request.encode_payload();
     let mut frame = Vec::with_capacity(crate::cluster::wire::HEADER_BYTES + payload.len());
