@@ -18,6 +18,7 @@ pub(super) struct ReplicaJournal {
     _lock: Option<File>,
     path: PathBuf,
     bytes_since_checkpoint: u64,
+    initialized: bool,
     #[cfg(test)]
     sync_count: u64,
 }
@@ -148,11 +149,12 @@ impl ReplicaJournal {
             file.sync_all()?;
         }
         file.seek(SeekFrom::End(0))?;
-        let journal = Self {
+        let mut journal = Self {
             file,
             _lock: Some(lock),
             path,
             bytes_since_checkpoint: offset - base_end,
+            initialized,
             #[cfg(test)]
             sync_count: 0,
         };
@@ -208,7 +210,9 @@ impl ReplicaJournal {
     }
 
     pub(super) fn sync_deferred(&mut self) -> io::Result<()> {
-        self.file.sync_all()?;
+        // Growing the file requires its new length to survive a crash;
+        // sync_data persists the bytes and metadata needed to retrieve them.
+        self.file.sync_data()?;
         self.mark_initialized()?;
         #[cfg(test)]
         {
@@ -222,14 +226,17 @@ impl ReplicaJournal {
         self.sync_count
     }
 
-    fn mark_initialized(&self) -> io::Result<()> {
-        if let Some(lock) = &self._lock {
-            if lock.metadata()?.len() == 0 {
-                let mut marker = lock;
-                marker.write_all(b"1")?;
-                lock.sync_all()?;
-            }
+    fn mark_initialized(&mut self) -> io::Result<()> {
+        if self.initialized {
+            return Ok(());
         }
+        if let Some(lock) = &self._lock {
+            let mut marker = lock;
+            marker.seek(SeekFrom::Start(0))?;
+            marker.write_all(b"1")?;
+            lock.sync_all()?;
+        }
+        self.initialized = true;
         Ok(())
     }
 
@@ -387,6 +394,7 @@ impl ReplicaJournal {
             _lock: None,
             path: path.to_path_buf(),
             bytes_since_checkpoint: 0,
+            initialized: true,
             sync_count: 0,
         }
     }
