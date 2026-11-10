@@ -743,26 +743,25 @@ impl RemoteReplicaSet {
         } else {
             MUTATION_QUORUM_DRAIN
         };
-        let pending: Vec<_> = self
+        let selected_count = selected.map_or(self.replicas.len(), |members| {
+            members.iter().filter(|member| **member).count()
+        });
+        let mut pending = Vec::with_capacity(selected_count);
+        for (_, replica) in self
             .replicas
             .iter_mut()
             .enumerate()
-            .filter(|(i, _)| selected.map_or(true, |members| members[*i]))
-            .map(|(_, replica)| {
-                replica.begin_encoded_before(code, frame.clone(), operation_deadline)
-            })
-            .collect();
-        let mut pending: Vec<_> = pending
-            .into_iter()
-            .enumerate()
-            .map(|(index, result)| match result {
-                Ok(reply) => Some(reply),
+            .filter(|(index, _)| selected.map_or(true, |members| members[*index]))
+        {
+            let index = pending.len();
+            match replica.begin_encoded_before(code, frame.clone(), operation_deadline) {
+                Ok(reply) => pending.push(Some(reply)),
                 Err(error) => {
                     on_reply(index, Err(error));
-                    None
+                    pending.push(None);
                 }
-            })
-            .collect();
+            }
+        }
         let mut applied_replies = 0usize;
         let mut terminal_replies = 0usize;
         let mut quorum_reached_at = None;
