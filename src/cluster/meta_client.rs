@@ -583,6 +583,31 @@ impl RemoteMetaClient {
         }
     }
 
+    /// List a bounded, ordered page of routes after one metadata read barrier.
+    /// Separate pages are independently confirmed, not one frozen snapshot.
+    pub fn list_chunk_routes(
+        &mut self,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<super::ChunkRoutePage, ObjectError> {
+        let after = after.unwrap_or("");
+        if !(1..=32).contains(&limit)
+            || after.len() > 128
+            || !after.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+        {
+            return Err(ObjectError::InvalidArgument("invalid route listing cursor or limit".into()));
+        }
+        match self.call(MetaRequest::ListChunkRoutes { after: after.into(), limit })? {
+            MetaReply::ChunkRoutePage(page)
+                if page.routes.len() <= limit as usize
+                    && (!page.has_more || page.routes.len() == limit as usize)
+                    && page.routes.first().is_none_or(|route| {
+                        route.group.as_ref().unwrap().placement_id.as_str() > after
+                    }) => Ok(page),
+            _ => Err(ObjectError::Corruption("route listing does not respect cursor or limit".into())),
+        }
+    }
+
     /// Refresh retained membership from a quorum-confirmed chunk membership read.
     /// Uses the current metadata route and checks every chunk socket's identity.
     /// A concurrent catalog change or uncertain commit is returned to the caller;
@@ -1278,6 +1303,7 @@ impl RemoteMetaClient {
                 | MetaRequest::ReadChunkRoute { .. }
                 | MetaRequest::ReadChunkRoutes { .. }
                 | MetaRequest::ReadChunkRoutesWide { .. }
+                | MetaRequest::ListChunkRoutes { .. }
         ) || matches!(&request, MetaRequest::Membership(command) if command.is_read());
         let mut last = not_leader();
         let mut saw_all_refused = false;

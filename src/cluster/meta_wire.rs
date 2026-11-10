@@ -102,6 +102,8 @@ pub enum MetaRequestCode {
     PlanObjectWriteRoutesWide = 88,
     /// Read a manifest and its first eight group routes at one metadata barrier.
     ReadManifestRoutesWide = 89,
+    /// List a bounded page of quorum-confirmed chunk routes.
+    ListChunkRoutes = 90,
 }
 
 impl MetaRequestCode {
@@ -138,6 +140,7 @@ impl MetaRequestCode {
             87 => Some(MetaRequestCode::ReadChunkRoutesWide),
             88 => Some(MetaRequestCode::PlanObjectWriteRoutesWide),
             89 => Some(MetaRequestCode::ReadManifestRoutesWide),
+            90 => Some(MetaRequestCode::ListChunkRoutes),
             _ => None,
         }
     }
@@ -171,6 +174,7 @@ impl MetaRequestCode {
             MetaRequestCode::ReadChunkRoutesWide,
             MetaRequestCode::PlanObjectWriteRoutesWide,
             MetaRequestCode::ReadManifestRoutesWide,
+            MetaRequestCode::ListChunkRoutes,
         ]
     }
 }

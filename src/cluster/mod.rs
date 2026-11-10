@@ -237,7 +237,7 @@ mod chunk_groups;
 #[cfg(feature = "meta-server")]
 mod chunk_group_route;
 #[cfg(feature = "meta-server")]
-pub use chunk_group_route::{ChunkGroupRoute, RouteBatch as ChunkRouteBatch};
+pub use chunk_group_route::{ChunkGroupRoute, RouteBatch as ChunkRouteBatch, RoutePage as ChunkRoutePage};
 #[cfg(feature = "meta-server")]
 mod chunk_catalog_outcome;
 #[cfg(feature = "meta-server")]

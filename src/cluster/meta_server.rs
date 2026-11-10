@@ -1008,6 +1008,24 @@ pub(super) fn apply_with_groups(
         crate::cluster::message::check_reply_size(reply.payload_len(), limit)?;
         return Ok(reply);
     }
+    if let MetaRequest::ListChunkRoutes { after, limit: page_limit } = &request {
+        let mut names = groups.groups()
+            .map(|group| group.placement_id.as_str())
+            .filter(|name| *name > after.as_str())
+            .take(*page_limit as usize + 1);
+        let ids: Vec<_> = names.by_ref().take(*page_limit as usize).collect();
+        let has_more = names.next().is_some();
+        let routes = ids.into_iter()
+            .map(|id| groups.routing_view(id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let reply = MetaReply::ChunkRoutePage(super::chunk_group_route::RoutePage {
+            version: 1,
+            routes,
+            has_more,
+        });
+        crate::cluster::message::check_reply_size(reply.payload_len(), limit)?;
+        return Ok(reply);
+    }
     if let MetaRequest::ReadChunkRoutes { placement_ids }
         | MetaRequest::ReadChunkRoutesWide { placement_ids } = &request
     {
@@ -1090,6 +1108,7 @@ pub(super) fn apply_to_meta(
         )),
 
         MetaRequest::ReadChunkGroup { .. } | MetaRequest::ReadChunkRoute { .. }
+        | MetaRequest::ListChunkRoutes { .. }
         | MetaRequest::ReadChunkRoutes { .. } | MetaRequest::ReadChunkRoutesWide { .. } => {
             Err(ObjectError::NotFound("chunk group missing".into()))
         }

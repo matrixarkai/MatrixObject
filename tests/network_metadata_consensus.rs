@@ -718,6 +718,54 @@ fn metadata_routes_object_writes_through_a_standalone_star_quorum() {
     exercise_star_object_route(40, 4);
 }
 
+#[test]
+fn chunk_route_listing_resumes_after_metadata_leader_loss() {
+    use matrixobjectstore_rs::cluster::{ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity};
+    let groups: Vec<_> = (0..7)
+        .map(|index| ChunkGroupConfig {
+            placement_id: format!("group-{index}"),
+            failure_domain: format!("rack-{index}"),
+            identity: Some(ChunkGroupIdentity {
+                version: 3,
+                group_id: index + 1,
+                node_id: 1,
+                capacity_bytes: 1 << 20,
+                max_pages: 128,
+                voters: vec![1, 2, 3],
+                peer_endpoints: Vec::new(),
+                bootstrap_voters: Vec::new(),
+                bootstrap_id: 0,
+            }),
+            api_endpoints: (0..3)
+                .map(|member| format!("127.0.0.1:{}", 24000 + index * 3 + member))
+                .collect(),
+            member_ids: (0..3)
+                .map(|member| format!("group-{index}-member-{member}"))
+                .collect(),
+        })
+        .collect();
+    let catalog = ChunkGroupCatalog::new(groups).unwrap();
+    let mut metadata = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let mut client = metadata.client(metadata.leader());
+    let first = client.list_chunk_routes(None, 3).unwrap();
+    assert!(first.has_more);
+    assert_eq!(first.routes.len(), 3);
+    assert_eq!(first.routes[0].group.as_ref().unwrap().placement_id, "group-0");
+    assert_eq!(first.routes[2].group.as_ref().unwrap().placement_id, "group-2");
+    let leader = metadata.leader();
+    metadata.kill(leader);
+    let mut client = metadata.client(metadata.leader());
+    let second = client.list_chunk_routes(Some("group-2"), 3).unwrap();
+    assert!(second.has_more);
+    assert_eq!(second.routes.len(), 3);
+    assert_eq!(second.routes[0].group.as_ref().unwrap().placement_id, "group-3");
+    let last = client.list_chunk_routes(Some("group-5"), 3).unwrap();
+    assert!(!last.has_more);
+    assert_eq!(last.routes.len(), 1);
+    assert_eq!(last.routes[0].group.as_ref().unwrap().placement_id, "group-6");
+    assert!(client.list_chunk_routes(Some("group-6"), 3).unwrap().routes.is_empty());
+}
+
 #[cfg(feature = "replica-server")]
 #[test]
 #[ignore = "explicit local distributed object scale run"]
