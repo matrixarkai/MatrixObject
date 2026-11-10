@@ -1453,7 +1453,32 @@ impl RemoteReplicaClient {
         }
     }
 
+    /// Close a namespace or retire a subset of its pinned immutable pages.
+    /// Inspect the fence after an uncertain reply before attempting another transition.
+    pub fn fence_namespace(&mut self, fence: crate::chunk_namespace_fence::NamespaceFence)
+        -> Result<crate::chunk_namespace_fence::NamespaceFence, ObjectError> {
+        fence.validate()?;
+        let request = ReplicaRequest::FenceNamespace(fence);
+        let ReplicaRequest::FenceNamespace(expected) = &request else { unreachable!() };
+        match self.call_ref(&request)? {
+            ReplicaReply::NamespaceFence(actual) if &actual == expected => Ok(actual),
+            _ => Err(ObjectError::Corruption("namespace fence reply differs from requested closure".into())),
+        }
+    }
+
+    pub fn read_namespace_fence(&mut self, namespace: &crate::ChunkId)
+        -> Result<crate::chunk_namespace_fence::NamespaceFence, ObjectError> {
+        match self.call(ReplicaRequest::ReadNamespaceFence { namespace: namespace.clone() })? {
+            ReplicaReply::NamespaceFence(actual) if actual.namespace()? == *namespace => Ok(actual),
+            _ => Err(ObjectError::Corruption("namespace fence reply names another namespace".into())),
+        }
+    }
+
     fn call(&mut self, request: ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
+        self.call_ref(&request)
+    }
+
+    fn call_ref(&mut self, request: &ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
         let Some((endpoints, options)) = self.catalog.clone() else {
             return match self.call_one(&request) {
                 Ok(ReplicaReply::NotLeader) => Err(not_leader()),
@@ -1474,6 +1499,7 @@ impl RemoteReplicaClient {
         let read_only = matches!(
             request,
             ReplicaRequest::Ping
+                | ReplicaRequest::ReadNamespaceFence { .. }
                 | ReplicaRequest::ReadChunk { .. }
                 | ReplicaRequest::ReadChunkBatch { .. }
                 | ReplicaRequest::DigestChunk { .. }

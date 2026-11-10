@@ -19,6 +19,7 @@ pub struct MatrixReplicaService {
     /// `MatrixChunkService` owns. This field was called `chunks` while holding
     /// neither.
     pages: BTreeMap<PageId, std::sync::Arc<PageState>>,
+    pub(crate) namespace_fences: crate::chunk_namespace_fence::NamespaceFenceCatalog,
     /// Whether this replica keeps the XOR sidecar for its pages.
     ///
     /// True only when this replica is the only copy. Above one replica a damaged
@@ -124,6 +125,7 @@ impl MatrixReplicaService {
     pub(crate) fn clone_for_raft_preparation(&self) -> Self {
         Self {
             pages: self.pages.clone(),
+            namespace_fences: self.namespace_fences.clone(),
             keep_ec_sidecar: self.keep_ec_sidecar,
             receipt_retention: self.receipt_retention,
             write_request_receipts: self.write_request_receipts.clone(),

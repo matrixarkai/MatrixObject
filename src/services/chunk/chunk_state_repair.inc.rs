@@ -7,6 +7,7 @@ impl MatrixReplicaService {
         mut state: PageState,
     ) -> Result<(), ObjectError> {
         self.ensure_writable()?;
+        self.validate_namespace_install(&page_id, &state)?;
         if state.fragment_bytes().is_empty() {
             if self.keep_ec_sidecar {
                 refresh_chunk_ec_sidecars(&mut state);
@@ -87,14 +88,10 @@ impl MatrixReplicaService {
         page_id: &PageId,
     ) -> Result<bool, ObjectError> {
         self.ensure_writable()?;
-        // NOT AN APPEND, so the batch undo cannot be a length here.
-        self.materialise_page_undo(page_id);
-        let accounting_before = self.page_accounting(page_id);
         let chunk = self
             .pages
-            .get_mut(page_id)
+            .get(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
-        let chunk = std::sync::Arc::make_mut(chunk);
         if etag_matches(&chunk.data, &chunk.checksum()) {
             return Ok(false);
         }
@@ -119,18 +116,21 @@ impl MatrixReplicaService {
                 "chunk EC sidecars cannot reconstruct expected payload".to_string(),
             ));
         }
-        chunk.data = std::sync::Arc::new(reconstructed);
-        chunk.write_sequence = chunk.write_sequence.saturating_add(1);
-        if self.keep_ec_sidecar {
-            refresh_chunk_ec_sidecars(chunk);
-        } else {
-            clear_chunk_ec_sidecars(chunk);
+        let mut repaired = (**chunk).clone();
+        repaired.data = std::sync::Arc::new(reconstructed);
+        // A closed namespace binds sequence as well as payload. Repair restores
+        // that identity; only an open namespace advances its sequence.
+        if self.namespace_fence(&page_id.chunk_id).is_none() {
+            repaired.write_sequence = repaired.write_sequence.saturating_add(1);
         }
+        if self.keep_ec_sidecar {
+            refresh_chunk_ec_sidecars(&mut repaired);
+        } else {
+            clear_chunk_ec_sidecars(&mut repaired);
+        }
+        self.install_chunk_state(page_id.clone(), repaired)?;
         self.ec_reconstructed_reads
             .set(self.ec_reconstructed_reads.get().saturating_add(1));
-        self.invalidate_chunk_cache(page_id, 0, u64::MAX);
-        // The payload was rebuilt from the sidecar, so its length can have moved.
-        self.reaccount_page(page_id, accounting_before);
         Ok(true)
     }
 

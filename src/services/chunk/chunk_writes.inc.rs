@@ -8,6 +8,7 @@ impl MatrixReplicaService {
         data: &[u8],
     ) -> Result<(), ObjectError> {
         self.ensure_writable()?;
+        self.ensure_namespace_open(&page_id.chunk_id)?;
         let end = validate_pipeline_range("chunk write", offset, data.len() as u64)?;
         let projected_len = self
             .pages
@@ -227,6 +228,7 @@ impl MatrixReplicaService {
         record_internal_receipt: bool,
     ) -> Result<ReplicaWriteBatchStats, ObjectError> {
         self.ensure_writable()?;
+        self.ensure_namespace_open(&page_id.chunk_id)?;
         let mut selected = Vec::with_capacity(writes.len());
         let mut stats = ReplicaWriteBatchStats::default();
         let mut selected_strictly_ordered = true;

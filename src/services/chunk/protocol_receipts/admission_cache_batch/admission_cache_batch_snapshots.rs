@@ -3,6 +3,7 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplicaServiceSnapshot {
     pub pages: BTreeMap<PageId, std::sync::Arc<PageState>>,
+    pub namespace_fences: crate::chunk_namespace_fence::NamespaceFenceCatalog,
     pub receipt_retention: usize,
     pub write_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaWriteReceipt>>,
     pub discard_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaDiscardReceipt>>,

@@ -5,6 +5,7 @@ pub mod manifest_retention;
 pub mod staged_allocation;
 pub mod manifest_copy;
 pub mod outcome;
+pub mod chunk_namespace_fence;
 pub mod placement_outcome;
 
 use std::cell::{Cell, RefCell};

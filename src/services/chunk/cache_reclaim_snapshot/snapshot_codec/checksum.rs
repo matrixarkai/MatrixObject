@@ -109,6 +109,11 @@ impl ReplicaServiceSnapshot {
             append_string(&mut material, idempotency_key);
             append_chunk_repair_receipt(&mut material, receipt);
         }
+        if !self.namespace_fences.is_empty() {
+            let fences = self.namespace_fences.to_bytes();
+            append_u64(&mut material, fences.len() as u64);
+            material.extend_from_slice(&fences);
+        }
         digest = fnv1a64_resumed(digest, &material);
         let mut checksum = String::with_capacity(24);
         append_etag_of_digest(&mut checksum, digest);

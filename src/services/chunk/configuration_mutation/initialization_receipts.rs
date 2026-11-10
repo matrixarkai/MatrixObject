@@ -21,6 +21,7 @@ impl MatrixReplicaService {
     pub fn new() -> Self {
         Self {
             pages: BTreeMap::new(),
+            namespace_fences: Default::default(),
             // Alone until told otherwise: for a single replica the sidecar is the
             // only recovery there is.
             keep_ec_sidecar: true,

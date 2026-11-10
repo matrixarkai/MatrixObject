@@ -563,6 +563,22 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus automatic_staged_expiry_resumes_after_outage_requires_quorum_and_keeps_idle_wal_stable -- --exact | tee /tmp/automatic-staged-expiry.log
           grep -q 'test result: ok. 1 passed' /tmp/automatic-staged-expiry.log
 
+      - name: namespace fences bind immutable repair and survive checkpoints
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib chunk_namespace_fence::tests -- --test-threads=1 | tee /tmp/namespace-fences.log
+          grep -q '^test result: ok. 4 passed' /tmp/namespace-fences.log
+          cargo test --locked --all-features --lib cluster::chunk_checkpoint::tests::namespace_fences_survive_streamed_checkpoint_and_keep_repair_immutable -- --exact | tee /tmp/namespace-fences.log
+          grep -q '^test result: ok. 1 passed' /tmp/namespace-fences.log
+
+      - name: namespace fences recover journals and lagging Raft voters
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test chunk_namespace_fencing | tee /tmp/namespace-fences.log
+          grep -q '^test result: ok. 1 passed' /tmp/namespace-fences.log
+          cargo test --locked --all-features --test network_chunk_consensus namespace_fences_transfer_to_lagging_voters_and_survive_leader_loss_and_total_restart -- --exact | tee /tmp/namespace-fences.log
+          grep -q '^test result: ok. 1 passed' /tmp/namespace-fences.log
+
       - name: sequential writes reuse one freshly routed group connection
         run: |
           set -o pipefail

@@ -43,6 +43,7 @@ impl MatrixReplicaService {
         length: u64,
     ) -> Result<(), ObjectError> {
         self.ensure_writable()?;
+        self.ensure_namespace_open(&page_id.chunk_id)?;
         if length == 0 {
             return Ok(());
         }
@@ -315,6 +316,7 @@ impl MatrixReplicaService {
         record_internal_receipt: bool,
     ) -> Result<ReplicaDiscardBatchStats, ObjectError> {
         self.ensure_writable()?;
+        self.ensure_namespace_open(&page_id.chunk_id)?;
         let logical_length = self
             .pages
             .get(page_id)
