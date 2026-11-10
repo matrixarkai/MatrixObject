@@ -703,6 +703,7 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::ReadChunkRoute { .. }
         | MetaRequest::ReadChunkRoutes { .. }
         | MetaRequest::ReadChunkRoutesWide { .. }
+        | MetaRequest::ListChunkRoutes { .. }
         | MetaRequest::PlanObjectPlacement { .. }
         | MetaRequest::PlanObjectPlacementRoutes { .. }
         | MetaRequest::PlanObjectWriteRoutes { .. }

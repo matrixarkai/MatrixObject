@@ -129,6 +129,68 @@ pub(super) struct RouteReads {
     #[prost(string, repeated, tag = "2")]
     pub placement_ids: Vec<String>,
 }
+
+/// Resume strictly after one group ID, with a bounded page of route records.
+#[derive(Clone, PartialEq, Message)]
+pub(super) struct RoutePageRead {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(string, tag = "2")]
+    pub after: String,
+    #[prost(uint32, tag = "3")]
+    pub limit: u32,
+}
+impl RoutePageRead {
+    pub(super) fn from_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
+        if bytes.len() > 256 {
+            return Err(invalid("route listing request exceeds bound"));
+        }
+        let request = Self::decode(bytes)
+            .map_err(|_| invalid("invalid route listing request protobuf"))?;
+        if request.version != 1
+            || !(1..=32).contains(&request.limit)
+            || request.after.len() > 128
+            || !request.after.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+            || request.encode_to_vec() != bytes
+        {
+            return Err(invalid("invalid route listing request"));
+        }
+        Ok(request)
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Message)]
+pub struct RoutePage {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(message, repeated, tag = "2")]
+    pub routes: Vec<ChunkGroupRoute>,
+    #[prost(bool, tag = "3")]
+    pub has_more: bool,
+}
+impl RoutePage {
+    pub(super) fn from_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
+        if bytes.len() > 32 * 65536 + 64 {
+            return Err(invalid("route listing reply exceeds bound"));
+        }
+        let page = Self::decode(bytes)
+            .map_err(|_| invalid("invalid route listing reply protobuf"))?;
+        let names: Vec<_> = page.routes.iter()
+            .map(|route| route.group.as_ref().map(|group| group.placement_id.as_str()))
+            .collect();
+        if page.version != 1
+            || page.routes.len() > 32
+            || (page.has_more && page.routes.is_empty())
+            || page.routes.iter().any(|route| route.membership_fence().is_err())
+            || names.iter().any(Option::is_none)
+            || names.windows(2).any(|pair| pair[0] >= pair[1])
+            || page.encode_to_vec() != bytes
+        {
+            return Err(invalid("invalid route listing reply"));
+        }
+        Ok(page)
+    }
+}
 impl RouteReads {
     pub(super) fn from_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
         Self::from_payload_with_max(bytes, 4)
@@ -262,6 +324,28 @@ mod tests {
                 member_ids: (1..=64).map(|i| format!("member-{i}")).collect(),
             }),
         }
+    }
+
+    #[test]
+    fn route_pages_bound_cursors_counts_and_order() {
+        let request = RoutePageRead { version: 1, after: "group-a".into(), limit: 2 };
+        assert_eq!(RoutePageRead::from_payload(&request.encode_to_vec()).unwrap(), request);
+        for invalid_request in [
+            RoutePageRead { limit: 0, ..request.clone() },
+            RoutePageRead { limit: 33, ..request.clone() },
+            RoutePageRead { after: "bad/name".into(), ..request.clone() },
+        ] {
+            assert!(RoutePageRead::from_payload(&invalid_request.encode_to_vec()).is_err());
+        }
+        let mut second = route();
+        second.group.as_mut().unwrap().placement_id = "group-b".into();
+        let page = RoutePage { version: 1, routes: vec![route(), second], has_more: false };
+        assert_eq!(RoutePage::from_payload(&page.encode_to_vec()).unwrap(), page);
+        let mut reversed = page.clone();
+        reversed.routes.reverse();
+        assert!(RoutePage::from_payload(&reversed.encode_to_vec()).is_err());
+        let empty_more = RoutePage { version: 1, routes: Vec::new(), has_more: true };
+        assert!(RoutePage::from_payload(&empty_more.encode_to_vec()).is_err());
     }
 
     #[test]
