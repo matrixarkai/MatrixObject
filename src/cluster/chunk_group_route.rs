@@ -68,7 +68,7 @@ impl ChunkGroupRoute {
             })
             .collect()
     }
-    /// Fixed standalone star sockets and their majority quorum.
+    /// Fixed standalone star sockets and their durable write threshold.
     pub fn standalone_star_route(
         &self,
     ) -> Result<Option<(Vec<String>, usize)>, ObjectError> {
@@ -77,7 +77,7 @@ impl ChunkGroupRoute {
         if !identity.is_standalone_star() {
             return Ok(None);
         }
-        let quorum = members.len() / 2 + 1;
+        let quorum = members.len();
         Ok(Some((
             members.into_iter().map(|(endpoint, _)| endpoint).collect(),
             quorum,
@@ -349,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn standalone_star_route_uses_all_fixed_members_and_majority() {
+    fn standalone_star_route_requires_all_fixed_members() {
         let mut route = route();
         let group = route.group.as_mut().unwrap();
         let identity = group.identity.as_mut().unwrap();
@@ -364,7 +364,7 @@ mod tests {
         let endpoints = group.api_endpoints.clone();
         assert_eq!(
             route.standalone_star_route().unwrap(),
-            Some((endpoints, 2))
+            Some((endpoints, 3))
         );
         assert_eq!(
             ChunkGroupRoute::from_payload(&route.encode_to_vec()).unwrap(),

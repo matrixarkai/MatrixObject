@@ -453,7 +453,7 @@ impl RemoteReplicaSet {
         })
     }
 
-    /// Connect a routed star group when its configured majority is available.
+    /// Connect a routed star group when its smaller operation quorum is available.
     ///
     /// The complete membership and its quorums remain fixed. Endpoints that are
     /// still connecting or unavailable remain in the membership. The call returns
@@ -486,7 +486,7 @@ impl RemoteReplicaSet {
             }
         }
 
-        let required = write_quorum.max(read_quorum);
+        let required = write_quorum.min(read_quorum);
         let mut pending = Self::start_routed_connects(endpoints.to_vec(), options.clone())?;
         let mut connected = Vec::new();
         let mut unavailable = Vec::new();
@@ -908,11 +908,11 @@ impl RemoteReplicaSet {
     }
 
     fn reconnect_routed(&mut self) {
-        // Optional members must not put their connect timeout on the quorum
-        // read/write path. Only a set that cannot currently reach quorum waits.
+        // A read can proceed with fewer members than a write. Do not wait for
+        // the write threshold before letting an available read use its quorum.
         self.retire_failed_routed_connections();
-        let required = self.write_quorum.max(self.read_quorum);
-        self.collect_routed_reconnect(self.replicas.len() < required);
+        let required = self.write_quorum.min(self.read_quorum);
+        self.collect_routed_reconnect(required);
         let Some(state) = self.routed_reconnect.as_ref() else {
             return;
         };
@@ -945,7 +945,7 @@ impl RemoteReplicaSet {
         }
     }
 
-    fn collect_routed_reconnect(&mut self, wait: bool) {
+    fn collect_routed_reconnect(&mut self, required: usize) {
         let mut pending = self
             .routed_reconnect
             .as_mut()
@@ -953,9 +953,8 @@ impl RemoteReplicaSet {
         let Some(mut pending) = pending.take() else {
             return;
         };
-        let required = self.write_quorum.max(self.read_quorum);
         loop {
-            let next = if wait && self.replicas.len() < required {
+            let next = if self.replicas.len() < required {
                 match pending.receiver.recv() {
                     Ok(result) => result,
                     Err(_) => {
@@ -1067,7 +1066,7 @@ impl RemoteReplicaSet {
 
     fn reconnect_routed_now(&mut self) {
         self.start_routed_reconnect();
-        self.collect_routed_reconnect(true);
+        self.collect_routed_reconnect(self.write_quorum.min(self.read_quorum));
     }
 
     fn start_routed_reconnect(&mut self) {
@@ -1289,6 +1288,9 @@ impl RemoteReplicaSet {
             });
         if fresh_whole_pages {
             self.reconnect_failed();
+            if self.routed_reconnect.is_some() && self.replicas.len() < self.write_quorum {
+                self.collect_routed_reconnect(self.write_quorum);
+            }
             let group = writes
                 .clone()
                 .enumerate()

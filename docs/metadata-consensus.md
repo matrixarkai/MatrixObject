@@ -657,7 +657,8 @@ refusal and removal of the serving leader. These are local process simulations.
 The metadata placement catalog accepts three route identities. Version 1 is a
 fixed Raft voter set. Version 2 uses committed membership health to select its
 current incoming and outgoing Raft voters and exclude learners. Version 3 is a
-fixed standalone star set whose API members use majority read and write quorums;
+fixed standalone star set. Routed object writes require every member to
+acknowledge durable data, while authenticated object reads need one member;
 it carries no Raft peer or bootstrap fields. Metadata-routed object reads and
 writes dispatch to the corresponding client without changing versions 1 or 2.
 API endpoints remain explicitly configured, and group inventories retain the

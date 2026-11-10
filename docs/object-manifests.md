@@ -479,12 +479,12 @@ route does not prove data-group availability. A caller obtains a fresh route for
 a later operation when membership changes; uncertain writes are never replayed.
 
 Identity version 3 selects a fixed standalone star route instead. The object
-client connects every configured API member, fences each page by majority state,
-and requires a majority conditional-write acknowledgement. Reads vote exact
-sequence, checksum and bytes. After the set has been established, one unavailable
-member does not prevent later reads or writes; failed sockets are reconnected only
-between operations. This is page-level quorum coordination, not a transaction
-across metadata and data groups.
+client fans out each fresh page to every configured API member and requires
+durable acknowledgement from all of them. Authenticated object reads can use
+one matching copy. A missing member prevents new object writes but does not
+prevent reads of committed objects. Failed sockets reconnect between operations.
+This is page-level quorum coordination, not a transaction across metadata and
+data groups.
 
 ## Connection failures during identity discovery
 
