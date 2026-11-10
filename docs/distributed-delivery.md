@@ -21,6 +21,8 @@ therefore leave existing objects readable while preventing new publication.
 Digest batches contain at most eight ranges; the object writer retains a
 32-group connection cache. Repair defaults to 16 pages per inventory batch,
 four workers in all-groups mode and a five-minute completed-sweep interval.
+Each repair worker retains at most 32 connected groups by default; connection
+eviction preserves traversal progress.
 These limits control different resources and must not be increased together
 without measuring memory, open sockets and foreground latency.
 

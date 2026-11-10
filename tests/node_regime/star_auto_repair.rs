@@ -39,6 +39,7 @@ fn worker_repairs_eight_star_groups_across_metadata_failover() {
 }
 
 fn exercise_all_groups(group_count: usize) {
+    let pages = 4;
     let reservations: Vec<_> = (0..group_count * 3)
         .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
         .collect();
@@ -86,20 +87,22 @@ fn exercise_all_groups(group_count: usize) {
         )
     };
     let mut chunks: Vec<_> = (0..group_count * 3).map(start).collect();
-    let page = |group: usize| PageId {
+    let page = |group: usize, index: u64| PageId {
         chunk_id: ChunkId::new(1, group as u64 + 80).unwrap(),
-        page_index: 0,
+        page_index: index,
     };
     let options = ReplicaClientOptions::default();
     let write_sources = |group: usize| {
         for member in 0..2 {
-            RemoteReplicaClient::connect(&endpoints[group * 3 + member], &options)
-                .unwrap()
-                .write_chunk(page(group), 0, &[group as u8 + 10; 64])
-                .unwrap();
+            let mut client = RemoteReplicaClient::connect(&endpoints[group * 3 + member], &options).unwrap();
+            for index in 0..pages {
+                client.write_chunk(page(group, index), 0, &[group as u8 + 10; 64]).unwrap();
+            }
         }
     };
-    write_sources(0);
+    for group in 0..group_count {
+        write_sources(group);
+    }
     let metadata_endpoints = metadata
         .api_addresses
         .iter()
@@ -111,7 +114,8 @@ fn exercise_all_groups(group_count: usize) {
             .env("MATRIXOBJECT_REPAIR_METADATA_ENDPOINTS", metadata_endpoints)
             .env("MATRIXOBJECT_REPAIR_ALL_GROUPS", "1")
             .env_remove("MATRIXOBJECT_REPAIR_GROUP")
-            .env("MATRIXOBJECT_REPAIR_WORKERS", "4")
+            .env("MATRIXOBJECT_REPAIR_WORKERS", if group_count == 2 { "1" } else { "4" })
+            .env("MATRIXOBJECT_REPAIR_ACTIVE_GROUPS", "1")
             .env("MATRIXOBJECT_REPAIR_BATCH_PAGES", "1")
             .env("MATRIXOBJECT_REPAIR_INTERVAL_MS", "100")
             .env("MATRIXOBJECT_REPAIR_SWEEP_INTERVAL_MS", "1000")
@@ -120,7 +124,7 @@ fn exercise_all_groups(group_count: usize) {
             .spawn()
             .unwrap(),
     );
-    let mut wait_for = |group: usize| {
+    let mut wait_for = |group: usize, through: u64| {
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             assert!(
@@ -130,8 +134,13 @@ fn exercise_all_groups(group_count: usize) {
             if let Ok(mut destination) =
                 RemoteReplicaClient::connect(&endpoints[group * 3 + 2], &options)
             {
-                if let Ok(read) = destination.read_chunk(&page(group), 0, 64) {
-                    assert_eq!(read.data, vec![group as u8 + 10; 64]);
+                let complete = (0..=through).all(|index| {
+                    destination.read_chunk(&page(group, index), 0, 64).is_ok_and(|read| {
+                        assert_eq!(read.data, vec![group as u8 + 10; 64]);
+                        true
+                    })
+                });
+                if complete {
                     break;
                 }
             }
@@ -139,15 +148,23 @@ fn exercise_all_groups(group_count: usize) {
             std::thread::sleep(Duration::from_millis(25));
         }
     };
-    wait_for(0);
+    wait_for(0, 0);
     let leader = metadata.leader();
     metadata.kill(leader);
-    for group in 1..group_count {
-        write_sources(group);
+    for group in 0..group_count {
+        wait_for(group, pages - 1);
     }
-    for group in 1..group_count {
-        wait_for(group);
-    }
+    let workers = if group_count == 2 { 1 } else { 4 };
+    let descriptors: Vec<_> = std::fs::read_dir(format!("/proc/{}/fd", worker.0.id())).unwrap()
+        .filter_map(Result::ok)
+        .filter_map(|entry| std::fs::read_link(entry.path()).ok())
+        .filter(|target| target.to_string_lossy().starts_with("socket:["))
+        .collect();
+    let sockets = descriptors.iter().collect::<std::collections::BTreeSet<_>>().len();
+    // Three chunk sockets per active group; allow two metadata sockets per
+    // thread while a new leader connection replaces the previous connection.
+    assert!(sockets <= workers * 5, "repair retained {sockets} sockets for {workers} workers");
+    assert!(descriptors.len() <= workers * 10, "repair retained too many socket descriptors");
     drop(worker);
     chunks.clear();
     chunks = (0..group_count * 3).map(start).collect();
@@ -156,16 +173,17 @@ fn exercise_all_groups(group_count: usize) {
             let mut reader =
                 RemoteReplicaClient::connect(&chunks[group * 3 + member].endpoint, &options)
                     .unwrap();
-            assert_eq!(
-                reader.read_chunk(&page(group), 0, 64).unwrap().data,
-                vec![group as u8 + 10; 64]
-            );
+            for index in 0..pages {
+                assert_eq!(reader.read_chunk(&page(group, index), 0, 64).unwrap().data,
+                    vec![group as u8 + 10; 64]);
+            }
         }
     }
     println!(
-        "STAR_GROUP_REPAIR groups={group_count} chunk_processes={} verified_copies={}",
+        "STAR_GROUP_REPAIR groups={group_count} pages_per_group={pages} active_groups_per_worker=1 sockets={sockets} socket_descriptors={} chunk_processes={} verified_copies={}",
+        descriptors.len(),
         group_count * 3,
-        group_count * 3
+        group_count * 3 * pages as usize
     );
 }
 
