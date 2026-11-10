@@ -69,7 +69,7 @@ impl ChunkGroupRoute {
             .collect()
     }
     /// Fixed standalone star sockets and their majority quorum.
-    pub(crate) fn standalone_star_route(
+    pub fn standalone_star_route(
         &self,
     ) -> Result<Option<(Vec<String>, usize)>, ObjectError> {
         let members = self.active_members()?;

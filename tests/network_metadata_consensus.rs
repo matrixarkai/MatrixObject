@@ -2161,3 +2161,7 @@ fn metadata_membership_never_acknowledges_without_quorum() {
 #[cfg(feature = "replica-server")]
 #[path = "node_regime/star_repair_metadata_scale.rs"]
 mod star_repair_metadata_scale;
+
+#[cfg(feature = "replica-server")]
+#[path = "node_regime/star_auto_repair.rs"]
+mod star_auto_repair;
