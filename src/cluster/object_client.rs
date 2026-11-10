@@ -650,11 +650,8 @@ impl RemoteMetaClient {
         }
         self.check_operation_deadline().map_err(&staged_error)?;
         let outcome = ManifestOutcome::decide(expected, staged.clone()).map_err(&staged_error)?;
-        let (publication, unadmitted) = if let Some(allocation) = owned {
-            self.publish_staged_manifest_attempt(allocation.allocation_id, outcome.clone(), options.update_time_ms)
-        } else {
-            self.publish_manifest_attempt(outcome.clone(), options.update_time_ms)
-        };
+        let (publication, unadmitted, outcome) = self.publish_preserving_outcome(
+            outcome, owned.map(|allocation| allocation.allocation_id), options.update_time_ms);
         match publication {
             Ok(value) => Ok(value),
             Err(error) if unadmitted => Err(staged_error(error)),
@@ -721,8 +718,8 @@ impl RemoteMetaClient {
             copied.key = key.into();
             copied.generation = generation;
             let outcome = ManifestOutcome::decide(expected, copied.clone()).map_err(before)?;
-            let (publication, unadmitted) = client.publish_manifest_attempt(
-                outcome.clone(), options.update_time_ms,
+            let (publication, unadmitted, outcome) = client.publish_preserving_outcome(
+                outcome, None, options.update_time_ms,
             );
             match publication {
                 Ok(value) => Ok(value),
@@ -1028,11 +1025,8 @@ impl RemoteMetaClient {
             }
         }
         self.check_operation_deadline().map_err(&staged_error)?;
-        let (publication, unadmitted) = if let Some(allocation) = owned {
-            self.publish_staged_manifest_attempt(allocation.allocation_id, outcome.clone(), options.update_time_ms)
-        } else {
-            self.publish_manifest_attempt(outcome.clone(), options.update_time_ms)
-        };
+        let (publication, unadmitted, outcome) = self.publish_preserving_outcome(
+            outcome, owned.map(|allocation| allocation.allocation_id), options.update_time_ms);
         match publication {
             Ok(value) => Ok(value),
             Err(error) if unadmitted => Err(staged_error(error)),
