@@ -1518,6 +1518,7 @@ mod coupled_groups {
                     length: 4,
                     write_sequence: 1,
                     data_checksum: checksum(&bytes),
+                    data_sha256: Vec::new(),
                 }],
             };
             let outcome = ManifestOutcome::decide(current.clone(), manifest.clone()).unwrap();
@@ -1785,6 +1786,7 @@ mod coupled_groups {
                 data_checksum: bytes.iter().fold(0xcbf29ce484222325u64, |h, b| {
                     (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
                 }),
+                data_sha256: Vec::new(),
             });
         }
         let manifest = ObjectManifest {

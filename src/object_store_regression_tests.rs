@@ -55111,6 +55111,7 @@ pub(crate) fn manifest_publication_fixture() -> (
         extents: vec![ObjectExtent {
             group: "group-a".into(), volume_id: 1, chunk_id: 1, page_index: 0,
             object_offset: 0, page_offset: 0, length: 4, write_sequence: 1, data_checksum: 42,
+            data_sha256: Vec::new(),
         }],
     };
     let create = PlacementOutcome::publish_manifest(
@@ -55158,6 +55159,7 @@ fn striped_manifest_charges_each_group_for_its_own_extents() {
                 group: group.into(), volume_id: 1, chunk_id: 1, page_index: index as u64,
                 object_offset: index as u64 * 4, page_offset: 0, length: 4,
                 write_sequence: 1, data_checksum: 42,
+                data_sha256: Vec::new(),
             }
         }).collect(),
     };

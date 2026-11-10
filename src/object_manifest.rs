@@ -65,6 +65,9 @@ pub struct ObjectExtent {
     pub write_sequence: u64,
     #[prost(fixed64, tag = "9")]
     pub data_checksum: u64,
+    /// Empty on manifests written before authenticated extent reads.
+    #[prost(bytes = "vec", tag = "10")]
+    pub data_sha256: Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Message)]
 pub struct ObjectManifest {
@@ -93,7 +96,7 @@ impl ObjectManifest {
     pub fn validate(&self) -> Result<(), ObjectError> {
         crate::validate_bucket(&self.bucket)?;
         crate::validate_key(&self.key)?;
-        if self.format_version != 1
+        if !(1..=2).contains(&self.format_version)
             || self.generation == 0
             || self.extents.len() > 4096
             || self.encoded_len() > MAX_MANIFEST
@@ -117,6 +120,8 @@ impl ObjectManifest {
                     .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
                 || extent.length == 0
                 || extent.write_sequence == 0
+                || (self.format_version == 1 && !extent.data_sha256.is_empty())
+                || (self.format_version == 2 && extent.data_sha256.len() != 32)
                 || extent.object_offset != offset
                 || extent
                     .page_offset
@@ -380,6 +385,7 @@ mod tests {
                 length: 4,
                 write_sequence: 1,
                 data_checksum: 42,
+                data_sha256: Vec::new(),
             }],
         }
     }
@@ -388,6 +394,20 @@ mod tests {
         let original = manifest(1);
         let bytes = original.to_bytes().unwrap();
         assert_eq!(ObjectManifest::from_bytes(&bytes).unwrap(), original);
+        let mut authenticated = original.clone();
+        authenticated.format_version = 2;
+        authenticated.extents[0].data_sha256 = vec![7; 32];
+        assert_eq!(
+            ObjectManifest::from_bytes(&authenticated.to_bytes().unwrap()).unwrap(),
+            authenticated
+        );
+        authenticated.extents[0].data_sha256.pop();
+        assert!(authenticated.validate().is_err());
+        authenticated.extents[0].data_sha256.clear();
+        assert!(authenticated.validate().is_err());
+        authenticated.format_version = 1;
+        authenticated.extents[0].data_sha256 = vec![7; 32];
+        assert!(authenticated.validate().is_err());
         for end in 0..bytes.len() {
             assert!(ObjectManifest::from_bytes(&bytes[..end]).is_err());
         }

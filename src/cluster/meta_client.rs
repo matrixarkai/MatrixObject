@@ -1031,7 +1031,7 @@ impl RemoteMetaClient {
                         ))
                     })
                     .collect::<Result<Vec<_>, ObjectError>>()?;
-                let reads = connection.read_chunks(&pages)?;
+                let reads = connection.read_chunks(&pages, batch)?;
                 for (extent, read) in batch.iter().zip(reads) {
                     let checksum = read.data.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
                         (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
@@ -1755,6 +1755,7 @@ mod operation_deadline_tests {
                 length: 1,
                 write_sequence: 1,
                 data_checksum: 1,
+                data_sha256: Vec::new(),
             }).collect(),
             deleted: false,
         };
