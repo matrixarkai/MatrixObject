@@ -182,6 +182,19 @@ fn replacement_load(group_count: usize, writes: u64, concurrent: bool, rounds: u
                     .unwrap();
                 assert_eq!(data, load_data_sized(*n, placement.length));
                 assert_eq!(manifest.generation, placement.version);
+                let offset = 4095;
+                let length = 8194;
+                let (range_manifest, range) = meta.read_object_range(
+                    &placement.bucket, &placement.key, offset, length,
+                    length as usize, &chunk_options(),
+                ).unwrap();
+                assert_eq!(range_manifest, manifest);
+                assert_eq!(range, data[offset as usize..(offset + length) as usize]);
+                let (_, tail) = meta.read_object_range(
+                    &placement.bucket, &placement.key, placement.length - 1, 1,
+                    1, &chunk_options(),
+                ).unwrap();
+                assert_eq!(tail, data[data.len() - 1..]);
                 count += 1;
             }
             count
