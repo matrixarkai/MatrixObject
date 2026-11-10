@@ -291,9 +291,10 @@ changes, quorum refusal, uncertain commit replies and preservation of newer stat
 `RemoteReplicaSet::repair_inventory_batch(after, limit)` repairs a bounded union
 of page identities from every configured member. `after` is an exclusive page
 cursor; `limit` must be 1 through 64. Every member must answer its inventory before
-any page mutation begins. The merge retains at most `limit` candidate identities
-plus one bounded member response, rather than collecting the complete cluster
-inventory. Repair still applies the source-quorum and destination checks above.
+any page mutation begins. Inventory requests are issued together and use the
+configured read timeout. The merge retains at most `limit` candidate identities
+while processing bounded member responses, rather than collecting the complete
+cluster inventory. Repair still applies the source-quorum and destination checks above.
 Pages are processed sequentially; this is a page-count bound, not a total network
 byte budget or an end-to-end deadline.
 

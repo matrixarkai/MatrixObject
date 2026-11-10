@@ -2257,10 +2257,48 @@ impl RemoteReplicaSet {
             ));
         }
         self.reconnect_failed();
+        let request = ReplicaRequest::PageInventory {
+            after: after.cloned(),
+            limit: limit as u64,
+        };
+        let deadline = self.read_wave_deadline()?;
         let mut selected = BTreeSet::new();
         let mut has_more = false;
-        for replica in &mut self.replicas {
-            let inventory = replica.page_inventory(after, limit as u64)?;
+        let mut first_error = None;
+        let mut answers = 0;
+        self.fan_out_each_before(&request, None, deadline, None, |_, reply| {
+            let inventory = match reply {
+                Ok(ReplicaReply::PageInventory(inventory)) => inventory,
+                Ok(other) => {
+                    first_error.get_or_insert_with(|| {
+                        ObjectError::Corruption(format!(
+                            "unexpected page inventory reply: {other:?}"
+                        ))
+                    });
+                    return;
+                }
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    return;
+                }
+            };
+            if inventory.entries.len() > limit
+                || (inventory.has_more && inventory.entries.len() != limit)
+                || after.is_some_and(|cursor| {
+                    inventory
+                        .entries
+                        .first()
+                        .is_some_and(|(id, _)| id <= cursor)
+                })
+            {
+                first_error.get_or_insert_with(|| {
+                    ObjectError::Corruption(
+                        "page inventory does not respect the requested cursor or limit".into(),
+                    )
+                });
+                return;
+            }
+            answers += 1;
             has_more |= inventory.has_more;
             for (page, _) in inventory.entries {
                 selected.insert(page);
@@ -2269,6 +2307,15 @@ impl RemoteReplicaSet {
                     has_more = true;
                 }
             }
+        });
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        if answers != self.replicas.len() {
+            return Err(ObjectError::Corruption(format!(
+                "page inventory answered by {answers} of {} replicas",
+                self.replicas.len()
+            )));
         }
         let mut batch = PageRepairBatch {
             pages: Vec::with_capacity(selected.len()),
