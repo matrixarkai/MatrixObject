@@ -804,6 +804,18 @@ each pending response retains at most its configured payload bound plus its fram
 header. Reconnecting failed sockets still happens before the exchange and uses
 the configured connection limits.
 
+An ignored release measurement compares construction of the same 8,384,512-byte
+conditional batch using owned page copies and a copied shared slice against
+borrowed page bytes encoded into one shared vector. It alternates the two paths
+over 24 samples per run. Four WSL runs recorded median construction times of
+22.5–25.9 ms for the owned path and 6.2–7.6 ms for the borrowed path. This
+isolates local encoding and memory copies; it does not measure socket sends,
+metadata work, durable sync, or end-to-end object latency. Reproduce it with:
+
+```sh
+cargo test --release --lib --features chunk-consensus,metadata-consensus star_frame_construction_measurement -- --ignored --nocapture
+```
+
 A Linux socket test restricts the first member's receive window and withholds
 reads while an 8 MiB mutation is sent to three members. Both healthy members must
 receive and acknowledge the complete request before the stalled member's send
