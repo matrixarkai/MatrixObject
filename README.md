@@ -6,6 +6,31 @@ and open to issues and pull requests from anyone.
 Objects are stored across replicated nodes with quorum writes, quorum reads,
 per-page checksums and background repair.
 
+## Related Projects
+
+[TemporalStore](https://github.com/matrixarkai/TemporalStore) serves temporal features and context;
+[MatrixCache](https://github.com/matrixarkai/matrixcache) provides embedded tiered caching;
+[MatrixRaft](https://github.com/matrixarkai/matrixraft) provides consensus;
+[MatrixArk](https://github.com/matrixarkai/matrixark) provides the Python context runtime; and
+[MatrixAdsDemo](https://github.com/matrixarkai/MatrixAdsDemo) demonstrates ads serving.
+Each project is independently usable and Apache-2.0 licensed.
+
+## Start Here
+
+| Task | Guide |
+|---|---|
+| Build and configure the store | [Building](#building) and [configuration](docs/configuring.md) |
+| Serve object requests | [Network access](#reaching-the-store-over-a-network) and [API TLS](docs/api-tls.md) |
+| Run metadata independently | [Metadata consensus and recovery](docs/metadata-consensus.md) |
+| Place data on independent replicas | [Chunk consensus](docs/chunk-consensus.md) and [group catalog](docs/chunk-group-catalog.md) |
+| Understand publication and reads | [Object manifests](docs/object-manifests.md) and [authenticated reads](docs/authenticated-object-reads.md) |
+| Plan distributed deployment work | [Distributed delivery](docs/distributed-delivery.md) |
+
+The local store API below is an embedding example, not a distributed deployment recipe.
+Building the service binaries does not configure remote placement, metadata consensus,
+TLS, or repair scheduling. Select and configure those paths explicitly using the guides
+above; local multi-process results are not independent-host production qualification.
+
 ```rust
 use matrixobjectstore_rs::{MatrixObjectStore, StoreOptions};
 
