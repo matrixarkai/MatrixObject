@@ -943,9 +943,18 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
         first_bytes
     );
     let second_bytes = b"all members acknowledge writes";
-    assert!(client
+    let candidate = match client
         .write_object("star", "second", None, second_bytes, &options)
-        .is_err());
+        .unwrap_err() {
+        matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication {
+            staged: Some(candidate), ..
+        } => *candidate,
+        error => panic!("missing staged candidate: {error:?}"),
+    };
+    assert!(client.resume_unpublished_object(
+        None, candidate.clone(), second_bytes, &options,
+    ).is_err());
+    assert!(client.read_manifest("star", "second").is_err());
 
     chunks[0] = processes::start(
         env!("CARGO_BIN_EXE_chunkserver"),
@@ -960,9 +969,24 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     assert_eq!(chunks[0].endpoint, endpoints[0]);
     drop(client);
     let mut client = connect_metadata();
-    let second = client
-        .write_object("star", "second", None, second_bytes, &options)
-        .unwrap();
+    assert!(client.resume_unpublished_object(
+        None, candidate.clone(), second_bytes, &options,
+    ).is_err());
+    assert!(client.read_manifest("star", "second").is_err());
+    let mut repair = RemoteReplicaSet::connect(&endpoints, 2, 2, &options.replica).unwrap();
+    let mut cursor = None;
+    loop {
+        let batch = repair.repair_inventory_batch(cursor.as_ref(), 64).unwrap();
+        assert!(!batch.blocked);
+        assert!(batch.pages.iter().all(|entry| entry.result.is_ok()));
+        if !batch.has_more { break; }
+        cursor = batch.resume_after;
+    }
+    drop(repair);
+    let second = client.resume_unpublished_object(
+        None, candidate.clone(), second_bytes, &options,
+    ).unwrap();
+    assert_eq!(second, candidate);
     assert_eq!(
         client
             .read_object("star", "second", second_bytes.len(), &options.replica)

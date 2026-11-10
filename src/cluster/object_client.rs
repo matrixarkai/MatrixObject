@@ -112,7 +112,7 @@ impl RemoteGroupClient {
             Self::Raft(client) => client.probe_chunk_digests_pipelined(pages),
             Self::Star(set) => pages
                 .iter()
-                .map(|(page, offset, length)| match set.read_chunk(page, *offset, *length) {
+                .map(|(page, offset, length)| match set.probe_written_chunk(page, *offset, *length) {
                     Ok(read) => {
                         let mut sha256 = [0; 32];
                         sha256.copy_from_slice(
