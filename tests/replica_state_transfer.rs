@@ -29,18 +29,25 @@ fn head_first_repair_skips_equal_heads_and_repairs_equal_sequence_divergence() {
     let endpoints: Vec<_> = nodes.iter().map(|node| node.endpoint.clone()).collect();
     let original = vec![17; 64 * 1024];
     let divergent = vec![18; original.len()];
-    for node in &nodes[..2] {
-        client(node).write_chunk(page(85), 0, &original).unwrap();
+    for index in 80..96 {
+        for node in &nodes[..2] {
+            client(node).write_chunk(page(index), 0, &original).unwrap();
+        }
+        client(&nodes[2])
+            .write_chunk(
+                page(index),
+                0,
+                if index == 85 { &divergent } else { &original },
+            )
+            .unwrap();
     }
-    client(&nodes[2])
-        .write_chunk(page(85), 0, &divergent)
-        .unwrap();
     let mut set =
         RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
-    let repaired = set.repair_inventory_batch_head_first(None, 1).unwrap();
+    let repaired = set.repair_inventory_batch_head_first(None, 16).unwrap();
     assert!(!repaired.blocked, "{repaired:?}");
+    assert_eq!(repaired.pages.len(), 16);
     assert_eq!(
-        repaired.pages[0].result.as_ref().unwrap().members,
+        repaired.pages[5].result.as_ref().unwrap().members,
         vec![
             PageRepairStatus::Current,
             PageRepairStatus::Current,
@@ -54,12 +61,12 @@ fn head_first_repair_skips_equal_heads_and_repairs_equal_sequence_divergence() {
             .data,
         original
     );
-    let healthy = set.repair_inventory_batch_head_first(None, 1).unwrap();
+    let healthy = set.repair_inventory_batch_head_first(None, 16).unwrap();
     assert!(!healthy.blocked);
-    assert_eq!(
-        healthy.pages[0].result.as_ref().unwrap().members,
-        vec![PageRepairStatus::Current; 3]
-    );
+    assert_eq!(healthy.pages.len(), 16);
+    assert!(healthy.pages.iter().all(|entry| {
+        entry.result.as_ref().unwrap().members == vec![PageRepairStatus::HeadMatched; 3]
+    }));
 }
 
 #[test]
