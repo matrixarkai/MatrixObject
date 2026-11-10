@@ -551,6 +551,53 @@ fn publication_fence_and_atomic_copy_survive_checkpoint_restart_and_quorum_loss(
 }
 
 #[test]
+fn staged_lease_deadlines_and_renewals_survive_failover_restart_and_quorum_loss() {
+    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
+    let mut group = Group::with_catalog_checkpoints(None, None, None, 1024);
+    let mut client = group.client(group.leader());
+    assert!(client.allocate_leased_staged_object("bucket", "leased", None, 1, false, 1000).is_err());
+    client.enable_publication_fence().unwrap();
+    let original = client.allocate_leased_staged_object("bucket", "leased", None, 1, false, 60_000).unwrap();
+    let renewed = client.renew_staged_allocation(&original, 120_000).unwrap();
+    assert!(renewed.expires_at_ms > original.expires_at_ms);
+    assert!(client.renew_staged_allocation(&original, 120_000).is_err());
+    assert!(client.expire_staged_allocation(&original).is_err());
+    let expiring = client.allocate_leased_staged_object("bucket", "expired", None, 1, false, 1000).unwrap();
+    for index in 0..16 {
+        client.allocate_staged_object("padding", &format!("key-{index}"), None, 1, false).unwrap();
+    }
+    node_regime::checkpoints::wait_for_checkpoint(
+        &group.root.join(group.leader().to_string()).join("metadata.peer.wal"), 4);
+    group.kill(group.leader());
+    let mut client = group.client(group.leader());
+    assert_eq!(client.read_staged_allocation(renewed.allocation_id).unwrap(), renewed);
+    while std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+        < u128::from(expiring.expires_at_ms) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let value = ObjectManifest { format_version: 2, bucket: "bucket".into(), key: "expired".into(),
+        generation: 1, length: 0, extents: Vec::new(), deleted: false };
+    let publish = ManifestOutcome::decide(None, value).unwrap();
+    assert!(client.publish_staged_manifest(expiring.allocation_id, publish.clone(), 0).is_err());
+    assert!(client.renew_staged_allocation(&expiring, 1000).is_err());
+    client.expire_staged_allocation(&expiring).unwrap();
+    client.expire_staged_allocation(&expiring).unwrap();
+    for index in 0..3 { if group.nodes[index].is_some() { group.kill(index); } }
+    for index in 0..3 { group.start(index); }
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    assert_eq!(client.read_staged_allocation(renewed.allocation_id).unwrap(), renewed);
+    assert!(client.read_staged_allocation(expiring.allocation_id).is_err());
+    assert!(client.publish_staged_manifest(expiring.allocation_id, publish, 0).is_err());
+    let next = client.allocate_leased_staged_object("bucket", "expired", None, 1, false, 1000).unwrap();
+    assert!(next.allocation_id > expiring.allocation_id);
+    for index in 0..3 { if index != leader { group.kill(index); } }
+    assert!(client.read_staged_allocation(renewed.allocation_id).is_err());
+    assert!(client.renew_staged_allocation(&renewed, 180_000).is_err());
+    assert!(client.expire_staged_allocation(&expiring).is_err());
+}
+
+#[test]
 fn process_quorum_preserves_outcomes_across_leader_loss_and_total_restart() {
     let mut group = Group::new();
     let first = group.leader();
@@ -1449,6 +1496,21 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
         "star", "first", last.object_offset, last.length, last.length as usize, &options.replica,
     ).is_err());
     drop(survivor);
+
+    for index in 0..2 {
+        chunks[index] = processes::start(env!("CARGO_BIN_EXE_chunkserver"),
+            &[("MATRIXOBJECT_REPLICA_ADDR", &endpoints[index]),
+              ("MATRIXOBJECT_REPLICA_JOURNAL", journals[index].to_str().unwrap())]);
+    }
+    for member in &members {
+        minority.heartbeat_placement_node(member, 0, 1 << 28, false, true, 102).unwrap();
+    }
+    let leased = minority.allocate_leased_staged_object("star", "leased", None, 4, false, 60_000).unwrap();
+    let leased = minority.renew_staged_allocation(&leased, 120_000).unwrap();
+    let leased_value = minority.write_staged_object(&leased, None, b"leased star", &options).unwrap();
+    assert_eq!(minority.read_object("star", "leased", 32, &options.replica).unwrap(),
+        (leased_value, b"leased star".to_vec()));
+    assert!(minority.read_staged_allocation(leased.allocation_id).is_err());
 
     drop(minority);
     drop(metadata);

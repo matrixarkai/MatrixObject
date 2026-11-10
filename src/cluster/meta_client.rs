@@ -1116,17 +1116,57 @@ impl RemoteMetaClient {
     /// Reserve an owned namespace before writing any object data.
     pub fn allocate_staged_object(&mut self, bucket: &str, key: &str, expected_generation: Option<u64>,
         page_count: u32, append: bool) -> Result<crate::staged_allocation::StagedAllocation, ObjectError> {
+        self.allocate_staged_inner(bucket, key, expected_generation, page_count, append, 0)
+    }
+
+    /// Reserve a leased namespace under the durable publication fence.
+    /// A lost allocation reply remains uncertain; do not adopt another listed reservation.
+    pub fn allocate_leased_staged_object(&mut self, bucket: &str, key: &str, expected_generation: Option<u64>,
+        page_count: u32, append: bool, ttl_ms: u64) -> Result<crate::staged_allocation::StagedAllocation, ObjectError> {
+        if ttl_ms == 0 { return Err(ObjectError::InvalidArgument("staged lease TTL is zero".into())); }
+        self.allocate_staged_inner(bucket, key, expected_generation, page_count, append, ttl_ms)
+    }
+
+    fn allocate_staged_inner(&mut self, bucket: &str, key: &str, expected_generation: Option<u64>,
+        page_count: u32, append: bool, ttl_ms: u64) -> Result<crate::staged_allocation::StagedAllocation, ObjectError> {
         if expected_generation == Some(0) { return Err(ObjectError::InvalidArgument("zero object generation".into())); }
         let reply = self.staged_call(crate::staged_allocation::StagedAllocationRequest {
-            version: 1, action: 1, bucket: bucket.into(), key: key.into(),
-            expected_generation: expected_generation.unwrap_or(0), page_count, append, ..Default::default()
+            version: if ttl_ms == 0 { 1 } else { 2 }, action: 1, bucket: bucket.into(), key: key.into(),
+            expected_generation: expected_generation.unwrap_or(0), page_count, append, ttl_ms, ..Default::default()
         })?;
         let allocation = reply.allocation.ok_or_else(|| ObjectError::Corruption("staged reply lacks allocation".into()))?;
         if allocation.bucket != bucket || allocation.key != key || allocation.page_count != page_count
-            || allocation.expected_generation != expected_generation.unwrap_or(0) || allocation.append != append {
+            || allocation.expected_generation != expected_generation.unwrap_or(0) || allocation.append != append
+            || allocation.version != if ttl_ms == 0 { 1 } else { 2 } {
             return Err(ObjectError::Corruption("staged reply differs from requested ownership".into()));
         }
         Ok(allocation)
+    }
+
+    pub fn renew_staged_allocation(&mut self, allocation: &crate::staged_allocation::StagedAllocation, ttl_ms: u64)
+        -> Result<crate::staged_allocation::StagedAllocation, ObjectError> {
+        allocation.validate()?;
+        let reply = self.staged_call(crate::staged_allocation::StagedAllocationRequest {
+            version: 2, action: 8, allocation_id: allocation.allocation_id,
+            expected_expiry_ms: allocation.expires_at_ms, ttl_ms, ..Default::default()
+        })?;
+        reply.allocation.filter(|record| record.renews(allocation))
+            .ok_or_else(|| ObjectError::Corruption("renewal reply changed staged identity".into()))
+    }
+
+    /// Retire this exact expired deadline. A newer renewal is never removed.
+    pub fn expire_staged_allocation(&mut self, allocation: &crate::staged_allocation::StagedAllocation)
+        -> Result<(), ObjectError> {
+        allocation.validate()?;
+        let reply = self.staged_call(crate::staged_allocation::StagedAllocationRequest {
+            version: 2, action: 9, allocation_id: allocation.allocation_id,
+            expected_expiry_ms: allocation.expires_at_ms, ..Default::default()
+        })?;
+        if reply.allocation.is_some() || reply.manifest.is_some() || !reply.allocation_ids.is_empty()
+            || reply.has_more || reply.publication_fence != 0 {
+            return Err(ObjectError::Corruption("unexpected staged expiry reply".into()));
+        }
+        Ok(())
     }
 
     pub fn read_staged_allocation(&mut self, allocation_id: u64)

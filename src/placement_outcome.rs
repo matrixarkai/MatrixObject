@@ -179,13 +179,18 @@ impl PlacementOutcome {
             }
         } else if self.version == 6 { return Err(invalid("copy outcome lacks live source")); }
         if let Some(change) = &self.staging {
-            if self.version != 4 || self.retention.is_some()
+            let renewal = change.before.is_some() && change.after.is_some();
+            if self.version != if renewal { 7 } else { 4 } || self.retention.is_some()
                 || self.before_index.checked_add(1) != Some(self.after_index) {
                 return Err(invalid("invalid staged outcome binding"));
             }
             match (&change.before, &change.after, &self.manifest) {
                 (None, Some(record), None) if record.allocation_id == self.after_index => record.validate()?,
                 (Some(record), None, None) if record.allocation_id <= self.before_index => record.validate()?,
+                (Some(before), Some(after), None) if before.allocation_id <= self.before_index && after.renews(before) => {
+                    before.validate()?;
+                    after.validate()?;
+                }
                 (Some(record), None, Some(manifest)) if record.allocation_id <= self.before_index => record.check_publication(manifest)?,
                 _ => return Err(invalid("invalid staged outcome transition")),
             }
@@ -193,7 +198,7 @@ impl PlacementOutcome {
                 if !self.nodes.is_empty() || !self.placements.is_empty() { return Err(invalid("staging changed unrelated records")); }
                 return Ok(());
             }
-        } else if self.version == 4 { return Err(invalid("staged outcome lacks ownership change")); }
+        } else if matches!(self.version, 4 | 7) { return Err(invalid("staged outcome lacks ownership change")); }
         if let Some(change) = &self.retention {
             if self.version != 3 || self.staging.is_some() || self.manifest.is_some() || !self.nodes.is_empty() || !self.placements.is_empty()
                 || self.before_index.checked_add(1) != Some(self.after_index) {

@@ -379,15 +379,23 @@ impl ManifestCatalog {
         let record = match (&change.before, &change.after) {
             (None, Some(after)) => after,
             (Some(before), None) => before,
-            _ => return Err(invalid("staging must create or remove one allocation")),
+            (Some(before), Some(after)) if after.renews(before) => {
+                before.validate()?;
+                after
+            }
+            _ => return Err(invalid("staging must create, renew or remove one allocation")),
         };
         record.validate()?;
         if self.staged.get(&record.allocation_id) != change.before.as_ref() {
             return Err(ObjectError::PreconditionFailed("staging prior state mismatch".into()));
         }
         if change.after.is_some() {
-            if self.staged.len() >= crate::staged_allocation::MAX_STAGED_ALLOCATIONS
-                || self.body_bytes + self.retention_bytes + self.staged_bytes + entry_size(record) > MAX_SNAPSHOT - self.header_size() {
+            if record.version == 2 && self.publication_fence == 0 {
+                return Err(ObjectError::PreconditionFailed("leased staging requires publication fencing".into()));
+            }
+            let released = change.before.as_ref().map_or(0, entry_size);
+            if (change.before.is_none() && self.staged.len() >= crate::staged_allocation::MAX_STAGED_ALLOCATIONS)
+                || self.body_bytes + self.retention_bytes + self.staged_bytes - released + entry_size(record) > MAX_SNAPSHOT - self.header_size() {
                 return Err(ObjectError::PreconditionFailed("staged allocation capacity exceeded".into()));
             }
             let current = self.get(&ObjectId::new(record.bucket.clone(), record.key.clone()));
@@ -629,6 +637,9 @@ impl ManifestCatalog {
         let mut previous = 0;
         for record in image.staged {
             record.validate()?;
+            if record.version == 2 && result.publication_fence == 0 {
+                return Err(invalid("leased staging lacks publication fencing"));
+            }
             if record.allocation_id <= previous { return Err(invalid("staged allocations are not ordered")); }
             if result.retained.contains_key(&record.allocation_id) {
                 return Err(invalid("protection identities overlap"));

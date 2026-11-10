@@ -1,5 +1,8 @@
 # Durable staged object writes
 
+Time-bounded reservations, renewal and explicit expiry are described in
+`staged-ownership-leases.md`. Existing reservations keep their permanent lifetime.
+
 `allocate_staged_object(bucket, key, expected_generation, page_count, append)`
 reserves a fresh page namespace and records its target generation before data
 is written. Use `None` for a new object, or the exact current generation for an

@@ -984,7 +984,7 @@ fn propose_batch(
     let mut staged_ids = BTreeSet::new();
     for request in queued.iter().take(PROPOSALS_PER_BATCH) {
         if let MetaRequest::StagedAllocation(command) = &request.request {
-            if matches!(command.action, 3 | 4) { staged_ids.insert(command.allocation_id); }
+            if matches!(command.action, 3 | 4 | 8 | 9) { staged_ids.insert(command.allocation_id); }
             if command.action == 1 {
                 for distance in 1..=PROPOSALS_PER_BATCH as u64 {
                     if let Some(id) = draft.index.checked_add(distance) { staged_ids.insert(id); }
@@ -2432,6 +2432,41 @@ mod tests {
         assert!(service.object_manifests.staged_allocation(first_id).is_none());
         assert!(service.object_manifests.staged_allocation(first_id + 2).is_none());
         assert_eq!(service.object_manifests.get(&live.object_id()), Some(&live));
+    }
+
+    #[test]
+    fn leased_staging_batch_restores_renewal_before_commit_and_refuses_stale_expiry() {
+        use crate::staged_allocation::StagedAllocationRequest;
+        let (_files, mut peer) = batch_peer();
+        let (mut service, groups) = fixture(1, 0);
+        let enable = StagedAllocationRequest { version: 1, action: 6, ..Default::default() };
+        let reserve = StagedAllocationRequest { version: 2, action: 1, page_count: 1,
+            bucket: "bucket".into(), key: "leased".into(), ttl_ms: 60_000, ..Default::default() };
+        for command in [enable, reserve] {
+            super::super::staged_allocation_commands::prepare(&service, &groups, &command, 8192)
+                .unwrap().0.apply(&mut service).unwrap();
+        }
+        let id = service.placement_commit_index;
+        let original = service.object_manifests.staged_allocation(id).unwrap().clone();
+        let renew = StagedAllocationRequest { version: 2, action: 8, allocation_id: id,
+            expected_expiry_ms: original.expires_at_ms, ttl_ms: 120_000, ..Default::default() };
+        let expire = StagedAllocationRequest { version: 2, action: 9, allocation_id: id,
+            expected_expiry_ms: original.expires_at_ms, ..Default::default() };
+        let saved = service.export_snapshot().to_bytes().unwrap();
+        let mut requests = VecDeque::new();
+        let mut receivers = Vec::new();
+        let mut pending = VecDeque::new();
+        for command in [renew, expire] {
+            let (request, receiver) = queued(MetaRequest::StagedAllocation(command), Instant::now() + Duration::from_secs(10));
+            requests.push_back(request);
+            receivers.push(receiver);
+        }
+        propose_batch(&mut peer, &mut service, &groups, 65536, &mut requests, &mut pending).unwrap();
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
+        peer.process_ready(|id, bytes| apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)).unwrap();
+        assert!(receivers[0].try_recv().unwrap().is_ok());
+        assert!(receivers[1].try_recv().unwrap().is_err());
+        assert!(service.object_manifests.staged_allocation(id).unwrap().expires_at_ms > original.expires_at_ms);
     }
 
     #[test]
