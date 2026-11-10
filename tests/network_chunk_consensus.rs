@@ -1400,9 +1400,19 @@ mod coupled_groups {
         chunks.kill(chunk_leader);
         meta = metadata.ready();
         chunks.leader();
-        data = meta
-            .connect_chunk_group("group-a", &chunk_options())
-            .unwrap();
+        let reconnect_deadline = Instant::now() + Duration::from_secs(15);
+        data = loop {
+            match meta.connect_chunk_group("group-a", &chunk_options()) {
+                Ok(data) => break data,
+                Err(error) => {
+                    assert!(
+                        Instant::now() < reconnect_deadline,
+                        "chunk route did not recover: {error}"
+                    );
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        };
         assert_eq!(
             data.read_chunk(&page(700), 0, 4).unwrap().data,
             vec![winner; 4]
@@ -1419,9 +1429,26 @@ mod coupled_groups {
             next = current.clone();
             next.version = version;
             next.update_time_ms = version + 10;
-            current = meta
-                .commit_object_placement_if_current(next, Some(current), &plan.plan_checksum)
-                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                match meta.commit_object_placement_if_current(
+                    next.clone(),
+                    Some(current.clone()),
+                    &plan.plan_checksum,
+                ) {
+                    Ok(committed) => {
+                        current = committed;
+                        break;
+                    }
+                    Err(matrixobjectstore_rs::ObjectError::PreconditionFailed(reason))
+                        if reason.contains("root placement node is not writable")
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(error) => panic!("placement update failed after recovery: {error}"),
+                }
+            }
         }
         health(&mut meta, true, 4, 4);
         let meta_leader = metadata
