@@ -11,7 +11,7 @@ message StagedAllocationChange {
 // Metadata opcode 93. Allocation protects a fresh page namespace before data I/O.
 message StagedAllocationRequest {
   uint32 version = 1;
-  uint32 action = 2; // 1 allocate, 2 read, 3 abort, 4 publish, 5 list
+  uint32 action = 2; // 1 allocate, 2 read, 3 abort, 4 publish, 5 list, 6 fence, 7 read fence
   uint64 allocation_id = 3;
   uint32 page_count = 4;
   string bucket = 5;
@@ -28,4 +28,9 @@ message StagedAllocationReply {
   ObjectManifest manifest = 3;
   repeated uint64 allocation_ids = 4;
   bool has_more = 5;
+  uint64 publication_fence = 6;
+}
+message PublicationFenceChange {
+  uint64 before = 1;
+  uint64 after = 2;
 }

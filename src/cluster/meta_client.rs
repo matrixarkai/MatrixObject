@@ -39,6 +39,10 @@ use crate::cluster::meta_wire::MetaRequestCode;
 use crate::cluster::wire::{StatusCode, HEADER_BYTES, MAX_PAYLOAD_BYTES};
 use crate::ObjectError;
 
+#[cfg(test)]
+#[path = "manifest_copy_client_tests.rs"]
+mod manifest_copy_client_tests;
+
 /// How a metaserver client is bounded.
 #[derive(Clone, Debug)]
 pub struct MetaClientOptions {
@@ -1061,6 +1065,52 @@ impl RemoteMetaClient {
             }
             Ok(results)
         })
+    }
+
+    /// Copy the source observed at atomic publication; no chunk data is transferred.
+    /// An unconfirmed response must remain uncertain and must not be replayed blindly.
+    pub fn copy_object_atomic(&mut self, source_bucket: &str, source_key: &str, bucket: &str, key: &str,
+        expected: Option<crate::object_manifest::ObjectManifest>, max_bytes: u64, update_time_ms: u64)
+        -> Result<crate::object_manifest::ObjectManifest, crate::manifest_copy::AtomicCopyFailure> {
+        use crate::manifest_copy::AtomicCopyFailure;
+        let command = crate::manifest_copy::ManifestCopyRequest { version: 1,
+            source_bucket: source_bucket.into(), source_key: source_key.into(), bucket: bucket.into(), key: key.into(),
+            expected, max_bytes, update_time_ms };
+        command.validate().map_err(AtomicCopyFailure::Refused)?;
+        let generation = match &command.expected {
+            None => 1,
+            Some(before) => before.generation.checked_add(1)
+                .ok_or_else(|| AtomicCopyFailure::Refused(ObjectError::PreconditionFailed("copy generation exhausted".into())))?,
+        };
+        let (reply, unadmitted) = self.try_call_admission(MetaRequest::CopyManifest(command));
+        let result = reply.into_result().and_then(|reply| match reply {
+            MetaReply::Manifest(value) if value.bucket == bucket && value.key == key && value.generation == generation
+                && !value.deleted && value.length <= max_bytes => Ok(value),
+            _ => Err(ObjectError::Corruption("unexpected atomic copy reply".into())),
+        });
+        result.map_err(|error| if unadmitted { AtomicCopyFailure::Refused(error) } else { AtomicCopyFailure::Unconfirmed(error) })
+    }
+
+    /// Enable durable, one-way admission fencing. Existing unowned writers must migrate first.
+    pub fn enable_publication_fence(&mut self) -> Result<u64, ObjectError> {
+        let reply = self.staged_call(crate::staged_allocation::StagedAllocationRequest {
+            version: 1, action: 6, ..Default::default()
+        })?;
+        if reply.publication_fence == 0 || reply.allocation.is_some() || reply.manifest.is_some()
+            || !reply.allocation_ids.is_empty() || reply.has_more {
+            return Err(ObjectError::Corruption("unexpected publication fence reply".into()));
+        }
+        Ok(reply.publication_fence)
+    }
+
+    pub fn read_publication_fence(&mut self) -> Result<u64, ObjectError> {
+        let reply = self.staged_call(crate::staged_allocation::StagedAllocationRequest {
+            version: 1, action: 7, ..Default::default()
+        })?;
+        if reply.allocation.is_some() || reply.manifest.is_some() || !reply.allocation_ids.is_empty() || reply.has_more {
+            return Err(ObjectError::Corruption("unexpected publication policy reply".into()));
+        }
+        Ok(reply.publication_fence)
     }
 
     /// Reserve an owned namespace before writing any object data.

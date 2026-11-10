@@ -456,6 +456,101 @@ fn staged_allocations_survive_failover_and_restart_and_fence_aborted_publication
 }
 
 #[test]
+fn publication_fence_and_atomic_copy_survive_checkpoint_restart_and_quorum_loss() {
+    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
+    use prost::Message;
+    #[derive(Clone, PartialEq, Message)]
+    struct WalPosition {
+        #[prost(bytes = "vec", tag = "5")]
+        hard_state: Vec<u8>,
+        #[prost(bytes = "vec", tag = "7")]
+        snapshot: Vec<u8>,
+    }
+    #[derive(Clone, PartialEq, Message)]
+    struct HardStatePosition {
+        #[prost(uint64, tag = "3")]
+        commit: u64,
+    }
+    #[derive(Clone, PartialEq, Message)]
+    struct SnapshotPosition {
+        #[prost(message, optional, tag = "2")]
+        metadata: Option<SnapshotIndex>,
+    }
+    #[derive(Clone, PartialEq, Message)]
+    struct SnapshotIndex {
+        #[prost(uint64, tag = "2")]
+        index: u64,
+    }
+    fn wal_positions(path: &std::path::Path) -> (u64, u64) {
+        let bytes = std::fs::read(path).unwrap();
+        let (mut offset, mut checkpoint, mut commit) = (0, 0, 0);
+        while bytes.len() - offset >= 24 {
+            assert_eq!(&bytes[offset..offset + 4], b"MRPW");
+            let length = u32::from_be_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            assert!(length < 8 * 1024 * 1024);
+            let end = offset + 24 + length;
+            // A concurrent append may not have finished its final frame.
+            if end > bytes.len() { break; }
+            let record = WalPosition::decode(&bytes[offset + 24..end]).unwrap();
+            commit = commit.max(HardStatePosition::decode(record.hard_state.as_slice()).unwrap().commit);
+            if !record.snapshot.is_empty() {
+                checkpoint = SnapshotPosition::decode(record.snapshot.as_slice()).unwrap().metadata.unwrap().index;
+            }
+            offset = end;
+        }
+        (checkpoint, commit)
+    }
+    let mut group = Group::with_catalog_checkpoints(None, None, None, 1024);
+    let mut client = group.client(group.leader());
+    assert_eq!(client.read_publication_fence().unwrap(), 0);
+    client.allocate_object_pages(1).unwrap();
+    let owner = client.allocate_staged_object("bucket", "source", None, 1, false).unwrap();
+    let fence = client.enable_publication_fence().unwrap();
+    assert!(fence > 0);
+    assert_eq!(client.enable_publication_fence().unwrap(), fence);
+    let leader = group.leader();
+    let wal = group.root.join(leader.to_string()).join("metadata.peer.wal");
+    let (_, fence_commit) = wal_positions(&wal);
+    assert!(fence_commit > 0);
+    assert!(client.allocate_object_pages(1).is_err());
+    let source = ObjectManifest { format_version: 2, bucket: "bucket".into(), key: "source".into(),
+        generation: 1, length: 0, extents: Vec::new(), deleted: false };
+    client.publish_staged_manifest(owner.allocation_id, ManifestOutcome::decide(None, source.clone()).unwrap(), 0).unwrap();
+    for index in 0..16 {
+        client.copy_object_atomic("bucket", "source", "copies", &format!("copy-{index}"), None, 0, 0).unwrap();
+    }
+    node_regime::checkpoints::wait_for_checkpoint(&wal, 4);
+    for index in 16..32 {
+        client.copy_object_atomic("bucket", "source", "copies", &format!("copy-{index}"), None, 0, 0).unwrap();
+    }
+    let until = Instant::now() + Duration::from_secs(30);
+    while wal_positions(&wal).0 < fence_commit {
+        assert!(Instant::now() < until, "fenced state was not checkpointed");
+        // Idempotent commands advance the WAL without growing the catalog.
+        // Checkpoint scheduling amortizes capture over the current image size.
+        assert_eq!(client.enable_publication_fence().unwrap(), fence);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    group.kill(leader);
+    let mut client = group.client(group.leader());
+    assert_eq!(client.read_publication_fence().unwrap(), fence);
+    assert_eq!(client.read_manifest("copies", "copy-31").unwrap().extents, source.extents);
+    for index in 0..3 { if group.nodes[index].is_some() { group.kill(index); } }
+    for index in 0..3 { group.start(index); }
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    assert_eq!(client.read_publication_fence().unwrap(), fence);
+    assert!(client.allocate_object_pages(1).is_err());
+    let copy = client.copy_object_atomic("bucket", "source", "copies", "after-restart", None, 0, 0).unwrap();
+    assert!(copy.extents.is_empty());
+    client.delete_object("bucket", "source", 0).unwrap();
+    assert!(client.copy_object_atomic("bucket", "source", "copies", "deleted", None, 0, 0).is_err());
+    for index in 0..3 { if index != leader { group.kill(index); } }
+    assert!(client.read_publication_fence().is_err());
+    assert!(client.copy_object_atomic("copies", "copy-31", "copies", "minority", None, 0, 0).is_err());
+}
+
+#[test]
 fn process_quorum_preserves_outcomes_across_leader_loss_and_total_restart() {
     let mut group = Group::new();
     let first = group.leader();
@@ -1209,7 +1304,7 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     assert!(client.read_staged_allocation(owned.allocation_id).is_err());
     assert_eq!(client.resume_staged_object(&owned, None, owned_candidate.clone(), owned_bytes, &options)
         .unwrap(), owned_candidate);
-    assert!(client.resume_staged_object(&aborted, None, aborted_candidate, owned_bytes, &options).is_err());
+    assert!(client.resume_staged_object(&aborted, None, aborted_candidate.clone(), owned_bytes, &options).is_err());
     let owned_append = client.allocate_staged_object("star", "owned-pending", Some(owned_candidate.generation), 1, true).unwrap();
     let owned_updated = client.write_staged_object(&owned_append, Some(owned_candidate.clone()), b"!", &options).unwrap();
     assert_eq!(&owned_updated.extents[..owned_candidate.extents.len()], &owned_candidate.extents);
@@ -1299,6 +1394,18 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     assert!(minority.copy_object(
         "star", &third_key, "star", "too-large-copy", None, &bounded_copy,
     ).is_err());
+    let publication_fence = minority.enable_publication_fence().unwrap();
+    assert_eq!(minority.read_publication_fence().unwrap(), publication_fence);
+    assert!(minority.allocate_object_pages(1).is_err());
+    assert!(minority.publish_manifest(matrixobjectstore_rs::object_manifest::ManifestOutcome::decide(
+        None, aborted_candidate).unwrap(), 0).is_err());
+    assert!(minority.copy_object("star", &third_key, "star", "legacy-copy", None, &options).is_err());
+    for member in &members {
+        minority.heartbeat_placement_node(member, 0, 1 << 28, false, false, 101).unwrap();
+    }
+    let atomic = minority.copy_object_atomic("star", &third_key, "other", "atomic-copy", None,
+        options.max_object_bytes as u64, 0).unwrap();
+    assert_eq!(atomic.extents, third.extents);
     minority.delete_object("star", &third_key, 0).unwrap();
     assert!(minority.copy_object(
         "star", &third_key, "star", "deleted-copy", None, &options,
@@ -1310,6 +1417,9 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     );
     drop(minority);
     let mut minority = connect_metadata();
+    assert_eq!(minority.read_publication_fence().unwrap(), publication_fence);
+    assert_eq!(minority.read_object("other", "atomic-copy", third_bytes.len(), &options.replica).unwrap(),
+        (atomic, third_bytes.clone()));
     assert_eq!(minority.read_retained_object(retained.retention_id, third_bytes.len(), &options.replica)
         .unwrap(), (third.clone(), third_bytes.clone()));
     assert!(minority.read_retained_object(retained.retention_id, 0, &options.replica).is_err());

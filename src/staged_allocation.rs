@@ -112,7 +112,7 @@ pub struct StagedAllocationChange {
 pub struct StagedAllocationRequest {
     #[prost(uint32, tag = "1")]
     pub version: u32,
-    /// 1 allocate, 2 read, 3 abort, 4 publish, 5 list.
+    /// 1 allocate, 2 read, 3 abort, 4 publish, 5 list, 6 fence, 7 read fence.
     #[prost(uint32, tag = "2")]
     pub action: u32,
     #[prost(uint64, tag = "3")]
@@ -137,7 +137,7 @@ pub struct StagedAllocationRequest {
 
 impl StagedAllocationRequest {
     pub(crate) fn is_read(&self) -> bool {
-        matches!(self.action, 2 | 5)
+        matches!(self.action, 2 | 5 | 7)
     }
     pub(crate) fn validate(&self) -> Result<(), ObjectError> {
         if self.version != 1 {
@@ -160,6 +160,19 @@ impl StagedAllocationRequest {
                 || self.update_time_ms != 0
             {
                 return Err(invalid("invalid staged allocation request fields"));
+            }
+        } else if matches!(self.action, 6 | 7) {
+            if self.allocation_id != 0
+                || self.page_count != 0
+                || !self.bucket.is_empty()
+                || !self.key.is_empty()
+                || self.expected_generation != 0
+                || self.append
+                || self.outcome.is_some()
+                || self.update_time_ms != 0
+                || self.limit != 0
+            {
+                return Err(invalid("invalid publication fence request fields"));
             }
         } else if (2..=5).contains(&self.action) {
             if !self.bucket.is_empty()
@@ -203,6 +216,8 @@ pub struct StagedAllocationReply {
     pub allocation_ids: Vec<u64>,
     #[prost(bool, tag = "5")]
     pub has_more: bool,
+    #[prost(uint64, tag = "6")]
+    pub publication_fence: u64,
 }
 impl StagedAllocationReply {
     pub(crate) fn from_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
@@ -218,6 +233,11 @@ impl StagedAllocationReply {
             || (value.allocation.is_some() && value.manifest.is_some())
             || ((value.allocation.is_some() || value.manifest.is_some())
                 && (!value.allocation_ids.is_empty() || value.has_more))
+            || (value.publication_fence != 0
+                && (value.allocation.is_some()
+                    || value.manifest.is_some()
+                    || !value.allocation_ids.is_empty()
+                    || value.has_more))
         {
             return Err(invalid("invalid staged reply"));
         }
@@ -229,6 +249,14 @@ impl StagedAllocationReply {
         }
         Ok(value)
     }
+}
+
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct PublicationFenceChange {
+    #[prost(uint64, tag = "1")]
+    pub before: u64,
+    #[prost(uint64, tag = "2")]
+    pub after: u64,
 }
 fn decode<T: Message + Default>(bytes: &[u8], limit: usize) -> Result<T, ObjectError> {
     if bytes.len() > limit {

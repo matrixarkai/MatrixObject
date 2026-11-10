@@ -68,10 +68,11 @@ metadata voter and storage reader before enabling owned allocations. Older
 binaries cannot replay the new outcome or catalog versions. Catalogs without
 staged records retain their prior encoding.
 
-Ordinary object writes keep their existing allocation path. Ownership protects
-the staged API; it is not a permanent blacklist of retired namespaces. Legacy
-publication after ownership removal and raw chunk writes still require a global
-publication fence and data-node fencing before reclamation can be enabled.
+Ordinary object writes keep their existing allocation path while the publication
+fence is disabled. `publication-admission.md` describes the durable switch that
+requires owned publication and rejects legacy publication after ownership removal.
+Ownership alone is not a permanent blacklist of retired namespaces. Raw chunk
+writes still require data-node fencing before reclamation can be enabled.
 Abort does not cancel a page write already in flight or physically delete data.
 Expiry, automatic reader protection and interrupted physical reclamation also
 remain unfinished. Neither a missing reservation nor a successful inventory

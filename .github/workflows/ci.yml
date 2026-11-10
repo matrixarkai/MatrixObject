@@ -493,6 +493,28 @@ jobs:
           cargo test --locked --all-features --test network_chunk_consensus coupled_groups::serial_object_writer_preserves_verified_recovery -- --exact | tee /tmp/staged-ownership.log
           grep -q 'test result: ok. 1 passed' /tmp/staged-ownership.log
 
+      - name: publication admission and atomic copy preserve source and failure semantics
+        run: |
+          set -o pipefail
+          for test in \
+            cluster::staged_allocation_commands::tests::publication_fence_is_durable_one_way_and_rejects_retired_namespace_publication \
+            cluster::manifest_copy_commands::tests::atomic_copy_binds_live_source_and_preserves_state_on_conflicts \
+            cluster::manifest_copy_commands::tests::atomic_copy_source_identity_does_not_duplicate_extent_payloads \
+            cluster::manifest_copy_commands::tests::publication_fence_and_atomic_copy_recover_from_standalone_journal \
+            cluster::meta_consensus::tests::publication_fence_and_copy_restore_speculative_state_and_commit_in_order \
+            cluster::meta_client::manifest_copy_client_tests::atomic_copy_lost_reply_remains_unconfirmed_without_mutation_replay \
+            manifest_copy::tests::atomic_copy_codec_rejects_truncation_unknown_fields_and_wrong_destination
+          do
+            cargo test --locked --all-features --lib "$test" -- --exact | tee /tmp/publication-admission.log
+            grep -q 'test result: ok. 1 passed' /tmp/publication-admission.log
+          done
+
+      - name: fenced publication and atomic copy survive metadata recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_metadata_consensus publication_fence_and_atomic_copy_survive_checkpoint_restart_and_quorum_loss -- --exact | tee /tmp/publication-admission.log
+          grep -q 'test result: ok. 1 passed' /tmp/publication-admission.log
+
       - name: sequential writes reuse one freshly routed group connection
         run: |
           set -o pipefail

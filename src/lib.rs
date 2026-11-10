@@ -3,6 +3,7 @@
 pub mod object_manifest;
 pub mod manifest_retention;
 pub mod staged_allocation;
+pub mod manifest_copy;
 pub mod outcome;
 pub mod placement_outcome;
 

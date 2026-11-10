@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-use super::{
-    meta_message::{MetaReply, MetaRequest},
-    ChunkGroupCatalog,
-};
+use super::{meta_message::MetaReply, ChunkGroupCatalog};
 use crate::{
     placement_outcome::PlacementOutcome,
     staged_allocation::{
@@ -73,10 +70,7 @@ pub(super) fn prepare(
                 })?;
             let manifest = command.outcome.clone().unwrap();
             allocation.check_publication(&manifest)?;
-            groups.check_request(&MetaRequest::PublishManifest {
-                outcome: manifest.clone(),
-                update_time_ms: command.update_time_ms,
-            })?;
+            groups.check_manifest(&manifest)?;
             outcome = PlacementOutcome::publish_staged_manifest(
                 service,
                 manifest,
@@ -84,6 +78,33 @@ pub(super) fn prepare(
                 allocation,
             )?;
             reply.manifest = outcome.manifest.as_ref().unwrap().after.clone();
+            None
+        }
+        6 => {
+            let current = service.object_manifests.publication_fence();
+            let next = if current == 0 {
+                service
+                    .placement_commit_index
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        ObjectError::PreconditionFailed(
+                            "publication fence sequence exhausted".into(),
+                        )
+                    })?
+            } else {
+                current
+            };
+            if current == 0 {
+                service.object_manifests.check_publication_fence(0, next)?;
+                outcome.version = 5;
+                outcome.after_index = next;
+                outcome.publication_fence =
+                    Some(crate::staged_allocation::PublicationFenceChange {
+                        before: 0,
+                        after: next,
+                    });
+            }
+            reply.publication_fence = next;
             None
         }
         _ => {
@@ -132,6 +153,7 @@ pub(super) fn read(
                 .object_manifests
                 .staged_ids(command.allocation_id, command.limit as usize)
         }
+        7 => value.publication_fence = service.object_manifests.publication_fence(),
         _ => {
             return Err(ObjectError::InvalidArgument(
                 "staged mutation requires durable dispatch".into(),
@@ -145,6 +167,78 @@ pub(super) fn read(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn publication_fence_is_durable_one_way_and_rejects_retired_namespace_publication() {
+        let (mut service, create, _) = crate::tests::manifest_publication_fixture();
+        create.apply(&mut service).unwrap();
+        let mut reserve = request();
+        reserve.key = "retired".into();
+        let (allocation, _) = prepare(&service, &Default::default(), &reserve, 8192).unwrap();
+        let owned = allocation.staging.as_ref().unwrap().after.clone().unwrap();
+        allocation.apply(&mut service).unwrap();
+        let abort = StagedAllocationRequest {
+            version: 1,
+            action: 3,
+            allocation_id: owned.allocation_id,
+            ..Default::default()
+        };
+        prepare(&service, &Default::default(), &abort, 8192)
+            .unwrap()
+            .0
+            .apply(&mut service)
+            .unwrap();
+        let enable = StagedAllocationRequest {
+            version: 1,
+            action: 6,
+            ..Default::default()
+        };
+        let before = service.export_snapshot().to_bytes().unwrap();
+        assert!(prepare(&service, &Default::default(), &enable, 1).is_err());
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), before);
+        let (fence, _) = prepare(&service, &Default::default(), &enable, 8192).unwrap();
+        let id = fence.after_index;
+        PlacementOutcome::from_payload(&fence.to_payload().unwrap())
+            .unwrap()
+            .apply(&mut service)
+            .unwrap();
+        assert_eq!(service.object_manifests.publication_fence(), id);
+        assert!(super::super::meta_server::decide_allocation(&service, 1, 8192).is_err());
+        let duplicate = prepare(&service, &Default::default(), &enable, 8192)
+            .unwrap()
+            .0;
+        assert!(duplicate.publication_fence.is_none());
+        duplicate.apply(&mut service).unwrap();
+        assert_eq!(service.placement_commit_index, id);
+        let mut downgrade = fence;
+        downgrade.publication_fence.as_mut().unwrap().before = id;
+        downgrade.publication_fence.as_mut().unwrap().after = 0;
+        assert!(downgrade.to_payload().is_err());
+        let page = owned.allocation().unwrap().page(0).unwrap();
+        let mut candidate = empty();
+        candidate.key = "retired".into();
+        candidate.length = 1;
+        candidate
+            .extents
+            .push(crate::object_manifest::ObjectExtent {
+                group: "group-a".into(),
+                volume_id: page.chunk_id.volume_id(),
+                chunk_id: page.chunk_id.id(),
+                page_index: 0,
+                length: 1,
+                write_sequence: 1,
+                data_sha256: vec![1; 32],
+                ..Default::default()
+            });
+        let publication = ManifestOutcome::decide(None, candidate).unwrap();
+        let saved = service.export_snapshot().to_bytes().unwrap();
+        assert!(matches!(
+            PlacementOutcome::publish_manifest(&service, publication, 0),
+            Err(ObjectError::PreconditionFailed(_))
+        ));
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
+        let restored = crate::MetaSnapshot::from_bytes(&saved).unwrap();
+        assert_eq!(restored.object_manifests, service.object_manifests);
+    }
     use super::*;
     use crate::object_manifest::{ManifestOutcome, ObjectManifest};
     fn request() -> StagedAllocationRequest {

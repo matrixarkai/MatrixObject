@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject;
+import "object_manifest.proto";
+
+// Checked against current source metadata and the copied extent list at apply.
+message LiveCopySource {
+  string bucket = 1;
+  string key = 2;
+  uint64 generation = 3;
+}
+// Metadata opcode 94. Reads the live source and publishes its copy atomically.
+message ManifestCopyRequest {
+  uint32 version = 1;
+  string source_bucket = 2;
+  string source_key = 3;
+  string bucket = 4;
+  string key = 5;
+  ObjectManifest expected = 6;
+  uint64 max_bytes = 7;
+  uint64 update_time_ms = 8;
+}

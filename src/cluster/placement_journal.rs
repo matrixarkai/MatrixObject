@@ -145,6 +145,8 @@ mod tests {
             manifest: None,
             retention: None,
             staging: None,
+            publication_fence: None,
+            copy_source: None,
         };
         let second = PlacementOutcome {
             before_index: base + 1,

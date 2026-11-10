@@ -207,6 +207,7 @@ pub fn object_id(bucket: &str, key: &str) -> ObjectId {
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaRequest {
+    CopyManifest(crate::manifest_copy::ManifestCopyRequest),
     StagedAllocation(crate::staged_allocation::StagedAllocationRequest),
     ManifestRetention(crate::manifest_retention::ManifestRetentionRequest),
     ListManifests(crate::object_manifest::ManifestListRequest),
@@ -328,6 +329,7 @@ impl MetaRequest {
             MetaRequest::ListManifests(_) => MetaRequestCode::ListManifests,
             MetaRequest::ManifestRetention(_) => MetaRequestCode::ManifestRetention,
             MetaRequest::StagedAllocation(_) => MetaRequestCode::StagedAllocation,
+            MetaRequest::CopyManifest(_) => MetaRequestCode::CopyManifest,
             MetaRequest::GroupIdentity => MetaRequestCode::GroupIdentity,
             MetaRequest::HeartbeatRootNode { .. } => MetaRequestCode::HeartbeatRootNode,
             MetaRequest::ReportChunkNode { .. } => MetaRequestCode::ReportChunkNode,
@@ -402,6 +404,7 @@ impl MetaRequest {
             MetaRequest::ListManifests(request) => return request.encode_to_vec(),
             MetaRequest::ManifestRetention(request) => return request.encode_to_vec(),
             MetaRequest::StagedAllocation(request) => return request.encode_to_vec(),
+            MetaRequest::CopyManifest(request) => return request.encode_to_vec(),
             MetaRequest::GroupIdentity => {}
             MetaRequest::CommitObjectPlacementIfCurrent {
                 placement,
@@ -547,6 +550,9 @@ impl MetaRequest {
         if code == MetaRequestCode::StagedAllocation {
             return crate::staged_allocation::StagedAllocationRequest::from_payload(payload).map(Self::StagedAllocation);
         }
+        if code == MetaRequestCode::CopyManifest {
+            return crate::manifest_copy::ManifestCopyRequest::from_payload(payload).map(Self::CopyManifest);
+        }
         if code == MetaRequestCode::ListChunkRoutes {
             let request = super::chunk_group_route::RoutePageRead::from_payload(payload)?;
             return Ok(Self::ListChunkRoutes { after: request.after, limit: request.limit });
@@ -679,6 +685,7 @@ impl MetaRequest {
             | MetaRequestCode::ListManifests
             | MetaRequestCode::ManifestRetention
             | MetaRequestCode::StagedAllocation
+            | MetaRequestCode::CopyManifest
             | MetaRequestCode::ReportChunkNode
             | MetaRequestCode::AllocateObjectPages
             | MetaRequestCode::ReadManifest
@@ -1042,7 +1049,7 @@ impl MetaReply {
         }
         if matches!(
             code,
-            MetaRequestCode::ReadManifest | MetaRequestCode::PublishManifest
+            MetaRequestCode::ReadManifest | MetaRequestCode::PublishManifest | MetaRequestCode::CopyManifest
         ) {
             if payload.len() > 1024 * 1024 {
                 return Err(ObjectError::Corruption(
@@ -1213,6 +1220,7 @@ impl MetaReply {
             | MetaRequestCode::ListManifests
             | MetaRequestCode::ManifestRetention
             | MetaRequestCode::StagedAllocation
+            | MetaRequestCode::CopyManifest
             | MetaRequestCode::GroupIdentity => unreachable!(),
             MetaRequestCode::ChunkCatalog
             | MetaRequestCode::ReportChunkNode

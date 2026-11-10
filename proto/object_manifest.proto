@@ -35,6 +35,7 @@ message ManifestCatalogImage {
   repeated ObjectManifest objects = 2;
   repeated RetainedManifest retained = 3; // catalog version 2
   repeated StagedAllocation staged = 4; // catalog version 3
+  uint64 publication_fence = 5; // catalog version 4
 }
 message RetainedManifest {
   uint64 retention_id = 1;
