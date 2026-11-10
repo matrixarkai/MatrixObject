@@ -1073,4 +1073,90 @@ mod allocation_tests {
             .is_err());
         }
     }
+
+    #[test]
+    #[ignore = "run explicitly in release mode for Star frame construction measurements"]
+    fn star_frame_construction_measurement() {
+        use crate::cluster::{ReplicaRequest, RequestCode};
+        use crate::cluster::message::{
+            encode_conditional_write_batch_frame, encode_request, ConditionalChunkWrite,
+            ConditionalChunkWriteRef,
+        };
+        use crate::{ChunkId, PageId};
+        use std::hint::black_box;
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        let payloads = vec![vec![7u8; 256 * 1024 - 128]; 32];
+        let pages: Vec<_> = (0..32)
+            .map(|index| PageId {
+                chunk_id: ChunkId::new(1, 2).unwrap(),
+                page_index: 1000 + index,
+            })
+            .collect();
+        let writes: Vec<_> = pages
+            .iter()
+            .zip(&payloads)
+            .map(|(page_id, data)| ConditionalChunkWriteRef {
+                page_id,
+                offset: 0,
+                data,
+                expected_sequence: 0,
+            })
+            .collect();
+        let owned_frame = || {
+            let request = ReplicaRequest::WriteChunkBatchIfSequence {
+                writes: writes
+                    .iter()
+                    .map(|write| ConditionalChunkWrite {
+                        page_id: write.page_id.clone(),
+                        offset: write.offset,
+                        data: write.data.to_vec(),
+                        expected_sequence: write.expected_sequence,
+                    })
+                    .collect(),
+            };
+            let frame: Arc<[u8]> = encode_request(&request).into();
+            frame
+        };
+        let borrowed_frame = || {
+            Arc::new(encode_conditional_write_batch_frame(
+                writes.iter().copied(),
+                RequestCode::WriteChunkBatchIfSequence,
+            ))
+        };
+        assert_eq!(owned_frame().as_ref(), borrowed_frame().as_slice());
+
+        let mut owned_us = Vec::new();
+        let mut borrowed_us = Vec::new();
+        for round in 0..24 {
+            let mut measure_owned = || {
+                let began = Instant::now();
+                black_box(owned_frame());
+                owned_us.push(began.elapsed().as_micros());
+            };
+            let mut measure_borrowed = || {
+                let began = Instant::now();
+                black_box(borrowed_frame());
+                borrowed_us.push(began.elapsed().as_micros());
+            };
+            if round % 2 == 0 {
+                measure_owned();
+                measure_borrowed();
+            } else {
+                measure_borrowed();
+                measure_owned();
+            }
+        }
+        owned_us.sort_unstable();
+        borrowed_us.sort_unstable();
+        eprintln!(
+            "STAR_FRAME bytes={} samples=24 owned_p50_us={} owned_p95_us={} borrowed_p50_us={} borrowed_p95_us={}",
+            32 * (256 * 1024 - 128),
+            owned_us[12],
+            owned_us[22],
+            borrowed_us[12],
+            borrowed_us[22]
+        );
+    }
 }
