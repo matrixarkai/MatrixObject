@@ -471,7 +471,22 @@ impl RemoteMetaClient {
         self.with_operation_deadline(options.replica.deadline, |client| {
             let mut bounded = options.clone();
             bounded.replica.deadline = client.operation_deadline();
-            client.resume_unpublished_object_inner(expected, staged, data, &bounded)
+            client.resume_unpublished_object_inner(expected, staged, data, &bounded, false)
+        })
+    }
+
+    /// Resume only the fresh suffix pages of a caller-retained append candidate.
+    pub fn resume_unpublished_append(
+        &mut self,
+        expected: ObjectManifest,
+        staged: ObjectManifest,
+        suffix: &[u8],
+        options: &ObjectWriteOptions,
+    ) -> Result<ObjectManifest, ObjectWriteFailure> {
+        self.with_operation_deadline(options.replica.deadline, |client| {
+            let mut bounded = options.clone();
+            bounded.replica.deadline = client.operation_deadline();
+            client.resume_unpublished_object_inner(Some(expected), staged, suffix, &bounded, true)
         })
     }
 
@@ -481,6 +496,7 @@ impl RemoteMetaClient {
         staged: ObjectManifest,
         data: &[u8],
         options: &ObjectWriteOptions,
+        append: bool,
     ) -> Result<ObjectManifest, ObjectWriteFailure> {
         let staged_error = |error| ObjectWriteFailure::BeforePublication {
             error,
@@ -496,18 +512,35 @@ impl RemoteMetaClient {
             options,
         )
         .map_err(&staged_error)?;
+        let mut candidate_data = staged.clone();
+        if append {
+            let previous = expected.as_ref().unwrap();
+            if previous.deleted || previous.format_version != 2 || staged.format_version != 2
+                || previous.length.checked_add(data.len() as u64) != Some(staged.length)
+                || staged.length > options.max_object_bytes as u64
+                || staged.extents.get(..previous.extents.len()) != Some(previous.extents.as_slice())
+            {
+                return Err(staged_error(invalid("staged append does not retain expected extents")));
+            }
+            candidate_data.extents = candidate_data.extents.split_off(previous.extents.len());
+            candidate_data.length = data.len() as u64;
+            for extent in &mut candidate_data.extents {
+                extent.object_offset = extent.object_offset.checked_sub(previous.length)
+                    .ok_or_else(|| staged_error(invalid("staged append offset precedes suffix")))?;
+            }
+        }
         if staged.deleted
             || staged.generation != generation
-            || staged.length != data.len() as u64
-            || staged.extents.len() != pages as usize
-            || staged
+            || candidate_data.length != data.len() as u64
+            || candidate_data.extents.len() != pages as usize
+            || candidate_data
                 .extents
                 .iter()
                 .map(|e| &e.group)
                 .collect::<std::collections::BTreeSet<_>>()
                 .len()
                 > options.target_groups as usize
-            || staged
+            || candidate_data
                 .extents
                 .iter()
                 .zip(data.chunks(options.page_bytes))
@@ -544,7 +577,7 @@ impl RemoteMetaClient {
         let mut routes = std::collections::BTreeMap::new();
         let mut grouped: std::collections::BTreeMap<String, Vec<usize>> =
             std::collections::BTreeMap::new();
-        for (index, extent) in staged.extents.iter().enumerate() {
+        for (index, extent) in candidate_data.extents.iter().enumerate() {
             grouped.entry(extent.group.clone()).or_default().push(index);
         }
         let group_ids: Vec<String> = grouped.keys().cloned().collect();
@@ -568,7 +601,7 @@ impl RemoteMetaClient {
             for batch in indexes.chunks(8) {
                 self.check_operation_deadline().map_err(&staged_error)?;
                 let pages = batch.iter().map(|&index| {
-                    let extent = &staged.extents[index];
+                    let extent = &candidate_data.extents[index];
                     Ok((crate::PageId {
                         chunk_id: crate::ChunkId::new(extent.volume_id, extent.chunk_id)?,
                         page_index: extent.page_index,
@@ -576,7 +609,7 @@ impl RemoteMetaClient {
                 }).collect::<Result<Vec<_>, ObjectError>>().map_err(&staged_error)?;
                 let probes = client.probe_chunk_digests(&pages).map_err(&staged_error)?;
                 for (&index, probe) in batch.iter().zip(probes) {
-                    let extent = &staged.extents[index];
+                    let extent = &candidate_data.extents[index];
                     match probe {
                         Some((sequence, length, digest)) => {
                             let start = extent.object_offset as usize;
@@ -609,7 +642,7 @@ impl RemoteMetaClient {
                 &indexes,
                 route,
                 Some(client),
-                &staged,
+                &candidate_data,
                 data,
                 options,
             )
