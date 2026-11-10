@@ -114,6 +114,17 @@ pub(super) fn project_voter_health(
 }
 
 impl ChunkGroupCatalog {
+    pub(super) fn check_manifest(&self, outcome: &crate::object_manifest::ManifestOutcome) -> Result<(), ObjectError> {
+        outcome.validate()?;
+        for manifest in outcome.before.iter().chain(outcome.after.iter()) {
+            for extent in &manifest.extents {
+                if !self.groups.contains_key(&extent.group) {
+                    return Err(invalid("manifest names an unconfigured chunk group"));
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn new(groups: Vec<ChunkGroupConfig>) -> Result<Self, ObjectError> {
         Self::with_membership_health(groups, BTreeMap::new())
     }
@@ -364,14 +375,7 @@ impl ChunkGroupCatalog {
     pub(super) fn check_request(&self, request: &MetaRequest) -> Result<(), ObjectError> {
         match request {
             MetaRequest::PublishManifest { outcome, .. } => {
-                outcome.validate()?;
-                for manifest in outcome.before.iter().chain(outcome.after.iter()) {
-                    for extent in &manifest.extents {
-                        if !self.groups.contains_key(&extent.group) {
-                            return Err(invalid("manifest names an unconfigured chunk group"));
-                        }
-                    }
-                }
+                self.check_manifest(outcome)?;
             }
             MetaRequest::HeartbeatRootNode {
                 node_id,

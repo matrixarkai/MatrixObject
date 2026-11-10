@@ -123,6 +123,10 @@ pub struct PlacementOutcome {
     pub retention: Option<crate::manifest_retention::ManifestRetentionChange>,
     #[prost(message, optional, tag = "8")]
     pub staging: Option<crate::staged_allocation::StagedAllocationChange>,
+    #[prost(message, optional, tag = "9")]
+    pub publication_fence: Option<crate::staged_allocation::PublicationFenceChange>,
+    #[prost(message, optional, tag = "10")]
+    pub copy_source: Option<crate::manifest_copy::LiveCopySource>,
 }
 fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
@@ -157,6 +161,23 @@ fn matches_manifest(placement: &PlacementValue, manifest: &ObjectManifest) -> bo
 }
 impl PlacementOutcome {
     fn validate_manifest_binding(&self) -> Result<(), ObjectError> {
+        if let Some(fence) = &self.publication_fence {
+            if self.version != 5 || fence.before != 0 || fence.after != self.after_index || fence.after == 0
+                || self.before_index.checked_add(1) != Some(self.after_index)
+                || self.manifest.is_some() || self.staging.is_some() || self.retention.is_some()
+                || self.copy_source.is_some() || !self.nodes.is_empty() || !self.placements.is_empty() {
+                return Err(invalid("invalid publication fence outcome"));
+            }
+            return Ok(());
+        } else if self.version == 5 { return Err(invalid("publication fence outcome lacks transition")); }
+        if let Some(source) = &self.copy_source {
+            source.validate()?;
+            let after = self.manifest.as_ref().and_then(|outcome| outcome.after.as_ref())
+                .ok_or_else(|| invalid("copy outcome lacks publication"))?;
+            if self.version != 6 || after.deleted || self.staging.is_some() || self.retention.is_some() {
+                return Err(invalid("invalid live copy source binding"));
+            }
+        } else if self.version == 6 { return Err(invalid("copy outcome lacks live source")); }
         if let Some(change) = &self.staging {
             if self.version != 4 || self.retention.is_some()
                 || self.before_index.checked_add(1) != Some(self.after_index) {
@@ -187,7 +208,7 @@ impl PlacementOutcome {
         }
         match (self.version, &self.manifest) {
             (1, None) => Ok(()),
-            (2 | 4, Some(manifest)) => {
+            (2 | 4 | 6, Some(manifest)) => {
                 manifest.validate()?;
                 if self.placements.len() != 1 {
                     return Err(invalid("manifest publication needs one placement change"));
@@ -220,7 +241,7 @@ impl PlacementOutcome {
         manifest: ManifestOutcome,
         update_time_ms: u64,
     ) -> Result<Self, ObjectError> {
-        Self::publish_manifest_with_staging(service, manifest, update_time_ms, None)
+        Self::publish_manifest_with_staging(service, manifest, update_time_ms, None, None)
     }
     pub(crate) fn publish_staged_manifest(
         service: &MatrixMetaService,
@@ -229,13 +250,18 @@ impl PlacementOutcome {
         allocation: crate::staged_allocation::StagedAllocation,
     ) -> Result<Self, ObjectError> {
         Self::publish_manifest_with_staging(service, manifest, update_time_ms,
-            Some(crate::staged_allocation::StagedAllocationChange { before: Some(allocation), after: None }))
+            Some(crate::staged_allocation::StagedAllocationChange { before: Some(allocation), after: None }), None)
+    }
+    pub(crate) fn publish_copied_manifest(service: &MatrixMetaService, manifest: ManifestOutcome,
+        update_time_ms: u64, source: crate::manifest_copy::LiveCopySource) -> Result<Self, ObjectError> {
+        Self::publish_manifest_with_staging(service, manifest, update_time_ms, None, Some(source))
     }
     fn publish_manifest_with_staging(
         service: &MatrixMetaService,
         manifest: ManifestOutcome,
         update_time_ms: u64,
         staging: Option<crate::staged_allocation::StagedAllocationChange>,
+        copy_source: Option<crate::manifest_copy::LiveCopySource>,
     ) -> Result<Self, ObjectError> {
         manifest.validate()?;
         let after = manifest.after.as_ref().unwrap();
@@ -284,7 +310,7 @@ impl PlacementOutcome {
             }
         }
         let outcome = Self {
-            version: if staging.is_some() { 4 } else { 2 },
+            version: if copy_source.is_some() { 6 } else if staging.is_some() { 4 } else { 2 },
             before_index: service.placement_commit_index,
             after_index: service
                 .placement_commit_index
@@ -298,6 +324,8 @@ impl PlacementOutcome {
             manifest: Some(manifest),
             retention: None,
             staging,
+            publication_fence: None,
+            copy_source,
         };
         outcome.validate_manifest_binding()?;
         outcome.validate_publication(service, true)?;
@@ -309,14 +337,15 @@ impl PlacementOutcome {
         &self,
         service: &MatrixMetaService,
         admit: bool,
-    ) -> Result<(), ObjectError> {
+    ) -> Result<Option<usize>, ObjectError> {
         let manifest = self.manifest.as_ref().unwrap();
         let after = manifest.after.as_ref().unwrap();
         if service.object_manifests.get(&after.object_id()) != manifest.before.as_ref() {
             return Err(invalid("manifest publication prior state mismatch"));
         }
-        service.object_manifests.check_outcome_with_staging(manifest,
-            self.staging.as_ref().and_then(|change| change.before.as_ref()).map(|record| record.allocation_id))?;
+        let body_bytes = service.object_manifests.check_outcome_with_admission(manifest,
+            self.staging.as_ref().and_then(|change| change.before.as_ref()).map(|record| record.allocation_id),
+            self.copy_source.as_ref())?;
         let change = &self.placements[0];
         if service
             .placements
@@ -353,7 +382,7 @@ impl PlacementOutcome {
                 .ok_or_else(|| invalid("manifest capacity accounting overflow"))?;
             if admit
                 && placement.node_ids.contains(&id)
-                && (!MatrixMetaService::node_accepts_new_placement(node)
+                && ((if self.copy_source.is_some() { node.draining } else { !MatrixMetaService::node_accepts_new_placement(node) })
                     // Verified staged pages already consume reported free space.
                     || after.committed_bytes > node.capacity_bytes)
             {
@@ -369,7 +398,7 @@ impl PlacementOutcome {
         if self.nodes != expected {
             return Err(invalid("manifest publication capacity changes mismatch"));
         }
-        Ok(())
+        Ok(body_bytes)
     }
 }
 impl PlacementOutcome {
@@ -416,6 +445,8 @@ impl PlacementOutcome {
             manifest: None,
             retention: None,
             staging: None,
+            publication_fence: None,
+            copy_source: None,
         })
     }
     pub fn finish(mut self, service: &MatrixMetaService) -> Result<Self, ObjectError> {
@@ -486,7 +517,9 @@ impl PlacementOutcome {
                     && self.placements.is_empty()
                     && self.manifest.is_none()
                     && self.retention.is_none()
-                    && self.staging.is_none()))
+                    && self.staging.is_none()
+                    && self.publication_fence.is_none()
+                    && self.copy_source.is_none()))
         {
             return Err(invalid("placement outcome index mismatch"));
         }
@@ -535,16 +568,22 @@ impl PlacementOutcome {
         if let Some(staging) = &self.staging {
             service.object_manifests.check_staging(staging)?;
         }
-        if self.manifest.is_some() { self.validate_publication(service, false)?; }
+        if let Some(fence) = &self.publication_fence {
+            service.object_manifests.check_publication_fence(fence.before, fence.after)?;
+        }
+        let publication_bytes = if self.manifest.is_some() { self.validate_publication(service, false)? } else { None };
         if let Some(staging) = &self.staging {
             service.object_manifests.apply_staging(staging)?;
         }
         if let Some(retention) = &self.retention {
             service.object_manifests.apply_retention(retention)?;
         }
+        if let Some(fence) = &self.publication_fence {
+            service.object_manifests.restore_publication_fence(fence.after);
+        }
         if let Some(manifest) = &self.manifest {
             // Catalog capacity and expected-state checks happen before any other writes.
-            service.object_manifests.apply(manifest)?;
+            if let Some(bytes) = publication_bytes { service.object_manifests.commit_checked_manifest(manifest, bytes); }
         }
         // All checks precede mutation; replay never invokes placement planning or heartbeat expiry.
         for change in &self.nodes {

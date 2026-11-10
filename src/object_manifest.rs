@@ -224,6 +224,7 @@ pub struct ManifestCatalog {
     retention_bytes: usize,
     staged: BTreeMap<u64, crate::staged_allocation::StagedAllocation>,
     staged_bytes: usize,
+    publication_fence: u64,
     // Tombstones retain every generation advance. Rebuild this sum on restore;
     // 100,000 retained u64 generations fit without overflow in u128.
     revision: u128,
@@ -344,8 +345,27 @@ struct CatalogImage {
     retained: Vec<crate::manifest_retention::RetainedManifest>,
     #[prost(message, repeated, tag = "4")]
     staged: Vec<crate::staged_allocation::StagedAllocation>,
+    #[prost(uint64, tag = "5")]
+    publication_fence: u64,
 }
 impl ManifestCatalog {
+    pub fn publication_fence(&self) -> u64 { self.publication_fence }
+    fn header_size(&self) -> usize {
+        if self.publication_fence == 0 { 2 } else {
+            3 + prost::encoding::encoded_len_varint(self.publication_fence)
+        }
+    }
+    pub(crate) fn check_publication_fence(&self, before: u64, after: u64) -> Result<(), ObjectError> {
+        if before != 0 || self.publication_fence != before || after == 0 {
+            return Err(invalid("publication fence must advance once from disabled"));
+        }
+        let header = 3 + prost::encoding::encoded_len_varint(after);
+        if self.body_bytes + self.retention_bytes + self.staged_bytes + header > MAX_SNAPSHOT {
+            return Err(ObjectError::PreconditionFailed("publication fence exceeds checkpoint bound".into()));
+        }
+        Ok(())
+    }
+    pub(crate) fn restore_publication_fence(&mut self, id: u64) { self.publication_fence = id; }
     pub fn staged_allocation(&self, id: u64) -> Option<&crate::staged_allocation::StagedAllocation> {
         self.staged.get(&id)
     }
@@ -367,7 +387,7 @@ impl ManifestCatalog {
         }
         if change.after.is_some() {
             if self.staged.len() >= crate::staged_allocation::MAX_STAGED_ALLOCATIONS
-                || self.body_bytes + self.retention_bytes + self.staged_bytes + entry_size(record) > MAX_SNAPSHOT - 2 {
+                || self.body_bytes + self.retention_bytes + self.staged_bytes + entry_size(record) > MAX_SNAPSHOT - self.header_size() {
                 return Err(ObjectError::PreconditionFailed("staged allocation capacity exceeded".into()));
             }
             let current = self.get(&ObjectId::new(record.bucket.clone(), record.key.clone()));
@@ -414,7 +434,7 @@ impl ManifestCatalog {
         }
         if change.after.is_some() {
             if self.retained.len() >= crate::manifest_retention::MAX_RETAINED_MANIFESTS
-                || self.body_bytes + self.retention_bytes + self.staged_bytes + entry_size(record) > MAX_SNAPSHOT - 2 {
+                || self.body_bytes + self.retention_bytes + self.staged_bytes + entry_size(record) > MAX_SNAPSHOT - self.header_size() {
                 return Err(ObjectError::PreconditionFailed("retention catalog capacity exceeded".into()));
             }
             let manifest = record.manifest.as_ref().unwrap();
@@ -472,11 +492,11 @@ impl ManifestCatalog {
         }
     }
     pub(crate) fn encoded_size(&self) -> usize {
-        self.body_bytes + self.retention_bytes + self.staged_bytes + 2 + 12
+        self.body_bytes + self.retention_bytes + self.staged_bytes + self.header_size() + 12
     }
 
     pub fn is_empty(&self) -> bool {
-        self.objects.is_empty() && self.staged.is_empty()
+        self.objects.is_empty() && self.staged.is_empty() && self.publication_fence == 0
     }
     pub fn len(&self) -> usize {
         self.objects.len()
@@ -491,10 +511,10 @@ impl ManifestCatalog {
         &self,
         outcome: &ManifestOutcome,
     ) -> Result<Option<usize>, ObjectError> {
-        self.check_outcome_with_staging(outcome, None)
+        self.check_outcome_with_admission(outcome, None, None)
     }
-    pub(crate) fn check_outcome_with_staging(
-        &self, outcome: &ManifestOutcome, allocation_id: Option<u64>,
+    pub(crate) fn check_outcome_with_admission(
+        &self, outcome: &ManifestOutcome, allocation_id: Option<u64>, source: Option<&crate::manifest_copy::LiveCopySource>,
     ) -> Result<Option<usize>, ObjectError> {
         outcome.validate()?;
         let after = outcome.after.as_ref().unwrap();
@@ -507,6 +527,20 @@ impl ManifestCatalog {
             return Err(ObjectError::PreconditionFailed(
                 "object manifest changed before publication".into(),
             ));
+        }
+        if let Some(source) = source {
+            source.validate()?;
+            let value = self.get(&ObjectId::new(source.bucket.clone(), source.key.clone()))
+                .ok_or_else(|| ObjectError::PreconditionFailed("copy source is missing".into()))?;
+            if value.deleted || value.generation != source.generation
+                || after.format_version != value.format_version || after.extents != value.extents || after.length != value.length {
+                return Err(ObjectError::PreconditionFailed("copy source changed before publication".into()));
+            }
+        }
+        if self.publication_fence != 0 && allocation_id.is_none() && source.is_none()
+            && !after.extents.is_empty()
+            && outcome.before.as_ref().is_none_or(|before| before.extents != after.extents) {
+            return Err(ObjectError::PreconditionFailed("fresh extents require owned publication".into()));
         }
         if current.is_none() && self.objects.len() >= MAX_OBJECTS {
             return Err(invalid("manifest catalog exceeds object bound"));
@@ -522,7 +556,7 @@ impl ManifestCatalog {
             }
         }
         let released = allocation_id.and_then(|id| self.staged.get(&id)).map_or(0, entry_size);
-        if body_bytes + self.retention_bytes + self.staged_bytes - released > MAX_SNAPSHOT - 2 {
+        if body_bytes + self.retention_bytes + self.staged_bytes - released > MAX_SNAPSHOT - self.header_size() {
             return Err(invalid(
                 "manifest publication exceeds checkpoint size bound",
             ));
@@ -533,24 +567,30 @@ impl ManifestCatalog {
         let Some(body_bytes) = self.check_outcome(outcome)? else {
             return Ok(false);
         };
+        self.commit_checked_manifest(outcome, body_bytes);
+        Ok(true)
+    }
+    pub(crate) fn commit_checked_manifest(&mut self, outcome: &ManifestOutcome, body_bytes: usize) {
         let after = outcome.after.as_ref().unwrap();
         self.objects.insert(after.object_id(), after.clone());
         self.revision += 1;
         self.body_bytes = body_bytes;
-        Ok(true)
     }
     pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
         let image = CatalogImage {
-            format_version: if !self.staged.is_empty() { 3 } else if self.retained.is_empty() { 1 } else { 2 },
+            format_version: if self.publication_fence != 0 { 4 } else if !self.staged.is_empty() { 3 } else if self.retained.is_empty() { 1 } else { 2 },
             objects: self.objects.values().cloned().collect(),
             retained: self.retained.values().cloned().collect(),
             staged: self.staged.values().cloned().collect(),
+            publication_fence: self.publication_fence,
         };
         frame(b"MOMC", &image, MAX_SNAPSHOT)
     }
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ObjectError> {
         let image: CatalogImage = unframe(b"MOMC", bytes, MAX_SNAPSHOT)?;
-        if !(1..=3).contains(&image.format_version) || image.objects.len() > MAX_OBJECTS
+        if !(1..=4).contains(&image.format_version) || image.objects.len() > MAX_OBJECTS
+            || (image.format_version < 4 && image.publication_fence != 0)
+            || (image.format_version == 4 && image.publication_fence == 0)
             || (image.format_version == 1 && (!image.retained.is_empty() || !image.staged.is_empty()))
             || (image.format_version == 2 && (image.retained.is_empty() || !image.staged.is_empty()))
             || (image.format_version == 3 && image.staged.is_empty())
@@ -559,6 +599,7 @@ impl ManifestCatalog {
             return Err(invalid("manifest catalog version or count mismatch"));
         }
         let mut result = Self::default();
+        result.publication_fence = image.publication_fence;
         let mut previous = None;
         for value in image.objects {
             value.validate()?;
@@ -856,6 +897,7 @@ mod tests {
             objects: vec![manifest(1), manifest(1)],
             retained: Vec::new(),
             staged: Vec::new(),
+            publication_fence: 0,
         };
         assert!(
             ManifestCatalog::from_bytes(&frame(b"MOMC", &duplicate, MAX_SNAPSHOT).unwrap())

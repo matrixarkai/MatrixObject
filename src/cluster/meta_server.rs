@@ -692,6 +692,8 @@ fn apply(
     }
     let request = super::health_report::stamp(request, &guard.service)?;
     let decision = match &request {
+        MetaRequest::CopyManifest(command) => Some(super::manifest_copy_commands::prepare(
+            &guard.service, &guard.groups, command, max_payload_bytes)?),
         MetaRequest::StagedAllocation(command) if !command.is_read() => {
             if guard.storage.is_none() {
                 return Err(ObjectError::PreconditionFailed("staged allocation requires durable metadata storage".into()));
@@ -733,7 +735,7 @@ fn apply(
     if let Some((decided, reply)) = decision {
         if guard.storage.is_some() {
             // Preflight the local snapshot bound before persisting an outcome.
-            if decided.manifest.is_some() || decided.retention.is_some() || decided.staging.is_some() {
+            if decided.manifest.is_some() || decided.retention.is_some() || decided.staging.is_some() || decided.publication_fence.is_some() {
                 let mut preview = guard.service.clone();
                 decided.apply(&mut preview)?;
                 if super::chunk_groups::encode_bootstrap(&preview, &guard.groups)?.len()
@@ -855,6 +857,9 @@ pub(super) fn decide_allocation(
     page_count: u32,
     limit: usize,
 ) -> Result<(crate::placement_outcome::PlacementOutcome, MetaReply), ObjectError> {
+    if service.object_manifests.publication_fence() != 0 {
+        return Err(ObjectError::PreconditionFailed("publication fence requires owned allocations".into()));
+    }
     let allocation_id = service
         .placement_commit_index
         .checked_add(1)
@@ -878,6 +883,8 @@ pub(super) fn decide_allocation(
         manifest: None,
         retention: None,
         staging: None,
+        publication_fence: None,
+        copy_source: None,
     };
     outcome.to_payload()?;
     Ok((outcome, reply))
@@ -950,6 +957,11 @@ pub(super) fn apply_with_groups(
     groups: &super::ChunkGroupCatalog,
 ) -> Result<MetaReply, ObjectError> {
     groups.check_request(&request)?;
+    if let MetaRequest::CopyManifest(command) = &request {
+        let (outcome, reply) = super::manifest_copy_commands::prepare(service, groups, command, limit)?;
+        outcome.apply(service)?;
+        return Ok(reply);
+    }
     if let MetaRequest::StagedAllocation(command) = &request {
         if !command.is_read() {
             let (outcome, reply) = super::staged_allocation_commands::prepare(service, groups, command, limit)?;
@@ -1141,6 +1153,7 @@ pub(super) fn apply_to_meta(
     max_payload_bytes: usize,
 ) -> Result<MetaReply, ObjectError> {
     match request {
+        MetaRequest::CopyManifest(_) => Err(ObjectError::InvalidArgument("atomic copy requires catalog dispatch".into())),
         MetaRequest::StagedAllocation(command) => super::staged_allocation_commands::read(guard, &command, max_payload_bytes),
         MetaRequest::ManifestRetention(command) => {
             command.validate()?;

@@ -2166,6 +2166,14 @@ mod coupled_groups {
         }
         assert_eq!(winners.len(), 1);
         let winning = winners.pop().unwrap();
+        let post_fence = meta.allocate_staged_object("written", "post-fence", None, 1, false).unwrap();
+        let publication_fence = meta.enable_publication_fence().unwrap();
+        assert_eq!(meta.read_publication_fence().unwrap(), publication_fence);
+        assert!(meta.allocate_object_pages(1).is_err());
+        let post_fence_value = meta.write_staged_object(&post_fence, None, b"OK", &options).unwrap();
+        let copied = meta.copy_object_atomic("written", "owned", "written", "fenced-copy", None, 100, 0).unwrap();
+        assert!(meta.write_object("written", "late-legacy", None, b"legacy", &options).is_err());
+        assert!(meta.read_manifest("written", "late-legacy").is_err());
 
         for id in 0..3 {
             if metadata.nodes[id].is_some() {
@@ -2195,6 +2203,10 @@ mod coupled_groups {
         assert_eq!(meta.read_object("written", "owned", 100, &options.replica).unwrap(),
             (owned_updated, b"owned raft bytes+tail".to_vec()));
         assert!(meta.read_staged_allocation(pending_owned.allocation_id).is_err());
+        assert_eq!(meta.read_publication_fence().unwrap(), publication_fence);
+        assert_eq!(meta.read_object("written", "post-fence", 100, &options.replica).unwrap(), (post_fence_value, b"OK".to_vec()));
+        assert_eq!(meta.read_object("written", "fenced-copy", 100, &options.replica).unwrap(),
+            (copied, b"owned raft bytes+tail".to_vec()));
     }
 
     #[test]
