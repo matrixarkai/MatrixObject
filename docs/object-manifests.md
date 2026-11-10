@@ -1,5 +1,15 @@
 # Object manifest publication
 
+`RemoteMetaClient::read_object_range(bucket, key, offset, length, max_bytes, options)`
+reads a byte range from one committed generation. The requested length must fit
+the caller's byte limit, and the range must fit the object; an empty range at
+the end is allowed. Only intersecting extents are fetched. Each selected extent
+is verified in full against its published sequence and digest before copying
+the requested bytes. The output allocation is bounded by the requested length;
+boundary extents still incur their complete read and checksum cost. The returned
+manifest identifies the complete generation. A shared deadline covers metadata
+and data requests, and an error returns no partial bytes.
+
 The `object_manifest` module defines a binary protobuf catalog for object names
 and immutable chunk extents. `proto/object_manifest.proto` documents its fields.
 The catalog is carried in metadata service snapshots, local metadata snapshot
