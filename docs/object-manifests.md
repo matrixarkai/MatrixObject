@@ -1,5 +1,10 @@
 # Object manifest publication
 
+Resuming an unpublished Star write verifies staged pages against the write
+threshold, even when ordinary committed-object reads need only one copy. A
+partially replicated candidate cannot become visible through resume. Restore
+and repair the required copies before retrying the caller-retained candidate.
+
 `RemoteMetaClient::append_object(expected, suffix, options)` retains the expected
 generation's immutable extents and writes fresh pages for the suffix. It publishes
 the combined manifest only after the new pages are durable. Existing payloads are

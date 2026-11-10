@@ -1578,6 +1578,20 @@ impl RemoteReplicaSet {
         )
     }
 
+    /// Verify staged bytes against the durable write threshold before publication.
+    pub(super) fn probe_written_chunk(
+        &mut self,
+        page_id: &PageId,
+        offset: u64,
+        length: u64,
+    ) -> Result<ReplicaReadResult, ObjectError> {
+        let read_quorum = self.read_quorum;
+        self.read_quorum = read_quorum.max(self.write_quorum);
+        let result = self.read_chunk(page_id, offset, length);
+        self.read_quorum = read_quorum;
+        result
+    }
+
     fn read_chunk_before(
         &mut self,
         page_id: &PageId,
