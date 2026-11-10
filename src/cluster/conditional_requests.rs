@@ -285,6 +285,13 @@ mod tests {
             let sample_request = ReplicaRequest::WriteChunkBatchIfSequence {
                 writes: vec![sample.clone()],
             };
+            let borrowed = crate::cluster::message::encode_conditional_write_batch_frame(
+                std::iter::once(crate::cluster::message::ConditionalChunkWriteRef::from(
+                    &sample,
+                )),
+                RequestCode::WriteChunkBatchIfSequence,
+            );
+            assert_eq!(borrowed, crate::cluster::message::encode_request(&sample_request));
             let expected = ChunkWriteBatch {
                 version: 1,
                 writes: vec![ChunkWrite {

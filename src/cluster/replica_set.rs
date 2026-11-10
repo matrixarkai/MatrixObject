@@ -29,7 +29,8 @@
 //! never written cannot tell the absence it is checking for from the outage it just caused.
 
 use crate::cluster::client::{RemoteReplicaClient, ReplicaClientOptions};
-use crate::cluster::message::{ConditionalChunkWrite, ReplicaReply, ReplicaRequest};
+use crate::cluster::message::{ConditionalChunkWriteRef, ReplicaReply, ReplicaRequest};
+use crate::cluster::wire::RequestCode;
 use crate::{ObjectError, PageId, ReplicaHead, ReplicaReadResult};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -53,7 +54,7 @@ const CONDITIONAL_WRITE_MAX_PAYLOAD_BYTES: usize =
     crate::cluster::wire::MAX_PAYLOAD_BYTES;
 
 fn conditional_write_frame_count(
-    group: &[(usize, ConditionalChunkWrite)],
+    group: &[(usize, ConditionalChunkWriteRef<'_>)],
     max_writes: usize,
     max_bytes: usize,
     frame_overhead: usize,
@@ -539,6 +540,19 @@ impl RemoteReplicaSet {
         self.fan_out_until_applied(request, selected, Some(self.write_quorum))
     }
 
+    fn fan_out_encoded_write_quorum(
+        &mut self,
+        frame: std::sync::Arc<[u8]>,
+        selected: Option<&[bool]>,
+    ) -> Vec<Result<ReplicaReply, ObjectError>> {
+        self.fan_out_encoded_until_applied(
+            RequestCode::WriteChunkBatchIfSequence,
+            frame,
+            selected,
+            Some(self.write_quorum),
+        )
+    }
+
     fn supports_state_conditional_write(&mut self) -> bool {
         if let Some(supported) = self.state_conditional_write {
             return supported;
@@ -633,6 +647,21 @@ impl RemoteReplicaSet {
         selected: Option<&[bool]>,
         return_after_applied: Option<usize>,
     ) -> Vec<Result<ReplicaReply, ObjectError>> {
+        self.fan_out_encoded_until_applied(
+            request.code(),
+            super::message::encode_request(request).into(),
+            selected,
+            return_after_applied,
+        )
+    }
+
+    fn fan_out_encoded_until_applied(
+        &mut self,
+        code: RequestCode,
+        frame: std::sync::Arc<[u8]>,
+        selected: Option<&[bool]>,
+        return_after_applied: Option<usize>,
+    ) -> Vec<Result<ReplicaReply, ObjectError>> {
         let reply_count = self
             .replicas
             .iter()
@@ -640,8 +669,9 @@ impl RemoteReplicaSet {
             .filter(|(index, _)| selected.map_or(true, |members| members[*index]))
             .count();
         let mut replies: Vec<_> = (0..reply_count).map(|_| None).collect();
-        self.fan_out_each_until_applied(
-            request,
+        self.fan_out_each_encoded_until_applied(
+            code,
+            frame,
             selected,
             return_after_applied,
             None,
@@ -678,6 +708,29 @@ impl RemoteReplicaSet {
         return_after_applied: Option<usize>,
         operation_deadline: Option<std::time::Instant>,
         return_after_replies: Option<usize>,
+        on_reply: F,
+    ) where
+        F: FnMut(usize, Result<ReplicaReply, ObjectError>),
+    {
+        self.fan_out_each_encoded_until_applied(
+            request.code(),
+            super::message::encode_request(request).into(),
+            selected,
+            return_after_applied,
+            operation_deadline,
+            return_after_replies,
+            on_reply,
+        );
+    }
+
+    fn fan_out_each_encoded_until_applied<F>(
+        &mut self,
+        code: RequestCode,
+        frame: std::sync::Arc<[u8]>,
+        selected: Option<&[bool]>,
+        return_after_applied: Option<usize>,
+        operation_deadline: Option<std::time::Instant>,
+        return_after_replies: Option<usize>,
         mut on_reply: F,
     ) where
         F: FnMut(usize, Result<ReplicaReply, ObjectError>),
@@ -685,7 +738,6 @@ impl RemoteReplicaSet {
         // One shared encoded frame and one pending exchange per selected member.
         // No worker threads or mutation retries. A terminal mutation may return at
         // quorum; dropping an incomplete exchange retires that member's socket.
-        let frame: std::sync::Arc<[u8]> = super::message::encode_request(request).into();
         let mutation_drain = if frame.len() >= LARGE_MUTATION_FRAME_BYTES {
             LARGE_MUTATION_QUORUM_DRAIN
         } else {
@@ -697,7 +749,7 @@ impl RemoteReplicaSet {
             .enumerate()
             .filter(|(i, _)| selected.map_or(true, |members| members[*i]))
             .map(|(_, replica)| {
-                replica.begin_encoded_before(request.code(), frame.clone(), operation_deadline)
+                replica.begin_encoded_before(code, frame.clone(), operation_deadline)
             })
             .collect();
         let mut pending: Vec<_> = pending
@@ -1179,10 +1231,10 @@ impl RemoteReplicaSet {
                 .map(|(index, (page_id, offset, data, _))| {
                     (
                         index,
-                        ConditionalChunkWrite {
-                            page_id: page_id.clone(),
+                        ConditionalChunkWriteRef {
+                            page_id,
                             offset,
-                            data: data.to_vec(),
+                            data,
                             expected_sequence: 0,
                         },
                     )
@@ -1206,7 +1258,8 @@ impl RemoteReplicaSet {
             .iter()
             .map(|(expected, _)| expected.as_ref().map_or(0, |head| head.write_sequence))
             .collect();
-        let mut groups: BTreeMap<Vec<bool>, Vec<(usize, ConditionalChunkWrite)>> = BTreeMap::new();
+        let mut groups: BTreeMap<Vec<bool>, Vec<(usize, ConditionalChunkWriteRef<'a>)>> =
+            BTreeMap::new();
         for (index, (page_id, offset, data, required_sequence)) in writes.clone().enumerate() {
             let page_index = page_indexes[page_id];
             let expected_sequence = next_sequences[page_index];
@@ -1223,10 +1276,10 @@ impl RemoteReplicaSet {
                 .or_default()
                 .push((
                     index,
-                    ConditionalChunkWrite {
-                        page_id: page_id.clone(),
+                    ConditionalChunkWriteRef {
+                        page_id,
                         offset,
-                        data: data.to_vec(),
+                        data,
                         expected_sequence,
                     },
                 ));
@@ -1241,7 +1294,7 @@ impl RemoteReplicaSet {
 
     fn apply_conditional_write_group(
         &mut self,
-        group: Vec<(usize, ConditionalChunkWrite)>,
+        group: Vec<(usize, ConditionalChunkWriteRef<'_>)>,
         selected: Option<&[bool]>,
         acknowledgements: &mut [usize],
     ) -> Result<(), ObjectError> {
@@ -1287,12 +1340,13 @@ impl RemoteReplicaSet {
                 frame.push((index, write));
             }
             let indexes: Vec<_> = frame.iter().map(|(index, _)| *index).collect();
-            let request = ReplicaRequest::WriteChunkBatchIfSequence {
-                writes: frame.into_iter().map(|(_, write)| write).collect(),
-            };
+            let encoded = super::message::encode_conditional_write_batch_frame(
+                frame.iter().map(|(_, write)| *write),
+                RequestCode::WriteChunkBatchIfSequence,
+            );
             let mut acknowledged = 0usize;
             let mut first_error = None;
-            for result in self.fan_out_write_quorum(&request, selected) {
+            for result in self.fan_out_encoded_write_quorum(encoded.into(), selected) {
                 match applied(result) {
                     Ok(()) => acknowledged += 1,
                     Err(error) if first_error.is_none() => first_error = Some(error),
