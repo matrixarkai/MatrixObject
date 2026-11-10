@@ -17,11 +17,7 @@ pub(super) fn prepare(
 ) -> Result<(PlacementOutcome, MetaReply), ObjectError> {
     let timed = command.version == 2 || (command.action == 4 && service.object_manifests
         .staged_allocation(command.allocation_id).is_some_and(|record| record.expires_at_ms != 0));
-    let now = if timed {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| ObjectError::PreconditionFailed("metadata clock precedes epoch".into()))?
-            .as_millis().try_into().map_err(|_| ObjectError::PreconditionFailed("metadata clock exceeds lease range".into()))?
-    } else { 0 };
+    let now = if timed { super::staged_lease_sweeper::now_ms()? } else { 0 };
     prepare_at(service, groups, command, limit, now)
 }
 

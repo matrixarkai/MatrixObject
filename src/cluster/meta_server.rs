@@ -518,6 +518,29 @@ impl MetaNodeServer {
                 accept_loop(listener, meta, counters, stop, options, dispatch);
             }));
         }
+        // Replicated storage runs cleanup on its leader's bounded proposal path.
+        // Only standalone durable storage needs a separate local timer.
+        let local_storage = self.meta.lock()
+            .map_err(|_| std::io::Error::other("metadata lock poisoned"))?.storage.is_some();
+        if local_storage {
+            let meta = Arc::clone(&self.meta);
+            let stop = Arc::clone(&self.stop);
+            let limit = self.options.max_payload_bytes;
+            handles.push(std::thread::spawn(move || {
+                while !stop.wait_for(super::staged_lease_sweeper::INTERVAL) {
+                    let Ok(now) = super::staged_lease_sweeper::now_ms() else { continue };
+                    let commands = match meta.lock() {
+                        Ok(guard) if !guard.failed =>
+                            super::staged_lease_sweeper::commands(&guard.service, now),
+                        _ => break,
+                    };
+                    for command in commands {
+                        if stop.is_stopped() { break; }
+                        let _ = apply(&meta, MetaRequest::StagedAllocation(command), limit);
+                    }
+                }
+            }));
+        }
         if let Some(ttl_ms) = self.heartbeat_ttl_ms {
             let meta = Arc::clone(&self.meta);
             let stop = Arc::clone(&self.stop);

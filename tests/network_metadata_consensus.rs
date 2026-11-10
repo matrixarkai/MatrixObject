@@ -598,6 +598,63 @@ fn staged_lease_deadlines_and_renewals_survive_failover_restart_and_quorum_loss(
 }
 
 #[test]
+fn automatic_staged_expiry_resumes_after_outage_requires_quorum_and_keeps_idle_wal_stable() {
+    use matrixobjectstore_rs::ObjectError;
+    let mut group = Group::new();
+    let mut client = group.client(group.leader());
+    client.enable_publication_fence().unwrap();
+    let permanent = client.allocate_staged_object("bucket", "permanent", None, 1, false).unwrap();
+    let old = client.allocate_leased_staged_object("bucket", "renewed", None, 1, false, 5000).unwrap();
+    let renewed = client.renew_staged_allocation(&old, 120_000).unwrap();
+    let mut abandoned = Vec::new();
+    for index in 0..6 {
+        abandoned.push(client.allocate_leased_staged_object("bucket", &format!("abandoned-{index}"),
+            None, 1, false, 5000).unwrap());
+    }
+    for record in &abandoned {
+        assert_eq!(client.read_staged_allocation(record.allocation_id).unwrap(), *record);
+    }
+    drop(client);
+    for index in 0..3 { group.kill(index); }
+    let last_deadline = abandoned.iter().map(|r| r.expires_at_ms).max().unwrap();
+    while std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+        <= u128::from(last_deadline) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    group.start(0);
+    std::thread::sleep(Duration::from_millis(2200));
+    assert!(group.client(0).read_staged_allocation(abandoned[0].allocation_id).is_err());
+    group.start(1);
+    group.start(2);
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    let until = Instant::now() + Duration::from_secs(15);
+    loop {
+        if abandoned.iter().all(|record| matches!(client.read_staged_allocation(record.allocation_id),
+            Err(ObjectError::NotFound(_)))) { break; }
+        assert!(Instant::now() < until, "new leader did not retire all abandoned staged leases");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(client.read_staged_allocation(permanent.allocation_id).unwrap(), permanent);
+    assert_eq!(client.read_staged_allocation(renewed.allocation_id).unwrap(), renewed);
+    let wal = group.root.join(leader.to_string()).join("metadata.peer.wal");
+    let before = std::fs::read(&wal).unwrap();
+    std::thread::sleep(Duration::from_millis(2200));
+    assert_eq!(std::fs::read(&wal).unwrap(), before, "empty automatic sweeps appended WAL records");
+    drop(client);
+    for index in 0..3 { group.kill(index); }
+    for index in 0..3 { group.start(index); }
+    let mut client = group.client(group.leader());
+    for record in &abandoned {
+        assert!(matches!(client.read_staged_allocation(record.allocation_id), Err(ObjectError::NotFound(_))));
+    }
+    assert_eq!(client.read_staged_allocation(permanent.allocation_id).unwrap(), permanent);
+    assert_eq!(client.read_staged_allocation(renewed.allocation_id).unwrap(), renewed);
+    let next = client.allocate_staged_object("bucket", "abandoned-0", None, 1, false).unwrap();
+    assert!(next.allocation_id > abandoned.last().unwrap().allocation_id);
+}
+
+#[test]
 fn process_quorum_preserves_outcomes_across_leader_loss_and_total_restart() {
     let mut group = Group::new();
     let first = group.leader();

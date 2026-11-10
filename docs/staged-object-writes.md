@@ -50,8 +50,9 @@ the original uncertainty when another generation has replaced it.
 are quorum-confirmed reads. An uncertain allocation response may leave an active
 record before any data I/O. Enumeration supports operator inspection, not automatic
 ownership recovery: matching target fields do not identify a request. Do not adopt
-another writer's reservation by matching its target. There is no automatic expiry.
-Owners or operators must abort abandoned reservations. Handles belong to one
+another writer's reservation by matching its target. Permanent reservations
+require explicit abort; leased reservations receive bounded automatic cleanup
+after their deadlines. Handles belong to one
 metadata history; use a pinned metadata catalog when reconnecting to endpoints.
 They are not separate authorization credentials.
 

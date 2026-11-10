@@ -67,6 +67,6 @@ the enable operation is idempotent.
 The fence closes manifest publication through retired or unowned namespaces.
 It does not stop raw chunk writes, cancel writes already in flight or protect
 ordinary readers automatically. Data-node fencing, reader-session integration,
-automatic expiry, allocation request identity and interruption-safe deletion remain
+reader expiry, allocation request identity and interruption-safe deletion remain
 unfinished. A positive fence or a successful inventory scan alone does not
 authorize physical reclamation.

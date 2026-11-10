@@ -369,6 +369,11 @@ impl ManifestCatalog {
     pub fn staged_allocation(&self, id: u64) -> Option<&crate::staged_allocation::StagedAllocation> {
         self.staged.get(&id)
     }
+    #[cfg(feature = "meta-server")]
+    pub(crate) fn expired_staged(&self, now: u64) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.staged.values().filter(move |record| record.expires_at_ms != 0 && record.expires_at_ms <= now)
+            .map(|record| (record.allocation_id, record.expires_at_ms))
+    }
     pub(crate) fn staged_ids(&self, after: u64, limit: usize) -> (Vec<u64>, bool) {
         let mut rows = self.staged.range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded));
         let ids = rows.by_ref().take(limit).map(|(id, _)| *id).collect();

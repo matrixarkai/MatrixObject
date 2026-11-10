@@ -42,8 +42,8 @@ These handles require explicit release and do not change ordinary reads.
 Explicit owned allocation, publication, resume and abort are available through
 `staged-object-writes.md`. A durable publication fence and atomic live-source
 copy are available through `publication-admission.md`. Opt-in staged deadlines,
-renewal and explicit expiry are available through `staged-ownership-leases.md`.
-Data-node fencing, automatic expiry, allocation request identity and automatic reader-session integration remain
+renewal and bounded automatic cleanup are available through `staged-ownership-leases.md`.
+Data-node fencing, allocation request identity and automatic reader-session integration remain
 unfinished. Keep reclamation disabled while completing them.
 
 Choose and document failover semantics before adding deletion: either restore

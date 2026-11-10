@@ -176,6 +176,8 @@ pub mod meta_server;
 #[cfg(feature = "meta-server")]
 mod staged_allocation_commands;
 #[cfg(feature = "meta-server")]
+mod staged_lease_sweeper;
+#[cfg(feature = "meta-server")]
 mod manifest_copy_commands;
 #[cfg(feature = "meta-server")]
 pub mod meta_wire;
