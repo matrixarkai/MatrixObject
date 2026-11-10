@@ -259,7 +259,8 @@ fn thirty_two_group_write_uses_each_verified_connection_for_data() {
     let written = client.write_object(
         "bucket", "wide", None, &object,
         &ObjectWriteOptions {
-            page_bytes: 4, target_groups: 32, ..Default::default()
+            page_bytes: 4, target_groups: 32, page_allocation_lease_pages: 1,
+            ..Default::default()
         },
     ).unwrap();
     assert_eq!(written.extents.len(), 32);
@@ -837,6 +838,7 @@ fn sequential_writes_reuse_a_route_matched_group_connection() {
             .unwrap();
         for value in [1u8, 2] {
             let ReplicaRequest::WriteChunkIfSequenceDigest {
+                page_id,
                 data,
                 expected_sequence,
                 ..
@@ -846,6 +848,7 @@ fn sequential_writes_reuse_a_route_matched_group_connection() {
             };
             assert_eq!(data, vec![value; 4]);
             assert_eq!(expected_sequence, 0);
+            assert_eq!(page_id.page_index, u64::from(value - 1));
             let mut sha256 = [0; 32];
             sha256.copy_from_slice(
                 ring::digest::digest(&ring::digest::SHA256, &data).as_ref(),
@@ -901,25 +904,27 @@ fn sequential_writes_reuse_a_route_matched_group_connection() {
                     }],
                 },
             );
-            assert!(matches!(
-                meta(&mut stream),
-                MetaRequest::AllocateObjectPages { page_count: 1 }
-            ));
-            reply(
-                &mut stream,
-                MetaReply::ObjectPages(ObjectPageAllocation {
-                    format_version: 1,
-                    allocation_id: turn as u64 + 1,
-                    page_count: 1,
-                }),
-            );
+            if turn == 0 {
+                assert!(matches!(
+                    meta(&mut stream),
+                    MetaRequest::AllocateObjectPages { page_count: 64 }
+                ));
+                reply(
+                    &mut stream,
+                    MetaReply::ObjectPages(ObjectPageAllocation {
+                        format_version: 1,
+                        allocation_id: 1,
+                        page_count: 64,
+                    }),
+                );
+            }
             let MetaRequest::PublishManifest { outcome, .. } = meta(&mut stream) else {
                 panic!("manifest publication missing");
             };
-            reply(
-                &mut stream,
-                MetaReply::Manifest(outcome.after.unwrap()),
-            );
+            let manifest = outcome.after.unwrap();
+            assert_eq!(manifest.extents[0].page_index, turn as u64);
+            assert_eq!(manifest.extents[0].chunk_id, 1);
+            reply(&mut stream, MetaReply::Manifest(manifest));
         }
         assert_eq!(stream.read(&mut [0]).unwrap(), 0);
     });
@@ -1050,6 +1055,7 @@ fn changed_route_replaces_the_cached_group_connection() {
     let options = ObjectWriteOptions {
         page_bytes: 4,
         target_groups: 1,
+        page_allocation_lease_pages: 1,
         ..Default::default()
     };
     client
@@ -1438,6 +1444,7 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
         &ObjectWriteOptions {
             page_bytes: 4,
             target_groups: 2,
+            page_allocation_lease_pages: 1,
             ..Default::default()
         },
     );

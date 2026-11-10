@@ -8,7 +8,7 @@ const MAX_MANIFEST: usize = 1024 * 1024;
 const MAX_SNAPSHOT: usize = 64 * 1024 * 1024;
 const MAX_OBJECTS: usize = 100_000;
 
-/// A committed namespace for one writer's immutable object pages.
+/// A committed namespace for immutable object pages.
 /// Allocation IDs are unique within one metadata history, including recovery.
 #[derive(Clone, PartialEq, Eq, Message)]
 pub struct ObjectPageAllocation {

@@ -118,6 +118,8 @@ pub struct RemoteMetaClient {
     wide_manifest_route_reads: Option<bool>,
     #[cfg(feature = "replica-server")]
     pub(super) object_connections: Vec<super::object_client::CachedGroupConnection>,
+    #[cfg(feature = "replica-server")]
+    pub(super) object_page_lease: Option<super::object_client::ObjectPageLease>,
 }
 
 #[cfg(any(feature = "replica-server", test))]
@@ -190,6 +192,8 @@ impl RemoteMetaClient {
             wide_manifest_route_reads: None,
             #[cfg(feature = "replica-server")]
             object_connections: Vec::new(),
+            #[cfg(feature = "replica-server")]
+            object_page_lease: None,
         })
     }
 
