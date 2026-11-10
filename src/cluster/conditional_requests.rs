@@ -276,6 +276,34 @@ mod tests {
             u32::from_be_bytes(frame[2..6].try_into().unwrap()) as usize,
             bytes.len()
         );
+        for length in [0, 1, 127, 128, 16_384, 1024 * 1024] {
+            let mut sample = write.clone();
+            sample.page_id.page_index = 300;
+            sample.offset = 1 << 20;
+            sample.expected_sequence = 1 << 40;
+            sample.data = vec![7; length];
+            let sample_request = ReplicaRequest::WriteChunkBatchIfSequence {
+                writes: vec![sample.clone()],
+            };
+            let expected = ChunkWriteBatch {
+                version: 1,
+                writes: vec![ChunkWrite {
+                    version: 1,
+                    volume: sample.page_id.chunk_id.volume_id(),
+                    chunk: sample.page_id.chunk_id.id(),
+                    page: sample.page_id.page_index,
+                    offset: sample.offset,
+                    expected_sequence: sample.expected_sequence,
+                    data: sample.data,
+                }],
+            }
+            .encode_to_vec();
+            assert_eq!(sample_request.encode_payload(), expected);
+            assert_eq!(
+                &crate::cluster::message::encode_request(&sample_request)[6..],
+                expected.as_slice()
+            );
+        }
         assert_eq!(RequestCode::from_u8(14), Some(RequestCode::WriteChunkBatchIfSequence));
         assert_eq!(ReplicaRequest::decode(request.code(), &bytes).unwrap(), request);
         let mut maximum: ChunkWriteBatch = decode(&bytes).unwrap();
