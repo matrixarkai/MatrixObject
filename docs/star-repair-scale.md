@@ -12,6 +12,13 @@ The regular CI case uses 32 pages (160 verified copies). The explicit scale case
 cargo test --release --locked --features chunk-consensus,metadata-consensus,api-tls --test network_metadata_consensus star_repair_metadata_scale::five_star_replicas_repair_256_pages_with_metadata_failover_and_restart -- --exact --ignored --nocapture --test-threads=1
 ```
 
+On November 10, 2026, commit `bfdd54fa8a99cd2019b04c8a96b2a9a965021e9d`
+passed this release test twice on one WSL host. Each run repaired 256 pages in
+37 bounded batches across five chunk replicas and three metadata voters, then
+verified all 1,280 copies after failover and restart. The test phases finished
+in 25.91 and 27.12 seconds. These are recovery validation times, not sustained
+repair throughput measurements.
+
 These tests cover bounded repair traversal and recovery across independent local processes. They do not certify sustained throughput, independent-host failures, automatic repair scheduling, or the separate multi-group Raft membership workload.
 
 The metadata-routed object case also has an explicit WSL scale run:
