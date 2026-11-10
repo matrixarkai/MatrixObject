@@ -1337,28 +1337,25 @@ impl RemoteReplicaSet {
             } else {
                 (8, 4 * 1024 * 1024, 0, 0)
             };
-        let mut remaining = group.into_iter().peekable();
-        while remaining.peek().is_some() {
-            let mut frame = Vec::new();
+        let mut completed = 0;
+        while completed < group.len() {
+            let mut end = completed;
             let mut frame_bytes = frame_overhead;
-            while frame.len() < max_frame_writes {
-                let Some((_, write)) = remaining.peek() else {
-                    break;
-                };
+            while end < group.len() && end - completed < max_frame_writes {
+                let write = &group[end].1;
                 let Some(next_bytes) = frame_bytes
                     .checked_add(entry_overhead)
                     .and_then(|bytes| bytes.checked_add(write.data.len()))
                 else {
                     break;
                 };
-                if !frame.is_empty() && next_bytes > max_frame_bytes {
+                if end > completed && next_bytes > max_frame_bytes {
                     break;
                 }
-                let (index, write) = remaining.next().unwrap();
                 frame_bytes = next_bytes;
-                frame.push((index, write));
+                end += 1;
             }
-            let indexes: Vec<_> = frame.iter().map(|(index, _)| *index).collect();
+            let frame = &group[completed..end];
             let encoded = super::message::encode_conditional_write_batch_frame(
                 frame.iter().map(|(_, write)| *write),
                 RequestCode::WriteChunkBatchIfSequence,
@@ -1382,9 +1379,10 @@ impl RemoteReplicaSet {
                     ))
                 }));
             }
-            for index in indexes {
-                acknowledgements[index] = acknowledged;
+            for (index, _) in frame {
+                acknowledgements[*index] = acknowledged;
             }
+            completed = end;
         }
         Ok(())
     }
