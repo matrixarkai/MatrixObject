@@ -449,11 +449,19 @@ mod tests {
                 .unwrap(),
             read_limits
         );
-        let invalid_read_limits = ReadBatchLimits {
+        let mut invalid_read_limits = ReadBatchLimits {
             version: 1,
             max_reads: 33,
             max_reply_payload_bytes: 8 * 1024 * 1024,
         };
+        assert!(ReplicaReply::decode(
+            RequestCode::ReadBatchLimits,
+            &invalid_read_limits.encode_to_vec()
+        )
+        .is_err());
+        invalid_read_limits.max_reads = 32;
+        invalid_read_limits.max_reply_payload_bytes =
+            crate::cluster::wire::MAX_PAYLOAD_BYTES as u32 + 1;
         assert!(ReplicaReply::decode(
             RequestCode::ReadBatchLimits,
             &invalid_read_limits.encode_to_vec()
@@ -643,7 +651,7 @@ mod tests {
         invalid.reads.push(invalid.reads[0].clone());
         assert!(ReplicaRequest::decode(request.code(), &invalid.encode_to_vec()).is_err());
         let maximum = ReplicaRequest::ReadChunkBatch {
-            reads: (0..4)
+            reads: (0..7)
                 .map(|index| {
                     (
                         PageId {
@@ -661,7 +669,7 @@ mod tests {
         oversized.reads.push(oversized.reads[0].clone());
         assert!(ReplicaRequest::decode(maximum.code(), &oversized.encode_to_vec()).is_err());
         let maximum_reply = ReplicaReply::Reads(
-            (0..4)
+            (0..7)
                 .map(|_| crate::ReplicaReadResult {
                     data: vec![3; 1024 * 1024],
                     write_sequence: 9,
@@ -674,6 +682,16 @@ mod tests {
             &maximum_reply.encode_payload(),
         )
         .is_ok());
+        let mut oversized_reply = maximum_reply.clone();
+        let ReplicaReply::Reads(ref mut reads) = oversized_reply else {
+            unreachable!()
+        };
+        reads.push(reads[0].clone());
+        assert!(ReplicaReply::decode(
+            RequestCode::ReadChunkBatch,
+            &oversized_reply.encode_payload(),
+        )
+        .is_err());
         let mut extra = encoded;
         extra.extend([0x18, 1]);
         assert!(ReplicaReply::decode(RequestCode::ReadChunkBatch, &extra).is_err());

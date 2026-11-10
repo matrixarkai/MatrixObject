@@ -452,7 +452,11 @@ fn frame_response(
                         max_reads: if consensus.is_some() { 8 } else { 32 },
                         max_reply_payload_bytes: options
                             .max_payload_bytes
-                            .min(4 * 1024 * 1024) as u32,
+                            .min(if consensus.is_some() {
+                                4 * 1024 * 1024
+                            } else {
+                                MAX_PAYLOAD_BYTES
+                            }) as u32,
                     }),
                     ReplicaRequest::WriteChunkBatchIfSequence { writes } => match consensus {
                         Some(c) => c.request_batch(writes),
@@ -491,7 +495,7 @@ fn frame_response(
                         max_reads: 32,
                         max_reply_payload_bytes: options
                             .max_payload_bytes
-                            .min(4 * 1024 * 1024) as u32,
+                            .min(MAX_PAYLOAD_BYTES) as u32,
                     }),
                     ReplicaRequest::WriteChunkBatchIfSequence { writes } => {
                         apply_batch(replica, writes, options.max_payload_bytes)

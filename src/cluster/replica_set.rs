@@ -1592,9 +1592,9 @@ impl RemoteReplicaSet {
     }
 
     /// Read up to 32 independent ranges through quorum-voted star fan-out.
-    /// Default one-MiB ranges share four-range frames. A rotating quorum is
-    /// contacted first and remaining members are used only when that wave cannot
-    /// produce an exact vote for every range.
+    /// Standalone nodes pack seven one-MiB ranges inside one bounded reply. A
+    /// rotating quorum is contacted first and remaining members are used only
+    /// when that wave cannot produce an exact vote for every range.
     pub fn read_chunks(
         &mut self,
         reads: &[(PageId, u64, u64)],
