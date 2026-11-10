@@ -167,10 +167,11 @@ mod worker {
                 return Err(StepError::Retry(error.to_string()));
             }
         };
-        let (endpoints, quorum) = route
+        let (endpoints, _) = route
             .standalone_star_route()
             .map_err(|error| StepError::Stop(error.to_string()))?
             .ok_or_else(|| StepError::Stop("repair group is not fixed Star membership".into()))?;
+        let quorum = endpoints.len() / 2 + 1;
         if active
             .as_ref()
             .is_none_or(|current| current.endpoints != endpoints || current.quorum != quorum)

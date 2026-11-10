@@ -860,9 +860,8 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
         (first.clone(), first_bytes.clone())
     );
 
-    // A quorum write may finish with different two-member acknowledgement
-    // subsets for different pages. Repair the initial object across the full
-    // membership so the failure below exercises routing, not that variation.
+    // Inventory repair also checks that the initial object is present across
+    // the full membership before the failure below exercises routing.
     let mut initial = RemoteReplicaSet::connect(&endpoints, 2, 2, &options.replica).unwrap();
     let mut after = None;
     let mut repaired_pages = 0;
@@ -914,16 +913,10 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
             .1,
         first_bytes
     );
-    let second_bytes = b"quorum remains writable";
-    let second = client
+    let second_bytes = b"all members acknowledge writes";
+    assert!(client
         .write_object("star", "second", None, second_bytes, &options)
-        .unwrap();
-    assert_eq!(
-        client
-            .read_object("star", "second", second_bytes.len(), &options.replica)
-            .unwrap(),
-        (second, second_bytes.to_vec())
-    );
+        .is_err());
 
     chunks[0] = processes::start(
         env!("CARGO_BIN_EXE_chunkserver"),
@@ -936,6 +929,17 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
         ],
     );
     assert_eq!(chunks[0].endpoint, endpoints[0]);
+    drop(client);
+    let mut client = connect_metadata();
+    let second = client
+        .write_object("star", "second", None, second_bytes, &options)
+        .unwrap();
+    assert_eq!(
+        client
+            .read_object("star", "second", second_bytes.len(), &options.replica)
+            .unwrap(),
+        (second, second_bytes.to_vec())
+    );
     let mut returned = RemoteReplicaClient::connect(&endpoints[0], &options.replica).unwrap();
     let rejoin_deadline = Instant::now() + Duration::from_secs(12);
     let mut attempt = 0;
@@ -978,9 +982,12 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     }
     drop(client);
     let mut minority = connect_metadata();
-    assert!(minority
-        .read_object("star", &third_key, third_bytes.len(), &options.replica)
-        .is_err());
+    assert_eq!(
+        minority
+            .read_object("star", &third_key, third_bytes.len(), &options.replica)
+            .unwrap(),
+        (third, third_bytes)
+    );
     println!(
         "STAR_OBJECT pages={page_count} page_bytes={page_bytes} write_ms={} repair_batches={repair_batches} verified_copies={}",
         write_elapsed.as_millis(),

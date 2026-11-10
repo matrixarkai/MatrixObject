@@ -8,7 +8,9 @@ use super::{
 use crate::object_manifest::{ManifestOutcome, ObjectExtent, ObjectManifest, ObjectPageAllocation};
 use crate::ObjectError;
 
-const MAX_CACHED_GROUP_CONNECTIONS: usize = 8;
+// Match the retained write window so a client can reuse every verified group
+// in a wide object workload without reconnecting between objects.
+const MAX_CACHED_GROUP_CONNECTIONS: usize = 32;
 const MAX_RETAINED_WRITE_CONNECTIONS: usize = 32;
 const DEFAULT_OBJECT_PAGE_LEASE_PAGES: u32 = 64;
 
@@ -46,7 +48,7 @@ impl RemoteGroupClient {
             Some((endpoints, quorum)) => RemoteReplicaSet::connect_routed_quorum(
                 &endpoints,
                 quorum,
-                quorum,
+                1,
                 options,
             )
             .map(Self::Star),
