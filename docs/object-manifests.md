@@ -14,9 +14,13 @@ publication is resolved only by observing the exact resulting manifest.
 Append requires a live version-2 manifest. The total length must fit
 `max_object_bytes`, and the combined manifest retains the 4,096-extent and encoded
 size limits. An empty suffix still conditionally publishes the next generation.
-Failed writes can leave unpublished pages for later reclamation. The existing
-whole-object resume helper does not accept arbitrary append layouts; callers must
-inspect the failure and committed manifest before starting another operation.
+Failed writes can leave unpublished pages for later reclamation.
+`resume_unpublished_append(expected, staged, suffix, options)` validates the exact
+retained prefix and supplied suffix, then probes only new pages using the durable
+write threshold. Missing pages receive conditional inserts using the staged IDs.
+It publishes the original combined candidate after verification; repeating the
+call after that exact candidate is visible returns it without more data writes.
+The whole-object resume helper retains its separate complete-payload contract.
 
 `RemoteMetaClient::read_object_range(bucket, key, offset, length, max_bytes, options)`
 reads a byte range from one committed generation. The requested length must fit

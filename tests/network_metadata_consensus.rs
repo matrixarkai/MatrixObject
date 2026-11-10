@@ -931,7 +931,18 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
 
     chunks[0].child.kill().unwrap();
     assert!(processes::reap_within(&mut chunks[0].child, Duration::from_secs(3)).is_some());
-    assert!(client.append_object(appended.clone(), b"unavailable", &options).is_err());
+    let pending_suffix = vec![0x39; page_bytes * 33 + 1];
+    let append_candidate = match client.append_object(
+        appended.clone(), &pending_suffix, &options,
+    ).unwrap_err() {
+        matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication {
+            staged: Some(candidate), ..
+        } => *candidate,
+        error => panic!("missing staged append: {error:?}"),
+    };
+    assert!(client.resume_unpublished_append(
+        appended.clone(), append_candidate.clone(), &pending_suffix, &options,
+    ).is_err());
     assert_eq!(client.read_manifest("star", "append").unwrap(), appended);
     drop(client);
     let mut client = connect_metadata();
@@ -983,6 +994,34 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
         cursor = batch.resume_after;
     }
     drop(repair);
+    drop(client);
+    let mut client = connect_metadata();
+    let unwritten = append_candidate.extents.last().unwrap();
+    let unwritten_page = PageId {
+        chunk_id: ChunkId::new(unwritten.volume_id, unwritten.chunk_id).unwrap(),
+        page_index: unwritten.page_index,
+    };
+    for endpoint in &endpoints {
+        let mut replica = RemoteReplicaClient::connect(endpoint, &options.replica).unwrap();
+        assert!(matches!(replica.read_chunk(&unwritten_page, 0, unwritten.length),
+            Err(matrixobjectstore_rs::ObjectError::NotFound(_))));
+    }
+    let mut wrong_suffix = pending_suffix.clone();
+    wrong_suffix[0] ^= 1;
+    assert!(client.resume_unpublished_append(
+        appended.clone(), append_candidate.clone(), &wrong_suffix, &options,
+    ).is_err());
+    let resumed = client.resume_unpublished_append(
+        appended.clone(), append_candidate.clone(), &pending_suffix, &options,
+    ).unwrap();
+    assert_eq!(resumed, append_candidate);
+    assert_eq!(&resumed.extents[..appended.extents.len()], &appended.extents);
+    append_bytes.extend_from_slice(&pending_suffix);
+    assert_eq!(client.read_object("star", "append", append_bytes.len(), &options.replica)
+        .unwrap(), (resumed.clone(), append_bytes));
+    assert_eq!(client.resume_unpublished_append(
+        appended.clone(), resumed.clone(), &pending_suffix, &options,
+    ).unwrap(), resumed);
     let second = client.resume_unpublished_object(
         None, candidate.clone(), second_bytes, &options,
     ).unwrap();
