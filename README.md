@@ -57,6 +57,12 @@ they do not turn an in-process store into independent durable voter groups.
 | `chunk-consensus` | Independent MatrixRaft voters for chunk groups |
 | `api-tls` | TLS support for the binary service APIs |
 
+For the independent consensus features, use Rust 1.89 or newer and install the
+Protobuf compiler, Autoconf, Automake, and Libtool before building. The metadata
+API and Raft peer transport use separate ports; reserve both in each voter's
+network configuration. See the [metadata deployment guide](docs/metadata-consensus.md)
+for process-specific settings rather than sharing a state directory between voters.
+
 From the repository root, build these paths together with:
 
 ```bash
