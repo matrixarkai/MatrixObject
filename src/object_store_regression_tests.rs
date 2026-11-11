@@ -41514,6 +41514,14 @@ fn every_mutation_that_is_not_an_append_pays_for_the_whole_pre_image() {
         },
         true,
     );
+    pinned(
+        "EC repair through state installation",
+        &|service, page| {
+            service.corrupt_chunk_payload_for_repair(page).unwrap();
+            assert!(service.repair_chunk_payload_from_ec(page).unwrap());
+        },
+        true,
+    );
     // The page itself going is the case a length cannot describe at all.
     pinned(
         "the page removed for repair",
@@ -41690,18 +41698,19 @@ fn every_page_mutation_pays_its_undo_before_mutating() {
     // checked, and if they matched EVERYTHING the reads would have collapsed to
     // zero and the paid-for check below would be about reads rather than writes.
     assert!(
-        // ELEVEN, NOT TWELVE, BECAUSE THE ABORT STOPPED BEING A SITE.
-        // `abort_mutation_batch` used to fix pages up in `self.pages`; it now takes
-        // the live map OUT of the service with `mem::take` and fixes up that
-        // detached map before installing it. Mutating a map nothing can read is not
-        // what this rule is about: the rule is that a mutation of LIVE state must
-        // first secure a pre-image, and the abort IS the code that restores one.
-        // The floor moved by exactly the one site that left. `unpaid` below is what
-        // guards the rule; this only keeps the scan from checking nothing at all.
-        sites >= 11,
-        "the chunk service should have at least 11 sites that change a page, and \
-         this scan found {sites} -- the needles have probably gone stale"
+        // The abort restores a detached map, and EC reconstruction now uses
+        // install_chunk_state instead of a second direct page-map mutation.
+        // Keep the direct-site floor aligned with those consolidated paths.
+        sites >= 10,
+        "the chunk service should have at least 10 direct mutation sites; found {sites}"
     );
+    let repair = std::fs::read_to_string(root.join("chunk_state_repair.inc.rs")).unwrap();
+    let function = repair.split("pub fn repair_chunk_payload_from_ec(").nth(1)
+        .expect("the reconstruction entry point");
+    let function = function.split("\n    pub fn ").next().unwrap();
+    assert!(function.lines().any(|line|
+        line.trim() == "self.install_chunk_state(page_id.clone(), repaired)?;"),
+        "EC reconstruction must retain the guarded installation path");
     assert!(
         reads > sites,
         "most reaches for the page map are reads, and this scan counted {reads} \
