@@ -50,7 +50,7 @@ impl ChunkCatalogOutcome {
             ));
         }
         let placement = PlacementOutcome::from_payload(&self.placement)?;
-        if !placement.placements.is_empty() || placement.manifest.is_some() {
+        if placement.version != 1 || !placement.placements.is_empty() || placement.manifest.is_some() {
             return Err(ObjectError::Corruption(
                 "chunk catalog outcome changes object state".into(),
             ));

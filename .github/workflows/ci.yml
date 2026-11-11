@@ -86,6 +86,15 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the_readme_describes_the_continuous_integration_it_has did not run"; exit 1; }
 
+      - name: Durable format constants are unchanged
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::every_durable_format_constant_is_accounted_for -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
+
       # Each guard asserts that it actually RAN. `cargo test` reports success
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
@@ -562,6 +571,16 @@ jobs:
           grep -q 'test result: ok. 1 passed' /tmp/automatic-staged-expiry.log
           cargo test --locked --all-features --test network_metadata_consensus automatic_staged_expiry_resumes_after_outage_requires_quorum_and_keeps_idle_wal_stable -- --exact | tee /tmp/automatic-staged-expiry.log
           grep -q 'test result: ok. 1 passed' /tmp/automatic-staged-expiry.log
+
+      - name: read sessions preserve deadlines and recover bounded cleanup
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib read_session -- --test-threads=1 | tee /tmp/read-sessions.log
+          grep -q '^test result: ok. 6 passed' /tmp/read-sessions.log
+          cargo test --locked --all-features --test read_session_leases -- --test-threads=1 | tee /tmp/read-sessions.log
+          grep -q '^test result: ok. 3 passed' /tmp/read-sessions.log
+          cargo test --locked --all-features --test network_metadata_consensus read_sessions_survive_lagging_voter_transfer_and_expire_after_quorum_recovery -- --exact | tee /tmp/read-sessions.log
+          grep -q '^test result: ok. 1 passed' /tmp/read-sessions.log
 
       - name: prepared staging binds retry identity through durable recovery
         run: |
@@ -1360,15 +1379,6 @@ jobs:
           cargo test --locked --test meta_restart_recovery restored_metadata_leases_remain_in_later_snapshots -- --exact --test-threads=1 2>&1 | tee /tmp/meta-guard.log
           grep -q '^running 1 test$' /tmp/meta-guard.log
           grep -q '^test result: ok. 1 passed' /tmp/meta-guard.log
-
-      - name: Durable format constants are unchanged
-        run: |
-          set -o pipefail
-          cargo test --locked --lib \
-            tests::every_durable_format_constant_is_accounted_for -- --exact \
-            | tee /tmp/guard.log
-          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
-            || { echo "::error::the guard did not run"; exit 1; }
 
       - name: A refused mutation leaves the store unchanged
         run: |

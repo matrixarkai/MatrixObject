@@ -40,6 +40,7 @@ message ManifestCatalogImage {
 message RetainedManifest {
   uint64 retention_id = 1;
   ObjectManifest manifest = 2;
+  uint64 expires_at_ms = 3; // zero is permanent; nonzero protects a read session
 }
 message StagedAllocation {
   uint32 version = 1;

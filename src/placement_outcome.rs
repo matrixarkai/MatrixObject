@@ -127,6 +127,8 @@ pub struct PlacementOutcome {
     pub publication_fence: Option<crate::staged_allocation::PublicationFenceChange>,
     #[prost(message, optional, tag = "10")]
     pub copy_source: Option<crate::manifest_copy::LiveCopySource>,
+    #[prost(message, optional, tag = "11")]
+    pub retention_deadline: Option<crate::manifest_retention::RetentionDeadlineChange>,
 }
 fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
@@ -161,6 +163,17 @@ fn matches_manifest(placement: &PlacementValue, manifest: &ObjectManifest) -> bo
 }
 impl PlacementOutcome {
     fn validate_manifest_binding(&self) -> Result<(), ObjectError> {
+        if let Some(change) = &self.retention_deadline {
+            change.validate()?;
+            if self.version != 8 || change.retention_id > self.before_index
+                || self.before_index.checked_add(1) != Some(self.after_index)
+                || self.manifest.is_some() || self.retention.is_some() || self.staging.is_some()
+                || self.copy_source.is_some() || self.publication_fence.is_some()
+                || !self.nodes.is_empty() || !self.placements.is_empty() {
+                return Err(invalid("invalid read session renewal outcome"));
+            }
+            return Ok(());
+        } else if self.version == 8 { return Err(invalid("read session renewal lacks deadline")); }
         if let Some(fence) = &self.publication_fence {
             if self.version != 5 || fence.before != 0 || fence.after != self.after_index || fence.after == 0
                 || self.before_index.checked_add(1) != Some(self.after_index)
@@ -331,6 +344,7 @@ impl PlacementOutcome {
             staging,
             publication_fence: None,
             copy_source,
+            retention_deadline: None,
         };
         outcome.validate_manifest_binding()?;
         outcome.validate_publication(service, true)?;
@@ -452,6 +466,7 @@ impl PlacementOutcome {
             staging: None,
             publication_fence: None,
             copy_source: None,
+            retention_deadline: None,
         })
     }
     pub fn finish(mut self, service: &MatrixMetaService) -> Result<Self, ObjectError> {
@@ -524,7 +539,8 @@ impl PlacementOutcome {
                     && self.retention.is_none()
                     && self.staging.is_none()
                     && self.publication_fence.is_none()
-                    && self.copy_source.is_none()))
+                    && self.copy_source.is_none()
+                    && self.retention_deadline.is_none()))
         {
             return Err(invalid("placement outcome index mismatch"));
         }
@@ -576,12 +592,18 @@ impl PlacementOutcome {
         if let Some(fence) = &self.publication_fence {
             service.object_manifests.check_publication_fence(fence.before, fence.after)?;
         }
+        if let Some(change) = &self.retention_deadline {
+            service.object_manifests.check_retention_deadline(change)?;
+        }
         let publication_bytes = if self.manifest.is_some() { self.validate_publication(service, false)? } else { None };
         if let Some(staging) = &self.staging {
             service.object_manifests.apply_staging(staging)?;
         }
         if let Some(retention) = &self.retention {
             service.object_manifests.apply_retention(retention)?;
+        }
+        if let Some(change) = &self.retention_deadline {
+            service.object_manifests.apply_retention_deadline(change)?;
         }
         if let Some(fence) = &self.publication_fence {
             service.object_manifests.restore_publication_fence(fence.after);

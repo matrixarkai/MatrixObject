@@ -2218,8 +2218,16 @@ mod coupled_groups {
         assert_eq!(meta.read_publication_fence().unwrap(), publication_fence);
         assert!(meta.allocate_object_pages(1).is_err());
         let post_fence_value = meta.write_staged_object(&post_fence, None, b"OK", &options).unwrap();
-        let prepared = meta.prepare_staged_allocation("written", "leased", None, 1, false, 60_000).unwrap();
-        let leased = meta.allocate_prepared_staged_object(&prepared).unwrap();
+        let mut selected = None;
+        for _ in 0..16 {
+            let prepared = meta.prepare_staged_allocation("written", "leased", None, 1, false, 60_000).unwrap();
+            match meta.try_allocate_prepared_staged_object(&prepared) {
+                Ok(record) => { selected = Some((prepared, record)); break; }
+                Err(matrixobjectstore_rs::staged_allocation::StagedAllocationFailure::PositionConsumed) => {}
+                Err(other) => panic!("allocation was not a known position conflict: {other:?}"),
+            }
+        }
+        let (prepared, leased) = selected.expect("foreground allocation must progress beside heartbeats");
         assert_eq!(meta.allocate_prepared_staged_object(&prepared).unwrap(), leased);
         let leased = meta.renew_staged_allocation(&leased, 120_000).unwrap();
         let leased_value = meta.write_staged_object(&leased, None, b"LS", &options).unwrap();
@@ -2260,7 +2268,7 @@ mod coupled_groups {
         assert_eq!(meta.read_object("written", "post-fence", 100, &options.replica).unwrap(), (post_fence_value, b"OK".to_vec()));
         assert_eq!(meta.read_object("written", "fenced-copy", 100, &options.replica).unwrap(),
             (copied, b"owned raft bytes+tail".to_vec()));
-        assert_eq!(meta.read_object("written", "leased", 100, &options.replica).unwrap(),
+        assert_eq!(meta.read_object_in_session("written", "leased", 100, &options.replica, 60_000).unwrap(),
             (leased_value, b"LS".to_vec()));
         assert!(meta.read_staged_allocation(leased.allocation_id).is_err());
     }
