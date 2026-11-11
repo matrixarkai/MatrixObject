@@ -41,6 +41,29 @@ let object = store.get_object("photos", "cat.jpg")?;
 
 ## How storage is laid out
 
+### Recoverable staged writes
+
+The metadata service supports durable staged ownership, optional renewable deadlines,
+and bounded expiry sweeps. A prepared allocation request binds a nonce and its ownership
+parameters to a durable metadata position. Persist the exact prepared handle before
+allocation to recover an active reservation after a lost reply; retrying is not permission
+to allocate again after publication, abort, or expiry. Existing allocation APIs remain
+available. Preparation requires an additional quorum read and can conflict with concurrent
+metadata mutations.
+
+Chunk namespace fences survive journals, checkpoints, and replica recovery. Closing a
+namespace refuses ordinary writes and discards while allowing exact pinned-page repair;
+later generations cannot reopen it. These are explicit controls, not an automatic
+publication-to-reclamation pipeline. Physical reclamation remains disabled. Configure
+metadata clock synchronization and upgrade snapshot consumers before using nonempty fences.
+
+Read [staged writes](docs/staged-object-writes.md),
+[request identities](docs/staged-request-identity.md),
+[ownership leases](docs/staged-ownership-leases.md), and
+[namespace fences](docs/chunk-namespace-fences.md) before adopting these APIs.
+
+### Storage units
+
 | tier | default size | what it is |
 |---|---|---|
 | **chunk** | 64 MiB | the append-only container objects are allocated from |
