@@ -141,7 +141,7 @@ measure performance at the same replication thresholds before tuning them.
 | Chunk sizing and append boundaries | Page and extent limits exist; a page is not a storage chunk | Add an explicit configurable chunk policy with 64 MiB default and up to 512 MiB, without splitting an atomic append across chunks; test rollover and restart |
 | Bounded asynchronous I/O | Connection reuse and bounded batches exist | Audit client admission independently: configurable 16 in-flight requests and 100 queued requests; refuse overload before allocating or mutating |
 | Writer ownership | Durable staging, expiry and persistable prepared request identity exist | Adopt prepared handles in durable application workflows and measure concurrent preparation conflicts; legacy creation remains uncertain on lost replies |
-| Reader sessions | Fenced whole/range/batch SDK reads acquire exact-generation leases; compact journal decisions exist | Drain legacy readers; measure concurrent admission, CPU and latency; reduce per-object grant mutations |
+| Reader sessions | Fenced whole/range/batch SDK reads acquire exact-generation leases; compact journal decisions exist | Drain legacy readers; profile fragmentation and checkpoint/repair interference; reduce per-object grant mutations |
 | Sealing and final length | Explicit namespace fences and exact repair pins exist | Have metadata durably drive closure to every participating data node before release; isolate stale nodes until their fence state catches up |
 | Garbage collection | Inventory and ownership records exist; deletion remains disabled | Reconcile live objects, cross-bucket copies, retained generations and staging; persist retryable deletion decisions and recover every interrupted phase |
 | Registration and expansion | Routing and membership checks exist; repair discovery is startup-only | Refresh group discovery while workers run; add generation-bound node registration and reject stale identities after restart |
@@ -150,11 +150,11 @@ measure performance at the same replication thresholds before tuning them.
 | Object API and access policy | Remote manifests, append, copy and listing exist | Inventory conditional delete, multipart, retained versions, ownership and access policy; add each through public clients with conflict and recovery tests |
 | Operations | Health, TLS, bounded workers and recovery checks exist | Exercise per-tenant quotas, repair bandwidth, draining and observability under concurrent foreground load |
 | Storage format and tiering | Durable journals and binary protobuf outcomes exist | Design aligned block storage, compaction, compression, distributed EC and tier movement separately; do not claim raw-device support from in-memory pages |
-| Cost and scale | Publication allocation measurements exist | Measure p50/p95/p99, QPS, CPU, allocations, network, journal and physical bytes with checkpoint/repair interference |
+| Cost and scale | Publication allocation measurements and a replicated leased-read CPU/WAL sweep exist | Profile fragmentation costs; measure allocations, network and physical bytes with checkpoint/repair interference |
 | TemporalStore integration | Binary outcome and suffix-write paths exist | Run one-append workloads at increasing prefix sizes; report encoded outcome, transferred suffix and durable bytes for local and replicated modes |
 
-The immediate sequence is prepared-handle adoption and reader rollout, concurrent
-grant measurements, metadata-driven namespace closure, stale-node readmission, and
+The immediate sequence is prepared-handle adoption and reader rollout, fragmentation
+profiling, metadata-driven namespace closure, stale-node readmission, and
 only then physical reclamation. Placement expansion and the workload harness can
 progress without granting deletion authority. Each implementation should ship with bounded wire
 contracts, restart tests and an update to this ledger.
@@ -182,3 +182,14 @@ after lifecycle changes, recording the exact commits and configuration of both
 stores. Keep reclamation disabled until protection and interrupted-deletion
 acceptance tests pass. The five public repositories remain Apache-2.0 and open
 to worldwide contributions throughout delivery.
+
+## Concurrent reader evidence
+
+The reproducible local release workload in [leased-read-scale.md](leased-read-scale.md)
+exercises three metadata voters and three Star replicas with 1–32 clients,
+1–1,024 extents per fixed-size object, whole reads and four-object batches. It
+verifies payloads, zero data-journal growth, empty retained catalogs after every
+phase, refusal at the 128-handle limit and recovery after release. It records
+latency, operation throughput, client/server CPU and observed metadata WAL growth.
+Fragmentation costs, concurrent grant admission and checkpoint/repair interference
+still require further profiling and optimization.

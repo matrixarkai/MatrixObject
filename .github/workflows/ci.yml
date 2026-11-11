@@ -95,6 +95,12 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
 
+      - name: a page mutation pays its undo before mutating
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::every_page_mutation_pays_its_undo_before_mutating -- --exact | tee /tmp/page-undo.log
+          grep -q '^running 1 test$' /tmp/page-undo.log
+          grep -q '^test result: ok. 1 passed' /tmp/page-undo.log
       - name: The repository carries what an outside contributor needs
         run: |
           set -o pipefail
@@ -580,6 +586,12 @@ jobs:
           grep -q 'test result: ok. 1 passed' /tmp/automatic-staged-expiry.log
           cargo test --locked --all-features --test network_metadata_consensus automatic_staged_expiry_resumes_after_outage_requires_quorum_and_keeps_idle_wal_stable -- --exact | tee /tmp/automatic-staged-expiry.log
           grep -q 'test result: ok. 1 passed' /tmp/automatic-staged-expiry.log
+
+      - name: leased readers verify concurrent payloads and bounded admission
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_metadata_consensus leased_object_read_scale -- --test-threads=1 --nocapture | tee /tmp/leased-reader-admission.log
+          grep -q '^test result: ok. 2 passed' /tmp/leased-reader-admission.log
 
       - name: selected generation grants retain compact wire and committed identity
         run: |
@@ -2599,12 +2611,6 @@ jobs:
           grep -q '^running 1 test$' /tmp/read-position.log
           grep -q '^test result: ok. 1 passed' /tmp/read-position.log
 
-      - name: a page mutation pays its undo before mutating
-        run: |
-          set -euo pipefail
-          cargo test --locked --lib tests::every_page_mutation_pays_its_undo_before_mutating -- --exact | tee /tmp/page-undo.log
-          grep -q '^running 1 test$' /tmp/page-undo.log
-          grep -q '^test result: ok. 1 passed' /tmp/page-undo.log
       - name: an open mutation batch holds only the pages it touched
         run: |
           set -euo pipefail

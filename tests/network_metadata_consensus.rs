@@ -25,6 +25,7 @@ struct Group {
     heartbeat_ttl: Option<String>,
     checkpoint_bytes: u64,
     membership: bool,
+    request_timeout_ms: u64,
 }
 impl Group {
     fn new() -> Self {
@@ -57,6 +58,19 @@ impl Group {
         catalog: Option<Vec<u8>>,
         checkpoint_bytes: u64,
         membership: bool,
+    ) -> Self {
+        Self::configured_with_timeout(
+            roster, heartbeat_ttl, catalog, checkpoint_bytes, membership,
+            if membership { 3000 } else { 700 },
+        )
+    }
+    fn configured_with_timeout(
+        roster: Option<String>,
+        heartbeat_ttl: Option<String>,
+        catalog: Option<Vec<u8>>,
+        checkpoint_bytes: u64,
+        membership: bool,
+        request_timeout_ms: u64,
     ) -> Self {
         let root = std::env::temp_dir().join(node_regime::run_token("metadata-peers"));
         std::fs::create_dir(&root).unwrap();
@@ -93,6 +107,7 @@ impl Group {
             heartbeat_ttl,
             checkpoint_bytes,
             membership,
+            request_timeout_ms,
         };
         for i in 0..group.nodes.len() {
             std::fs::create_dir(group.root.join(i.to_string())).unwrap();
@@ -111,6 +126,7 @@ impl Group {
             .join(",");
         let id = (i + 1).to_string();
         let checkpoint_bytes = self.checkpoint_bytes.to_string();
+        let request_timeout_ms = self.request_timeout_ms.to_string();
         let path = self.root.join(i.to_string());
         let bind = self.api_addresses[i].to_string();
         let mut environment = vec![
@@ -124,7 +140,7 @@ impl Group {
             // Membership recovery writes can include checkpoint I/O on loaded hosts.
             (
                 "MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS",
-                if self.membership { "3000" } else { "700" },
+                request_timeout_ms.as_str(),
             ),
             (
                 "MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES",
@@ -2920,3 +2936,7 @@ mod star_repair_metadata_scale;
 #[cfg(feature = "replica-server")]
 #[path = "node_regime/star_auto_repair.rs"]
 mod star_auto_repair;
+
+#[cfg(feature = "replica-server")]
+#[path = "node_regime/leased_object_read_scale.rs"]
+mod leased_object_read_scale;
