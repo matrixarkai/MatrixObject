@@ -587,6 +587,14 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus automatic_staged_expiry_resumes_after_outage_requires_quorum_and_keeps_idle_wal_stable -- --exact | tee /tmp/automatic-staged-expiry.log
           grep -q 'test result: ok. 1 passed' /tmp/automatic-staged-expiry.log
 
+      - name: manifest route replies preserve wire bytes with bounded allocations
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib manifest_route_encoding -- --test-threads=1 | tee /tmp/manifest-route-encoding.log
+          grep -q '^test result: ok. 2 passed' /tmp/manifest-route-encoding.log
+          cargo test --locked --all-features --test manifest_route_encoding_allocations -- --test-threads=1 | tee /tmp/manifest-route-encoding.log
+          grep -q '^test result: ok. 1 passed' /tmp/manifest-route-encoding.log
+
       - name: leased readers verify concurrent payloads and bounded admission
         run: |
           set -o pipefail
