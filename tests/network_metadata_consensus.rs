@@ -213,6 +213,57 @@ impl Drop for Group {
 }
 
 #[test]
+fn prepared_staging_identity_survives_lagging_voter_transfer_leader_loss_and_retirement() {
+    use matrixobjectstore_rs::staged_allocation::PreparedStagedAllocation;
+    let mut group = Group::with_catalog_checkpoints(None, None, None, 1024);
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    client.enable_publication_fence().unwrap();
+    let lagging = (leader + 1) % 3;
+    group.kill(lagging);
+    let prepared = client.prepare_staged_allocation("bucket", "identified", None, 2, false, 60_000).unwrap();
+    let prepared = PreparedStagedAllocation::from_bytes(&prepared.to_bytes()).unwrap();
+    let competing = client.prepare_staged_allocation("bucket", "identified", None, 2, false, 60_000).unwrap();
+    let first = client.allocate_prepared_staged_object(&prepared).unwrap();
+    assert!(client.allocate_prepared_staged_object(&competing).is_err());
+    let renewed = client.renew_staged_allocation(&first, 120_000).unwrap();
+    assert_eq!(client.allocate_prepared_staged_object(&prepared).unwrap(), renewed);
+    let wal = group.root.join(leader.to_string()).join("metadata.peer.wal");
+    let identity_commit = node_regime::checkpoints::committed_index(&wal);
+    assert!(identity_commit > 0);
+    for index in 0..16 {
+        client.allocate_staged_object("bucket", &format!("checkpoint-{index}"), None, 1, false).unwrap();
+    }
+    node_regime::checkpoints::wait_for_checkpoint_index(&wal, identity_commit);
+    group.start(lagging);
+    node_regime::checkpoints::wait_for_checkpoint_index(
+        &group.root.join(lagging.to_string()).join("metadata.peer.wal"), identity_commit);
+    group.kill(leader);
+    let mut client = group.client(group.leader());
+    assert_eq!(client.allocate_prepared_staged_object(&prepared).unwrap(), renewed);
+    for index in 0..3 { if group.nodes[index].is_some() { group.kill(index); } }
+    for index in 0..3 { group.start(index); }
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    assert_eq!(client.allocate_prepared_staged_object(&prepared).unwrap(), renewed);
+    assert!(client.allocate_prepared_staged_object(&competing).is_err());
+    assert_eq!(client.list_staged_allocations(0, 32).unwrap().0.len(), 17);
+    client.abort_staged_allocation(renewed.allocation_id).unwrap();
+    assert!(client.allocate_prepared_staged_object(&prepared).is_err());
+    for index in 0..3 { group.kill(index); }
+    for index in 0..3 { group.start(index); }
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    assert!(client.allocate_prepared_staged_object(&prepared).is_err());
+    let next = client.prepare_staged_allocation("bucket", "identified", None, 1, false, 0).unwrap();
+    assert!(next.allocation_id() > renewed.allocation_id);
+    assert!(client.allocate_prepared_staged_object(&next).is_ok());
+    for index in 0..3 { if index != leader { group.kill(index); } }
+    assert!(client.prepare_staged_allocation("bucket", "minority", None, 1, false, 0).is_err());
+    assert!(client.allocate_prepared_staged_object(&next).is_err());
+}
+
+#[test]
 fn object_tombstone_survives_metadata_failover_and_restart() {
     use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
 
@@ -1562,9 +1613,12 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     for member in &members {
         minority.heartbeat_placement_node(member, 0, 1 << 28, false, true, 102).unwrap();
     }
-    let leased = minority.allocate_leased_staged_object("star", "leased", None, 4, false, 60_000).unwrap();
+    let prepared = minority.prepare_staged_allocation("star", "leased", None, 4, false, 60_000).unwrap();
+    let leased = minority.allocate_prepared_staged_object(&prepared).unwrap();
+    assert_eq!(minority.allocate_prepared_staged_object(&prepared).unwrap(), leased);
     let leased = minority.renew_staged_allocation(&leased, 120_000).unwrap();
     let leased_value = minority.write_staged_object(&leased, None, b"leased star", &options).unwrap();
+    assert!(minority.allocate_prepared_staged_object(&prepared).is_err());
     assert_eq!(minority.read_object("star", "leased", 32, &options.replica).unwrap(),
         (leased_value, b"leased star".to_vec()));
     assert!(minority.read_staged_allocation(leased.allocation_id).is_err());

@@ -395,7 +395,7 @@ impl ManifestCatalog {
             return Err(ObjectError::PreconditionFailed("staging prior state mismatch".into()));
         }
         if change.after.is_some() {
-            if record.version == 2 && self.publication_fence == 0 {
+            if record.version >= 2 && self.publication_fence == 0 {
                 return Err(ObjectError::PreconditionFailed("leased staging requires publication fencing".into()));
             }
             let released = change.before.as_ref().map_or(0, entry_size);
@@ -642,7 +642,7 @@ impl ManifestCatalog {
         let mut previous = 0;
         for record in image.staged {
             record.validate()?;
-            if record.version == 2 && result.publication_fence == 0 {
+            if record.version >= 2 && result.publication_fence == 0 {
                 return Err(invalid("leased staging lacks publication fencing"));
             }
             if record.allocation_id <= previous { return Err(invalid("staged allocations are not ordered")); }

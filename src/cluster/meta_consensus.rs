@@ -2427,6 +2427,42 @@ mod tests {
     }
 
     #[test]
+    fn prepared_staging_batch_restores_identity_and_commits_duplicate_requests_once() {
+        use crate::staged_allocation::StagedAllocationRequest;
+        let (_files, mut peer) = batch_peer();
+        let (mut service, groups) = fixture(1, 0);
+        let enable = StagedAllocationRequest { version: 1, action: 6, ..Default::default() };
+        super::super::staged_allocation_commands::prepare(&service, &groups, &enable, 8192)
+            .unwrap().0.apply(&mut service).unwrap();
+        let before = service.placement_commit_index;
+        let reserve = StagedAllocationRequest { version: 3, action: 1, allocation_id: before + 1,
+            page_count: 1, bucket: "bucket".into(), key: "identified".into(),
+            request_nonce: vec![7; 32], ..Default::default() };
+        let competing = StagedAllocationRequest { request_nonce: vec![8; 32], ..reserve.clone() };
+        let abort = StagedAllocationRequest { version: 1, action: 3, allocation_id: before + 1, ..Default::default() };
+        let saved = service.export_snapshot().to_bytes().unwrap();
+        let mut requests = VecDeque::new();
+        let mut receivers = Vec::new();
+        let mut pending = VecDeque::new();
+        for command in [reserve.clone(), reserve.clone(), competing, abort, reserve] {
+            let (request, receiver) = queued(MetaRequest::StagedAllocation(command), Instant::now() + Duration::from_secs(10));
+            requests.push_back(request);
+            receivers.push(receiver);
+        }
+        propose_batch(&mut peer, &mut service, &groups, 65536, &mut requests, &mut pending).unwrap();
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
+        assert!(receivers.iter().all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
+        peer.process_ready(|id, bytes| apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)).unwrap();
+        let first = receivers[0].try_recv().unwrap().unwrap();
+        assert_eq!(receivers[1].try_recv().unwrap().unwrap(), first);
+        assert!(receivers[2].try_recv().unwrap().is_err());
+        assert!(receivers[3].try_recv().unwrap().is_ok());
+        assert!(receivers[4].try_recv().unwrap().is_err());
+        assert_eq!(service.placement_commit_index, before + 2);
+        assert!(service.object_manifests.staged_allocation(before + 1).is_none());
+    }
+
+    #[test]
     fn staging_batch_restores_reservations_and_objects_before_atomic_commit() {
         use crate::staged_allocation::StagedAllocationRequest;
         use crate::object_manifest::{ManifestOutcome, ObjectManifest};

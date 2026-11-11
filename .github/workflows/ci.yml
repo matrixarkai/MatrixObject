@@ -563,6 +563,16 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus automatic_staged_expiry_resumes_after_outage_requires_quorum_and_keeps_idle_wal_stable -- --exact | tee /tmp/automatic-staged-expiry.log
           grep -q 'test result: ok. 1 passed' /tmp/automatic-staged-expiry.log
 
+      - name: prepared staging binds retry identity through durable recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib prepared_staging -- --test-threads=1 | tee /tmp/prepared-staging.log
+          grep -q '^test result: ok. 4 passed' /tmp/prepared-staging.log
+          cargo test --locked --all-features --test staged_request_identity | tee /tmp/prepared-staging.log
+          grep -q '^test result: ok. 1 passed' /tmp/prepared-staging.log
+          cargo test --locked --all-features --test network_metadata_consensus prepared_staging_identity_survives_lagging_voter_transfer_leader_loss_and_retirement -- --exact | tee /tmp/prepared-staging.log
+          grep -q '^test result: ok. 1 passed' /tmp/prepared-staging.log
+
       - name: namespace fences bind immutable repair and survive checkpoints
         run: |
           set -o pipefail
