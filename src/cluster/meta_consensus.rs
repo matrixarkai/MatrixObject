@@ -736,6 +736,7 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::PlanObjectPlacementRoutes { .. }
         | MetaRequest::PlanObjectWriteRoutes { .. }
         | MetaRequest::PlanObjectWriteRoutesWide { .. }
+        | MetaRequest::PlanAppendRoutes(_)
         | MetaRequest::ReadObjectRootPlacement { .. }
         | MetaRequest::GroupIdentity
         | MetaRequest::Ping => true,
@@ -2447,6 +2448,7 @@ mod tests {
 
     include!("compact_generation_batch_tests.rs");
     include!("compact_append_command_tests.rs");
+    include!("append_plan_command_tests.rs");
 
     #[test]
     fn compact_read_session_batches_restore_shared_records_before_committing_removal_and_creation() {

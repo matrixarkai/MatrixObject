@@ -778,6 +778,39 @@ impl RemoteMetaClient {
         }
     }
 
+    /// Select append groups against an exact live manifest without returning its prefix.
+    /// Requires upgraded metadata voters; unsupported peers are refused without fallback.
+    pub fn plan_append_routes_compact(&mut self, expected: &crate::object_manifest::ObjectManifest,
+        group_bytes: u64, group_count: u64)
+        -> Result<(PlacementAssignment, Vec<super::ChunkGroupRoute>), ObjectError> {
+        expected.validate()?;
+        if expected.deleted || expected.format_version != 2 {
+            return Err(ObjectError::InvalidArgument("compact planning requires a live immutable manifest".into()));
+        }
+        let command = super::append_plan::AppendPlanRequest { version: 1,
+            bucket: expected.bucket.clone(), key: expected.key.clone(), generation: expected.generation,
+            manifest_sha256: crate::read_session_outcome::manifest_sha256(expected)?,
+            length: group_bytes, replica_count: group_count };
+        command.validate()?;
+        match self.call(MetaRequest::PlanAppendRoutes(command.clone()))? {
+            MetaReply::AppendPlan(value) if value.generation == command.generation
+                && value.manifest_sha256 == command.manifest_sha256 => {
+                let plan = value.checked_plan()?;
+                if plan.bucket != command.bucket || plan.key != command.key || plan.length != group_bytes
+                    || plan.node_ids.len() != group_count as usize {
+                    return Err(ObjectError::Corruption("compact append plan differs from request".into()));
+                }
+                let routes = if value.routes.is_empty() {
+                    let mut routes = Vec::with_capacity(plan.node_ids.len());
+                    for ids in plan.node_ids.chunks(32) { routes.extend(self.read_chunk_routes(ids)?); }
+                    routes
+                } else { value.routes };
+                Ok((plan, routes))
+            }
+            _ => Err(ObjectError::Corruption("unexpected compact append plan reply".into())),
+        }
+    }
+
     fn plan_object_write_routes_separately(
         &mut self,
         bucket: &str,
@@ -1857,6 +1890,7 @@ impl RemoteMetaClient {
                 | MetaRequest::ReadManifestRoutesBatch { .. }
                 | MetaRequest::PlanObjectWriteRoutes { .. }
                 | MetaRequest::PlanObjectWriteRoutesWide { .. }
+                | MetaRequest::PlanAppendRoutes(_)
                 | MetaRequest::ReadObjectRootPlacement { .. }
                 | MetaRequest::ReadChunkGroup { .. }
                 | MetaRequest::ReadChunkRoute { .. }

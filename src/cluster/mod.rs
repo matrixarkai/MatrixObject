@@ -172,6 +172,8 @@ pub use peer_membership::{MembershipOperation, MembershipRequest, MembershipStat
 #[cfg(feature = "meta-server")]
 pub mod meta_message;
 #[cfg(feature = "meta-server")]
+pub mod append_plan;
+#[cfg(feature = "meta-server")]
 pub mod meta_server;
 #[cfg(feature = "meta-server")]
 mod staged_allocation_commands;

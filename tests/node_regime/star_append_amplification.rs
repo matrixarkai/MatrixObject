@@ -311,6 +311,8 @@ fn run(prefix_pages: &[usize], page_bytes: usize, compact: bool) {
         }
         let publication_frame = 6 + request.encoded_len();
         if compact {
+            assert!(wire.requests < 1024, "compact append requests copied the prefix");
+            assert!(wire.replies < 2048, "compact append replies copied the prefix");
             assert!(publication_frame < 256, "compact publication copied the prefix");
             assert!(wal < 6000, "compact WAL copied the prefix: {wal}");
         }
@@ -408,12 +410,31 @@ fn compact_append_publishes_after_metadata_leader_loss_and_recovers() {
     let allocation = fixture.reserve(&mut client, "failover", None, 1, false);
     let base = client.write_staged_object(&allocation, None, b"prefix", &options).unwrap();
     let allocation = fixture.reserve(&mut client, "failover", Some(base.generation), 1, true);
+    let mut wrong = base.clone();
+    wrong.extents[0].data_sha256[0] ^= 1;
+    let data_before = fixture.data_journals();
+    assert!(matches!(client.append_staged_object_compact(&allocation, wrong, b"suffix", &options),
+        Err(matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication { .. })));
+    assert_eq!(fixture.data_journals(), data_before, "stale planning wrote data");
+    assert_eq!(client.read_staged_allocation(allocation.allocation_id).unwrap(), allocation);
     drop(client);
     let old_leader = fixture.metadata.leader();
     fixture.metadata.kill(old_leader);
     fixture.metadata.leader();
     let after = fixture.client().append_staged_object_compact(&allocation, base, b"suffix", &options).unwrap();
     verify_replicas(&fixture, &after, b"prefixsuffix");
+    let survivor = fixture.metadata.leader();
+    let other = (0..3).find(|id| *id != survivor && *id != old_leader).unwrap();
+    fixture.metadata.kill(other);
+    let mut minority = fixture.metadata.client(survivor);
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        if minority.plan_append_routes_compact(&after, 1, 1).is_err() { break; }
+        assert!(Instant::now() < until, "minority kept serving compact append plans");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(minority);
+    fixture.metadata.start(other);
     fixture.metadata.start(old_leader);
     fixture.restart();
     let mut client = fixture.client();

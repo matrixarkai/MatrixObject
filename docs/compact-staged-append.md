@@ -24,10 +24,11 @@ current catalog without reevaluating wall-clock expiry.
 
 The outcome expands against the current manifest during validation and replay
 and then uses the existing full publication checks. Prefix hashing and catalog
-copies therefore remain proportional to the existing extent count. Planning
-still returns the full prior manifest. This change bounds **publication request,
-acknowledgement and durable suffix decision** for a fixed suffix and placement;
-it does not make total append CPU, allocations or network traffic constant.
+copies therefore remain proportional to the existing extent count. The compact
+append helper now also uses [digest-bound planning](compact-append-planning.md),
+which omits the prior extent list from both directions. Publication bounds the
+**request, acknowledgement and durable suffix decision** for a fixed suffix and
+placement; hashing, object construction and catalog copies still need profiling.
 
 Validation covers malformed and noncanonical messages, digest and generation
 conflicts, unowned pages, expiry, capacity refusal, equivalent legacy state,
@@ -57,4 +58,5 @@ more suffix extents and more placement groups require larger messages.
 The [release measurement](star-append-amplification.md) records 183–190-byte
 publication frames and 2,226–2,283 bytes of three-voter metadata WAL growth for
 one 4-KiB suffix at 1, 128 and 4,095 prior extents. Data journal growth remains
-12,552 bytes; the full-prefix planning reply remains visible in total traffic.
+12,552 bytes. That initial publication measurement retained the full planning
+reply; the subsequent compact-planning measurement records its removal.

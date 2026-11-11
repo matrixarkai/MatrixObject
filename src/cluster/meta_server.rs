@@ -1022,6 +1022,32 @@ pub(super) fn apply_with_groups(
             return Ok(reply);
         }
     }
+    if let MetaRequest::PlanAppendRoutes(command) = &request {
+        command.validate()?;
+        let current = service.object_manifests.get(&super::meta_message::object_id(&command.bucket, &command.key))
+            .ok_or_else(|| ObjectError::PreconditionFailed("append plan prior manifest missing".into()))?;
+        if current.deleted || current.format_version != 2 || current.generation != command.generation
+            || crate::read_session_outcome::manifest_sha256(current)? != command.manifest_sha256 {
+            return Err(ObjectError::PreconditionFailed("append plan prior manifest changed".into()));
+        }
+        let MetaReply::Plan(plan) = apply_to_meta(service, MetaRequest::PlanObjectPlacement {
+            bucket: command.bucket.clone(), key: command.key.clone(), length: command.length,
+            replica_count: command.replica_count,
+        }, limit)? else { unreachable!() };
+        if plan.node_ids.iter().any(|id| groups.get(id).is_none()) {
+            return Err(ObjectError::PreconditionFailed("append plan selected an unconfigured group".into()));
+        }
+        let routes = if plan.node_ids.len() <= 32 {
+            plan.node_ids.iter().map(|id| groups.routing_view(id)).collect::<Result<Vec<_>, _>>()?
+        } else { Vec::new() };
+        let value = super::append_plan::AppendPlanReply { version: 1,
+            plan: MetaReply::Plan(plan).encode_payload(), routes, generation: command.generation,
+            manifest_sha256: command.manifest_sha256.clone() };
+        value.checked_plan()?;
+        let reply = MetaReply::AppendPlan(value);
+        super::message::check_reply_size(reply.payload_len(), limit.min(super::append_plan::MAX_REPLY_BYTES))?;
+        return Ok(reply);
+    }
     if let MetaRequest::PlanObjectPlacementRoutes { bucket, key, length, replica_count }
     | MetaRequest::PlanObjectWriteRoutes { bucket, key, length, replica_count }
     | MetaRequest::PlanObjectWriteRoutesWide { bucket, key, length, replica_count } = &request {
@@ -1260,6 +1286,7 @@ pub(super) fn apply_to_meta(
         MetaRequest::PlanObjectWriteRoutes { .. } => Err(ObjectError::PreconditionFailed(
             "write plan routes require the chunk catalog".into(),
         )),
+        MetaRequest::PlanAppendRoutes(_) => Err(ObjectError::PreconditionFailed("append plan routes require the chunk catalog".into())),
         MetaRequest::PlanObjectWriteRoutesWide { .. } => Err(ObjectError::PreconditionFailed(
             "wide write plan routes require the chunk catalog".into(),
         )),
