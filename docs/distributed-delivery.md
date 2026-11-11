@@ -159,6 +159,17 @@ only then physical reclamation. Placement expansion and the workload harness can
 progress without granting deletion authority. Each implementation should ship with bounded wire
 contracts, restart tests and an update to this ledger.
 
+## Star append cost
+
+[Star append journal and traffic cost](star-append-amplification.md) records
+an owned, fenced append through three metadata voters and three Star replicas.
+A fixed 4-KiB suffix added 12,552 bytes to the three data journals at every tested
+prefix size. At 4,095 prior extents, publication sent 604,919 bytes and the three
+metadata WALs grew by 1,816,467 bytes. Full manifests in publication, its reply
+and planning remain an amplification cost. Compact publication and planning
+require explicit protocol and durable-format activation, ownership/CAS guards,
+mixed-history recovery and failover validation.
+
 ## Cross-service validation
 
 For TemporalStore, record one append's logical payload, encoded outcome,

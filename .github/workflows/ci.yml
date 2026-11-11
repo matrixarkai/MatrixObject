@@ -595,6 +595,12 @@ jobs:
           cargo test --locked --all-features --test manifest_route_encoding_allocations -- --test-threads=1 | tee /tmp/manifest-route-encoding.log
           grep -q '^test result: ok. 1 passed' /tmp/manifest-route-encoding.log
 
+      - name: owned Star appends keep suffix writes bounded through full restart
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_metadata_consensus star_append_amplification -- --test-threads=1 --nocapture | tee /tmp/star-append-cost.log
+          grep -q '^test result: ok. 1 passed' /tmp/star-append-cost.log
+
       - name: leased readers verify concurrent payloads and bounded admission
         run: |
           set -o pipefail
