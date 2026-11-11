@@ -109,3 +109,12 @@ concurrent whole-object and four-object reads, then fills all 128 retention slot
 requires an ordinary read to refuse without creating a handle, releases those
 slots and requires the ordinary read to recover. The fixture owns and removes
 its process directories, journals and child processes on completion or failure.
+
+
+## Reply allocation follow-up
+
+[Manifest route reply encoding](manifest-route-encoding.md) records the subsequent
+removal of complete-manifest clones during envelope sizing and framing, direct
+encoding into one output buffer, and a duplicate canonical re-encoding pass.
+Wire bytes remain unchanged. The allocation workload isolates those codec costs;
+the timing sample above retains its original revision and sampling conditions.

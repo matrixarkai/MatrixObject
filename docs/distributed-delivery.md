@@ -193,3 +193,10 @@ phase, refusal at the 128-handle limit and recovery after release. It records
 latency, operation throughput, client/server CPU and observed metadata WAL growth.
 Fragmentation costs, concurrent grant admission and checkpoint/repair interference
 still require further profiling and optimization.
+
+
+Metadata route replies now borrow manifest data during sizing and framing and
+write directly into one output buffer. The measured allocation counts and wire
+compatibility checks are in [manifest-route-encoding.md](manifest-route-encoding.md).
+This removes codec copies; fragmentation, retained catalog work, per-object grant
+mutations, checkpoint/repair interference and physical I/O still need profiling.
