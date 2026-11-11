@@ -43,6 +43,20 @@ store.put_object("photos", "cat.jpg", bytes, "image/jpeg", now_ms, opts)?;
 let object = store.get_object("photos", "cat.jpg")?;
 ```
 
+## Deployment Responsibilities
+
+| Layer | Configure before relying on it |
+|---|---|
+| Object API | Request authentication, TLS, request budgets, and the network endpoint |
+| Metadata service | Durable voter storage, membership, quorum availability, and recovery |
+| Chunk and page services | Independent replica placement, persistence, and repair scheduling |
+| Reclamation | Reader protection, stale-range handling, and the work needed to reclaim storage |
+
+Keep acknowledgement, publication, and reclamation separate: accepting staged data does not
+by itself publish an object, and deleting metadata does not immediately return physical
+space. Use the manifest, lease, and repair guides above when choosing recovery and capacity
+policies. A local embedding example does not exercise these independent service boundaries.
+
 ## How storage is laid out
 
 ### Immutable metadata catalogs
