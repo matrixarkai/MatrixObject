@@ -581,6 +581,14 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus automatic_staged_expiry_resumes_after_outage_requires_quorum_and_keeps_idle_wal_stable -- --exact | tee /tmp/automatic-staged-expiry.log
           grep -q 'test result: ok. 1 passed' /tmp/automatic-staged-expiry.log
 
+      - name: ordinary reads preserve selected generations and batch consistency
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib ordinary_read_protection -- --test-threads=1 | tee /tmp/ordinary-reads.log
+          grep -q '^test result: ok. 3 passed' /tmp/ordinary-reads.log
+          cargo test --locked --all-features --test ordinary_read_protection -- --test-threads=1 | tee /tmp/ordinary-reads.log
+          grep -q '^test result: ok. 5 passed' /tmp/ordinary-reads.log
+
       - name: read sessions preserve deadlines and recover bounded cleanup
         run: |
           set -o pipefail

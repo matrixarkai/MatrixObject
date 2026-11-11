@@ -765,6 +765,8 @@ struct ManifestRoutesPayload {
     manifest: Option<crate::object_manifest::ObjectManifest>,
     #[prost(message, repeated, tag = "3")]
     routes: Vec<super::ChunkGroupRoute>,
+    #[prost(uint64, tag = "4")]
+    publication_fence: u64,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -777,6 +779,8 @@ struct ManifestRoutesBatchPayload {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManifestRouteEntry {
+    /// Nonzero requires a leased read of this exact generation before payload I/O.
+    pub publication_fence: u64,
     pub manifest: crate::object_manifest::ObjectManifest,
     pub routes: Vec<super::ChunkGroupRoute>,
 }
@@ -830,7 +834,7 @@ fn validate_manifest_route_payload(
         ObjectError::Corruption("manifest route reply missing manifest".into()))?;
     manifest.validate()?;
     let names = manifest_route_names(&manifest, max_routes);
-    if value.version != 1 || value.routes.len() > max_routes
+    if !matches!((value.version, value.publication_fence), (1, 0) | (2, 1..)) || value.routes.len() > max_routes
         || value.routes.iter().any(|route| route.membership_fence().is_err())
         || (!value.routes.is_empty() && names.len() != value.routes.len())
         || value.routes.iter().zip(&names).any(|(route, name)|
@@ -838,7 +842,7 @@ fn validate_manifest_route_payload(
     {
         return Err(ObjectError::Corruption("invalid manifest route reply".into()));
     }
-    Ok(ManifestRouteEntry { manifest, routes: value.routes })
+    Ok(ManifestRouteEntry { manifest, routes: value.routes, publication_fence: value.publication_fence })
 }
 
 /// Reply contents, including a pre-admission leader-routing response.
@@ -851,6 +855,7 @@ pub enum MetaReply {
     ObjectPages(crate::object_manifest::ObjectPageAllocation),
     Manifest(crate::object_manifest::ObjectManifest),
     ManifestRoutes {
+        publication_fence: u64,
         manifest: crate::object_manifest::ObjectManifest,
         routes: Vec<super::ChunkGroupRoute>,
     },
@@ -923,13 +928,15 @@ impl MetaReply {
             }),
             Self::ObjectPages(value) => value.encoded_len(),
             Self::Manifest(value) => value.encoded_len(),
-            Self::ManifestRoutes { manifest, routes } => ManifestRoutesPayload {
-                version: 1, manifest: Some(manifest.clone()), routes: routes.clone(),
+            Self::ManifestRoutes { manifest, routes, publication_fence } => ManifestRoutesPayload {
+                version: if *publication_fence == 0 { 1 } else { 2 }, publication_fence: *publication_fence,
+                manifest: Some(manifest.clone()), routes: routes.clone(),
             }.encoded_len(),
             Self::ManifestRoutesBatch { objects } => ManifestRoutesBatchPayload {
                 version: 1,
                 objects: objects.iter().map(|object| ManifestRoutesPayload {
-                    version: 1,
+                    version: if object.publication_fence == 0 { 1 } else { 2 },
+                    publication_fence: object.publication_fence,
                     manifest: Some(object.manifest.clone()),
                     routes: object.routes.clone(),
                 }).collect(),
@@ -957,13 +964,15 @@ impl MetaReply {
         match self {
             MetaReply::ObjectPages(value) => return value.encode_to_vec(),
             MetaReply::Manifest(value) => return value.encode_to_vec(),
-            MetaReply::ManifestRoutes { manifest, routes } => return ManifestRoutesPayload {
-                version: 1, manifest: Some(manifest.clone()), routes: routes.clone(),
+            MetaReply::ManifestRoutes { manifest, routes, publication_fence } => return ManifestRoutesPayload {
+                version: if *publication_fence == 0 { 1 } else { 2 }, publication_fence: *publication_fence,
+                manifest: Some(manifest.clone()), routes: routes.clone(),
             }.encode_to_vec(),
             MetaReply::ManifestRoutesBatch { objects } => return ManifestRoutesBatchPayload {
                 version: 1,
                 objects: objects.iter().map(|object| ManifestRoutesPayload {
-                    version: 1,
+                    version: if object.publication_fence == 0 { 1 } else { 2 },
+                    publication_fence: object.publication_fence,
                     manifest: Some(object.manifest.clone()),
                     routes: object.routes.clone(),
                 }).collect(),
@@ -1079,6 +1088,7 @@ impl MetaReply {
             return Ok(Self::ManifestRoutes {
                 manifest: object.manifest,
                 routes: object.routes,
+                publication_fence: object.publication_fence,
             });
         }
         if code == MetaRequestCode::ReadManifestRoutesBatch {
@@ -1089,7 +1099,9 @@ impl MetaReply {
             }
             let value: ManifestRoutesBatchPayload =
                 super::conditional_requests::decode(payload)?;
-            if value.version != 1 || value.objects.is_empty() || value.objects.len() > 32 {
+            if value.version != 1 || value.objects.is_empty() || value.objects.len() > 32
+                || value.encode_to_vec() != payload
+                || value.objects.iter().any(|entry| entry.publication_fence != value.objects[0].publication_fence) {
                 return Err(ObjectError::Corruption(
                     "invalid manifest route batch reply".into(),
                 ));
@@ -1422,3 +1434,7 @@ pub fn encode_meta_reply(reply: &MetaReply) -> Vec<u8> {
     frame.extend_from_slice(&payload);
     frame
 }
+
+#[cfg(test)]
+#[path = "ordinary_read_protection_wire_tests.rs"]
+mod ordinary_read_protection;

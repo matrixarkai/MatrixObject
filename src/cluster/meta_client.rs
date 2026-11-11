@@ -121,6 +121,7 @@ pub struct RemoteMetaClient {
     wide_write_plan_reads: Option<bool>,
     wide_write_plan_limit: u64,
     wide_manifest_route_reads: Option<bool>,
+    read_protection_fence: u64,
     #[cfg(feature = "replica-server")]
     pub(super) object_connections: Vec<super::object_client::CachedGroupConnection>,
     #[cfg(feature = "replica-server")]
@@ -196,6 +197,7 @@ impl RemoteMetaClient {
             wide_write_plan_reads: None,
             wide_write_plan_limit: 32,
             wide_manifest_route_reads: None,
+            read_protection_fence: 0,
             #[cfg(feature = "replica-server")]
             object_connections: Vec::new(),
             #[cfg(feature = "replica-server")]
@@ -962,19 +964,6 @@ impl RemoteMetaClient {
             Ok(_) => return Err(ObjectError::Corruption(
                 "unexpected manifest route batch reply".into(),
             )),
-            Err(ObjectError::PreconditionFailed(message))
-                if message.starts_with("the replica does not implement this request:") =>
-            {
-                let mut entries = Vec::with_capacity(names.len());
-                for (bucket, key) in &names {
-                    let (manifest, routes) = self.read_manifest_routes(bucket, key)?;
-                    entries.push(super::ManifestRouteEntry {
-                        manifest,
-                        routes: routes.unwrap_or_default(),
-                    });
-                }
-                entries
-            }
             Err(error) => return Err(error),
         };
         if result.len() != names.len()
@@ -985,6 +974,11 @@ impl RemoteMetaClient {
                 "manifest route batch reply order mismatch".into(),
             ));
         }
+        let fence = result[0].publication_fence;
+        if result.iter().any(|entry| entry.publication_fence != fence) {
+            return Err(ObjectError::Corruption("inconsistent batch read protection".into()));
+        }
+        self.observe_read_protection(fence)?;
         Ok(result)
     }
     /// Read one committed object generation through its configured data groups.
@@ -1024,7 +1018,7 @@ impl RemoteMetaClient {
             let mut bounded = options.clone();
             bounded.deadline = client.operation_deadline();
             let (manifest, routes) = client.read_manifest_routes(bucket, key)?;
-            client.read_object_from_manifest_routes(
+            client.read_selected_object(
                 manifest, routes, max_bytes, &bounded, Some((offset, length)),
             )
         })
@@ -1053,17 +1047,7 @@ impl RemoteMetaClient {
             let names = objects.iter().map(|(bucket, key, _)| (*bucket, *key))
                 .collect::<Vec<_>>();
             let entries = client.read_manifest_routes_batch(&names)?;
-            let mut results = Vec::with_capacity(entries.len());
-            for (entry, (_, _, max_bytes)) in entries.into_iter().zip(objects) {
-                results.push(client.read_object_from_manifest_routes(
-                    entry.manifest,
-                    Some(entry.routes),
-                    *max_bytes,
-                    &bounded,
-                    None,
-                )?);
-            }
-            Ok(results)
+            client.read_selected_batch(entries, objects, &bounded)
         })
     }
 
@@ -1100,6 +1084,7 @@ impl RemoteMetaClient {
             || !reply.allocation_ids.is_empty() || reply.has_more {
             return Err(ObjectError::Corruption("unexpected publication fence reply".into()));
         }
+        self.observe_read_protection(reply.publication_fence)?;
         Ok(reply.publication_fence)
     }
 
@@ -1110,6 +1095,7 @@ impl RemoteMetaClient {
         if reply.allocation.is_some() || reply.manifest.is_some() || !reply.allocation_ids.is_empty() || reply.has_more {
             return Err(ObjectError::Corruption("unexpected publication policy reply".into()));
         }
+        self.observe_read_protection(reply.publication_fence)?;
         Ok(reply.publication_fence)
     }
 
@@ -1449,7 +1435,7 @@ impl RemoteMetaClient {
     ) -> Result<(crate::object_manifest::ObjectManifest, Vec<u8>), ObjectError> {
         self.check_operation_deadline()?;
         let (manifest, bundled_routes) = self.read_manifest_routes(bucket, key)?;
-        self.read_object_from_manifest_routes(
+        self.read_selected_object(
             manifest,
             bundled_routes,
             max_bytes,
@@ -1654,8 +1640,9 @@ impl RemoteMetaClient {
         let result = match self.call(MetaRequest::ReadManifestRoutesWide {
             bucket: bucket.into(), key: key.into(),
         }) {
-            Ok(MetaReply::ManifestRoutes { manifest, routes })
+            Ok(MetaReply::ManifestRoutes { manifest, routes, publication_fence })
                 if manifest.bucket == bucket && manifest.key == key => {
+                self.observe_read_protection(publication_fence)?;
                 self.wide_manifest_route_reads = Some(true);
                 (manifest, Some(routes))
             }
@@ -1676,11 +1663,15 @@ impl RemoteMetaClient {
         match self.call(MetaRequest::ReadManifestRoutes {
             bucket: bucket.into(), key: key.into(),
         }) {
-            Ok(MetaReply::ManifestRoutes { manifest, routes })
-                if manifest.bucket == bucket && manifest.key == key => Ok((manifest, Some(routes))),
+            Ok(MetaReply::ManifestRoutes { manifest, routes, publication_fence })
+                if manifest.bucket == bucket && manifest.key == key => {
+                self.observe_read_protection(publication_fence)?;
+                Ok((manifest, Some(routes)))
+            },
             Ok(_) => Err(ObjectError::Corruption("unexpected manifest route reply".into())),
             Err(ObjectError::PreconditionFailed(message))
                 if message.starts_with("the replica does not implement this request:") => {
+                self.observe_read_protection(0)?;
                 Ok((self.read_manifest(bucket, key)?, None))
             }
             Err(error) => Err(error),
@@ -1833,6 +1824,7 @@ impl RemoteMetaClient {
                 | MetaRequest::ReadManifest { .. }
                 | MetaRequest::ReadManifestRoutes { .. }
                 | MetaRequest::ReadManifestRoutesWide { .. }
+                | MetaRequest::ReadManifestRoutesBatch { .. }
                 | MetaRequest::PlanObjectWriteRoutes { .. }
                 | MetaRequest::PlanObjectWriteRoutesWide { .. }
                 | MetaRequest::ReadObjectRootPlacement { .. }
@@ -1953,6 +1945,7 @@ impl RemoteMetaClient {
     }
 
     fn adopt_connection(&mut self, mut next: Self) {
+        next.read_protection_fence = self.read_protection_fence;
         #[cfg(feature = "replica-server")]
         {
             // Cached data sockets are still checked against each fresh route.
@@ -2225,75 +2218,26 @@ mod operation_deadline_tests {
     }
 
     #[test]
-    fn manifest_route_batch_uses_individual_confirmed_reads_on_older_server() {
+    fn manifest_route_batch_refuses_serial_fallback_on_older_server() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = listener.local_addr().unwrap().to_string();
         let worker = std::thread::spawn(move || {
             let (mut server, _) = listener.accept().unwrap();
             server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-            for index in 0..4 {
-                let mut header = [0u8; HEADER_BYTES];
-                server.read_exact(&mut header).unwrap();
-                let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
-                let mut payload = vec![0; length];
-                server.read_exact(&mut payload).unwrap();
-                let code = MetaRequestCode::from_u8(header[1]).unwrap();
-                let request = MetaRequest::decode(code, &payload).unwrap();
-                if index == 0 {
-                    assert!(matches!(request, MetaRequest::ReadManifestRoutesBatch { .. }));
-                    server
-                        .write_all(&super::super::message::encode_failure(
-                            StatusCode::UnknownRequest,
-                            "unsupported manifest route batch",
-                        ))
-                        .unwrap();
-                    continue;
-                }
-                if index == 1 {
-                    assert!(matches!(request, MetaRequest::ReadManifestRoutesWide { .. }));
-                    server
-                        .write_all(&super::super::message::encode_failure(
-                            StatusCode::UnknownRequest,
-                            "unsupported wide manifest route read",
-                        ))
-                        .unwrap();
-                    continue;
-                }
-                let key = format!("key-{}", index - 1);
-                assert!(matches!(request, MetaRequest::ReadManifestRoutes { key: request_key, .. }
-                    if request_key == key));
-                let manifest = crate::object_manifest::ObjectManifest {
-                    format_version: 1,
-                    bucket: "bucket".into(),
-                    key,
-                    generation: 1,
-                    length: 0,
-                    extents: Vec::new(),
-                    deleted: false,
-                };
-                server
-                    .write_all(&super::super::meta_message::encode_meta_reply(
-                        &MetaReply::ManifestRoutes {
-                            manifest,
-                            routes: Vec::new(),
-                        },
-                    ))
-                    .unwrap();
-            }
+            let mut header = [0; HEADER_BYTES];
+            server.read_exact(&mut header).unwrap();
+            let mut payload = vec![0; u32::from_be_bytes(header[2..].try_into().unwrap()) as usize];
+            server.read_exact(&mut payload).unwrap();
+            assert!(matches!(MetaRequest::decode(MetaRequestCode::from_u8(header[1]).unwrap(),
+                &payload).unwrap(), MetaRequest::ReadManifestRoutesBatch { .. }));
+            server.write_all(&super::super::message::encode_failure(
+                StatusCode::UnknownRequest, "unsupported manifest route batch")).unwrap();
+            assert_eq!(server.read(&mut header).unwrap(), 0);
         });
-        let mut client =
-            RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
-        let entries = client
-            .read_manifest_routes_batch(&[("bucket", "key-1"), ("bucket", "key-2")])
-            .unwrap();
-        assert_eq!(
-            entries
-                .iter()
-                .map(|entry| entry.manifest.key.as_str())
-                .collect::<Vec<_>>(),
-            ["key-1", "key-2"]
-        );
-        assert!(entries.iter().all(|entry| entry.routes.is_empty()));
+        let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+        assert!(matches!(client.read_manifest_routes_batch(&[("bucket", "key-1"), ("bucket", "key-2")]),
+            Err(ObjectError::PreconditionFailed(_))));
+        drop(client);
         worker.join().unwrap();
     }
 
@@ -2392,6 +2336,7 @@ mod operation_deadline_tests {
             }),
         }).collect::<Vec<_>>();
         let reply = MetaReply::ManifestRoutes {
+            publication_fence: 0,
             manifest: manifest.clone(),
             routes: routes.clone(),
         };
@@ -2922,3 +2867,4 @@ mod operation_deadline_tests {
         }
     }
 }
+include!("meta_client_read_sessions.rs");

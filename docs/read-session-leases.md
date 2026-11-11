@@ -32,10 +32,37 @@ Acquisition is not replayed after an uncertain transport result. A client failur
 panic or uncertain cleanup may leave a leased handle; automatic expiry bounds
 its lifetime. Explicit `release_manifest` remains idempotent after removal.
 
-Ordinary `read_object`, range reads and batched reads retain their existing
-behavior. The helper adds acquisition/release RPCs and returns a full manifest.
-Preserve batched selection semantics and measure concurrent-reader admission,
-CPU and latency before migrating those defaults.
+In a catalog with publication fencing enabled, ordinary whole-object, range and
+batch reads acquire 60-second sessions for the exact selected generations before
+any payload I/O. All grants in a batch must succeed first. Duplicate object entries
+share a grant; conflicting generations refuse the whole operation. A concurrent
+overwrite before acquisition refuses the read rather than selecting another
+generation. Successful grants preserve their generations across overwrite or delete.
+
+One monotonic deadline covers all grants, payload reads and cleanup, with a
+100-ms lease margin and the caller's earlier deadline. Failure releases every
+known grant; lost acquisition replies are never replayed. Leases left by an
+uncertain result expire automatically. The existing 128-handle/64-MiB catalog
+bounds apply to concurrent readers; exhaustion refuses admission.
+
+Unfenced catalogs retain legacy ordinary-read behavior. Batched metadata
+selection always requires native batch support: older servers refuse it instead
+of substituting separate confirmations. Manifest-route replies carry the
+publication fence in field 4 and use version 2 when it is positive; zero retains
+version-1 bytes. Every batch entry must carry the same policy. Once observed,
+the client preserves the fence across reconnects and refuses a missing or
+different policy. Older SDKs reject the version-2 response.
+
+Upgrade metadata voters together before enabling this policy. Drain readers
+started before activation and upgrade all reader clients before any future
+reclamation rollout. This only protects supported SDK data-read methods; raw
+manifest retrieval and direct data-node reads do not acquire sessions.
+
+Automatic grants currently return full retained manifests, adding one full
+manifest response per distinct object and two metadata mutations per grant.
+Compact journal outcomes do not remove this network, hashing or catalog cost.
+Measure concurrent-reader admission, CPU, latency and transferred bytes before
+increasing limits. Compact grant replies remain a performance follow-up.
 
 ## Bounded cleanup and recovery
 
@@ -54,7 +81,7 @@ Empty sweeps append nothing.
 Outage and quorum loss can delay removal. Replay applies committed decisions
 without consulting the recovering clock. Metadata clocks must remain synchronized;
 these are not clock-skew-tolerant data-node leases. Physical reclamation stays
-disabled pending complete reader adoption, data fence propagation, stale-node
+disabled pending reader migration and drain, data fence propagation, stale-node
 readmission and interrupted-deletion recovery.
 
 ## Wire format and measured bounds

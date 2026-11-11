@@ -1078,7 +1078,8 @@ pub(super) fn apply_with_groups(
         let routes = super::meta_message::manifest_route_names(&manifest, max_routes).iter()
             .map(|id| groups.routing_view(id))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut reply = MetaReply::ManifestRoutes { manifest, routes };
+        let mut reply = MetaReply::ManifestRoutes { manifest, routes,
+            publication_fence: service.object_manifests.publication_fence() };
         let max_reply_bytes = if max_routes == 8 {
             super::meta_message::MAX_MANIFEST_ROUTE_WIDE_REPLY_BYTES
         } else {
@@ -1104,7 +1105,8 @@ pub(super) fn apply_with_groups(
             let routes = super::meta_message::manifest_route_names(&manifest, 4).iter()
                 .map(|id| groups.routing_view(id))
                 .collect::<Result<Vec<_>, _>>()?;
-            entries.push(super::ManifestRouteEntry { manifest, routes });
+            entries.push(super::ManifestRouteEntry { manifest, routes,
+                publication_fence: service.object_manifests.publication_fence() });
         }
         let mut reply = MetaReply::ManifestRoutesBatch { objects: entries };
         if reply.payload_len() > limit {

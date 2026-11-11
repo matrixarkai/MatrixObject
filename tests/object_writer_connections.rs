@@ -1180,6 +1180,7 @@ fn sequential_object_reads_reuse_one_verified_group_connection() {
             reply(
                 &mut stream,
                 MetaReply::ManifestRoutes {
+                    publication_fence: 0,
                     manifest,
                     routes: vec![route.clone()],
                 },
@@ -1438,6 +1439,7 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
             MetaRequest::ReadManifestRoutesWide { .. }
         ));
         reply(&mut stream, MetaReply::ManifestRoutes {
+                    publication_fence: 0,
             manifest: manifest.clone(),
             routes: groups.into_iter()
                 .map(|group| ChunkGroupRoute { version: 1, group: Some(group), fence: vec![] })

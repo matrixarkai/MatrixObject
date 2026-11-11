@@ -41,7 +41,10 @@ Explicit durable generation handles are now available through
 These handles require explicit release and do not change ordinary reads.
 Renewable, expiring sessions and an automatic session-read helper are available
 through `read-session-leases.md`. Ordinary whole-object, range and batch reads
-still need migration; session journal decisions are now independent of extent-list size.
+now acquire exact-generation sessions in fenced catalogs. Native batch selection,
+duplicate-grant sharing and cleanup on failed admission are enforced. Unfenced
+catalogs and pre-activation readers still require migration and drain; session
+journal decisions are independent of extent-list size.
 Explicit owned allocation, publication, resume and abort are available through
 `staged-object-writes.md`. A durable publication fence and atomic live-source
 copy are available through `publication-admission.md`. Opt-in staged deadlines,
@@ -49,7 +52,7 @@ renewal and bounded automatic cleanup are available through `staged-ownership-le
 Explicit durable chunk namespace closure and immutable repair pins are available
 through `chunk-namespace-fences.md`. Persistable allocation retry identity is
 available through `staged-request-identity.md`. Automatic fence propagation and
-ordinary-reader session adoption remain unfinished.
+reader rollout and drain remain unfinished.
 Keep reclamation disabled while completing them.
 
 Choose and document failover semantics before adding deletion: either restore
@@ -137,7 +140,7 @@ measure performance at the same replication thresholds before tuning them.
 | Chunk sizing and append boundaries | Page and extent limits exist; a page is not a storage chunk | Add an explicit configurable chunk policy with 64 MiB default and up to 512 MiB, without splitting an atomic append across chunks; test rollover and restart |
 | Bounded asynchronous I/O | Connection reuse and bounded batches exist | Audit client admission independently: configurable 16 in-flight requests and 100 queued requests; refuse overload before allocating or mutating |
 | Writer ownership | Durable staging, expiry and persistable prepared request identity exist | Adopt prepared handles in durable application workflows and measure concurrent preparation conflicts; legacy creation remains uncertain on lost replies |
-| Reader sessions | Permanent handles, renewable leases and compact session decisions exist | Migrate ordinary whole/range/batch reads while preserving deadlines and batch selection; measure admission, CPU and latency under concurrent readers |
+| Reader sessions | Fenced whole/range/batch SDK reads acquire exact-generation leases; compact journal decisions exist | Drain legacy readers; reduce full-manifest grant replies; measure admission, CPU and latency under concurrent readers |
 | Sealing and final length | Explicit namespace fences and exact repair pins exist | Have metadata durably drive closure to every participating data node before release; isolate stale nodes until their fence state catches up |
 | Garbage collection | Inventory and ownership records exist; deletion remains disabled | Reconcile live objects, cross-bucket copies, retained generations and staging; persist retryable deletion decisions and recover every interrupted phase |
 | Registration and expansion | Routing and membership checks exist; repair discovery is startup-only | Refresh group discovery while workers run; add generation-bound node registration and reject stale identities after restart |
@@ -149,10 +152,10 @@ measure performance at the same replication thresholds before tuning them.
 | Cost and scale | Publication allocation measurements exist | Measure p50/p95/p99, QPS, CPU, allocations, network, journal and physical bytes with checkpoint/repair interference |
 | TemporalStore integration | Binary outcome and suffix-write paths exist | Run one-append workloads at increasing prefix sizes; report encoded outcome, transferred suffix and durable bytes for local and replicated modes |
 
-The immediate sequence is prepared-handle adoption, automatic read protection,
-metadata-driven namespace closure, stale-node readmission, and only then physical
-reclamation. Placement expansion and the workload harness can progress without
-granting deletion authority. Each implementation should ship with bounded wire
+The immediate sequence is prepared-handle adoption and reader rollout, compact
+grant responses, metadata-driven namespace closure, stale-node readmission, and
+only then physical reclamation. Placement expansion and the workload harness can
+progress without granting deletion authority. Each implementation should ship with bounded wire
 contracts, restart tests and an update to this ledger.
 
 ## Cross-service validation
