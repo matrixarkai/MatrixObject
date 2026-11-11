@@ -1009,7 +1009,7 @@ fn propose_batch(
         draft.service.object_manifests.retained_manifest(*id).map(|record| (*id, record.expires_at_ms))
     }).collect();
     draft.retentions = retention_ids.into_iter().map(|id| {
-        (id, draft.service.object_manifests.retained_manifest(id).cloned())
+        (id, draft.service.object_manifests.retained_arc(id))
     }).collect();
     let mut staged_ids = BTreeSet::new();
     for request in queued.iter().take(PROPOSALS_PER_BATCH) {
@@ -1177,7 +1177,7 @@ struct PlacementDraft<'a> {
         Option<crate::object_manifest::ObjectManifest>,
     )>,
     index: u64,
-    retentions: Vec<(u64, Option<crate::manifest_retention::RetainedManifest>)>,
+    retentions: Vec<(u64, Option<std::sync::Arc<crate::manifest_retention::RetainedManifest>>)>,
     retention_deadlines: Vec<(u64, u64)>,
     staging_allocations: Vec<(u64, Option<crate::staged_allocation::StagedAllocation>)>,
     publication_fence: u64,
@@ -1225,7 +1225,7 @@ impl Drop for PlacementDraft<'_> {
             self.service.object_manifests.restore_staging(id, previous);
         }
         for (id, previous) in self.retentions.drain(..) {
-            self.service.object_manifests.restore_retention(id, previous);
+            self.service.object_manifests.restore_retention_arc(id, previous);
         }
         for (id, deadline) in self.retention_deadlines.drain(..) {
             self.service.object_manifests.restore_retention_deadline(id, deadline);
@@ -2433,6 +2433,44 @@ mod tests {
         assert!(service.object_manifests.retained_manifest(first_id).is_none());
         assert!(service.object_manifests.retained_manifest(first_id + 1).is_some());
         assert_eq!(service.placement_commit_index, first_id + 2);
+    }
+
+    #[test]
+    fn compact_read_session_batches_restore_shared_records_before_committing_removal_and_creation() {
+        use crate::manifest_retention::ManifestRetentionRequest;
+        use crate::object_manifest::{ManifestOutcome, ObjectManifest};
+        let (_files, mut peer) = batch_peer();
+        let (mut service, groups) = fixture(1, 0);
+        PlacementOutcome::publish_manifest(&service, ManifestOutcome::decide(None, ObjectManifest {
+            format_version: 2, bucket: "bucket".into(), key: "reader".into(), generation: 1,
+            ..Default::default()
+        }).unwrap(), 0).unwrap().apply(&mut service).unwrap();
+        let open = ManifestRetentionRequest { version: 2, action: 5, bucket: "bucket".into(),
+            key: "reader".into(), ttl_ms: 60_000, ..Default::default() };
+        super::super::read_session_commands::prepare_at(&service, &open, 8192,
+            super::super::staged_lease_sweeper::now_ms().unwrap()).unwrap().0.apply(&mut service).unwrap();
+        let id = service.placement_commit_index;
+        let original = service.object_manifests.retained_arc(id).unwrap();
+        let before = service.export_snapshot().to_bytes().unwrap();
+        let release = ManifestRetentionRequest { version: 1, action: 2, retention_id: id, ..Default::default() };
+        let release_new = ManifestRetentionRequest { retention_id: id + 2, ..release.clone() };
+        let mut requests = VecDeque::new();
+        let mut receivers = Vec::new();
+        let mut pending = VecDeque::new();
+        for command in [release, open, release_new] {
+            let (request, receiver) = queued(MetaRequest::ManifestRetention(command), Instant::now() + Duration::from_secs(10));
+            requests.push_back(request);
+            receivers.push(receiver);
+        }
+        propose_batch(&mut peer, &mut service, &groups, 8192, &mut requests, &mut pending).unwrap();
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), before);
+        assert!(std::sync::Arc::ptr_eq(&original, &service.object_manifests.retained_arc(id).unwrap()));
+        assert!(receivers.iter().all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
+        peer.process_ready(|id, bytes| apply_committed(&mut service, &groups, 8192, &mut pending, id, bytes)).unwrap();
+        assert!(receivers.iter().all(|rx| rx.try_recv().unwrap().is_ok()));
+        assert!(service.object_manifests.retained_manifest(id).is_none());
+        assert!(service.object_manifests.retained_manifest(id + 2).is_none());
+        assert_eq!(service.placement_commit_index, id + 3);
     }
 
     #[test]

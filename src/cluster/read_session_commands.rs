@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-//! Durable reader protection and compact renewal decisions.
+//! Durable reader protection with compact creation, renewal and removal.
 use super::{meta_message::MetaReply, MetaRequest};
 use crate::{
     manifest_retention::{
-        ManifestRetentionChange, ManifestRetentionReply, ManifestRetentionRequest,
-        RetainedManifest, RetentionDeadlineChange,
+        ManifestRetentionReply, ManifestRetentionRequest, RetainedManifest, RetentionDeadlineChange,
     },
     placement_outcome::PlacementOutcome,
     MatrixMetaService, ObjectError,
@@ -53,28 +52,30 @@ pub(super) fn prepare_at(
                     !manifest.deleted
                         && (command.generation == 0 || command.generation == manifest.generation)
                 })
-                .cloned()
                 .ok_or_else(|| refused("current generation cannot open a read session"))?;
-            let record = RetainedManifest {
+            let open = crate::read_session_outcome::ReadSessionOpen {
                 retention_id: service
                     .placement_commit_index
                     .checked_add(1)
                     .ok_or_else(|| refused("read session identity exhausted"))?,
-                manifest: Some(manifest),
+                bucket: manifest.bucket.clone(),
+                key: manifest.key.clone(),
+                generation: manifest.generation,
                 expires_at_ms: now
                     .checked_add(command.ttl_ms)
                     .ok_or_else(|| refused("read session deadline overflow"))?,
+                manifest_sha256: crate::read_session_outcome::manifest_sha256(manifest)?,
             };
-            let change = ManifestRetentionChange {
-                before: None,
-                after: Some(record.clone()),
-            };
-            service.object_manifests.check_retention(&change)?;
-            reply.retained = Some(record);
+            service.object_manifests.check_read_session_open(&open)?;
+            reply.retained = Some(RetainedManifest {
+                retention_id: open.retention_id,
+                manifest: Some(manifest.clone()),
+                expires_at_ms: open.expires_at_ms,
+            });
             reply.version = 3;
             reply.lease_ms = command.ttl_ms;
-            outcome.version = 3;
-            outcome.retention = Some(change);
+            outcome.version = 9;
+            outcome.read_session_open = Some(open);
         }
         6 | 7 => {
             if command.retention_id > service.placement_commit_index {
@@ -96,11 +97,12 @@ pub(super) fn prepare_at(
                         if now < record.expires_at_ms {
                             return Err(refused("read session has not expired"));
                         }
-                        outcome.version = 3;
-                        outcome.retention = Some(ManifestRetentionChange {
-                            before: Some(record.clone()),
-                            after: None,
-                        });
+                        outcome.version = 10;
+                        outcome.read_session_removal =
+                            Some(crate::read_session_outcome::ReadSessionRemoval {
+                                retention_id: command.retention_id,
+                                expected_expiry_ms: record.expires_at_ms,
+                            });
                     } else {
                         if now >= record.expires_at_ms {
                             return Err(refused("read session expired"));
@@ -125,7 +127,10 @@ pub(super) fn prepare_at(
         }
         _ => return Err(refused("read session requires a lease mutation")),
     }
-    if outcome.retention.is_some() || outcome.retention_deadline.is_some() {
+    if outcome.read_session_open.is_some()
+        || outcome.read_session_removal.is_some()
+        || outcome.retention_deadline.is_some()
+    {
         outcome.after_index = outcome
             .before_index
             .checked_add(1)
@@ -158,6 +163,207 @@ pub(super) fn expired(service: &MatrixMetaService, now: u64) -> Vec<MetaRequest>
 mod tests {
     use super::*;
     use crate::object_manifest::{ObjectExtent, ObjectManifest};
+    #[test]
+    fn compact_read_session_decisions_reject_changed_bindings_and_preserve_captured_snapshots() {
+        let mut service = fixture(1);
+        let (open, _) = prepare_at(&service, &open(), 8192, 1000).unwrap();
+        assert_eq!(open.version, 9);
+        let before = service.export_snapshot().to_bytes().unwrap();
+        let mut wrong = open.clone();
+        wrong.read_session_open.as_mut().unwrap().manifest_sha256[0] ^= 1;
+        assert!(wrong.apply(&mut service).is_err());
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), before);
+        let mut wrong = open.clone();
+        wrong.read_session_open.as_mut().unwrap().generation += 1;
+        assert!(wrong.apply(&mut service).is_err());
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), before);
+        let mut mixed = open.clone();
+        mixed.read_session_removal = Some(crate::read_session_outcome::ReadSessionRemoval {
+            retention_id: 1,
+            expected_expiry_ms: 2000,
+        });
+        assert!(mixed.to_payload().is_err());
+        PlacementOutcome::from_payload(&open.to_payload().unwrap())
+            .unwrap()
+            .apply(&mut service)
+            .unwrap();
+        let id = service.placement_commit_index;
+        let captured = service.export_snapshot();
+        let captured_bytes = captured.to_bytes().unwrap();
+        let release = ManifestRetentionRequest {
+            version: 1,
+            action: 2,
+            retention_id: id,
+            ..Default::default()
+        };
+        let (mut stale_release, _) =
+            super::super::meta_server::decide_retention(&service, &release, 8192).unwrap();
+        assert_eq!(stale_release.version, 10);
+        let renew = ManifestRetentionRequest {
+            version: 2,
+            action: 6,
+            retention_id: id,
+            expected_expiry_ms: 2000,
+            ttl_ms: 2000,
+            ..Default::default()
+        };
+        prepare_at(&service, &renew, 64, 1500)
+            .unwrap()
+            .0
+            .apply(&mut service)
+            .unwrap();
+        assert_eq!(captured.to_bytes().unwrap(), captured_bytes);
+        assert_eq!(
+            captured
+                .object_manifests
+                .retained_manifest(id)
+                .unwrap()
+                .expires_at_ms,
+            2000
+        );
+        stale_release.before_index = service.placement_commit_index;
+        stale_release.after_index = service.placement_commit_index + 1;
+        let saved = service.export_snapshot().to_bytes().unwrap();
+        assert!(stale_release.apply(&mut service).is_err());
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
+        assert_eq!(
+            service
+                .object_manifests
+                .retained_manifest(id)
+                .unwrap()
+                .expires_at_ms,
+            3500
+        );
+    }
+
+    #[test]
+    fn compact_read_session_journal_size_is_independent_of_extent_count_and_recovers_mixed_history()
+    {
+        let mut compact_sizes = Vec::new();
+        for count in [1, 4096] {
+            let root = std::env::temp_dir().join(format!(
+                "compact-read-session-{}-{count}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&root).unwrap();
+            struct Cleanup(std::path::PathBuf);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    let _ = std::fs::remove_dir_all(&self.0);
+                }
+            }
+            let _cleanup = Cleanup(root.clone());
+            let mut service = fixture(count);
+            let (mut storage, _) =
+                super::super::meta_snapshot_file::MetaSnapshotFile::open(&root, &mut service)
+                    .unwrap();
+            storage.persist(&service, &Default::default()).unwrap();
+            let path = root.join("metadata.outcomes");
+            let size = || std::fs::metadata(&path).unwrap().len();
+            let legacy_record = RetainedManifest {
+                retention_id: service.placement_commit_index + 1,
+                manifest: service
+                    .object_manifests
+                    .get(&crate::ObjectId::new("bucket", "object"))
+                    .cloned(),
+                expires_at_ms: 2000,
+            };
+            let mut legacy = PlacementOutcome::capture(&service, Vec::new(), None).unwrap();
+            legacy.version = 3;
+            legacy.after_index += 1;
+            legacy.retention = Some(crate::manifest_retention::ManifestRetentionChange {
+                before: None,
+                after: Some(legacy_record.clone()),
+            });
+            let start = size();
+            storage.append_outcome(&legacy).unwrap();
+            legacy.apply(&mut service).unwrap();
+            let mut legacy_remove = PlacementOutcome::capture(&service, Vec::new(), None).unwrap();
+            legacy_remove.version = 3;
+            legacy_remove.after_index += 1;
+            legacy_remove.retention = Some(crate::manifest_retention::ManifestRetentionChange {
+                before: Some(legacy_record),
+                after: None,
+            });
+            storage.append_outcome(&legacy_remove).unwrap();
+            legacy_remove.apply(&mut service).unwrap();
+            let legacy_bytes = size() - start;
+            let (create, _) = prepare_at(&service, &open(), 1024 * 1024, 1000).unwrap();
+            assert_eq!(create.version, 9);
+            assert!(create.retention.is_none());
+            let before = size();
+            storage.append_outcome(&create).unwrap();
+            create.apply(&mut service).unwrap();
+            let creation_bytes = size() - before;
+            let id = service.placement_commit_index;
+            let renew = ManifestRetentionRequest {
+                version: 2,
+                action: 6,
+                retention_id: id,
+                expected_expiry_ms: 2000,
+                ttl_ms: 2000,
+                ..Default::default()
+            };
+            let (renewal, _) = prepare_at(&service, &renew, 64, 1500).unwrap();
+            storage.append_outcome(&renewal).unwrap();
+            renewal.apply(&mut service).unwrap();
+            let expected = service.object_manifests.clone();
+            drop(storage);
+            let mut recovered = MatrixMetaService::new();
+            let (mut storage, restored) =
+                super::super::meta_snapshot_file::MetaSnapshotFile::open(&root, &mut recovered)
+                    .unwrap();
+            assert!(restored);
+            assert_eq!(recovered.object_manifests, expected);
+            let release = ManifestRetentionRequest {
+                version: 1,
+                action: 2,
+                retention_id: id,
+                ..Default::default()
+            };
+            let (remove, _) =
+                super::super::meta_server::decide_retention(&recovered, &release, 8192).unwrap();
+            assert_eq!(remove.version, 10);
+            assert!(remove.retention.is_none());
+            let before = size();
+            storage.append_outcome(&remove).unwrap();
+            remove.apply(&mut recovered).unwrap();
+            let removal_bytes = size() - before;
+            let (create, _) = prepare_at(&recovered, &open(), 1024 * 1024, 1000).unwrap();
+            storage.append_outcome(&create).unwrap();
+            create.apply(&mut recovered).unwrap();
+            let id = recovered.placement_commit_index;
+            let expire = ManifestRetentionRequest {
+                version: 2,
+                action: 7,
+                retention_id: id,
+                expected_expiry_ms: 2000,
+                ..Default::default()
+            };
+            let (expiry, _) = prepare_at(&recovered, &expire, 64, 2000).unwrap();
+            assert_eq!(expiry.version, 10);
+            storage.append_outcome(&expiry).unwrap();
+            expiry.apply(&mut recovered).unwrap();
+            drop(storage);
+            let mut final_state = MatrixMetaService::new();
+            let (_storage, restored) =
+                super::super::meta_snapshot_file::MetaSnapshotFile::open(&root, &mut final_state)
+                    .unwrap();
+            assert!(restored);
+            assert_eq!(final_state.object_manifests, recovered.object_manifests);
+            assert!(final_state
+                .object_manifests
+                .retention_ids(0, 32)
+                .0
+                .is_empty());
+            let compact_bytes = creation_bytes + removal_bytes;
+            assert_eq!(compact_bytes, 150);
+            assert_eq!(legacy_bytes, if count == 1 { 252 } else { 466588 });
+            compact_sizes.push(compact_bytes);
+            println!("extents={count} legacy_cycle_wal_bytes={legacy_bytes} compact_cycle_wal_bytes={compact_bytes}");
+        }
+        assert_eq!(compact_sizes[0], compact_sizes[1]);
+    }
     fn fixture(count: u64) -> MatrixMetaService {
         let mut service = MatrixMetaService::new();
         let manifest = ObjectManifest {

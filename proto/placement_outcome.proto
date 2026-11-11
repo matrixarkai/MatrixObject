@@ -39,4 +39,6 @@ message PlacementOutcome {
   matrixobject.PublicationFenceChange publication_fence = 9; // version 5 only
   matrixobject.LiveCopySource copy_source = 10; // version 6 only
   matrixobject.RetentionDeadlineChange retention_deadline = 11; // version 8, compact read-session renewal
+  matrixobject.ReadSessionOpen read_session_open = 12; // version 9
+  matrixobject.ReadSessionRemoval read_session_removal = 13; // version 10
 }

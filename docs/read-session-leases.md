@@ -33,10 +33,9 @@ panic or uncertain cleanup may leave a leased handle; automatic expiry bounds
 its lifetime. Explicit `release_manifest` remains idempotent after removal.
 
 Ordinary `read_object`, range reads and batched reads retain their existing
-behavior. Creation and release currently journal a full manifest record, and
-the helper adds metadata work. Reduce that amplification, preserve batched
-selection semantics, and measure concurrent-reader admission before migrating
-those defaults.
+behavior. The helper adds acquisition/release RPCs and returns a full manifest.
+Preserve batched selection semantics and measure concurrent-reader admission,
+CPU and latency before migrating those defaults.
 
 ## Bounded cleanup and recovery
 
@@ -65,14 +64,39 @@ TTL field 8 and expected-deadline field 9. Retained records add deadline field 3
 zero preserves permanent retention. Version-3 replies carry a relative lease
 window. Version-2 replies acknowledge renewal with only ID and deadline.
 
-Creation and removal use existing binary protobuf retention outcomes. Renewal
-uses placement outcome version 8 and field 11, with no manifest copy in the
-payload or speculative rollback record. Tests with one and 4,096 extents keep
-the renewal outcome below 128 bytes and reply below 32 bytes. This byte bound
-does not establish constant CPU cost or end-to-end throughput.
+Creation uses binary protobuf placement outcome version 9 and field 12. It binds
+the handle ID, object name, generation, deadline and SHA-256 of the canonical
+manifest protobuf. Replay verifies the current generation and digest before
+retaining its manifest. Removal uses version 10 and field 13, binding the immutable
+handle ID and exact prior deadline. A stale removal cannot erase a renewal.
+Permanent handles retain their version-3 creation/removal format. Earlier
+full-record session outcomes still replay.
 
-Upgrade all metadata voters, clients and snapshot consumers before opening leased
-handles. Permanent records and version-1 requests retain their encoding. Local
+Checkpoints retain complete manifests. Raft rollback bookkeeping shares immutable
+retained records instead of copying their extent vectors. Deadline mutation
+preserves captured snapshots through copy-on-write. Hashing streams the protobuf
+encoder into a fixed scratch buffer instead of allocating a complete temporary
+payload; validation and hashing still perform work proportional to manifest size.
+
+Renewal remains version 8 and field 11. Tests with one and 4,096 extents keep its
+outcome below 128 bytes and reply below 32 bytes.
+
+| Extents | Full-record creation + removal journal bytes | Compact creation + removal journal bytes |
+|---:|---:|---:|
+| 1 | 252 | 150 |
+| 4,096 | 466,588 | 150 |
+
+These are actual standalone metadata journal file deltas for fixed object names, including frame
+overhead. They exclude renewal, replies, checkpoints and filesystem/device
+journaling. They do not establish constant CPU cost or end-to-end throughput.
+The test `compact_read_session_journal_size_is_independent_of_extent_count_and_recovers_mixed_history`
+pins these figures and reopens mixed old/new histories with active protection.
+
+Use a coordinated metadata stop/upgrade/restart: automatic expiry also writes new
+decisions. Upgrade every voter and snapshot consumer before restarting cleanup;
+earlier binaries cannot apply versions 9 and 10. Client request/reply formats,
+checkpoint records, permanent records and
+version-1 requests retain their encoding. Local
 WSL checks cover deletion during a paused session, deadline exhaustion, journal
 restart, cleanup fairness, full handle capacity, lagging-voter checkpoint transfer,
 leader loss, total restart, quorum loss and real Star/Raft object reads.

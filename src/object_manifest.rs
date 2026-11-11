@@ -4,6 +4,7 @@
 use crate::{ChunkId, ObjectError, ObjectId};
 use prost::Message;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 const MAX_MANIFEST: usize = 1024 * 1024;
 const MAX_SNAPSHOT: usize = 64 * 1024 * 1024;
 const MAX_OBJECTS: usize = 100_000;
@@ -220,7 +221,7 @@ impl ManifestOutcome {
 pub struct ManifestCatalog {
     objects: BTreeMap<ObjectId, ObjectManifest>,
     body_bytes: usize,
-    retained: BTreeMap<u64, crate::manifest_retention::RetainedManifest>,
+    retained: BTreeMap<u64, Arc<crate::manifest_retention::RetainedManifest>>,
     retention_bytes: usize,
     staged: BTreeMap<u64, crate::staged_allocation::StagedAllocation>,
     staged_bytes: usize,
@@ -425,7 +426,7 @@ impl ManifestCatalog {
         }
     }
     pub fn retained_manifest(&self, id: u64) -> Option<&crate::manifest_retention::RetainedManifest> {
-        self.retained.get(&id)
+        self.retained.get(&id).map(Arc::as_ref)
     }
     pub(crate) fn max_retention_id(&self) -> u64 {
         self.retained.last_key_value().map_or(0, |(id, _)| *id)
@@ -442,7 +443,7 @@ impl ManifestCatalog {
             _ => return Err(invalid("retention must create or remove one handle")),
         };
         record.validate()?;
-        if self.retained.get(&record.retention_id) != change.before.as_ref() {
+        if self.retained_manifest(record.retention_id) != change.before.as_ref() {
             return Err(ObjectError::PreconditionFailed("retention prior state mismatch".into()));
         }
         if change.after.is_some() {
@@ -464,11 +465,18 @@ impl ManifestCatalog {
         Ok(())
     }
     pub(crate) fn restore_retention(&mut self, id: u64, value: Option<crate::manifest_retention::RetainedManifest>) {
+        self.restore_retention_arc(id, value.map(Arc::new));
+    }
+    #[cfg(feature = "metadata-consensus")]
+    pub(crate) fn retained_arc(&self, id: u64) -> Option<Arc<crate::manifest_retention::RetainedManifest>> {
+        self.retained.get(&id).cloned()
+    }
+    pub(crate) fn restore_retention_arc(&mut self, id: u64, value: Option<Arc<crate::manifest_retention::RetainedManifest>>) {
         if let Some(previous) = self.retained.remove(&id) {
-            self.retention_bytes -= entry_size(&previous);
+            self.retention_bytes -= entry_size(previous.as_ref());
         }
         if let Some(value) = value {
-            self.retention_bytes += entry_size(&value);
+            self.retention_bytes += entry_size(value.as_ref());
             self.retained.insert(id, value);
         }
     }
@@ -479,9 +487,9 @@ impl ManifestCatalog {
     #[cfg(feature = "metadata-consensus")]
     pub(crate) fn restore_retention_deadline(&mut self, id: u64, deadline: u64) {
         if let Some(record) = self.retained.get_mut(&id) {
-            self.retention_bytes -= entry_size(record);
-            record.expires_at_ms = deadline;
-            self.retention_bytes += entry_size(record);
+            self.retention_bytes -= entry_size(record.as_ref());
+            Arc::make_mut(record).expires_at_ms = deadline;
+            self.retention_bytes += entry_size(record.as_ref());
         }
     }
     pub(crate) fn check_retention_deadline(&self, change: &crate::manifest_retention::RetentionDeadlineChange)
@@ -494,7 +502,7 @@ impl ManifestCatalog {
         let new_len = old_len - prost::encoding::encoded_len_varint(change.before)
             + prost::encoding::encoded_len_varint(change.after);
         let new_entry = 1 + prost::encoding::encoded_len_varint(new_len as u64) + new_len;
-        let bytes = self.retention_bytes - entry_size(record) + new_entry;
+        let bytes = self.retention_bytes - entry_size(record.as_ref()) + new_entry;
         if self.body_bytes + bytes + self.staged_bytes > MAX_SNAPSHOT - self.header_size() {
             return Err(ObjectError::PreconditionFailed("retention catalog capacity exceeded".into()));
         }
@@ -503,9 +511,49 @@ impl ManifestCatalog {
     pub(crate) fn apply_retention_deadline(&mut self, change: &crate::manifest_retention::RetentionDeadlineChange)
         -> Result<(), ObjectError> {
         let bytes = self.check_retention_deadline(change)?;
-        self.retained.get_mut(&change.retention_id).unwrap().expires_at_ms = change.after;
+        Arc::make_mut(self.retained.get_mut(&change.retention_id).unwrap()).expires_at_ms = change.after;
         self.retention_bytes = bytes;
         Ok(())
+    }
+    pub(crate) fn check_read_session_open(&self, open: &crate::read_session_outcome::ReadSessionOpen)
+        -> Result<(&ObjectManifest, usize), ObjectError> {
+        open.validate()?;
+        let manifest = self.get(&ObjectId::new(open.bucket.clone(), open.key.clone()))
+            .filter(|manifest| !manifest.deleted && manifest.generation == open.generation)
+            .ok_or_else(|| ObjectError::PreconditionFailed("read session generation changed".into()))?;
+        manifest.validate()?;
+        if crate::read_session_outcome::manifest_sha256(manifest)? != open.manifest_sha256 {
+            return Err(ObjectError::PreconditionFailed("read session manifest digest changed".into()));
+        }
+        let manifest_len = manifest.encoded_len();
+        let record_len = 1 + prost::encoding::encoded_len_varint(open.retention_id)
+            + 1 + prost::encoding::encoded_len_varint(manifest_len as u64) + manifest_len
+            + 1 + prost::encoding::encoded_len_varint(open.expires_at_ms);
+        let entry = 1 + prost::encoding::encoded_len_varint(record_len as u64) + record_len;
+        let bytes = self.retention_bytes + entry;
+        if self.retained.contains_key(&open.retention_id) || self.staged.contains_key(&open.retention_id)
+            || self.retained.len() >= crate::manifest_retention::MAX_RETAINED_MANIFESTS
+            || self.body_bytes + bytes + self.staged_bytes > MAX_SNAPSHOT - self.header_size() {
+            return Err(ObjectError::PreconditionFailed("read session catalog capacity or identity conflict".into()));
+        }
+        Ok((manifest, bytes))
+    }
+    pub(crate) fn commit_checked_read_session(&mut self, record: crate::manifest_retention::RetainedManifest, bytes: usize) {
+        self.retained.insert(record.retention_id, Arc::new(record));
+        self.retention_bytes = bytes;
+    }
+    pub(crate) fn check_read_session_removal(&self, removal: &crate::read_session_outcome::ReadSessionRemoval)
+        -> Result<usize, ObjectError> {
+        removal.validate()?;
+        let record = self.retained.get(&removal.retention_id)
+            .filter(|record| record.expires_at_ms == removal.expected_expiry_ms)
+            .ok_or_else(|| ObjectError::PreconditionFailed("read session removal deadline changed".into()))?;
+        Ok(self.retention_bytes - entry_size(record.as_ref()))
+    }
+    pub(crate) fn commit_checked_read_session_removal(&mut self, id: u64, bytes: usize) {
+        let removed = self.retained.remove(&id);
+        debug_assert!(removed.is_some());
+        self.retention_bytes = bytes;
     }
     pub(crate) fn list_page(&self, request: &ManifestListRequest) -> Result<ManifestListPage, ObjectError> {
         request.validate()?;
@@ -628,7 +676,7 @@ impl ManifestCatalog {
         let image = CatalogImage {
             format_version: if self.publication_fence != 0 { 4 } else if !self.staged.is_empty() { 3 } else if self.retained.is_empty() { 1 } else { 2 },
             objects: self.objects.values().cloned().collect(),
-            retained: self.retained.values().cloned().collect(),
+            retained: self.retained.values().map(|record| record.as_ref().clone()).collect(),
             staged: self.staged.values().cloned().collect(),
             publication_fence: self.publication_fence,
         };

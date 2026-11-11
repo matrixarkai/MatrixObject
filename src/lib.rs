@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 pub mod object_manifest;
 pub mod manifest_retention;
+pub mod read_session_outcome;
 pub mod staged_allocation;
 pub mod manifest_copy;
 pub mod outcome;
