@@ -108,6 +108,7 @@ pub enum MetaRequestCode {
     ManifestRetention = 92,
     StagedAllocation = 93,
     CopyManifest = 94,
+    PlanAppendRoutes = 95,
 }
 
 impl MetaRequestCode {
@@ -149,6 +150,7 @@ impl MetaRequestCode {
             92 => Some(MetaRequestCode::ManifestRetention),
             93 => Some(MetaRequestCode::StagedAllocation),
             94 => Some(MetaRequestCode::CopyManifest),
+            95 => Some(MetaRequestCode::PlanAppendRoutes),
             _ => None,
         }
     }
@@ -187,6 +189,7 @@ impl MetaRequestCode {
             MetaRequestCode::ManifestRetention,
             MetaRequestCode::StagedAllocation,
             MetaRequestCode::CopyManifest,
+            MetaRequestCode::PlanAppendRoutes,
         ]
     }
 }

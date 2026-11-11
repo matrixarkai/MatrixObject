@@ -832,7 +832,12 @@ impl RemoteMetaClient {
             }
             planned_group_bytes.into_iter().max().unwrap_or(0)
         } else { 0 };
-        let (current, preplanned) = if (1..=32).contains(&count) {
+        let (current, preplanned) = if compact {
+            let expected = expected.as_ref().expect("compact append requires a prior manifest");
+            let (plan, routes) = self.plan_append_routes_compact(expected, max_group_bytes, u64::from(count)).map_err(before)?;
+            // Exact selection is confirmed by generation and digest; retain the caller's prefix.
+            (None, Some((plan, routes)))
+        } else if (1..=32).contains(&count) {
             let (current, plan, routes) = self.plan_object_write_routes(
                 bucket, key, max_group_bytes, u64::from(count),
             ).map_err(before)?;
@@ -845,7 +850,7 @@ impl RemoteMetaClient {
             };
             (current, None)
         };
-        if current != expected {
+        if !compact && current != expected {
             return Err(before(ObjectError::PreconditionFailed(
                 "object manifest changed before write".into(),
             )));

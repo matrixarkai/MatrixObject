@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject;
+import "chunk_group_catalog.proto";
+// Metadata opcode 95; quorum-confirmed, without a durable mutation.
+message AppendPlanRequest {
+  uint32 version = 1;
+  string bucket = 2;
+  string key = 3;
+  uint64 generation = 4;
+  bytes manifest_sha256 = 5;
+  uint64 length = 6; // largest suffix charge per selected group
+  uint64 replica_count = 7; // selected groups, 1..4096
+}
+message AppendPlanReply {
+  uint32 version = 1;
+  bytes plan = 2; // existing PlacementAssignment binary wire payload
+  repeated ChunkGroupRoute routes = 3; // all routes through 32 groups; empty for wider plans
+  uint64 generation = 4;
+  bytes manifest_sha256 = 5;
+}

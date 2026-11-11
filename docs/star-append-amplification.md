@@ -88,11 +88,33 @@ between rows come from encoded integers and record lengths. Data writes retain
 the same durable suffix cost. These counts exclude peer traffic and physical
 filesystem/device amplification, as in the original measurement window.
 
-Planning still returns the complete prior manifest, accounting for the growing
-reply column. Prefix hashing and catalog preparation still scale with extent
-count. Compact planning and catalog work remain the next implementation; this
-measurement does not establish constant append CPU, allocations, total network
-traffic or improved native latency.
+This first compact-publication sample still returned the complete prior
+manifest during planning, accounting for the growing reply column. The compact
+helper now uses [digest-bound planning](compact-append-planning.md), omitting
+that extent list. Prefix hashing and catalog preparation still scale with extent
+count. These measurements do not establish constant append CPU, allocations,
+physical device amplification or improved native latency.
+
+## Compact planning release sample
+
+With opcode 95 planning and version 11 publication, the same 4-KiB suffix workload
+now omits the prefix from both planning directions. These are observed complete
+API-window and journal counts from the local WSL release run; each case had one
+publication attempt and recovered every metadata and data process.
+
+| Prefix extents | Metadata request bytes | Metadata reply bytes | Publication frame bytes | Metadata WAL growth | Data journal growth |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 353 | 544 | 183 | 2,214 | 12,552 |
+| 128 | 357 | 544 | 187 | 2,244 | 12,552 |
+| 4,095 | 360 | 544 | 190 | 2,271 | 12,552 |
+
+At 4,095 prior extents, metadata replies fall from the first compact-publication
+sample's 302,923 bytes to 544 bytes. The planner adds a digest-bound selection
+request, so total request bytes increase from 337 to 360 while remaining bounded
+for this fixed suffix and placement. Publication retains the same version 11
+decision format. Data journals retain the same suffix cost. Prefix hashing,
+catalog copies, peer traffic and physical device writes still need profiling;
+the measured elapsed times are not native latency benchmarks.
 
 ## Reproduce
 
