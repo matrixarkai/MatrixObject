@@ -1,5 +1,9 @@
 # Durable staged object writes
 
+For recoverable creation, persist a prepared request before submission using
+`prepare_staged_allocation` and `allocate_prepared_staged_object`.
+See `staged-request-identity.md` for retry identity, contention and recovery rules.
+
 Time-bounded reservations, renewal and explicit expiry are described in
 `staged-ownership-leases.md`. Existing reservations keep their permanent lifetime.
 
@@ -78,6 +82,6 @@ requires owned publication and rejects legacy publication after ownership remova
 Ownership alone is not a permanent blacklist of retired namespaces. Raw chunk
 writes still require data-node fencing before reclamation can be enabled.
 Abort does not cancel a page write already in flight or physically delete data.
-Expiry, automatic reader protection and interrupted physical reclamation also
+Automatic reader protection and interrupted physical reclamation also
 remain unfinished. Neither a missing reservation nor a successful inventory
 scan alone authorizes deletion. Reclamation remains disabled.

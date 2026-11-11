@@ -15,7 +15,7 @@ pub(super) fn prepare(
     command: &StagedAllocationRequest,
     limit: usize,
 ) -> Result<(PlacementOutcome, MetaReply), ObjectError> {
-    let timed = command.version == 2 || (command.action == 4 && service.object_manifests
+    let timed = command.ttl_ms != 0 || matches!(command.action, 8 | 9) || (command.action == 4 && service.object_manifests
         .staged_allocation(command.allocation_id).is_some_and(|record| record.expires_at_ms != 0));
     let now = if timed { super::staged_lease_sweeper::now_ms()? } else { 0 };
     prepare_at(service, groups, command, limit, now)
@@ -32,6 +32,25 @@ pub(super) fn prepare_at(service: &MatrixMetaService, groups: &ChunkGroupCatalog
     };
     let change = match command.action {
         1 => {
+            if command.version == 3 && command.allocation_id <= service.placement_commit_index {
+                let record = service.object_manifests.staged_allocation(command.allocation_id)
+                    .filter(|record| crate::staged_allocation::PreparedStagedAllocation {
+                        request: command.clone()
+                    }.matches(record))
+                    .ok_or_else(|| ObjectError::PreconditionFailed("prepared allocation position is consumed or retired".into()))?;
+                if record.expires_at_ms != 0 && (now == 0 || now >= record.expires_at_ms) {
+                    return Err(ObjectError::PreconditionFailed("prepared allocation lease expired".into()));
+                }
+                reply.allocation = Some(record.clone());
+                let reply = MetaReply::StagedAllocation(reply);
+                super::message::check_reply_size(reply.payload_len(), limit)?;
+                return Ok((outcome, reply));
+            }
+            let next = service.placement_commit_index.checked_add(1)
+                .ok_or_else(|| ObjectError::PreconditionFailed("staged allocation sequence exhausted".into()))?;
+            if command.version == 3 && command.allocation_id != next {
+                return Err(ObjectError::PreconditionFailed("prepared allocation position is not next".into()));
+            }
             let record = StagedAllocation {
                 version: command.version,
                 allocation_id: service
@@ -51,6 +70,8 @@ pub(super) fn prepare_at(service: &MatrixMetaService, groups: &ChunkGroupCatalog
                     if now == 0 { return Err(ObjectError::PreconditionFailed("metadata lease clock is zero".into())); }
                     now.checked_add(command.ttl_ms).ok_or_else(|| ObjectError::PreconditionFailed("staged deadline overflow".into()))?
                 },
+                request_nonce: command.request_nonce.clone(),
+                request_ttl_ms: if command.version == 3 { command.ttl_ms } else { 0 },
             };
             reply.allocation = Some(record.clone());
             Some(StagedAllocationChange {
@@ -105,7 +126,7 @@ pub(super) fn prepare_at(service: &MatrixMetaService, groups: &ChunkGroupCatalog
                 None if command.action == 9 => None,
                 None => return Err(ObjectError::NotFound("staged allocation missing".into())),
                 Some(before) => {
-                    if now == 0 || before.version != 2 || before.expires_at_ms != command.expected_expiry_ms {
+                    if now == 0 || before.expires_at_ms == 0 || before.expires_at_ms != command.expected_expiry_ms {
                         return Err(ObjectError::PreconditionFailed("staged lease deadline changed".into()));
                     }
                     if command.action == 9 {
@@ -203,6 +224,11 @@ pub(super) fn read(
                 .staged_ids(command.allocation_id, command.limit as usize)
         }
         7 => value.publication_fence = service.object_manifests.publication_fence(),
+        10 => {
+            value.version = 2;
+            value.allocation_cursor = service.placement_commit_index.checked_add(1)
+                .ok_or_else(|| ObjectError::PreconditionFailed("allocation cursor exhausted".into()))?;
+        }
         _ => {
             return Err(ObjectError::InvalidArgument(
                 "staged mutation requires durable dispatch".into(),
@@ -216,6 +242,98 @@ pub(super) fn read(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prepared_staging_retries_preserve_one_identity_across_renewal_expiry_and_snapshot() {
+        let mut service = MatrixMetaService::new();
+        let groups = ChunkGroupCatalog::default();
+        let enable = StagedAllocationRequest { version: 1, action: 6, ..Default::default() };
+        prepare_at(&service, &groups, &enable, 8192, 1000).unwrap().0.apply(&mut service).unwrap();
+        let command = StagedAllocationRequest {
+            version: 3, allocation_id: service.placement_commit_index + 1,
+            ttl_ms: 1000, request_nonce: vec![7; 32], ..request()
+        };
+        assert!(prepare_at(&service, &groups, &command, 1, 1000).is_err());
+        let (outcome, _) = prepare_at(&service, &groups, &command, 8192, 1000).unwrap();
+        PlacementOutcome::from_payload(&outcome.to_payload().unwrap()).unwrap().apply(&mut service).unwrap();
+        let id = command.allocation_id;
+        let original = service.object_manifests.staged_allocation(id).unwrap().clone();
+        // Unrelated allocation advances the metadata position.
+        prepare_at(&service, &groups, &request(), 8192, 1000).unwrap().0.apply(&mut service).unwrap();
+        let saved = service.export_snapshot().to_bytes().unwrap();
+        let (retry, reply) = prepare_at(&service, &groups, &command, 8192, 1500).unwrap();
+        assert_eq!(retry.before_index, retry.after_index);
+        assert!(retry.staging.is_none());
+        assert!(retry.to_payload().unwrap().len() < 256);
+        assert!(matches!(reply, MetaReply::StagedAllocation(reply) if reply.allocation == Some(original.clone())));
+        retry.apply(&mut service).unwrap();
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
+        for wrong in [
+            StagedAllocationRequest { request_nonce: vec![8; 32], ..command.clone() },
+            StagedAllocationRequest { page_count: 3, ..command.clone() },
+            StagedAllocationRequest { ttl_ms: 2000, ..command.clone() },
+            StagedAllocationRequest { key: "another".into(), ..command.clone() },
+        ] {
+            assert!(prepare_at(&service, &groups, &wrong, 8192, 1500).is_err());
+        }
+        let renew = StagedAllocationRequest { version: 2, action: 8, allocation_id: id,
+            expected_expiry_ms: 2000, ttl_ms: 2000, ..Default::default() };
+        prepare_at(&service, &groups, &renew, 8192, 1500).unwrap().0.apply(&mut service).unwrap();
+        let renewed = service.object_manifests.staged_allocation(id).unwrap().clone();
+        assert_eq!(renewed.expires_at_ms, 3500);
+        let mut restored = MatrixMetaService::new();
+        let snapshot = crate::MetaSnapshot::from_bytes(&service.export_snapshot().to_bytes().unwrap()).unwrap();
+        restored.install_placement_roster(&snapshot).unwrap();
+        restored.install_snapshot(snapshot).unwrap();
+        let (_, reply) = prepare_at(&restored, &groups, &command, 8192, 2500).unwrap();
+        assert!(matches!(reply, MetaReply::StagedAllocation(reply) if reply.allocation == Some(renewed)));
+        assert!(prepare_at(&restored, &groups, &command, 8192, 3500).is_err());
+        let expire = StagedAllocationRequest { version: 2, action: 9, allocation_id: id,
+            expected_expiry_ms: 3500, ..Default::default() };
+        prepare_at(&restored, &groups, &expire, 8192, 3500).unwrap().0.apply(&mut restored).unwrap();
+        assert!(prepare_at(&restored, &groups, &command, 8192, 3501).is_err());
+        assert!(restored.object_manifests.staged_allocation(id).is_none());
+        assert!(prepare_at(&restored, &groups, &StagedAllocationRequest {
+            allocation_id: restored.placement_commit_index + 2, ..command
+        }, 8192, 3501).is_err());
+    }
+
+    #[test]
+    fn prepared_staging_consumed_positions_never_allocate_after_publication_or_abort() {
+        let mut service = MatrixMetaService::new();
+        let groups = ChunkGroupCatalog::default();
+        let enable = StagedAllocationRequest { version: 1, action: 6, ..Default::default() };
+        prepare_at(&service, &groups, &enable, 8192, 0).unwrap().0.apply(&mut service).unwrap();
+        for publish in [false, true] {
+            let command = StagedAllocationRequest {
+                version: 3, allocation_id: service.placement_commit_index + 1,
+                request_nonce: vec![7; 32], ..request()
+            };
+            let competing = StagedAllocationRequest { request_nonce: vec![8; 32], ..command.clone() };
+            prepare_at(&service, &groups, &command, 8192, 0).unwrap().0.apply(&mut service).unwrap();
+            assert!(prepare_at(&service, &groups, &competing, 8192, 0).is_err());
+            let finish = if publish {
+                StagedAllocationRequest { version: 1, action: 4, allocation_id: command.allocation_id,
+                    outcome: Some(crate::object_manifest::ManifestOutcome::decide(None,
+                        crate::object_manifest::ObjectManifest { format_version: 2, bucket: command.bucket.clone(),
+                            key: command.key.clone(), generation: 1, ..Default::default() }).unwrap()),
+                    ..Default::default() }
+            } else { StagedAllocationRequest { version: 1, action: 3, allocation_id: command.allocation_id, ..Default::default() } };
+            prepare_at(&service, &groups, &finish, 8192, 0).unwrap().0.apply(&mut service).unwrap();
+            let saved = service.export_snapshot().to_bytes().unwrap();
+            assert!(prepare_at(&service, &groups, &command, 8192, 0).is_err());
+            assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
+        }
+        let stale = StagedAllocationRequest { version: 3, allocation_id: service.placement_commit_index + 1,
+            request_nonce: vec![9; 32], key: "other".into(), ..request() };
+        // Consume the position with another target, without installing an allocation.
+        let next = service.placement_commit_index + 1;
+        let outcome = PlacementOutcome::publish_manifest(&service, ManifestOutcome::decide(None,
+            ObjectManifest { key: "cursor-consumer".into(), ..empty() }).unwrap(), 0).unwrap();
+        outcome.apply(&mut service).unwrap();
+        assert_eq!(service.placement_commit_index, next);
+        assert!(prepare_at(&service, &groups, &stale, 8192, 0).is_err());
+    }
+
     #[test]
     fn staged_leases_enforce_deadlines_renewal_and_capacity_without_clocked_replay() {
         let mut service = MatrixMetaService::new();

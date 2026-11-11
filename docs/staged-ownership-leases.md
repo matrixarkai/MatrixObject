@@ -47,8 +47,8 @@ Expired records remain listed and count toward the shared 128-reservation
 capacity until removal commits or an explicit abort succeeds. The explicit
 expiry API remains available to controllers. Enumeration returns at most 32 IDs
 per page; read each record and submit its exact deadline. Concurrent renewal
-causes a refusal, requiring a fresh read. Allocation request identity remains
-unfinished.
+causes a refusal, requiring a fresh read. Persistable version-3 prepared requests
+provide allocation retry identity; see `staged-request-identity.md`.
 
 Deadlines use the admitting metadata server's Unix clock. Deployments must keep
 metadata clocks synchronized; this is not a clock-skew-tolerant data-node lease.

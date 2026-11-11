@@ -2218,9 +2218,12 @@ mod coupled_groups {
         assert_eq!(meta.read_publication_fence().unwrap(), publication_fence);
         assert!(meta.allocate_object_pages(1).is_err());
         let post_fence_value = meta.write_staged_object(&post_fence, None, b"OK", &options).unwrap();
-        let leased = meta.allocate_leased_staged_object("written", "leased", None, 1, false, 60_000).unwrap();
+        let prepared = meta.prepare_staged_allocation("written", "leased", None, 1, false, 60_000).unwrap();
+        let leased = meta.allocate_prepared_staged_object(&prepared).unwrap();
+        assert_eq!(meta.allocate_prepared_staged_object(&prepared).unwrap(), leased);
         let leased = meta.renew_staged_allocation(&leased, 120_000).unwrap();
         let leased_value = meta.write_staged_object(&leased, None, b"LS", &options).unwrap();
+        assert!(meta.allocate_prepared_staged_object(&prepared).is_err());
         let copied = meta.copy_object_atomic("written", "owned", "written", "fenced-copy", None, 100, 0).unwrap();
         assert!(meta.write_object("written", "late-legacy", None, b"legacy", &options).is_err());
         assert!(meta.read_manifest("written", "late-legacy").is_err());

@@ -1114,6 +1114,7 @@ impl RemoteMetaClient {
     }
 
     /// Reserve an owned namespace before writing any object data.
+    /// For recoverable creation, persist a prepared staged allocation instead.
     pub fn allocate_staged_object(&mut self, bucket: &str, key: &str, expected_generation: Option<u64>,
         page_count: u32, append: bool) -> Result<crate::staged_allocation::StagedAllocation, ObjectError> {
         self.allocate_staged_inner(bucket, key, expected_generation, page_count, append, 0)
@@ -1125,6 +1126,42 @@ impl RemoteMetaClient {
         page_count: u32, append: bool, ttl_ms: u64) -> Result<crate::staged_allocation::StagedAllocation, ObjectError> {
         if ttl_ms == 0 { return Err(ObjectError::InvalidArgument("staged lease TTL is zero".into())); }
         self.allocate_staged_inner(bucket, key, expected_generation, page_count, append, ttl_ms)
+    }
+
+    /// Prepare an allocation without reserving pages. Persist the returned bytes
+    /// before submission. Other metadata mutations may consume its position.
+    pub fn prepare_staged_allocation(&mut self, bucket: &str, key: &str, expected_generation: Option<u64>,
+        page_count: u32, append: bool, ttl_ms: u64)
+        -> Result<crate::staged_allocation::PreparedStagedAllocation, ObjectError> {
+        if expected_generation == Some(0) {
+            return Err(ObjectError::InvalidArgument("zero object generation".into()));
+        }
+        let mut request_nonce = vec![0; 32];
+        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut request_nonce)
+            .map_err(|_| ObjectError::PreconditionFailed("cannot generate allocation identity".into()))?;
+        let mut request = crate::staged_allocation::StagedAllocationRequest {
+            version: 3, action: 1, allocation_id: 1, bucket: bucket.into(), key: key.into(),
+            expected_generation: expected_generation.unwrap_or(0), page_count, append,
+            ttl_ms, request_nonce, ..Default::default()
+        };
+        request.validate()?;
+        let reply = self.staged_call(crate::staged_allocation::StagedAllocationRequest {
+            version: 3, action: 10, ..Default::default()
+        })?;
+        if reply.version != 2 || reply.allocation_cursor == 0 {
+            return Err(ObjectError::Corruption("unexpected staged allocation cursor reply".into()));
+        }
+        request.allocation_id = reply.allocation_cursor;
+        Ok(crate::staged_allocation::PreparedStagedAllocation { request })
+    }
+
+    /// Submit or retry the exact persisted request. An inactive or consumed
+    /// position is refused permanently; this never allocates a replacement.
+    pub fn allocate_prepared_staged_object(&mut self, prepared: &crate::staged_allocation::PreparedStagedAllocation)
+        -> Result<crate::staged_allocation::StagedAllocation, ObjectError> {
+        let reply = self.staged_call(prepared.request.clone())?;
+        reply.allocation.filter(|record| prepared.matches(record))
+            .ok_or_else(|| ObjectError::Corruption("staged reply differs from prepared identity".into()))
     }
 
     fn allocate_staged_inner(&mut self, bucket: &str, key: &str, expected_generation: Option<u64>,
