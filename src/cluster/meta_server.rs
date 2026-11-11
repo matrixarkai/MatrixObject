@@ -761,7 +761,7 @@ fn apply(
             let renewal_grows = decided.retention_deadline.as_ref().is_some_and(|change|
                 prost::encoding::encoded_len_varint(change.after) > prost::encoding::encoded_len_varint(change.before));
             if decided.manifest.is_some() || decided.retention.is_some() || decided.staging.is_some()
-                || decided.publication_fence.is_some() || renewal_grows {
+                || decided.publication_fence.is_some() || decided.read_session_open.is_some() || renewal_grows {
                 let mut preview = guard.service.clone();
                 decided.apply(&mut preview)?;
                 if super::chunk_groups::encode_bootstrap(&preview, &guard.groups)?.len()
@@ -912,6 +912,8 @@ pub(super) fn decide_allocation(
         publication_fence: None,
         copy_source: None,
         retention_deadline: None,
+        read_session_open: None,
+        read_session_removal: None,
     };
     outcome.to_payload()?;
     Ok((outcome, reply))
@@ -964,8 +966,19 @@ pub(super) fn decide_retention(
             if command.retention_id > service.placement_commit_index {
                 return Err(ObjectError::PreconditionFailed("retention handle is from a future position".into()));
             }
-            service.object_manifests.retained_manifest(command.retention_id).cloned()
-                .map(|record| ManifestRetentionChange { before: Some(record), after: None })
+            match service.object_manifests.retained_manifest(command.retention_id) {
+                Some(record) if record.expires_at_ms != 0 => {
+                    outcome.version = 10;
+                    outcome.after_index = outcome.before_index.checked_add(1)
+                        .ok_or_else(|| ObjectError::PreconditionFailed("metadata position exhausted".into()))?;
+                    outcome.read_session_removal = Some(crate::read_session_outcome::ReadSessionRemoval {
+                        retention_id: command.retention_id, expected_expiry_ms: record.expires_at_ms,
+                    });
+                    None
+                }
+                Some(record) => Some(ManifestRetentionChange { before: Some(record.clone()), after: None }),
+                None => None,
+            }
         }
         _ => return Err(ObjectError::InvalidArgument("retention decision requires mutation".into())),
     };

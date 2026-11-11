@@ -148,6 +148,8 @@ mod tests {
             publication_fence: None,
             copy_source: None,
             retention_deadline: None,
+            read_session_open: None,
+            read_session_removal: None,
         };
         let second = PlacementOutcome {
             before_index: base + 1,

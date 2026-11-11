@@ -51,22 +51,23 @@ Four jobs, all on a pinned toolchain:
 | job | what it does |
 |---|---|
 | **build & docs** | `cargo build --all-targets --locked` and `--all-features`, then `cargo doc --no-deps --locked` and `--all-features`, all with warnings denied |
-| **format and rollback guards** | 251 individual tests in the library plus named integration tests and network-partition checks |
+| **format and rollback guards** | Named library guards, grouped test filters, integration targets and network-partition checks |
 
-The **network metadata consensus** job also runs forty-four named health, routing, preparation, and consensus tests
+The **network metadata consensus** job also runs named health, routing, preparation, and consensus tests
 with the optional consensus feature enabled.
 
-The **network chunk consensus** job runs thirty-four identity, routing, process, recovery, configuration,
+The **network chunk consensus** job runs identity, routing, process, recovery, configuration,
 capacity, shutdown, and metadata-health tests with the chunk consensus feature. The coupled
 quorum test additionally enables metadata consensus and starts three voters for each service.
 
-Across these jobs, 271 individual tests run in the library.
+Across these jobs, the workflow explicitly names 257 individual tests. It also
+runs grouped library filters and integration targets.
 
-**CI does not run the suite.** It compiles everything and runs those 271 guards plus the integration tests. A green
+**CI does not run the suite.** It compiles everything and runs those 257 guards plus grouped tests and integration targets. A green
 tick means the tree builds and those guards hold; it does not mean the suite passed. Run
 `tools/suite_gate.sh` yourself.
 
-Each guard step greps its own output for `test result: ok. 1 passed`, because a filter
+Named Rust test steps check a positive expected test count in their output, because a filter
 that matches nothing exits 0. If you rename a guard the workflow pins, the suite tells you
 before you push: `every_guard_the_workflow_pins_by_name_exists` reads the workflow and
 asserts every name it pins still exists and names exactly one test.

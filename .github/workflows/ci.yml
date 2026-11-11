@@ -95,6 +95,15 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
 
+      - name: The repository carries what an outside contributor needs
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::the_repository_carries_what_an_outside_contributor_needs -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the_repository_carries_what_an_outside_contributor_needs did not run"; exit 1; }
+
       # Each guard asserts that it actually RAN. `cargo test` reports success
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
@@ -576,7 +585,7 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --all-features --lib read_session -- --test-threads=1 | tee /tmp/read-sessions.log
-          grep -q '^test result: ok. 6 passed' /tmp/read-sessions.log
+          grep -q '^test result: ok. 10 passed' /tmp/read-sessions.log
           cargo test --locked --all-features --test read_session_leases -- --test-threads=1 | tee /tmp/read-sessions.log
           grep -q '^test result: ok. 3 passed' /tmp/read-sessions.log
           cargo test --locked --all-features --test network_metadata_consensus read_sessions_survive_lagging_voter_transfer_and_expire_after_quorum_recovery -- --exact | tee /tmp/read-sessions.log
@@ -1743,15 +1752,6 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::every_rust_source_carries_the_licence_header did not run"; exit 1; }
-
-      - name: The repository carries what an outside contributor needs
-        run: |
-          set -o pipefail
-          cargo test --locked --lib \
-            tests::the_repository_carries_what_an_outside_contributor_needs -- --exact \
-            | tee /tmp/guard.log
-          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
-            || { echo "::error::the_repository_carries_what_an_outside_contributor_needs did not run"; exit 1; }
 
       - name: A returning replica does not vote until it is checked in
         run: |

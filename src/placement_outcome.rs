@@ -129,6 +129,10 @@ pub struct PlacementOutcome {
     pub copy_source: Option<crate::manifest_copy::LiveCopySource>,
     #[prost(message, optional, tag = "11")]
     pub retention_deadline: Option<crate::manifest_retention::RetentionDeadlineChange>,
+    #[prost(message, optional, tag = "12")]
+    pub read_session_open: Option<crate::read_session_outcome::ReadSessionOpen>,
+    #[prost(message, optional, tag = "13")]
+    pub read_session_removal: Option<crate::read_session_outcome::ReadSessionRemoval>,
 }
 fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
@@ -163,6 +167,20 @@ fn matches_manifest(placement: &PlacementValue, manifest: &ObjectManifest) -> bo
 }
 impl PlacementOutcome {
     fn validate_manifest_binding(&self) -> Result<(), ObjectError> {
+        if self.read_session_open.is_some() || self.read_session_removal.is_some() {
+            if self.before_index.checked_add(1) != Some(self.after_index)
+                || self.manifest.is_some() || self.retention.is_some() || self.staging.is_some()
+                || self.retention_deadline.is_some() || self.copy_source.is_some()
+                || self.publication_fence.is_some() || !self.nodes.is_empty() || !self.placements.is_empty() {
+                return Err(invalid("compact read session changes unrelated state"));
+            }
+            match (self.version, &self.read_session_open, &self.read_session_removal) {
+                (9, Some(open), None) if open.retention_id == self.after_index => open.validate()?,
+                (10, None, Some(removal)) if removal.retention_id <= self.before_index => removal.validate()?,
+                _ => return Err(invalid("invalid compact read session outcome binding")),
+            }
+            return Ok(());
+        } else if matches!(self.version, 9 | 10) { return Err(invalid("compact read session outcome lacks a decision")); }
         if let Some(change) = &self.retention_deadline {
             change.validate()?;
             if self.version != 8 || change.retention_id > self.before_index
@@ -345,6 +363,8 @@ impl PlacementOutcome {
             publication_fence: None,
             copy_source,
             retention_deadline: None,
+            read_session_open: None,
+            read_session_removal: None,
         };
         outcome.validate_manifest_binding()?;
         outcome.validate_publication(service, true)?;
@@ -467,6 +487,8 @@ impl PlacementOutcome {
             publication_fence: None,
             copy_source: None,
             retention_deadline: None,
+            read_session_open: None,
+            read_session_removal: None,
         })
     }
     pub fn finish(mut self, service: &MatrixMetaService) -> Result<Self, ObjectError> {
@@ -540,7 +562,8 @@ impl PlacementOutcome {
                     && self.staging.is_none()
                     && self.publication_fence.is_none()
                     && self.copy_source.is_none()
-                    && self.retention_deadline.is_none()))
+                    && self.retention_deadline.is_none()
+                    && self.read_session_open.is_none() && self.read_session_removal.is_none()))
         {
             return Err(invalid("placement outcome index mismatch"));
         }
@@ -595,6 +618,14 @@ impl PlacementOutcome {
         if let Some(change) = &self.retention_deadline {
             service.object_manifests.check_retention_deadline(change)?;
         }
+        let read_session = if let Some(open) = &self.read_session_open {
+            let (manifest, bytes) = service.object_manifests.check_read_session_open(open)?;
+            Some((crate::manifest_retention::RetainedManifest { retention_id: open.retention_id,
+                manifest: Some(manifest.clone()), expires_at_ms: open.expires_at_ms }, bytes))
+        } else { None };
+        let read_session_removal = if let Some(removal) = &self.read_session_removal {
+            Some((removal.retention_id, service.object_manifests.check_read_session_removal(removal)?))
+        } else { None };
         let publication_bytes = if self.manifest.is_some() { self.validate_publication(service, false)? } else { None };
         if let Some(staging) = &self.staging {
             service.object_manifests.apply_staging(staging)?;
@@ -605,6 +636,8 @@ impl PlacementOutcome {
         if let Some(change) = &self.retention_deadline {
             service.object_manifests.apply_retention_deadline(change)?;
         }
+        if let Some((record, bytes)) = read_session { service.object_manifests.commit_checked_read_session(record, bytes); }
+        if let Some((id, bytes)) = read_session_removal { service.object_manifests.commit_checked_read_session_removal(id, bytes); }
         if let Some(fence) = &self.publication_fence {
             service.object_manifests.restore_publication_fence(fence.after);
         }

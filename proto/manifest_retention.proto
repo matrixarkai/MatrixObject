@@ -34,3 +34,15 @@ message RetentionDeadlineChange {
   uint64 before = 2;
   uint64 after = 3;
 }
+message ReadSessionOpen {
+  uint64 retention_id = 1;
+  string bucket = 2;
+  string key = 3;
+  uint64 generation = 4;
+  uint64 expires_at_ms = 5;
+  bytes manifest_sha256 = 6;
+}
+message ReadSessionRemoval {
+  uint64 retention_id = 1;
+  uint64 expected_expiry_ms = 2;
+}
