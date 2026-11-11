@@ -24,6 +24,9 @@ Each project is independently usable and Apache-2.0 licensed.
 | Run metadata independently | [Metadata consensus and recovery](docs/metadata-consensus.md) |
 | Place data on independent replicas | [Chunk consensus](docs/chunk-consensus.md) and [group catalog](docs/chunk-group-catalog.md) |
 | Understand publication and reads | [Object manifests](docs/object-manifests.md) and [authenticated reads](docs/authenticated-object-reads.md) |
+| Protect reads across overwrite or delete | [Read-session leases](docs/read-session-leases.md) |
+| Append without sending the stored prefix again | [Compact append planning](docs/compact-append-planning.md) and [publication](docs/compact-staged-append.md) |
+| Size repair and append work | [Repair worker](docs/star-repair-worker.md) and [append amplification](docs/star-append-amplification.md) |
 | Plan distributed deployment work | [Distributed delivery](docs/distributed-delivery.md) |
 
 The local store API below is an embedding example, not a distributed deployment recipe.
@@ -61,6 +64,25 @@ Read [staged writes](docs/staged-object-writes.md),
 [request identities](docs/staged-request-identity.md),
 [ownership leases](docs/staged-ownership-leases.md), and
 [namespace fences](docs/chunk-namespace-fences.md) before adopting these APIs.
+
+### Append planning and reader protection
+
+`append_staged_object_compact` plans against the exact current generation and
+canonical manifest digest, sends only the new immutable suffix for publication,
+and refuses a concurrent change rather than silently appending to another version.
+Compact planning does not return the stored prefix extent list. Wider placement
+plans fetch routes in bounded batches. Hashing and catalog validation still scale
+with the prefix; bounded wire traffic is not constant CPU or memory cost. Upgrade
+metadata voters before using the compact protocol; unsupported peers are refused
+without silently falling back to a full-manifest append.
+
+In publication-fenced catalogs, supported ordinary object, range, and batch reads
+acquire bounded sessions for their selected generations before payload I/O. A
+session protects that generation across overwrite or delete, subject to its deadline.
+Admission is bounded, cleanup is explicit or expiry-driven, and direct data-node
+reads do not acquire this protection. Reader leases do not enable physical
+reclamation: that remains disabled pending the rollout requirements in the
+[read-session guide](docs/read-session-leases.md).
 
 ### Storage units
 
