@@ -607,6 +607,14 @@ jobs:
           cargo test --locked --all-features --lib compact_append -- --test-threads=1 | tee /tmp/compact-append.log
           grep -q '^test result: ok. 7 passed' /tmp/compact-append.log
 
+      - name: catalog clones share immutable manifests and preserve canonical images
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test catalog_manifest_sharing_allocations -- --test-threads=1 | tee /tmp/catalog-sharing-allocations.log
+          grep -q '^test result: ok. 2 passed' /tmp/catalog-sharing-allocations.log
+          cargo test --locked --all-features --lib shared_catalog -- --test-threads=1 | tee /tmp/catalog-sharing-images.log
+          grep -q '^test result: ok. 1 passed' /tmp/catalog-sharing-images.log
+
       - name: leased readers verify concurrent payloads and bounded admission
         run: |
           set -o pipefail

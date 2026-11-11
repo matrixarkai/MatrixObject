@@ -219,7 +219,7 @@ impl ManifestOutcome {
 }
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct ManifestCatalog {
-    objects: BTreeMap<ObjectId, ObjectManifest>,
+    objects: BTreeMap<ObjectId, Arc<ManifestEntry>>,
     body_bytes: usize,
     retained: BTreeMap<u64, Arc<crate::manifest_retention::RetainedManifest>>,
     retention_bytes: usize,
@@ -229,6 +229,22 @@ pub struct ManifestCatalog {
     // Tombstones retain every generation advance. Rebuild this sum on restore;
     // 100,000 retained u64 generations fit without overflow in u128.
     revision: u128,
+}
+/// Immutable catalog value shared by snapshots and speculative undo.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ManifestEntry {
+    manifest: ObjectManifest,
+    encoded_bytes: usize,
+}
+impl ManifestEntry {
+    fn new(manifest: ObjectManifest) -> Self {
+        let encoded_bytes = entry_size(&manifest);
+        Self { manifest, encoded_bytes }
+    }
+}
+impl std::ops::Deref for ManifestEntry {
+    type Target = ObjectManifest;
+    fn deref(&self) -> &ObjectManifest { &self.manifest }
 }
 fn entry_size(value: &impl Message) -> usize {
     let size = value.encoded_len();
@@ -576,16 +592,18 @@ impl ManifestCatalog {
             revision: if request.version >= 2 { self.revision.to_be_bytes().to_vec() } else { Vec::new() } })
     }
     #[cfg(feature = "metadata-consensus")]
-    pub(crate) fn restore_entry(&mut self, id: ObjectId, previous: Option<ObjectManifest>) {
-        if let Some(current) = self.objects.remove(&id) {
+    pub(crate) fn restore_entry_arc(&mut self, id: ObjectId, previous: Option<Arc<ManifestEntry>>) {
+        let previous_bytes = previous.as_ref().map_or(0, |entry| entry.encoded_bytes);
+        let previous_generation = previous.as_ref().map_or(0, |entry| u128::from(entry.generation));
+        let current = if let Some(previous) = previous {
+            self.objects.insert(id, previous)
+        } else { self.objects.remove(&id) };
+        if let Some(current) = current {
             self.revision -= u128::from(current.generation);
-            self.body_bytes -= entry_size(&current);
+            self.body_bytes -= current.encoded_bytes;
         }
-        if let Some(previous) = previous {
-            self.revision += u128::from(previous.generation);
-            self.body_bytes += entry_size(&previous);
-            self.objects.insert(id, previous);
-        }
+        self.revision += previous_generation;
+        self.body_bytes += previous_bytes;
     }
     pub(crate) fn encoded_size(&self) -> usize {
         self.body_bytes + self.retention_bytes + self.staged_bytes + self.header_size() + 12
@@ -600,7 +618,11 @@ impl ManifestCatalog {
 
     /// Includes tombstones so a recreation must name the deleted generation.
     pub fn get(&self, id: &ObjectId) -> Option<&ObjectManifest> {
-        self.objects.get(id)
+        self.objects.get(id).map(|entry| &entry.manifest)
+    }
+    #[cfg(feature = "metadata-consensus")]
+    pub(crate) fn entry_arc(&self, id: &ObjectId) -> Option<Arc<ManifestEntry>> {
+        self.objects.get(id).cloned()
     }
     /// Compare before touching state. An identical already-applied outcome is a no-op.
     pub(crate) fn check_outcome(
@@ -615,7 +637,7 @@ impl ManifestCatalog {
         outcome.validate()?;
         let after = outcome.after.as_ref().unwrap();
         let id = after.object_id();
-        let current = self.objects.get(&id);
+        let current = self.get(&id);
         if current == Some(after) {
             return Ok(None);
         }
@@ -641,7 +663,7 @@ impl ManifestCatalog {
         if current.is_none() && self.objects.len() >= MAX_OBJECTS {
             return Err(invalid("manifest catalog exceeds object bound"));
         }
-        let body_bytes = self.body_bytes - current.map_or(0, entry_size) + entry_size(after);
+        let body_bytes = self.body_bytes - self.objects.get(&id).map_or(0, |entry| entry.encoded_bytes) + entry_size(after);
         if !self.staged.is_empty() {
             for extent in &after.extents {
                 let id = extent.volume_id.checked_shl(32).filter(|_| extent.volume_id <= u32::MAX as u64)
@@ -668,14 +690,17 @@ impl ManifestCatalog {
     }
     pub(crate) fn commit_checked_manifest(&mut self, outcome: &ManifestOutcome, body_bytes: usize) {
         let after = outcome.after.as_ref().unwrap();
-        self.objects.insert(after.object_id(), after.clone());
+        let id = after.object_id();
+        let old_bytes = self.objects.get(&id).map_or(0, |entry| entry.encoded_bytes);
+        let encoded_bytes = body_bytes - (self.body_bytes - old_bytes);
+        self.objects.insert(id, Arc::new(ManifestEntry { manifest: after.clone(), encoded_bytes }));
         self.revision += 1;
         self.body_bytes = body_bytes;
     }
     pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
         let image = CatalogImage {
             format_version: if self.publication_fence != 0 { 4 } else if !self.staged.is_empty() { 3 } else if self.retained.is_empty() { 1 } else { 2 },
-            objects: self.objects.values().cloned().collect(),
+            objects: self.objects.values().map(|entry| entry.manifest.clone()).collect(),
             retained: self.retained.values().map(|record| record.as_ref().clone()).collect(),
             staged: self.staged.values().cloned().collect(),
             publication_fence: self.publication_fence,
@@ -704,9 +729,10 @@ impl ManifestCatalog {
                 return Err(invalid("manifest catalog is not strictly ordered"));
             }
             previous = Some(id.clone());
-            result.body_bytes += entry_size(&value);
-            result.revision += u128::from(value.generation);
-            result.objects.insert(id, value);
+            let entry = ManifestEntry::new(value);
+            result.body_bytes += entry.encoded_bytes;
+            result.revision += u128::from(entry.generation);
+            result.objects.insert(id, Arc::new(entry));
         }
         let mut previous = 0;
         for retained in image.retained {
@@ -781,6 +807,7 @@ fn unframe<T: Message + Default>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("manifest_catalog_sharing_tests.rs");
     #[test]
     fn manifest_listing_is_bounded_ordered_and_bucket_scoped() {
         let mut catalog = ManifestCatalog::default();
@@ -881,7 +908,7 @@ mod tests {
         }).is_err());
         #[cfg(feature = "metadata-consensus")]
         {
-            catalog.restore_entry(created.object_id(), Some(created));
+            catalog.restore_entry_arc(created.object_id(), Some(Arc::new(ManifestEntry::new(created))));
             assert_eq!(catalog.list_page(&request).unwrap().revision, first.revision);
         }
         assert!(ManifestListRequest { expected_revision: vec![1], ..request }.validate().is_err());

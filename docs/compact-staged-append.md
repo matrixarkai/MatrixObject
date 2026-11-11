@@ -23,8 +23,10 @@ atomically with publication. Replay checks the recorded decision against the
 current catalog without reevaluating wall-clock expiry.
 
 The outcome expands against the current manifest during validation and replay
-and then uses the existing full publication checks. Prefix hashing and catalog
-copies therefore remain proportional to the existing extent count. The compact
+and then uses the existing full publication checks. Prefix hashing and owned
+candidate copies therefore remain proportional to the existing extent count.
+[Catalog snapshots and undo](manifest-catalog-sharing.md) share immutable entries.
+The compact
 append helper now also uses [digest-bound planning](compact-append-planning.md),
 which omits the prior extent list from both directions. Publication bounds the
 **request, acknowledgement and durable suffix decision** for a fixed suffix and

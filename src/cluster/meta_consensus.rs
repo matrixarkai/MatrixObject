@@ -1185,7 +1185,7 @@ struct PlacementDraft<'a> {
     objects: Vec<(
         crate::ObjectId,
         Option<crate::ObjectPlacement>,
-        Option<crate::object_manifest::ObjectManifest>,
+        Option<std::sync::Arc<crate::object_manifest::ManifestEntry>>,
     )>,
     index: u64,
     retentions: Vec<(u64, Option<std::sync::Arc<crate::manifest_retention::RetainedManifest>>)>,
@@ -1211,7 +1211,7 @@ impl<'a> PlacementDraft<'a> {
             .into_iter()
             .map(|id| {
                 let previous = service.placements.get(&id).cloned();
-                let manifest = service.object_manifests.get(&id).cloned();
+                let manifest = service.object_manifests.entry_arc(&id);
                 (id, previous, manifest)
             })
             .collect();
@@ -1247,7 +1247,7 @@ impl Drop for PlacementDraft<'_> {
         for (id, previous, manifest) in self.objects.drain(..) {
             self.service
                 .object_manifests
-                .restore_entry(id.clone(), manifest);
+                .restore_entry_arc(id.clone(), manifest);
             if let Some(previous) = previous {
                 self.service.placements.insert(id, previous);
             } else {
