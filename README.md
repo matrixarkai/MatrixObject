@@ -24,6 +24,7 @@ Each project is independently usable and Apache-2.0 licensed.
 | Run metadata independently | [Metadata consensus and recovery](docs/metadata-consensus.md) |
 | Place data on independent replicas | [Chunk consensus](docs/chunk-consensus.md) and [group catalog](docs/chunk-group-catalog.md) |
 | Understand publication and reads | [Object manifests](docs/object-manifests.md) and [authenticated reads](docs/authenticated-object-reads.md) |
+| Understand metadata clone and rollback costs | [Immutable catalog sharing](docs/manifest-catalog-sharing.md) |
 | Protect reads across overwrite or delete | [Read-session leases](docs/read-session-leases.md) |
 | Append without sending the stored prefix again | [Compact append planning](docs/compact-append-planning.md) and [publication](docs/compact-staged-append.md) |
 | Size repair and append work | [Repair worker](docs/star-repair-worker.md) and [append amplification](docs/star-append-amplification.md) |
@@ -43,6 +44,19 @@ let object = store.get_object("photos", "cat.jpg")?;
 ```
 
 ## How storage is laid out
+
+### Immutable metadata catalogs
+
+Catalog clones used by snapshot capture and Raft preparation share immutable
+manifest entries instead of copying every extent. Publishing replaces an entry;
+earlier catalog clones retain their selected generation across append, delete,
+and recreation. Speculative rollback restores the original entry and its cached
+encoded size. Canonical catalog and checkpoint formats remain unchanged.
+
+This reduces catalog-clone work, not every append cost: candidate construction,
+validation, hashing, public manifest copies, and checkpoint serialization can
+still copy or traverse extents. See [immutable catalog sharing](docs/manifest-catalog-sharing.md)
+for the allocation measurement and its limits.
 
 ### Recoverable staged writes
 
