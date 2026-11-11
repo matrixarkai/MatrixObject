@@ -45,6 +45,31 @@ let object = store.get_object("photos", "cat.jpg")?;
 
 ## Deployment Responsibilities
 
+### Build features are not deployment modes
+
+The default Cargo features include `raft-rs`, `http-server`, `replica-server`,
+and `meta-server`. They make the corresponding APIs and binaries available;
+they do not turn an in-process store into independent durable voter groups.
+
+| Opt-in feature | Purpose |
+|---|---|
+| `metadata-consensus` | Independent MatrixRaft voters for metadata requests |
+| `chunk-consensus` | Independent MatrixRaft voters for chunk groups |
+| `api-tls` | TLS support for the binary service APIs |
+
+From the repository root, build these paths together with:
+
+```bash
+cargo build --locked --release --features metadata-consensus,chunk-consensus,api-tls
+```
+
+Configure endpoints, group identities, durable directories, and TLS credentials
+using the guides above before starting services. Each voter needs exclusive
+ownership of its own durable files. Enabling features alone does not create
+replicas or establish quorum availability.
+
+### Configure the services
+
 | Layer | Configure before relying on it |
 |---|---|
 | Object API | Request authentication, TLS, request budgets, and the network endpoint |
