@@ -531,12 +531,12 @@ impl MetaNodeServer {
                     let Ok(now) = super::staged_lease_sweeper::now_ms() else { continue };
                     let commands = match meta.lock() {
                         Ok(guard) if !guard.failed =>
-                            super::staged_lease_sweeper::commands(&guard.service, now),
+                            super::staged_lease_sweeper::all_commands(&guard.service, now),
                         _ => break,
                     };
                     for command in commands {
                         if stop.is_stopped() { break; }
-                        let _ = apply(&meta, MetaRequest::StagedAllocation(command), limit);
+                        let _ = apply(&meta, command, limit);
                     }
                 }
             }));
@@ -758,7 +758,10 @@ fn apply(
     if let Some((decided, reply)) = decision {
         if guard.storage.is_some() {
             // Preflight the local snapshot bound before persisting an outcome.
-            if decided.manifest.is_some() || decided.retention.is_some() || decided.staging.is_some() || decided.publication_fence.is_some() {
+            let renewal_grows = decided.retention_deadline.as_ref().is_some_and(|change|
+                prost::encoding::encoded_len_varint(change.after) > prost::encoding::encoded_len_varint(change.before));
+            if decided.manifest.is_some() || decided.retention.is_some() || decided.staging.is_some()
+                || decided.publication_fence.is_some() || renewal_grows {
                 let mut preview = guard.service.clone();
                 decided.apply(&mut preview)?;
                 if super::chunk_groups::encode_bootstrap(&preview, &guard.groups)?.len()
@@ -908,6 +911,7 @@ pub(super) fn decide_allocation(
         staging: None,
         publication_fence: None,
         copy_source: None,
+        retention_deadline: None,
     };
     outcome.to_payload()?;
     Ok((outcome, reply))
@@ -936,6 +940,10 @@ pub(super) fn decide_retention(
 ) -> Result<(crate::placement_outcome::PlacementOutcome, MetaReply), ObjectError> {
     use crate::manifest_retention::{ManifestRetentionChange, ManifestRetentionReply, RetainedManifest};
     command.validate()?;
+    if command.version == 2 {
+        return super::read_session_commands::prepare_at(service, command, limit,
+            super::staged_lease_sweeper::now_ms()?);
+    }
     let mut outcome = crate::placement_outcome::PlacementOutcome::capture(service, Vec::new(), None)?;
     let mut reply = ManifestRetentionReply { version: 1, ..Default::default() };
     let change = match command.action {
@@ -947,6 +955,7 @@ pub(super) fn decide_retention(
                 retention_id: service.placement_commit_index.checked_add(1)
                     .ok_or_else(|| ObjectError::PreconditionFailed("retention identity exhausted".into()))?,
                 manifest: Some(manifest),
+                expires_at_ms: 0,
             };
             reply.retained = Some(record.clone());
             Some(ManifestRetentionChange { before: None, after: Some(record) })
@@ -1182,8 +1191,13 @@ pub(super) fn apply_to_meta(
             command.validate()?;
             let mut value = crate::manifest_retention::ManifestRetentionReply { version: 1, ..Default::default() };
             match command.action {
-                3 => value.retained = Some(guard.object_manifests.retained_manifest(command.retention_id)
-                    .cloned().ok_or_else(|| ObjectError::NotFound("retained manifest missing".into()))?),
+                3 => {
+                    let record = guard.object_manifests.retained_manifest(command.retention_id)
+                        .ok_or_else(|| ObjectError::NotFound("retained manifest missing".into()))?;
+                    let remaining = super::read_session_commands::remaining(record)?;
+                    if remaining != 0 { value.version = 3; value.lease_ms = remaining; }
+                    value.retained = Some(record.clone());
+                }
                 4 => (value.retention_ids, value.has_more) = guard.object_manifests.retention_ids(command.retention_id, command.limit as usize),
                 _ => return Err(ObjectError::InvalidArgument("retention mutation requires durable dispatch".into())),
             }

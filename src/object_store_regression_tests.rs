@@ -34870,6 +34870,7 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRSCHUNK-AGG-FINGERPRINT8",
         "MOSRSCHUNK-FINGERPRINT4",
         "MOSRSCHUNK22",
+        "MOSRSCHUNK23",
         "MOSRSCHUNKCONTROL12",
         "MOSRSJNL1",
         "MOSRSMETA",
@@ -35042,7 +35043,7 @@ fn every_durable_format_constant_is_accounted_for() {
     );
     assert_eq!(
         found.len(),
-        153,
+        154,
         "the count is pinned as well, so a rename that happens to swap two names cannot pass"
     );
 }

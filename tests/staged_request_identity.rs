@@ -115,16 +115,16 @@ fn lost_allocation_reply_recovers_exact_identity_and_never_resurrects_after_rest
         socket
     });
     let mut uncertain = RemoteMetaClient::connect(&proxy, &options()).unwrap();
-    assert!(uncertain
-        .allocate_prepared_staged_object(&prepared)
-        .is_err());
+    assert!(matches!(uncertain.try_allocate_prepared_staged_object(&prepared),
+        Err(matrixobjectstore_rs::staged_allocation::StagedAllocationFailure::Unconfirmed(_))));
     let socket = worker.join().unwrap();
     assert!(
         matches!(socket.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
     );
     let recovered = client.allocate_prepared_staged_object(&prepared).unwrap();
     assert_eq!(recovered.allocation_id, prepared.allocation_id());
-    assert!(client.allocate_prepared_staged_object(&competing).is_err());
+    assert!(matches!(client.try_allocate_prepared_staged_object(&competing),
+        Err(matrixobjectstore_rs::staged_allocation::StagedAllocationFailure::PositionConsumed)));
     assert_eq!(
         client.list_staged_allocations(0, 32).unwrap(),
         (vec![recovered.allocation_id], false)

@@ -8,6 +8,23 @@ use crate::{
 use prost::Message;
 
 pub(crate) const MAX_STAGED_ALLOCATIONS: usize = 128;
+pub(crate) const POSITION_CONSUMED: &str = "prepared allocation position is consumed or retired";
+
+/// Admission of this attempt does not establish the result of an earlier attempt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StagedAllocationFailure {
+    PositionConsumed,
+    NotAdmitted(ObjectError),
+    Unconfirmed(ObjectError),
+}
+impl StagedAllocationFailure {
+    pub fn into_error(self) -> ObjectError {
+        match self {
+            Self::PositionConsumed => ObjectError::PreconditionFailed(POSITION_CONSUMED.into()),
+            Self::NotAdmitted(error) | Self::Unconfirmed(error) => error,
+        }
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, Message)]
 pub struct StagedAllocation {

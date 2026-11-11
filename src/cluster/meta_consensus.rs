@@ -582,12 +582,11 @@ fn run(
                 && queued.len() < PROPOSALS_PER_BATCH {
                 lease_sweep = Instant::now();
                 if let Ok(now) = super::staged_lease_sweeper::now_ms() {
-                    expiry = super::staged_lease_sweeper::commands(service, now);
+                    expiry = super::staged_lease_sweeper::all_commands(service, now);
                     // A selected deadline can already be queued behind foreground
                     // work. Do not accumulate repeated cleanup for the same owner.
                     expiry.retain(|command| !queued.iter().any(|request: &Request|
-                        matches!(&request.request, MetaRequest::StagedAllocation(queued)
-                            if queued.action == 9 && queued.allocation_id == command.allocation_id)));
+                        super::staged_lease_sweeper::same_cleanup(&request.request, command)));
                     expiry.truncate(PROPOSALS_PER_BATCH - queued.len());
                 }
             }
@@ -602,7 +601,7 @@ fn run(
             for command in expiry {
                 let (reply, _) = mpsc::sync_channel(1);
                 queued.push_back(Request {
-                    request: MetaRequest::StagedAllocation(command), reply,
+                    request: command, reply,
                     deadline: Instant::now() + Duration::from_secs(30),
                     progress: RequestProgress::new(false),
                 });
@@ -993,10 +992,12 @@ fn propose_batch(
         .collect();
     let mut draft = PlacementDraft::with_records(service, nodes, objects.into_iter().collect());
     let mut retention_ids = BTreeSet::new();
+    let mut renewal_ids = BTreeSet::new();
     for request in queued.iter().take(PROPOSALS_PER_BATCH) {
         if let MetaRequest::ManifestRetention(command) = &request.request {
-            if command.action == 2 { retention_ids.insert(command.retention_id); }
-            if command.action == 1 {
+            if matches!(command.action, 2 | 7) { retention_ids.insert(command.retention_id); }
+            if command.action == 6 { renewal_ids.insert(command.retention_id); }
+            if matches!(command.action, 1 | 5) {
                 // Any earlier request can advance the metadata index once.
                 for distance in 1..=PROPOSALS_PER_BATCH as u64 {
                     if let Some(id) = draft.index.checked_add(distance) { retention_ids.insert(id); }
@@ -1004,6 +1005,9 @@ fn propose_batch(
             }
         }
     }
+    draft.retention_deadlines = renewal_ids.difference(&retention_ids).filter_map(|id| {
+        draft.service.object_manifests.retained_manifest(*id).map(|record| (*id, record.expires_at_ms))
+    }).collect();
     draft.retentions = retention_ids.into_iter().map(|id| {
         (id, draft.service.object_manifests.retained_manifest(id).cloned())
     }).collect();
@@ -1174,6 +1178,7 @@ struct PlacementDraft<'a> {
     )>,
     index: u64,
     retentions: Vec<(u64, Option<crate::manifest_retention::RetainedManifest>)>,
+    retention_deadlines: Vec<(u64, u64)>,
     staging_allocations: Vec<(u64, Option<crate::staged_allocation::StagedAllocation>)>,
     publication_fence: u64,
 }
@@ -1207,6 +1212,7 @@ impl<'a> PlacementDraft<'a> {
             objects,
             index,
             retentions: Vec::new(),
+            retention_deadlines: Vec::new(),
             staging_allocations: Vec::new(),
             publication_fence,
         }
@@ -1220,6 +1226,9 @@ impl Drop for PlacementDraft<'_> {
         }
         for (id, previous) in self.retentions.drain(..) {
             self.service.object_manifests.restore_retention(id, previous);
+        }
+        for (id, deadline) in self.retention_deadlines.drain(..) {
+            self.service.object_manifests.restore_retention_deadline(id, deadline);
         }
         for node in self.nodes.drain(..) {
             self.service.nodes.insert(node.node_id.clone(), node);
@@ -2424,6 +2433,43 @@ mod tests {
         assert!(service.object_manifests.retained_manifest(first_id).is_none());
         assert!(service.object_manifests.retained_manifest(first_id + 1).is_some());
         assert_eq!(service.placement_commit_index, first_id + 2);
+    }
+
+    #[test]
+    fn read_session_batch_restores_compact_deadlines_and_commits_renewal_before_expiry() {
+        use crate::manifest_retention::ManifestRetentionRequest;
+        use crate::object_manifest::{ManifestOutcome, ObjectManifest};
+        let (_files, mut peer) = batch_peer();
+        let (mut service, groups) = fixture(1, 0);
+        PlacementOutcome::publish_manifest(&service, ManifestOutcome::decide(None, ObjectManifest {
+            format_version: 2, bucket: "bucket".into(), key: "reader".into(), generation: 1,
+            ..Default::default()
+        }).unwrap(), 0).unwrap().apply(&mut service).unwrap();
+        let open = ManifestRetentionRequest { version: 2, action: 5, bucket: "bucket".into(),
+            key: "reader".into(), ttl_ms: 60_000, ..Default::default() };
+        super::super::read_session_commands::prepare_at(&service, &open, 8192,
+            super::super::staged_lease_sweeper::now_ms().unwrap()).unwrap().0.apply(&mut service).unwrap();
+        let id = service.placement_commit_index;
+        let expiry = service.object_manifests.retained_manifest(id).unwrap().expires_at_ms;
+        let renew = ManifestRetentionRequest { version: 2, action: 6, retention_id: id,
+            expected_expiry_ms: expiry, ttl_ms: 120_000, ..Default::default() };
+        let stale_expiry = ManifestRetentionRequest { action: 7, ttl_ms: 0, ..renew.clone() };
+        let saved = service.export_snapshot().to_bytes().unwrap();
+        let mut requests = VecDeque::new();
+        let mut receivers = Vec::new();
+        let mut pending = VecDeque::new();
+        for command in [renew, stale_expiry] {
+            let (request, receiver) = queued(MetaRequest::ManifestRetention(command), Instant::now() + Duration::from_secs(10));
+            requests.push_back(request);
+            receivers.push(receiver);
+        }
+        propose_batch(&mut peer, &mut service, &groups, 8192, &mut requests, &mut pending).unwrap();
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
+        assert!(receivers.iter().all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
+        peer.process_ready(|id, bytes| apply_committed(&mut service, &groups, 8192, &mut pending, id, bytes)).unwrap();
+        assert!(receivers[0].try_recv().unwrap().is_ok());
+        assert!(receivers[1].try_recv().unwrap().is_err());
+        assert!(service.object_manifests.retained_manifest(id).unwrap().expires_at_ms > expiry);
     }
 
     #[test]

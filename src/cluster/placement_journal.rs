@@ -147,6 +147,7 @@ mod tests {
             staging: None,
             publication_fence: None,
             copy_source: None,
+            retention_deadline: None,
         };
         let second = PlacementOutcome {
             before_index: base + 1,

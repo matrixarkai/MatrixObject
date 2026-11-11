@@ -1,5 +1,8 @@
 # Durable manifest retention
 
+This page describes permanent handles. Bounded renewable sessions and automatic
+session acquisition/release are described in `read-session-leases.md`.
+
 `RemoteMetaClient::retain_manifest(bucket, key, generation)` records one exact
 current, live generation and returns a `RetainedManifest`. Retaining a stale
 generation or tombstone is refused. The handle stores immutable extent metadata;
@@ -20,7 +23,7 @@ retention. Handle reads and enumeration require current-term quorum confirmation
 retention mutations wait for durable commit. Unknown request codes are refused
 by older servers; clients do not substitute an unprotected read.
 
-There is no automatic expiry. Abandoned handles continue retaining data until an
+Permanent handles have no automatic expiry. Abandoned handles continue retaining data until an
 operator explicitly releases them. A lost creation reply can leave such a
 handle, so `list_retained_manifests(after, limit)` enumerates up to 32 IDs per
 page with an exclusive numeric cursor. Read each ID to inspect its manifest.
@@ -29,7 +32,7 @@ Retain is not replayed automatically after a transport-uncertain result. Creatio
 and release have the same access assumptions as the metadata API; a handle is
 not a separate authorization credential.
 
-At most 128 handles can be retained. Their encoded records share the catalog's
+At most 128 handles, including leased sessions, can be retained. Their encoded records share the catalog's
 64-MiB checkpoint body bound with current manifests and staged allocations. A full catalog refuses new
 retention before changing state. Ordinary `read_object` calls do not implicitly
 create handles; callers needing explicit retention must use this API and release
@@ -59,6 +62,6 @@ Any future collector must preserve extents named by current manifests and by
 every retained manifest, including cross-bucket copies. It must also fence
 staged writers and concurrent retention/publication. The current listing revision
 tracks publication only; it does not track handle changes and cannot authorize
-deletion. This API does not implement staged-write ownership, expiry, physical
+deletion. Permanent-handle operations do not provide physical
 reclamation or automatic protection for ordinary reads. Reclamation remains
 disabled until those protocols and interrupted-deletion tests are implemented.

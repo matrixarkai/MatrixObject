@@ -213,6 +213,68 @@ impl Drop for Group {
 }
 
 #[test]
+fn read_sessions_survive_lagging_voter_transfer_and_expire_after_quorum_recovery() {
+    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
+    use matrixobjectstore_rs::cluster::ReplicaClientOptions;
+    let mut group = Group::with_catalog_checkpoints(None, None, None, 1024);
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    let original = client.publish_manifest(ManifestOutcome::decide(None, ObjectManifest {
+        format_version: 2, bucket: "bucket".into(), key: "reader".into(), generation: 1,
+        ..Default::default()
+    }).unwrap(), 0).unwrap();
+    let permanent = client.retain_manifest("bucket", "reader", 1).unwrap();
+    let lagging = (leader + 1) % 3;
+    group.kill(lagging);
+    let mut session = client.open_read_session("bucket", "reader", Some(1), 60_000).unwrap();
+    client.delete_object("bucket", "reader", 0).unwrap();
+    client.renew_read_session(&mut session, 120_000).unwrap();
+    let wal = group.root.join(leader.to_string()).join("metadata.peer.wal");
+    let protected_commit = node_regime::checkpoints::committed_index(&wal);
+    assert!(protected_commit > 0);
+    for index in 0..16 {
+        client.allocate_staged_object("bucket", &format!("reader-checkpoint-{index}"), None, 1, false).unwrap();
+    }
+    node_regime::checkpoints::wait_for_checkpoint_index(&wal, protected_commit);
+    group.start(lagging);
+    node_regime::checkpoints::wait_for_checkpoint_index(
+        &group.root.join(lagging.to_string()).join("metadata.peer.wal"), protected_commit);
+    group.kill(leader);
+    let mut client = group.client(group.leader());
+    assert_eq!(client.read_retained_object(session.retention_id, 0, &ReplicaClientOptions::default()).unwrap(),
+        (original, Vec::new()));
+    client.publish_manifest(ManifestOutcome::decide(None, ObjectManifest {
+        format_version: 2, bucket: "bucket".into(), key: "abandoned-reader".into(), generation: 1,
+        ..Default::default()
+    }).unwrap(), 0).unwrap();
+    let abandoned = client.open_read_session("bucket", "abandoned-reader", None, 1000).unwrap();
+    for index in 0..3 { if group.nodes[index].is_some() { group.kill(index); } }
+    std::thread::sleep(Duration::from_millis(1200));
+    group.start(0);
+    let mut minority = group.client(0);
+    assert!(minority.read_retained_manifest(session.retention_id).is_err());
+    assert!(minority.release_manifest(session.retention_id).is_err());
+    group.start(1);
+    group.start(2);
+    let mut client = group.client(group.leader());
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        if !client.list_retained_manifests(0, 32).unwrap().0.contains(&abandoned.retention_id) { break; }
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(client.read_retained_manifest(abandoned.retention_id).is_err());
+    assert_eq!(client.read_retained_manifest(session.retention_id).unwrap(), session);
+    assert_eq!(client.read_retained_manifest(permanent.retention_id).unwrap(), permanent);
+    client.expire_read_session(&abandoned).unwrap();
+    for index in 0..3 { group.kill(index); }
+    for index in 0..3 { group.start(index); }
+    let mut client = group.client(group.leader());
+    assert_eq!(client.read_retained_manifest(session.retention_id).unwrap(), session);
+    assert!(client.read_retained_manifest(abandoned.retention_id).is_err());
+}
+
+#[test]
 fn prepared_staging_identity_survives_lagging_voter_transfer_leader_loss_and_retirement() {
     use matrixobjectstore_rs::staged_allocation::PreparedStagedAllocation;
     let mut group = Group::with_catalog_checkpoints(None, None, None, 1024);
@@ -1619,7 +1681,7 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     let leased = minority.renew_staged_allocation(&leased, 120_000).unwrap();
     let leased_value = minority.write_staged_object(&leased, None, b"leased star", &options).unwrap();
     assert!(minority.allocate_prepared_staged_object(&prepared).is_err());
-    assert_eq!(minority.read_object("star", "leased", 32, &options.replica).unwrap(),
+    assert_eq!(minority.read_object_in_session("star", "leased", 32, &options.replica, 60_000).unwrap(),
         (leased_value, b"leased star".to_vec()));
     assert!(minority.read_staged_allocation(leased.allocation_id).is_err());
 

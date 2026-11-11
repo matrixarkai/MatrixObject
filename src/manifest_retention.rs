@@ -12,6 +12,9 @@ pub struct RetainedManifest {
     pub retention_id: u64,
     #[prost(message, optional, tag = "2")]
     pub manifest: Option<ObjectManifest>,
+    /// Zero retains permanently; nonzero is a metadata-server lease deadline.
+    #[prost(uint64, tag = "3")]
+    pub expires_at_ms: u64,
 }
 
 impl RetainedManifest {
@@ -32,7 +35,7 @@ impl RetainedManifest {
 pub struct ManifestRetentionRequest {
     #[prost(uint32, tag = "1")]
     pub version: u32,
-    /// 1: retain current generation; 2: release; 3: read; 4: list handles.
+    /// 1 retain; 2 release; 3 read; 4 list; 5 open session; 6 renew; 7 expire.
     #[prost(uint32, tag = "2")]
     pub action: u32,
     #[prost(string, tag = "3")]
@@ -46,6 +49,10 @@ pub struct ManifestRetentionRequest {
     pub retention_id: u64,
     #[prost(uint32, tag = "7")]
     pub limit: u32,
+    #[prost(uint64, tag = "8")]
+    pub ttl_ms: u64,
+    #[prost(uint64, tag = "9")]
+    pub expected_expiry_ms: u64,
 }
 
 impl ManifestRetentionRequest {
@@ -53,6 +60,27 @@ impl ManifestRetentionRequest {
         matches!(self.action, 3 | 4)
     }
     pub(crate) fn validate(&self) -> Result<(), ObjectError> {
+        if self.version == 2 {
+            if !matches!(self.action, 5..=7)
+                || (self.action != 7 && !(1000..=3_600_000).contains(&self.ttl_ms))
+                || (self.action == 7 && self.ttl_ms != 0) || self.limit != 0 {
+                return Err(invalid("invalid read session lease fields"));
+            }
+            if self.action == 5 {
+                crate::validate_bucket(&self.bucket)?;
+                crate::validate_key(&self.key)?;
+                if self.retention_id != 0 || self.expected_expiry_ms != 0 {
+                    return Err(invalid("invalid read session target"));
+                }
+            } else if !self.bucket.is_empty() || !self.key.is_empty() || self.generation != 0
+                || self.retention_id == 0 || self.expected_expiry_ms == 0 {
+                return Err(invalid("invalid read session handle"));
+            }
+            return Ok(());
+        }
+        if self.ttl_ms != 0 || self.expected_expiry_ms != 0 {
+            return Err(invalid("read session fields require version 2"));
+        }
         if self.version != 1 {
             return Err(invalid("unsupported retention request version"));
         }
@@ -95,12 +123,26 @@ pub struct ManifestRetentionReply {
     pub retention_ids: Vec<u64>,
     #[prost(bool, tag = "4")]
     pub has_more: bool,
+    #[prost(uint64, tag = "5")]
+    pub retention_id: u64,
+    #[prost(uint64, tag = "6")]
+    pub expires_at_ms: u64,
+    /// Relative protection window measured by the metadata server.
+    #[prost(uint64, tag = "7")]
+    pub lease_ms: u64,
 }
 
 impl ManifestRetentionReply {
     pub(crate) fn from_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
         let value: Self = decode(bytes, 1024 * 1024 + 128)?;
-        if value.version != 1
+        if !((value.version == 1 && value.retention_id == 0 && value.expires_at_ms == 0 && value.lease_ms == 0
+                && value.retained.as_ref().is_none_or(|record| record.expires_at_ms == 0))
+            || (value.version == 2 && value.retention_id != 0 && value.expires_at_ms != 0
+                && value.lease_ms == 0 && value.retained.is_none() && value.retention_ids.is_empty() && !value.has_more)
+            || (value.version == 3 && value.retention_id == 0 && value.expires_at_ms == 0
+                && (1..=3_600_000).contains(&value.lease_ms)
+                && value.retained.as_ref().is_some_and(|record| record.expires_at_ms != 0)
+                && value.retention_ids.is_empty() && !value.has_more))
             || value.retention_ids.len() > 32
             || value.retention_ids.contains(&0)
             || value
@@ -127,6 +169,24 @@ pub struct ManifestRetentionChange {
     pub after: Option<RetainedManifest>,
 }
 
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct RetentionDeadlineChange {
+    #[prost(uint64, tag = "1")]
+    pub retention_id: u64,
+    #[prost(uint64, tag = "2")]
+    pub before: u64,
+    #[prost(uint64, tag = "3")]
+    pub after: u64,
+}
+impl RetentionDeadlineChange {
+    pub(crate) fn validate(&self) -> Result<(), ObjectError> {
+        if self.retention_id == 0 || self.before == 0 || self.after <= self.before {
+            return Err(invalid("invalid read session deadline change"));
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn invalid(message: &str) -> ObjectError {
     ObjectError::Corruption(message.into())
 }
@@ -145,6 +205,41 @@ fn decode<T: Message + Default>(bytes: &[u8], limit: usize) -> Result<T, ObjectE
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn read_session_wire_bounds_ttl_and_compact_renewal_identity() {
+        let open = ManifestRetentionRequest { version: 2, action: 5, bucket: "bucket".into(),
+            key: "object".into(), ttl_ms: 1000, ..Default::default() };
+        let bytes = open.encode_to_vec();
+        assert_eq!(ManifestRetentionRequest::from_payload(&bytes).unwrap(), open);
+        for ttl in [0, 999, 3_600_001, u64::MAX] {
+            assert!(ManifestRetentionRequest { ttl_ms: ttl, ..open.clone() }.validate().is_err());
+        }
+        assert!(ManifestRetentionRequest { version: 1, ..open.clone() }.validate().is_err());
+        assert!(ManifestRetentionRequest { retention_id: 1, ..open }.validate().is_err());
+        let renew = ManifestRetentionRequest { version: 2, action: 6, retention_id: 2,
+            ttl_ms: 1000, expected_expiry_ms: 2000, ..Default::default() };
+        assert_eq!(ManifestRetentionRequest::from_payload(&renew.encode_to_vec()).unwrap(), renew);
+        assert!(ManifestRetentionRequest { expected_expiry_ms: 0, ..renew.clone() }.validate().is_err());
+        assert!(ManifestRetentionRequest { action: 7, ..renew }.validate().is_err());
+        let reply = ManifestRetentionReply { version: 2, retention_id: 2, expires_at_ms: 3000, ..Default::default() };
+        assert_eq!(ManifestRetentionReply::from_payload(&reply.encode_to_vec()).unwrap(), reply);
+        assert!(reply.encoded_len() < 32);
+        assert!(ManifestRetentionReply::from_payload(&ManifestRetentionReply { has_more: true, ..reply }.encode_to_vec()).is_err());
+        let grant = ManifestRetentionReply { version: 3, lease_ms: 1000,
+            retained: Some(RetainedManifest { retention_id: 1, expires_at_ms: 2000,
+                manifest: Some(ObjectManifest { format_version: 2, bucket: "bucket".into(),
+                    key: "object".into(), generation: 1, ..Default::default() }) }), ..Default::default() };
+        assert_eq!(ManifestRetentionReply::from_payload(&grant.encode_to_vec()).unwrap(), grant);
+        assert!(ManifestRetentionReply::from_payload(&ManifestRetentionReply {
+            lease_ms: 0, ..grant.clone()
+        }.encode_to_vec()).is_err());
+        assert!(ManifestRetentionReply::from_payload(&ManifestRetentionReply {
+            version: 1, lease_ms: 0, ..grant
+        }.encode_to_vec()).is_err());
+        let expiry = ManifestRetentionRequest { version: 2, action: 7, retention_id: 2,
+            expected_expiry_ms: 2000, ..Default::default() };
+        assert_eq!(ManifestRetentionRequest::from_payload(&expiry.encode_to_vec()).unwrap(), expiry);
+    }
     #[test]
     fn retention_wire_refuses_truncation_unknown_fields_and_conflicting_actions() {
         let request = ManifestRetentionRequest {

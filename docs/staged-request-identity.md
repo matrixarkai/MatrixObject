@@ -28,6 +28,12 @@ bounded to 128 records and shares the existing checkpoint byte budget.
 
 Another mutation may consume the prepared position before submission. The
 request is then refused; it cannot move to a replacement position automatically.
+`try_allocate_prepared_staged_object` distinguishes `PositionConsumed`,
+`NotAdmitted` and `Unconfirmed`. For a newly prepared handle submitted once,
+a known consumed-position refusal permits preparing and persisting a fresh
+handle. Stop on uncertainty and retain the original handle. When resuming an
+older handle, a consumed position can mean prior publication or retirement;
+it does not authorize replacing that operation.
 Preparation adds one metadata read per reservation, and contending preparers
 can require another round trip. This tradeoff must be measured under concurrent
 allocation load before changing caller defaults.

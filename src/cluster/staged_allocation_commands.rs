@@ -37,7 +37,7 @@ pub(super) fn prepare_at(service: &MatrixMetaService, groups: &ChunkGroupCatalog
                     .filter(|record| crate::staged_allocation::PreparedStagedAllocation {
                         request: command.clone()
                     }.matches(record))
-                    .ok_or_else(|| ObjectError::PreconditionFailed("prepared allocation position is consumed or retired".into()))?;
+                    .ok_or_else(|| ObjectError::PreconditionFailed(crate::staged_allocation::POSITION_CONSUMED.into()))?;
                 if record.expires_at_ms != 0 && (now == 0 || now >= record.expires_at_ms) {
                     return Err(ObjectError::PreconditionFailed("prepared allocation lease expired".into()));
                 }

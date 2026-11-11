@@ -1159,9 +1159,31 @@ impl RemoteMetaClient {
     /// position is refused permanently; this never allocates a replacement.
     pub fn allocate_prepared_staged_object(&mut self, prepared: &crate::staged_allocation::PreparedStagedAllocation)
         -> Result<crate::staged_allocation::StagedAllocation, ObjectError> {
-        let reply = self.staged_call(prepared.request.clone())?;
-        reply.allocation.filter(|record| prepared.matches(record))
-            .ok_or_else(|| ObjectError::Corruption("staged reply differs from prepared identity".into()))
+        self.try_allocate_prepared_staged_object(prepared).map_err(|failure| failure.into_error())
+    }
+
+    /// Distinguish a consumed-position refusal from an uncertain allocation.
+    /// Re-preparation is safe only for a fresh handle with no earlier uncertain submission.
+    pub fn try_allocate_prepared_staged_object(&mut self, prepared: &crate::staged_allocation::PreparedStagedAllocation)
+        -> Result<crate::staged_allocation::StagedAllocation, crate::staged_allocation::StagedAllocationFailure> {
+        use crate::staged_allocation::StagedAllocationFailure as Failure;
+        prepared.request.validate().map_err(Failure::NotAdmitted)?;
+        let (outcome, unadmitted) = self.try_call_admission(&MetaRequest::StagedAllocation(prepared.request.clone()));
+        match outcome {
+            MetaCallOutcome::Answered(MetaReply::StagedAllocation(reply)) =>
+                reply.allocation.filter(|record| prepared.matches(record))
+                    .ok_or_else(|| Failure::Unconfirmed(ObjectError::Corruption("staged reply differs from prepared identity".into()))),
+            MetaCallOutcome::Refused(ObjectError::PreconditionFailed(message))
+                if message == ObjectError::PreconditionFailed(crate::staged_allocation::POSITION_CONSUMED.into()).to_string() =>
+                    Err(Failure::PositionConsumed),
+            other => {
+                let error = match other {
+                    MetaCallOutcome::Answered(reply) => unexpected_reply("a prepared allocation", &reply),
+                    MetaCallOutcome::Refused(error) | MetaCallOutcome::Unreachable(error) => error,
+                };
+                Err(if unadmitted { Failure::NotAdmitted(error) } else { Failure::Unconfirmed(error) })
+            }
+        }
     }
 
     fn allocate_staged_inner(&mut self, bucket: &str, key: &str, expected_generation: Option<u64>,
@@ -1258,6 +1280,76 @@ impl RemoteMetaClient {
         }
     }
 
+    /// Atomically select and protect a live generation until a bounded deadline.
+    /// A missing expected generation selects the current generation at commit.
+    pub fn open_read_session(&mut self, bucket: &str, key: &str, generation: Option<u64>, ttl_ms: u64)
+        -> Result<crate::manifest_retention::RetainedManifest, ObjectError> {
+        if generation == Some(0) { return Err(ObjectError::InvalidArgument("zero manifest generation".into())); }
+        let reply = self.retention_call(crate::manifest_retention::ManifestRetentionRequest {
+            version: 2, action: 5, bucket: bucket.into(), key: key.into(),
+            generation: generation.unwrap_or(0), ttl_ms, ..Default::default()
+        })?;
+        if reply.version != 3 || reply.lease_ms != ttl_ms {
+            return Err(ObjectError::Corruption("read session reply lacks its protection window".into()));
+        }
+        reply.retained.filter(|record| record.expires_at_ms != 0 && record.manifest.as_ref().is_some_and(|manifest|
+            manifest.bucket == bucket && manifest.key == key && generation.is_none_or(|value| value == manifest.generation)))
+            .ok_or_else(|| ObjectError::Corruption("read session reply differs from requested target".into()))
+    }
+
+    /// Extend a live session using its exact prior deadline, without rewriting its manifest.
+    pub fn renew_read_session(&mut self, session: &mut crate::manifest_retention::RetainedManifest, ttl_ms: u64)
+        -> Result<(), ObjectError> {
+        session.validate()?;
+        let reply = self.retention_call(crate::manifest_retention::ManifestRetentionRequest {
+            version: 2, action: 6, retention_id: session.retention_id,
+            expected_expiry_ms: session.expires_at_ms, ttl_ms, ..Default::default()
+        })?;
+        if reply.version != 2 || reply.retention_id != session.retention_id || reply.expires_at_ms <= session.expires_at_ms {
+            return Err(ObjectError::Corruption("read session renewal reply changed identity".into()));
+        }
+        session.expires_at_ms = reply.expires_at_ms;
+        Ok(())
+    }
+
+    pub fn expire_read_session(&mut self, session: &crate::manifest_retention::RetainedManifest)
+        -> Result<(), ObjectError> {
+        session.validate()?;
+        let reply = self.retention_call(crate::manifest_retention::ManifestRetentionRequest {
+            version: 2, action: 7, retention_id: session.retention_id,
+            expected_expiry_ms: session.expires_at_ms, ..Default::default()
+        })?;
+        if reply.version != 1 || reply.retained.is_some() || !reply.retention_ids.is_empty() || reply.has_more {
+            return Err(ObjectError::Corruption("unexpected read session expiry reply".into()));
+        }
+        Ok(())
+    }
+
+    /// Read with automatic acquisition and release of a bounded read session.
+    /// Transport-uncertain acquisition is not retried; its lease expires automatically.
+    #[cfg(feature = "replica-server")]
+    pub fn read_object_in_session(&mut self, bucket: &str, key: &str, max_bytes: usize,
+        options: &super::ReplicaClientOptions, ttl_ms: u64)
+        -> Result<(crate::object_manifest::ObjectManifest, Vec<u8>), ObjectError> {
+        if !(1000..=3_600_000).contains(&ttl_ms) {
+            return Err(ObjectError::InvalidArgument("invalid read session TTL".into()));
+        }
+        let deadline = Instant::now().checked_add(Duration::from_millis(ttl_ms - 100))
+            .ok_or_else(|| ObjectError::InvalidArgument("read session deadline overflow".into()))?;
+        let deadline = options.deadline.map_or(deadline, |value| value.min(deadline));
+        self.with_operation_deadline(Some(deadline), |client| {
+            let session = client.open_read_session(bucket, key, None, ttl_ms)?;
+            let mut bounded = options.clone();
+            bounded.deadline = client.operation_deadline();
+            let result = client.read_object_from_manifest_routes(session.manifest.unwrap(), None, max_bytes, &bounded, None)
+                .and_then(|result| { client.check_operation_deadline()?; Ok(result) });
+            // Bytes have been copied into the caller's result. An uncertain
+            // cleanup may leave bounded protection for automatic expiry.
+            let _ = client.release_manifest(session.retention_id);
+            result.and_then(|result| { client.check_operation_deadline()?; Ok(result) })
+        })
+    }
+
     /// Retain one current generation durably until explicitly released.
     /// A lost creation reply can leave a handle listed in the metadata catalog.
     pub fn retain_manifest(&mut self, bucket: &str, key: &str, generation: u64)
@@ -1324,10 +1416,26 @@ impl RemoteMetaClient {
         options: &super::ReplicaClientOptions)
         -> Result<(crate::object_manifest::ObjectManifest, Vec<u8>), ObjectError> {
         self.with_operation_deadline(options.deadline, |client| {
-            let mut bounded = options.clone();
-            bounded.deadline = client.operation_deadline();
-            let retained = client.read_retained_manifest(retention_id)?;
-            client.read_object_from_manifest_routes(retained.manifest.unwrap(), None, max_bytes, &bounded, None)
+            let started = Instant::now();
+            let reply = client.retention_call(crate::manifest_retention::ManifestRetentionRequest {
+                version: 1, action: 3, retention_id, ..Default::default()
+            })?;
+            let retained = reply.retained.filter(|record| record.retention_id == retention_id)
+                .ok_or_else(|| ObjectError::Corruption("retention reply names another handle".into()))?;
+            let deadline = if retained.expires_at_ms == 0 { None } else {
+                if reply.version != 3 || reply.lease_ms <= 100 {
+                    return Err(ObjectError::PreconditionFailed("read session window is too short".into()));
+                }
+                Some(started.checked_add(Duration::from_millis(reply.lease_ms - 100))
+                    .ok_or_else(|| ObjectError::Corruption("read session window overflows".into()))?)
+            };
+            client.with_operation_deadline(deadline, |client| {
+                let mut bounded = options.clone();
+                bounded.deadline = client.operation_deadline();
+                let result = client.read_object_from_manifest_routes(retained.manifest.unwrap(), None, max_bytes, &bounded, None)?;
+                client.check_operation_deadline()?;
+                Ok(result)
+            })
         })
     }
 

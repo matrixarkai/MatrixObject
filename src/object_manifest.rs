@@ -472,6 +472,41 @@ impl ManifestCatalog {
             self.retained.insert(id, value);
         }
     }
+    pub(crate) fn expired_retention(&self, now: u64) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.retained.values().filter(move |record| record.expires_at_ms != 0 && record.expires_at_ms <= now)
+            .map(|record| (record.retention_id, record.expires_at_ms))
+    }
+    #[cfg(feature = "metadata-consensus")]
+    pub(crate) fn restore_retention_deadline(&mut self, id: u64, deadline: u64) {
+        if let Some(record) = self.retained.get_mut(&id) {
+            self.retention_bytes -= entry_size(record);
+            record.expires_at_ms = deadline;
+            self.retention_bytes += entry_size(record);
+        }
+    }
+    pub(crate) fn check_retention_deadline(&self, change: &crate::manifest_retention::RetentionDeadlineChange)
+        -> Result<usize, ObjectError> {
+        change.validate()?;
+        let record = self.retained.get(&change.retention_id)
+            .filter(|record| record.expires_at_ms == change.before)
+            .ok_or_else(|| ObjectError::PreconditionFailed("read session deadline changed".into()))?;
+        let old_len = record.encoded_len();
+        let new_len = old_len - prost::encoding::encoded_len_varint(change.before)
+            + prost::encoding::encoded_len_varint(change.after);
+        let new_entry = 1 + prost::encoding::encoded_len_varint(new_len as u64) + new_len;
+        let bytes = self.retention_bytes - entry_size(record) + new_entry;
+        if self.body_bytes + bytes + self.staged_bytes > MAX_SNAPSHOT - self.header_size() {
+            return Err(ObjectError::PreconditionFailed("retention catalog capacity exceeded".into()));
+        }
+        Ok(bytes)
+    }
+    pub(crate) fn apply_retention_deadline(&mut self, change: &crate::manifest_retention::RetentionDeadlineChange)
+        -> Result<(), ObjectError> {
+        let bytes = self.check_retention_deadline(change)?;
+        self.retained.get_mut(&change.retention_id).unwrap().expires_at_ms = change.after;
+        self.retention_bytes = bytes;
+        Ok(())
+    }
     pub(crate) fn list_page(&self, request: &ManifestListRequest) -> Result<ManifestListPage, ObjectError> {
         request.validate()?;
         if request.version >= 2 && !request.expected_revision.is_empty()
