@@ -2268,6 +2268,15 @@ mod coupled_groups {
         assert_eq!(meta.read_object("written", "post-fence", 100, &options.replica).unwrap(), (post_fence_value, b"OK".to_vec()));
         assert_eq!(meta.read_object("written", "fenced-copy", 100, &options.replica).unwrap(),
             (copied, b"owned raft bytes+tail".to_vec()));
+
+    assert_eq!(meta.read_object("written", "leased", 100, &options.replica).unwrap(),
+        (leased_value.clone(), b"LS".to_vec()));
+    assert_eq!(meta.read_object_range("written", "leased", 1, 1, 1, &options.replica).unwrap().1,
+        b"S");
+    assert_eq!(meta.read_objects(&[("written", "leased", 100), ("written", "leased", 100)],
+        &options.replica).unwrap(),
+        vec![(leased_value.clone(), b"LS".to_vec()); 2]);
+    assert!(meta.list_retained_manifests(0, 32).unwrap().0.is_empty());
         assert_eq!(meta.read_object_in_session("written", "leased", 100, &options.replica, 60_000).unwrap(),
             (leased_value, b"LS".to_vec()));
         assert!(meta.read_staged_allocation(leased.allocation_id).is_err());

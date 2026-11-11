@@ -992,10 +992,12 @@ mod manifest_tests {
         let reply = MetaReply::ManifestRoutesBatch {
             objects: vec![
                 crate::cluster::ManifestRouteEntry {
+                    publication_fence: 0,
                     manifest: first,
                     routes: vec![],
                 },
                 crate::cluster::ManifestRouteEntry {
+                    publication_fence: 0,
                     manifest: second,
                     routes: vec![],
                 },

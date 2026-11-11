@@ -1681,6 +1681,15 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     let leased = minority.renew_staged_allocation(&leased, 120_000).unwrap();
     let leased_value = minority.write_staged_object(&leased, None, b"leased star", &options).unwrap();
     assert!(minority.allocate_prepared_staged_object(&prepared).is_err());
+
+    assert_eq!(minority.read_object("star", "leased", 32, &options.replica).unwrap(),
+        (leased_value.clone(), b"leased star".to_vec()));
+    assert_eq!(minority.read_object_range("star", "leased", 1, 1, 1, &options.replica).unwrap().1,
+        b"e");
+    assert_eq!(minority.read_objects(&[("star", "leased", 32), ("star", "leased", 32)],
+        &options.replica).unwrap(),
+        vec![(leased_value.clone(), b"leased star".to_vec()); 2]);
+    assert!(minority.list_retained_manifests(0, 32).unwrap().0.is_empty());
     assert_eq!(minority.read_object_in_session("star", "leased", 32, &options.replica, 60_000).unwrap(),
         (leased_value, b"leased star".to_vec()));
     assert!(minority.read_staged_allocation(leased.allocation_id).is_err());
