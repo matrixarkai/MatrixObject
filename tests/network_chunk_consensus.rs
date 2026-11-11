@@ -3362,6 +3362,22 @@ mod coupled_groups {
         probe_recovery_with_security(partition, peer_tls, false);
     }
     fn probe_recovery_with_security(partition: bool, peer_tls: Option<PathBuf>, api_tls: bool) {
+        fn wait_for_write_placement(metadata: &MetadataGroup, groups: &[Group]) {
+            let mut client = metadata.ready();
+            let until = Instant::now() + Duration::from_secs(30);
+            loop {
+                let observed = match client.plan_object_write_routes("probe-bucket", "probe/readiness", 1025, groups.len() as u64) {
+                    Ok((None, plan, routes)) if plan.node_ids.len() == groups.len()
+                        && routes.len() == groups.len()
+                        && groups.iter().all(|group| plan.node_ids.contains(&group.placement_id())) => return,
+                    Ok(value) => format!("unexpected write plan: {value:?}"),
+                    Err(error) => error.to_string(),
+                };
+                assert!(Instant::now() < until, "recovered placement did not admit the workload: {observed}; nodes={:?}",
+                    client.list_placement_nodes());
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
         let mut groups: Vec<_> = (1..=2)
             .map(|id| {
                 let mut group = Group::configured(4 * 1024 * 1024);
@@ -3433,6 +3449,7 @@ mod coupled_groups {
             );
             assert!(!text.contains("failed=true"), "{text}");
         };
+        wait_for_write_placement(&metadata, &groups);
         check(run("write", "1025", "recovery"));
         let (_, first) = metadata
             .ready()
@@ -3502,6 +3519,7 @@ mod coupled_groups {
                 .read_manifest("probe-bucket", "probe/recovery/00000000")
                 .is_err());
             check(run("verify", "1025", "recovery"));
+            wait_for_write_placement(&metadata, &groups);
             check(run("write", "1025", "partition"));
             for group in &mut groups {
                 for node in &mut group.nodes {
@@ -3527,6 +3545,7 @@ mod coupled_groups {
             for group in &groups {
                 group.leader();
             }
+            wait_for_write_placement(&metadata, &groups);
             check(run("write", "1025", "healed"));
         } else {
             for group in &mut groups {

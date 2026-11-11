@@ -182,7 +182,7 @@ each tested prefix size and sends 353–360 bytes for the fixed suffix and group
 | Order | Deliverable | Completion evidence |
 |---|---|---|
 | 1 | Compact owned append publication | Fixed-suffix publication and metadata WAL remain bounded at 1, 128 and 4,095 prior extents; digest, lease, ownership and capacity refusal preserve state; every replica recovers |
-| 2 | Compact append planning and catalog preparation | Digest-bound planning is implemented, with inline routes through 32 groups and bounded route batches for wider plans. Reduce and measure remaining prefix hashing and catalog copies; record allocations, CPU and bytes alongside latency at unchanged durability thresholds |
+| 2 | Compact append planning and catalog preparation | Digest-bound planning is implemented, with inline routes through 32 groups and bounded route batches for wider plans. Catalog snapshots and speculative undo now share immutable entries. Profile remaining candidate construction and prefix hashing; record allocations, CPU and bytes alongside latency at unchanged durability thresholds |
 | 3 | Metadata-driven namespace closure | Persist closure work before contacting replicas; retry after leader loss; isolate stale replicas; retain exact repair pins and active-reader protection |
 | 4 | Configurable chunk rollover and client admission | Default 64-MiB storage chunks, configurable through 512 MiB, atomic append boundaries; independently bound 16 active and 100 queued asynchronous requests; reject overload before mutation |
 | 5 | Dynamic membership and movement | Refresh repair discovery; bind registration to node generations; preserve host/rack/disk placement and capacity budgets during interrupted transfer |
@@ -196,6 +196,12 @@ catalog preparation and hashing remain separate work. Keep physical reclamation 
 until metadata-driven closure and stale-node isolation are complete. Aligned
 block storage, compression, distributed EC and tier movement follow these safety
 milestones and require their own durable formats and recovery workloads.
+
+[Immutable catalog sharing](manifest-catalog-sharing.md) records the catalog
+clone allocation measurement, canonical-image checks and exact-entry rollback
+checks. Sharing removes extent-list copies from snapshot capture and undo
+capture; constructing new candidates and serializing checkpoints remain separate
+costs.
 
 ## Cross-service validation workloads
 
@@ -212,6 +218,11 @@ claim distributed storage behavior from an in-memory mock. Track rename and
 license audits separately from runtime correctness and performance evidence.
 
 ## Release gates
+
+After partition recovery, establish metadata write-placement readiness in
+addition to metadata and data quorum leadership. Chunk health reporting is
+asynchronous. The isolated partition workload waits on a bounded read-only write
+plan before issuing each write phase; it never retries unconfirmed publications.
 
 Run compatibility and bounded-message tests, the complete object-connection test
 target, digest failover tests, revision-checked enumeration and journal-backed

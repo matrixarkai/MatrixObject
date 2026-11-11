@@ -224,6 +224,8 @@ fn compact_append_restores_speculative_state_and_waits_for_commit() {
     let (mut service, groups, command) =
         compact_append_fixture(super::super::staged_lease_sweeper::now_ms().unwrap());
     let saved = service.export_snapshot().to_bytes().unwrap();
+    let id = crate::ObjectId::new("bucket", "append");
+    let original_entry = service.object_manifests.entry_arc(&id).unwrap();
     let (request, receiver) = queued(
         MetaRequest::StagedAllocation(command.clone()),
         Instant::now() + Duration::from_secs(10),
@@ -240,6 +242,7 @@ fn compact_append_restores_speculative_state_and_waits_for_commit() {
     )
     .unwrap();
     assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
+    assert!(std::sync::Arc::ptr_eq(&original_entry, &service.object_manifests.entry_arc(&id).unwrap()));
     assert!(matches!(
         receiver.try_recv(),
         Err(mpsc::TryRecvError::Empty)
@@ -261,6 +264,7 @@ fn compact_append_restores_speculative_state_and_waits_for_commit() {
         .staged_allocation(command.allocation_id)
         .is_none());
     assert_eq!(service.nodes["group-0"].committed_bytes, 1);
+    assert!(!std::sync::Arc::ptr_eq(&original_entry, &service.object_manifests.entry_arc(&id).unwrap()));
 }
 
 #[test]

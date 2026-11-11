@@ -26,8 +26,9 @@ A concurrent publication after planning can therefore still refuse the append.
 
 Client and server compute canonical manifest hashes without allocating a full
 serialized manifest. Hashing remains linear in the prefix extent count. Building
-the returned object and validating/persisting publication still involve catalog
-copies. This change bounds planning traffic for a fixed placement and avoids
+the returned object and validating/persisting publication still involve owned
+manifest copies. [Catalog snapshots and undo](manifest-catalog-sharing.md) now
+share immutable entries. Compact planning bounds traffic for a fixed placement and avoids
 cloning the prefix into a planning reply; it does not establish constant append
 CPU, memory cost, physical I/O or native latency.
 
