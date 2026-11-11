@@ -104,6 +104,22 @@ policies. A local embedding example does not exercise these independent service 
 - Use [distributed delivery](docs/distributed-delivery.md) to distinguish local
   multi-process behavior from independent-host availability and capacity claims.
 
+## Object Workflow Map
+
+| Operation | Start with | Boundary |
+|---|---|---|
+| Publish or replace an object | [Object manifests](docs/object-manifests.md) | Data placement and manifest publication are separate steps; generation checks prevent publishing against another version. |
+| Recover an interrupted write | [Staged writes](docs/staged-object-writes.md) and [request identity](docs/staged-request-identity.md) | Retain the prepared handle and exact candidate. A lost reply is not permission to allocate another namespace. |
+| Append a suffix | [Compact planning](docs/compact-append-planning.md) and [staged append](docs/compact-staged-append.md) | The stored prefix is not resent, but validation and hashing can still scale with it. |
+| Read a generation across replacement | [Read-session leases](docs/read-session-leases.md) | Supported fenced reads protect a selected generation until their bounded deadline; direct data-node reads do not acquire this protection. |
+| Repair data on replicas | [Repair worker](docs/star-repair-worker.md) | Repair scheduling and durable replica placement require explicit configuration. |
+| Delete and recover capacity | [Namespace fences](docs/chunk-namespace-fences.md) | Removing visibility or closing a namespace does not reclaim physical storage. Physical reclamation remains disabled. |
+
+These guides describe different API layers. Do not infer network behavior from
+an embedded call, or treat a successful staged allocation, page write, and object
+publication as interchangeable acknowledgements. Configure metadata and data
+services using their own deployment contracts.
+
 ## How storage is laid out
 
 ### Immutable metadata catalogs
