@@ -7,7 +7,7 @@ import "object_manifest.proto";
 // Metadata opcode 92. Permanent handles require release; sessions have bounded deadlines.
 message ManifestRetentionRequest {
   uint32 version = 1;
-  uint32 action = 2; // 1 retain, 2 release, 3 read, 4 list; version 2: 5 open session, 6 renew, 7 expire
+  uint32 action = 2; // 1 retain, 2 release, 3 read, 4 list; version 2: 5 open session, 6 renew, 7 expire; version 3: 8 grant selected manifest
   string bucket = 3;
   string key = 4;
   uint64 generation = 5;
@@ -15,15 +15,17 @@ message ManifestRetentionRequest {
   uint32 limit = 7;
   uint64 ttl_ms = 8;
   uint64 expected_expiry_ms = 9;
+  bytes manifest_sha256 = 10; // version 3 action 8: exact selected manifest
 }
 message ManifestRetentionReply {
   uint32 version = 1;
   RetainedManifest retained = 2;
   repeated uint64 retention_ids = 3;
   bool has_more = 4;
-  uint64 retention_id = 5; // version 2 compact renewal reply
+  uint64 retention_id = 5; // version 2 renewal or version 4 selected grant reply
   uint64 expires_at_ms = 6;
-  uint64 lease_ms = 7; // version 3 reply: relative protection remaining at admission
+  uint64 lease_ms = 7; // version 3 full record or version 4 selected grant
+  bytes manifest_sha256 = 8; // version 4 selected grant acknowledgement
 }
 message ManifestRetentionChange {
   RetainedManifest before = 1;

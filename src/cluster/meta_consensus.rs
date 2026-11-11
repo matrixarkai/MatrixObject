@@ -997,7 +997,7 @@ fn propose_batch(
         if let MetaRequest::ManifestRetention(command) = &request.request {
             if matches!(command.action, 2 | 7) { retention_ids.insert(command.retention_id); }
             if command.action == 6 { renewal_ids.insert(command.retention_id); }
-            if matches!(command.action, 1 | 5) {
+            if matches!(command.action, 1 | 5 | 8) {
                 // Any earlier request can advance the metadata index once.
                 for distance in 1..=PROPOSALS_PER_BATCH as u64 {
                     if let Some(id) = draft.index.checked_add(distance) { retention_ids.insert(id); }
@@ -2434,6 +2434,8 @@ mod tests {
         assert!(service.object_manifests.retained_manifest(first_id + 1).is_some());
         assert_eq!(service.placement_commit_index, first_id + 2);
     }
+
+    include!("compact_generation_batch_tests.rs");
 
     #[test]
     fn compact_read_session_batches_restore_shared_records_before_committing_removal_and_creation() {

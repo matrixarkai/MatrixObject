@@ -35,7 +35,7 @@ impl RetainedManifest {
 pub struct ManifestRetentionRequest {
     #[prost(uint32, tag = "1")]
     pub version: u32,
-    /// 1 retain; 2 release; 3 read; 4 list; 5 open session; 6 renew; 7 expire.
+    /// 1 retain; 2 release; 3 read; 4 list; 5 open session; 6 renew; 7 expire; 8 grant selected manifest.
     #[prost(uint32, tag = "2")]
     pub action: u32,
     #[prost(string, tag = "3")]
@@ -53,6 +53,9 @@ pub struct ManifestRetentionRequest {
     pub ttl_ms: u64,
     #[prost(uint64, tag = "9")]
     pub expected_expiry_ms: u64,
+    /// Version 3 action 8 binds an already selected manifest without returning it.
+    #[prost(bytes, tag = "10")]
+    pub manifest_sha256: Vec<u8>,
 }
 
 impl ManifestRetentionRequest {
@@ -60,6 +63,20 @@ impl ManifestRetentionRequest {
         matches!(self.action, 3 | 4)
     }
     pub(crate) fn validate(&self) -> Result<(), ObjectError> {
+        if self.version == 3 {
+            crate::validate_bucket(&self.bucket)?;
+            crate::validate_key(&self.key)?;
+            if self.action != 8 || self.generation == 0 || self.retention_id != 0
+                || self.limit != 0 || self.expected_expiry_ms != 0
+                || !(1000..=3_600_000).contains(&self.ttl_ms)
+                || self.manifest_sha256.len() != 32 {
+                return Err(invalid("invalid selected manifest grant request"));
+            }
+            return Ok(());
+        }
+        if !self.manifest_sha256.is_empty() {
+            return Err(invalid("manifest digest requires version 3"));
+        }
         if self.version == 2 {
             if !matches!(self.action, 5..=7)
                 || (self.action != 7 && !(1000..=3_600_000).contains(&self.ttl_ms))
@@ -130,18 +147,25 @@ pub struct ManifestRetentionReply {
     /// Relative protection window measured by the metadata server.
     #[prost(uint64, tag = "7")]
     pub lease_ms: u64,
+    /// Version 4 acknowledges the exact selected manifest digest.
+    #[prost(bytes, tag = "8")]
+    pub manifest_sha256: Vec<u8>,
 }
 
 impl ManifestRetentionReply {
     pub(crate) fn from_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
         let value: Self = decode(bytes, 1024 * 1024 + 128)?;
-        if !((value.version == 1 && value.retention_id == 0 && value.expires_at_ms == 0 && value.lease_ms == 0
+        if !((value.version == 1 && value.manifest_sha256.is_empty() && value.retention_id == 0 && value.expires_at_ms == 0 && value.lease_ms == 0
                 && value.retained.as_ref().is_none_or(|record| record.expires_at_ms == 0))
-            || (value.version == 2 && value.retention_id != 0 && value.expires_at_ms != 0
+            || (value.version == 2 && value.manifest_sha256.is_empty() && value.retention_id != 0 && value.expires_at_ms != 0
                 && value.lease_ms == 0 && value.retained.is_none() && value.retention_ids.is_empty() && !value.has_more)
-            || (value.version == 3 && value.retention_id == 0 && value.expires_at_ms == 0
+            || (value.version == 3 && value.manifest_sha256.is_empty() && value.retention_id == 0 && value.expires_at_ms == 0
                 && (1..=3_600_000).contains(&value.lease_ms)
                 && value.retained.as_ref().is_some_and(|record| record.expires_at_ms != 0)
+                && value.retention_ids.is_empty() && !value.has_more)
+            || (value.version == 4 && value.retention_id != 0 && value.expires_at_ms != 0
+                && (1000..=3_600_000).contains(&value.lease_ms)
+                && value.manifest_sha256.len() == 32 && value.retained.is_none()
                 && value.retention_ids.is_empty() && !value.has_more))
             || value.retention_ids.len() > 32
             || value.retention_ids.contains(&0)
@@ -279,5 +303,50 @@ mod tests {
         let mut wrong = reply;
         wrong.retention_ids = vec![9, 4];
         assert!(ManifestRetentionReply::from_payload(&wrong.encode_to_vec()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod compact_selected_grants {
+    use super::*;
+    #[test]
+    fn wire_versions_require_complete_exclusive_bindings() {
+        let request = ManifestRetentionRequest { version: 3, action: 8, bucket: "bucket".into(),
+            key: "object".into(), generation: 1, ttl_ms: 1000, manifest_sha256: vec![7; 32],
+            ..Default::default() };
+        assert_eq!(ManifestRetentionRequest::from_payload(&request.encode_to_vec()).unwrap(), request);
+        let invalid = [
+            ManifestRetentionRequest { version: 2, ..request.clone() },
+            ManifestRetentionRequest { action: 5, ..request.clone() },
+            ManifestRetentionRequest { generation: 0, ..request.clone() },
+            ManifestRetentionRequest { retention_id: 1, ..request.clone() },
+            ManifestRetentionRequest { expected_expiry_ms: 1, ..request.clone() },
+            ManifestRetentionRequest { ttl_ms: 999, ..request.clone() },
+            ManifestRetentionRequest { ttl_ms: 3_600_001, ..request.clone() },
+            ManifestRetentionRequest { limit: 1, ..request.clone() },
+            ManifestRetentionRequest { manifest_sha256: vec![7; 31], ..request.clone() },
+        ];
+        for value in invalid { assert!(value.validate().is_err()); }
+        let reply = ManifestRetentionReply { version: 4, retention_id: u64::MAX,
+            expires_at_ms: u64::MAX, lease_ms: 3_600_000, manifest_sha256: vec![7; 32],
+            ..Default::default() };
+        assert_eq!(reply.encoded_len(), 63);
+        assert_eq!(ManifestRetentionReply::from_payload(&reply.encode_to_vec()).unwrap(), reply);
+        let invalid = [
+            ManifestRetentionReply { version: 3, ..reply.clone() },
+            ManifestRetentionReply { retention_id: 0, ..reply.clone() },
+            ManifestRetentionReply { expires_at_ms: 0, ..reply.clone() },
+            ManifestRetentionReply { lease_ms: 999, ..reply.clone() },
+            ManifestRetentionReply { lease_ms: 3_600_001, ..reply.clone() },
+            ManifestRetentionReply { manifest_sha256: vec![7; 31], ..reply.clone() },
+            ManifestRetentionReply { has_more: true, ..reply.clone() },
+            ManifestRetentionReply { retention_ids: vec![1], ..reply.clone() },
+        ];
+        for value in invalid {
+            assert!(ManifestRetentionReply::from_payload(&value.encode_to_vec()).is_err());
+        }
+        let mut bytes = reply.encode_to_vec();
+        bytes.extend([0xa0, 0x06, 1]);
+        assert!(ManifestRetentionReply::from_payload(&bytes).is_err());
     }
 }

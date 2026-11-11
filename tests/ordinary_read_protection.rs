@@ -6,7 +6,7 @@ use matrixobjectstore_rs::{
         MetaClientOptions, MetaNodeOptions, MetaNodeServer, MetaNodeShutdown, RemoteMetaClient,
         ReplicaClientOptions,
     },
-    manifest_retention::ManifestRetentionRequest,
+    manifest_retention::{ManifestRetentionReply, ManifestRetentionRequest},
     object_manifest::{ManifestOutcome, ObjectManifest},
 };
 use prost::Message;
@@ -129,12 +129,19 @@ fn ordinary_reads_hold_selected_generation_across_delete_and_release() {
             reader.write_all(&frame(&mut upstream)).unwrap();
             let open = frame(&mut reader);
             let request = ManifestRetentionRequest::decode(&open[6..]).unwrap();
-            assert_eq!(request.action, 5);
+            assert_eq!(request.action, 8);
+            assert_eq!(request.version, 3);
+            assert_eq!(request.manifest_sha256.len(), 32);
             assert_eq!(request.generation, 1);
             assert_eq!(request.ttl_ms, 60_000);
             upstream.write_all(&open).unwrap();
             let reply = frame(&mut upstream);
             assert_eq!(reply[1], 0);
+            assert!(reply.len() <= 6 + 63);
+            let grant = ManifestRetentionReply::decode(&reply[6..]).unwrap();
+            assert_eq!(grant.version, 4);
+            assert!(grant.retained.is_none());
+            assert_eq!(grant.manifest_sha256, request.manifest_sha256);
             committed.send(()).unwrap();
             resumed.recv_timeout(Duration::from_secs(10)).unwrap();
             reader.write_all(&reply).unwrap();
@@ -238,7 +245,7 @@ fn batch_conflict_releases_prior_grants_and_returns_no_result() {
             let request = frame(&mut reader);
             if index == 2 {
                 let command = ManifestRetentionRequest::decode(&request[6..]).unwrap();
-                assert_eq!(command.action, 5);
+                assert_eq!(command.action, 8);
                 assert_eq!(command.key, "other");
             }
             if index == 3 {
@@ -326,7 +333,7 @@ fn lost_acquisition_reply_does_not_replay_a_grant() {
             ManifestRetentionRequest::decode(&request[6..])
                 .unwrap()
                 .action,
-            5
+            8
         );
         upstream.write_all(&request).unwrap();
         assert_eq!(frame(&mut upstream)[1], 0);

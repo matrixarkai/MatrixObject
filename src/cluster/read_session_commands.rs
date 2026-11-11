@@ -32,7 +32,7 @@ pub(super) fn prepare_at(
     now: u64,
 ) -> Result<(PlacementOutcome, MetaReply), ObjectError> {
     command.validate()?;
-    if command.version != 2 || now == 0 {
+    if !matches!(command.version, 2 | 3) || now == 0 {
         return Err(refused("read session requires a valid metadata clock"));
     }
     let mut outcome = PlacementOutcome::capture(service, Vec::new(), None)?;
@@ -41,7 +41,7 @@ pub(super) fn prepare_at(
         ..Default::default()
     };
     match command.action {
-        5 => {
+        5 | 8 => {
             let manifest = service
                 .object_manifests
                 .get(&super::meta_message::object_id(
@@ -64,15 +64,26 @@ pub(super) fn prepare_at(
                 expires_at_ms: now
                     .checked_add(command.ttl_ms)
                     .ok_or_else(|| refused("read session deadline overflow"))?,
-                manifest_sha256: crate::read_session_outcome::manifest_sha256(manifest)?,
+                manifest_sha256: if command.action == 8 {
+                    command.manifest_sha256.clone()
+                } else {
+                    crate::read_session_outcome::manifest_sha256(manifest)?
+                },
             };
             service.object_manifests.check_read_session_open(&open)?;
-            reply.retained = Some(RetainedManifest {
-                retention_id: open.retention_id,
-                manifest: Some(manifest.clone()),
-                expires_at_ms: open.expires_at_ms,
-            });
-            reply.version = 3;
+            if command.action == 8 {
+                reply.version = 4;
+                reply.retention_id = open.retention_id;
+                reply.expires_at_ms = open.expires_at_ms;
+                reply.manifest_sha256 = open.manifest_sha256.clone();
+            } else {
+                reply.retained = Some(RetainedManifest {
+                    retention_id: open.retention_id,
+                    manifest: Some(manifest.clone()),
+                    expires_at_ms: open.expires_at_ms,
+                });
+                reply.version = 3;
+            }
             reply.lease_ms = command.ttl_ms;
             outcome.version = 9;
             outcome.read_session_open = Some(open);
@@ -163,6 +174,7 @@ pub(super) fn expired(service: &MatrixMetaService, now: u64) -> Vec<MetaRequest>
 mod tests {
     use super::*;
     use crate::object_manifest::{ObjectExtent, ObjectManifest};
+    include!("compact_generation_grant_tests.rs");
     #[test]
     fn compact_read_session_decisions_reject_changed_bindings_and_preserve_captured_snapshots() {
         let mut service = fixture(1);
