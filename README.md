@@ -88,6 +88,22 @@ by itself publish an object, and deleting metadata does not immediately return p
 space. Use the manifest, lease, and repair guides above when choosing recovery and capacity
 policies. A local embedding example does not exercise these independent service boundaries.
 
+## Deployment and Upgrade Checklist
+
+- Choose metadata and chunk consensus features explicitly, then configure their
+  independent processes, identities, ports, and durable directories. Building all
+  binaries is not a cluster deployment.
+- Preserve metadata checkpoints and journals together with the data replicas
+  they describe. An object API process alone is not a backup of the store.
+- Upgrade protocol consumers before enabling compact append publication or
+  nonempty namespace fences. Consult the linked protocol guides for refused
+  operations rather than assuming an older peer will transparently downgrade.
+- Budget separately for staged bytes, published objects, retained reader
+  generations, and repair work. A successful delete is not proof that physical
+  storage has been reclaimed; physical reclamation remains disabled.
+- Use [distributed delivery](docs/distributed-delivery.md) to distinguish local
+  multi-process behavior from independent-host availability and capacity claims.
+
 ## How storage is laid out
 
 ### Immutable metadata catalogs
