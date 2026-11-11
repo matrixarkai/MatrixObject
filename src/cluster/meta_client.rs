@@ -1261,7 +1261,7 @@ impl RemoteMetaClient {
         -> Result<crate::staged_allocation::StagedAllocationReply, ObjectError> {
         request.validate()?;
         match self.call(MetaRequest::StagedAllocation(request))? {
-            MetaReply::StagedAllocation(reply) => Ok(reply),
+            MetaReply::StagedAllocation(reply) if reply.version != 3 => Ok(reply),
             other => Err(unexpected_reply("a staged allocation result", &other)),
         }
     }
@@ -1727,6 +1727,36 @@ impl RemoteMetaClient {
     ) {
         let (result, unadmitted, _) = self.publish_preserving_outcome(outcome, None, update_time_ms);
         (result, unadmitted)
+    }
+
+    /// Publish a digest-bound suffix. Upgrade all metadata voters and journal readers before use.
+    pub fn publish_staged_append_compact(&mut self, allocation_id: u64,
+        outcome: crate::object_manifest::ManifestOutcome, update_time_ms: u64)
+        -> Result<crate::object_manifest::ObjectManifest, ObjectError> {
+        self.publish_compact_append_preserving_outcome(outcome, allocation_id, update_time_ms).0
+    }
+
+    pub(super) fn publish_compact_append_preserving_outcome(&mut self,
+        outcome: crate::object_manifest::ManifestOutcome, allocation_id: u64, update_time_ms: u64)
+        -> (Result<crate::object_manifest::ObjectManifest, ObjectError>, bool,
+            crate::object_manifest::ManifestOutcome) {
+        let append = match crate::manifest_append::ManifestAppend::decide(&outcome) {
+            Ok(value) => value, Err(error) => return (Err(error), true, outcome),
+        };
+        let digest = append.after_sha256.clone();
+        let command = crate::staged_allocation::StagedAllocationRequest {
+            version: 4, action: 11, allocation_id, manifest_append: Some(append), update_time_ms,
+            ..Default::default()
+        };
+        if let Err(error) = command.validate() { return (Err(error), true, outcome); }
+        let (reply, unadmitted) = self.try_call_admission(&MetaRequest::StagedAllocation(command));
+        let result = reply.into_result().and_then(|reply| match reply {
+            MetaReply::StagedAllocation(value) if value.version == 3
+                && value.committed_allocation_id == allocation_id && value.manifest_sha256 == digest =>
+                Ok(outcome.after.as_ref().unwrap().clone()),
+            _ => Err(ObjectError::Corruption("unexpected compact append acknowledgement".into())),
+        });
+        (result, unadmitted, outcome)
     }
 
     /// Keep the original outcome for uncertain publication without cloning its manifests.

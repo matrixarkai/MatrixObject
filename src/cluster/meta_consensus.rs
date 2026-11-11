@@ -957,6 +957,16 @@ fn propose_batch(
                     }
                 }
             }
+            MetaRequest::StagedAllocation(command) if command.action == 11 => {
+                if let Some(append) = &command.manifest_append {
+                    let id = crate::ObjectId::new(append.bucket.clone(), append.key.clone());
+                    if let Some(current) = service.object_manifests.get(&id) {
+                        nodes.extend(current.extents.iter().map(|extent| extent.group.clone()));
+                    }
+                    nodes.extend(append.suffix.iter().map(|extent| extent.group.clone()));
+                    objects.insert(id);
+                }
+            }
             MetaRequest::PublishManifest { outcome, .. } => {
                 for manifest in outcome.before.iter().chain(outcome.after.iter()) {
                     nodes.extend(manifest.extents.iter().map(|e| e.group.clone()));
@@ -1014,7 +1024,7 @@ fn propose_batch(
     let mut staged_ids = BTreeSet::new();
     for request in queued.iter().take(PROPOSALS_PER_BATCH) {
         if let MetaRequest::StagedAllocation(command) = &request.request {
-            if matches!(command.action, 3 | 4 | 8 | 9) { staged_ids.insert(command.allocation_id); }
+            if matches!(command.action, 3 | 4 | 8 | 9 | 11) { staged_ids.insert(command.allocation_id); }
             if command.action == 1 {
                 for distance in 1..=PROPOSALS_PER_BATCH as u64 {
                     if let Some(id) = draft.index.checked_add(distance) { staged_ids.insert(id); }
@@ -2436,6 +2446,7 @@ mod tests {
     }
 
     include!("compact_generation_batch_tests.rs");
+    include!("compact_append_command_tests.rs");
 
     #[test]
     fn compact_read_session_batches_restore_shared_records_before_committing_removal_and_creation() {

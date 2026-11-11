@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject;
+import "object_manifest.proto";
+message ManifestAppend {
+  string bucket = 1;
+  string key = 2;
+  uint64 before_generation = 3;
+  uint64 before_length = 4;
+  uint32 before_extents = 5;
+  bytes before_sha256 = 6;
+  repeated ObjectExtent suffix = 7;
+  uint64 after_length = 8;
+  bytes after_sha256 = 9;
+}

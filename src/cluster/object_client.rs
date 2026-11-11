@@ -687,7 +687,7 @@ impl RemoteMetaClient {
         self.with_operation_deadline(options.replica.deadline, |client| {
             let mut bounded = options.clone();
             bounded.replica.deadline = client.operation_deadline();
-            client.write_object_inner(bucket, key, expected, data, &bounded, false, None)
+            client.write_object_inner(bucket, key, expected, data, &bounded, false, None, false)
         })
     }
 
@@ -746,7 +746,7 @@ impl RemoteMetaClient {
             bounded.replica.deadline = client.operation_deadline();
             let bucket = expected.bucket.clone();
             let key = expected.key.clone();
-            client.write_object_inner(&bucket, &key, Some(expected), data, &bounded, true, None)
+            client.write_object_inner(&bucket, &key, Some(expected), data, &bounded, true, None, false)
         })
     }
 
@@ -759,7 +759,22 @@ impl RemoteMetaClient {
             let mut bounded = options.clone();
             bounded.replica.deadline = client.operation_deadline();
             client.write_object_inner(&allocation.bucket, &allocation.key, expected, data, &bounded,
-                allocation.append, Some(allocation))
+                allocation.append, Some(allocation), false)
+        })
+    }
+
+    /// Append using bounded publication metadata. All metadata binaries must support version 11 outcomes.
+    pub fn append_staged_object_compact(&mut self, allocation: &crate::staged_allocation::StagedAllocation,
+        expected: ObjectManifest, data: &[u8], options: &ObjectWriteOptions)
+        -> Result<ObjectManifest, ObjectWriteFailure> {
+        if !allocation.append || data.is_empty() {
+            return Err(before(ObjectError::InvalidArgument("compact publication requires a nonempty staged append".into())));
+        }
+        self.with_operation_deadline(options.replica.deadline, |client| {
+            let mut bounded = options.clone();
+            bounded.replica.deadline = client.operation_deadline();
+            client.write_object_inner(&allocation.bucket, &allocation.key, Some(expected), data,
+                &bounded, true, Some(allocation), true)
         })
     }
 
@@ -785,6 +800,7 @@ impl RemoteMetaClient {
         options: &ObjectWriteOptions,
         append: bool,
         owned: Option<&crate::staged_allocation::StagedAllocation>,
+        compact: bool,
     ) -> Result<ObjectManifest, ObjectWriteFailure> {
         self.check_operation_deadline().map_err(before)?;
         let (pages, generation) =
@@ -1025,8 +1041,12 @@ impl RemoteMetaClient {
             }
         }
         self.check_operation_deadline().map_err(&staged_error)?;
-        let (publication, unadmitted, outcome) = self.publish_preserving_outcome(
-            outcome, owned.map(|allocation| allocation.allocation_id), options.update_time_ms);
+        let (publication, unadmitted, outcome) = if compact {
+            self.publish_compact_append_preserving_outcome(outcome,
+                owned.expect("compact append requires owned staging").allocation_id, options.update_time_ms)
+        } else {
+            self.publish_preserving_outcome(outcome, owned.map(|allocation| allocation.allocation_id), options.update_time_ms)
+        };
         match publication {
             Ok(value) => Ok(value),
             Err(error) if unadmitted => Err(staged_error(error)),
@@ -1053,6 +1073,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::time::{Duration, Instant};
+    include!("compact_append_client_tests.rs");
     fn accept(listener: &TcpListener) -> TcpStream {
         let end = Instant::now() + Duration::from_secs(5);
         loop {

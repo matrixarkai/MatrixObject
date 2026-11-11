@@ -64,21 +64,35 @@ time, and the host is shared. The emitted elapsed time is not a native latency
 benchmark. Physical device write amplification, CPU, allocations, checkpoint
 interference and repair interference require separate measurements.
 
-## Next implementation
+## Compact publication release sample
 
-Add a compact staged-append publication that binds the prior generation and
-canonical manifest digest, suffix extent list and resulting digest. Preserve
-the exact prefix, active ownership, expiry, capacity accounting and atomic
-ownership consumption. Persist a bounded binary protobuf decision and acknowledge
-the resulting identity without returning the full manifest again.
+The opt-in [compact staged append protocol](compact-staged-append.md) binds the
+prior generation and canonical digest, immutable suffix and resulting digest.
+It persists a version 11 binary protobuf decision and acknowledges the committed
+allocation and digest. All metadata voters and recovery readers must be upgraded
+before activation. Existing write methods continue to use full publication.
 
-Write planning must also confirm the expected generation and digest without
-resending the complete prefix. Preserve old request and durable-format readers,
-and define activation for mixed-version metadata voters before enabling a new
-durable decision. Validate malformed or stale requests, lost replies, speculative
-rollback, mixed-history restart, failover and every replica's resulting bytes.
-The current workload establishes the cost and recovery checks; it does not
-implement this compact publication path.
+The same local WSL release workload, with the same 4-KiB pages and three-member
+durability thresholds, produced the following observed bytes. Every case had one
+publication attempt and passed complete six-process recovery and replica reads.
+
+| Prefix extents | Metadata request bytes | Metadata reply bytes | Publication frame bytes | Metadata WAL growth | Data journal growth |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 330 | 604 | 183 | 2,226 | 12,552 |
+| 128 | 334 | 9,747 | 187 | 2,256 | 12,552 |
+| 4,095 | 337 | 302,923 | 190 | 2,283 | 12,552 |
+
+At 4,095 prior extents, publication falls from 604,919 to 190 bytes and total
+metadata WAL growth from 1,816,467 to 2,283 bytes. Small bounded size differences
+between rows come from encoded integers and record lengths. Data writes retain
+the same durable suffix cost. These counts exclude peer traffic and physical
+filesystem/device amplification, as in the original measurement window.
+
+Planning still returns the complete prior manifest, accounting for the growing
+reply column. Prefix hashing and catalog preparation still scale with extent
+count. Compact planning and catalog work remain the next implementation; this
+measurement does not establish constant append CPU, allocations, total network
+traffic or improved native latency.
 
 ## Reproduce
 

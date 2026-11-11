@@ -153,7 +153,7 @@ pub struct StagedAllocationChange {
 pub struct StagedAllocationRequest {
     #[prost(uint32, tag = "1")]
     pub version: u32,
-    /// 1 allocate, 2 read, 3 abort, 4 publish, 5 list, 6 fence, 7 read fence, 8 renew, 9 expire.
+    /// 1 allocate, 2 read, 3 abort, 4 publish, 5 list, 6 fence, 7 read fence, 8 renew, 9 expire, 10 cursor, 11 compact append.
     #[prost(uint32, tag = "2")]
     pub action: u32,
     #[prost(uint64, tag = "3")]
@@ -180,6 +180,8 @@ pub struct StagedAllocationRequest {
     pub expected_expiry_ms: u64,
     #[prost(bytes = "vec", tag = "14")]
     pub request_nonce: Vec<u8>,
+    #[prost(message, optional, tag = "15")]
+    pub manifest_append: Option<crate::manifest_append::ManifestAppend>,
 }
 
 impl StagedAllocationRequest {
@@ -187,6 +189,16 @@ impl StagedAllocationRequest {
         matches!(self.action, 2 | 5 | 7 | 10)
     }
     pub(crate) fn validate(&self) -> Result<(), ObjectError> {
+        if self.version == 4 {
+            if self.action != 11 || self.allocation_id == 0 || self.page_count != 0
+                || !self.bucket.is_empty() || !self.key.is_empty() || self.expected_generation != 0
+                || self.append || self.outcome.is_some() || self.limit != 0 || self.ttl_ms != 0
+                || self.expected_expiry_ms != 0 || !self.request_nonce.is_empty() {
+                return Err(invalid("invalid compact staged append request"));
+            }
+            return self.manifest_append.as_ref().ok_or_else(|| invalid("compact append missing"))?.validate();
+        }
+        if self.manifest_append.is_some() { return Err(invalid("compact append requires version 4")); }
         if self.version == 3 {
             if self.action == 1 {
                 StagedAllocation {
@@ -310,10 +322,25 @@ pub struct StagedAllocationReply {
     pub publication_fence: u64,
     #[prost(uint64, tag = "7")]
     pub allocation_cursor: u64,
+    #[prost(uint64, tag = "8")]
+    pub committed_allocation_id: u64,
+    #[prost(bytes, tag = "9")]
+    pub manifest_sha256: Vec<u8>,
 }
 impl StagedAllocationReply {
     pub(crate) fn from_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
         let value: Self = decode(bytes, 1024 * 1024 + 8192)?;
+        if value.version == 3 {
+            if value.committed_allocation_id == 0 || value.manifest_sha256.len() != 32
+                || value.allocation.is_some() || value.manifest.is_some() || !value.allocation_ids.is_empty()
+                || value.has_more || value.publication_fence != 0 || value.allocation_cursor != 0 {
+                return Err(invalid("invalid compact staged append acknowledgement"));
+            }
+            return Ok(value);
+        }
+        if value.committed_allocation_id != 0 || !value.manifest_sha256.is_empty() {
+            return Err(invalid("compact acknowledgement requires version 3"));
+        }
         if !matches!((value.version, value.allocation_cursor), (1, 0) | (2, 1..))
             || value.allocation_ids.len() > 32
             || value.allocation_ids.contains(&0)

@@ -3,6 +3,7 @@
 syntax = "proto3";
 package matrixobject.outcome.v1;
 import "object_manifest.proto";
+import "manifest_append.proto";
 import "manifest_retention.proto";
 import "staged_allocation.proto";
 import "manifest_copy.proto";
@@ -41,4 +42,5 @@ message PlacementOutcome {
   matrixobject.RetentionDeadlineChange retention_deadline = 11; // version 8, compact read-session renewal
   matrixobject.ReadSessionOpen read_session_open = 12; // version 9
   matrixobject.ReadSessionRemoval read_session_removal = 13; // version 10
+  matrixobject.ManifestAppend manifest_append = 14; // version 11, explicit staged append
 }

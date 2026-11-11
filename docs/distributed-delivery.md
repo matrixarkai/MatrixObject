@@ -166,11 +166,34 @@ an owned, fenced append through three metadata voters and three Star replicas.
 A fixed 4-KiB suffix added 12,552 bytes to the three data journals at every tested
 prefix size. At 4,095 prior extents, publication sent 604,919 bytes and the three
 metadata WALs grew by 1,816,467 bytes. Full manifests in publication, its reply
-and planning remain an amplification cost. Compact publication and planning
-require explicit protocol and durable-format activation, ownership/CAS guards,
-mixed-history recovery and failover validation.
+and planning explain that original amplification cost. Opt-in compact publication
+now reduces those last-case publication and WAL counts to 190 and 2,283 bytes,
+respectively, with the same suffix data-journal cost. It requires all metadata
+voters and journal readers to support the version 11 outcome before use.
+Planning replies, prefix hashing and catalog copies remain proportional to the
+prefix. The protocol includes ownership/CAS guards, mixed-history recovery and
+metadata leader-loss validation.
 
-## Cross-service validation
+## Next implementation milestones
+
+| Order | Deliverable | Completion evidence |
+|---|---|---|
+| 1 | Compact owned append publication | Fixed-suffix publication and metadata WAL remain bounded at 1, 128 and 4,095 prior extents; digest, lease, ownership and capacity refusal preserve state; every replica recovers |
+| 2 | Compact append planning and catalog preparation | Exact prior-generation selection without returning or cloning the whole prefix; record allocations, CPU and bytes alongside latency at unchanged durability thresholds |
+| 3 | Metadata-driven namespace closure | Persist closure work before contacting replicas; retry after leader loss; isolate stale replicas; retain exact repair pins and active-reader protection |
+| 4 | Configurable chunk rollover and client admission | Default 64-MiB storage chunks, configurable through 512 MiB, atomic append boundaries; independently bound 16 active and 100 queued asynchronous requests; reject overload before mutation |
+| 5 | Dynamic membership and movement | Refresh repair discovery; bind registration to node generations; preserve host/rack/disk placement and capacity budgets during interrupted transfer |
+| 6 | Physical reclamation and API expansion | Recover interrupted deletion without reclaiming retained or copied data; add conditional delete, multipart and version access through remote clients with restart tests |
+| 7 | Cross-service append and foreground performance | TemporalStore local and replicated binary outcomes; report logical, network and durable bytes, CPU, allocations and latency with concurrent repair and checkpoints |
+
+[Compact staged append publication](compact-staged-append.md) implements the
+explicit publication protocol for the first milestone. Full-prefix planning and
+catalog preparation remain separate work. Keep physical reclamation disabled
+until metadata-driven closure and stale-node isolation are complete. Aligned
+block storage, compression, distributed EC and tier movement follow these safety
+milestones and require their own durable formats and recovery workloads.
+
+## Cross-service validation workloads
 
 For TemporalStore, record one append's logical payload, encoded outcome,
 object-store suffix bytes, network transfer and durable journal growth. Repeat

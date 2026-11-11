@@ -254,7 +254,7 @@ fn verify_replicas(fixture: &Fixture, manifest: &ObjectManifest, expected: &[u8]
     }
 }
 
-fn run(prefix_pages: &[usize], page_bytes: usize) {
+fn run(prefix_pages: &[usize], page_bytes: usize, compact: bool) {
     let mut fixture = Fixture::new();
     let mut client = fixture.client();
     let options = ObjectWriteOptions {
@@ -280,9 +280,11 @@ fn run(prefix_pages: &[usize], page_bytes: usize) {
         let suffix = vec![0x7b; page_bytes];
         let started = Instant::now();
         let allocation = fixture.reserve(&mut client, &key, Some(base.generation), 1, true);
-        let after = client
-            .write_staged_object(&allocation, Some(base.clone()), &suffix, &options)
-            .unwrap();
+        let after = if compact {
+            client.append_staged_object_compact(&allocation, base.clone(), &suffix, &options)
+        } else {
+            client.write_staged_object(&allocation, Some(base.clone()), &suffix, &options)
+        }.unwrap();
         let elapsed = started.elapsed();
         fixture.settle();
         let wire = fixture.wire().since(before_wire);
@@ -294,14 +296,24 @@ fn run(prefix_pages: &[usize], page_bytes: usize) {
             .map(|(after, before)| after.checked_sub(before).unwrap())
             .collect::<Vec<_>>();
         let outcome = ManifestOutcome::decide(Some(base.clone()), after.clone()).unwrap();
-        let request = StagedAllocationRequest {
+        let mut request = StagedAllocationRequest {
             version: 1,
             action: 4,
             allocation_id: allocation.allocation_id,
             outcome: Some(outcome.clone()),
             ..Default::default()
         };
+        if compact {
+            request.version = 4;
+            request.action = 11;
+            request.manifest_append = Some(matrixobjectstore_rs::manifest_append::ManifestAppend::decide(&outcome).unwrap());
+            request.outcome = None;
+        }
         let publication_frame = 6 + request.encoded_len();
+        if compact {
+            assert!(publication_frame < 256, "compact publication copied the prefix");
+            assert!(wal < 6000, "compact WAL copied the prefix: {wal}");
+        }
         assert!(wire.publications >= 1);
         assert_eq!(
             wire.publication_bytes,
@@ -333,7 +345,7 @@ fn run(prefix_pages: &[usize], page_bytes: usize) {
             assert_eq!(value.data, suffix);
             assert_eq!(value.write_sequence, extent.write_sequence);
         }
-        println!("STAR_APPEND_COST prefix_pages={pages} prefix_bytes={} suffix_bytes={} metadata_request_bytes={} metadata_reply_bytes={} publication_frame_bytes={publication_frame} publication_attempts={} manifest_outcome_bytes={} metadata_wal_bytes={wal} data_journal_bytes={} elapsed_us={}",
+        println!("STAR_APPEND_COST compact={compact} prefix_pages={pages} prefix_bytes={} suffix_bytes={} metadata_request_bytes={} metadata_reply_bytes={} publication_frame_bytes={publication_frame} publication_attempts={} manifest_outcome_bytes={} metadata_wal_bytes={wal} data_journal_bytes={} elapsed_us={}",
             prefix.len(), suffix.len(), wire.requests, wire.replies, wire.publications,
             outcome.encoded_len(), data.iter().sum::<u64>(), elapsed.as_micros());
         let mut expected = prefix;
@@ -370,10 +382,43 @@ fn run(prefix_pages: &[usize], page_bytes: usize) {
 
 #[test]
 fn owned_append_keeps_data_writes_bounded_and_recovers_all_replicas() {
-    run(&[1, 32], 128);
+    run(&[1, 32], 128, false);
 }
 #[test]
 #[ignore = "explicit local Star append amplification measurement"]
 fn measure_one_star_append_as_prefix_grows() {
-    run(&[1, 128, 4095], 4096);
+    run(&[1, 128, 4095], 4096, false);
+}
+
+#[test]
+fn compact_owned_append_keeps_publication_bounded_and_recovers_all_replicas() {
+    run(&[1, 32], 128, true);
+}
+#[test]
+#[ignore = "explicit local compact append measurement"]
+fn measure_compact_star_append_as_prefix_grows() {
+    run(&[1, 128, 4095], 4096, true);
+}
+
+#[test]
+fn compact_append_publishes_after_metadata_leader_loss_and_recovers() {
+    let mut fixture = Fixture::new();
+    let mut client = fixture.client();
+    let options = ObjectWriteOptions { page_bytes: 128, ..Default::default() };
+    let allocation = fixture.reserve(&mut client, "failover", None, 1, false);
+    let base = client.write_staged_object(&allocation, None, b"prefix", &options).unwrap();
+    let allocation = fixture.reserve(&mut client, "failover", Some(base.generation), 1, true);
+    drop(client);
+    let old_leader = fixture.metadata.leader();
+    fixture.metadata.kill(old_leader);
+    fixture.metadata.leader();
+    let after = fixture.client().append_staged_object_compact(&allocation, base, b"suffix", &options).unwrap();
+    verify_replicas(&fixture, &after, b"prefixsuffix");
+    fixture.metadata.start(old_leader);
+    fixture.restart();
+    let mut client = fixture.client();
+    assert_eq!(client.read_object("append", "failover", 128, &options.replica).unwrap(),
+        (after.clone(), b"prefixsuffix".to_vec()));
+    verify_replicas(&fixture, &after, b"prefixsuffix");
+    assert!(client.read_staged_allocation(allocation.allocation_id).is_err());
 }
