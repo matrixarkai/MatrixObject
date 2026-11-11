@@ -914,6 +914,7 @@ pub(super) fn decide_allocation(
         retention_deadline: None,
         read_session_open: None,
         read_session_removal: None,
+            manifest_append: None,
     };
     outcome.to_payload()?;
     Ok((outcome, reply))

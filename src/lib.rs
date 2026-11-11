@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 pub mod object_manifest;
+pub mod manifest_append;
 pub mod manifest_retention;
 pub mod read_session_outcome;
 pub mod staged_allocation;

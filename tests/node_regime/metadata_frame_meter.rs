@@ -150,7 +150,7 @@ impl FrameMeter {
                                 if request[1] == MetaRequestCode::StagedAllocation as u8 {
                                     let command = StagedAllocationRequest::decode(&request[6..])
                                         .map_err(|_| io::ErrorKind::InvalidData)?;
-                                    if command.action == 4 {
+                                    if matches!(command.action, 4 | 11) {
                                         counters.publications.fetch_add(1, Ordering::SeqCst);
                                         counters
                                             .publication_bytes

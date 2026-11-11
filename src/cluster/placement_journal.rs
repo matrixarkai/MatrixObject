@@ -150,6 +150,7 @@ mod tests {
             retention_deadline: None,
             read_session_open: None,
             read_session_removal: None,
+            manifest_append: None,
         };
         let second = PlacementOutcome {
             before_index: base + 1,

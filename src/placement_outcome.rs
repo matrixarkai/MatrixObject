@@ -133,6 +133,8 @@ pub struct PlacementOutcome {
     pub read_session_open: Option<crate::read_session_outcome::ReadSessionOpen>,
     #[prost(message, optional, tag = "13")]
     pub read_session_removal: Option<crate::read_session_outcome::ReadSessionRemoval>,
+    #[prost(message, optional, tag = "14")]
+    pub manifest_append: Option<crate::manifest_append::ManifestAppend>,
 }
 fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
@@ -167,6 +169,41 @@ fn matches_manifest(placement: &PlacementValue, manifest: &ObjectManifest) -> bo
 }
 impl PlacementOutcome {
     fn validate_manifest_binding(&self) -> Result<(), ObjectError> {
+        if let Some(append) = &self.manifest_append {
+            append.validate()?;
+            let record = self.staging.as_ref().and_then(|change|
+                if change.after.is_none() { change.before.as_ref() } else { None })
+                .ok_or_else(|| invalid("compact append must consume staged ownership"))?;
+            record.validate()?;
+            if self.version != 11 || self.before_index.checked_add(1) != Some(self.after_index)
+                || self.manifest.is_some() || self.retention.is_some() || self.retention_deadline.is_some()
+                || self.publication_fence.is_some() || self.copy_source.is_some()
+                || self.read_session_open.is_some() || self.read_session_removal.is_some()
+                || !record.append || record.bucket != append.bucket || record.key != append.key
+                || record.expected_generation != append.before_generation
+                || record.allocation_id > self.before_index || self.placements.len() != 1 {
+                return Err(invalid("invalid compact append outcome binding"));
+            }
+            let placement = &self.placements[0];
+            let before = placement.before.as_ref().ok_or_else(|| invalid("compact append lacks prior placement"))?;
+            let after = placement.after.as_ref().ok_or_else(|| invalid("compact append lacks resulting placement"))?;
+            if before.bucket != append.bucket || before.key != append.key
+                || before.version != append.before_generation || before.length != append.before_length
+                || after.bucket != append.bucket || after.key != append.key
+                || after.version != append.before_generation + 1 || after.length != append.after_length
+                || append.suffix.len() > record.page_count as usize {
+                return Err(invalid("compact append placement differs from suffix decision"));
+            }
+            let allocation = record.allocation()?;
+            for (index, extent) in append.suffix.iter().enumerate() {
+                let page = allocation.page(index as u32)?;
+                if extent.volume_id != page.chunk_id.volume_id() || extent.chunk_id != page.chunk_id.id()
+                    || extent.page_index != page.page_index {
+                    return Err(invalid("compact append uses an unowned page"));
+                }
+            }
+            return Ok(());
+        } else if self.version == 11 { return Err(invalid("compact append outcome lacks suffix")); }
         if self.read_session_open.is_some() || self.read_session_removal.is_some() {
             if self.before_index.checked_add(1) != Some(self.after_index)
                 || self.manifest.is_some() || self.retention.is_some() || self.staging.is_some()
@@ -277,7 +314,7 @@ impl PlacementOutcome {
         manifest: ManifestOutcome,
         update_time_ms: u64,
     ) -> Result<Self, ObjectError> {
-        Self::publish_manifest_with_staging(service, manifest, update_time_ms, None, None)
+        Self::publish_manifest_with_staging(service, manifest, update_time_ms, None, None, None)
     }
     pub(crate) fn publish_staged_manifest(
         service: &MatrixMetaService,
@@ -286,11 +323,20 @@ impl PlacementOutcome {
         allocation: crate::staged_allocation::StagedAllocation,
     ) -> Result<Self, ObjectError> {
         Self::publish_manifest_with_staging(service, manifest, update_time_ms,
-            Some(crate::staged_allocation::StagedAllocationChange { before: Some(allocation), after: None }), None)
+            Some(crate::staged_allocation::StagedAllocationChange { before: Some(allocation), after: None }), None, None)
     }
     pub(crate) fn publish_copied_manifest(service: &MatrixMetaService, manifest: ManifestOutcome,
         update_time_ms: u64, source: crate::manifest_copy::LiveCopySource) -> Result<Self, ObjectError> {
-        Self::publish_manifest_with_staging(service, manifest, update_time_ms, None, Some(source))
+        Self::publish_manifest_with_staging(service, manifest, update_time_ms, None, Some(source), None)
+    }
+    pub(crate) fn publish_staged_append(
+        service: &MatrixMetaService, manifest: ManifestOutcome, update_time_ms: u64,
+        allocation: crate::staged_allocation::StagedAllocation,
+        append: crate::manifest_append::ManifestAppend,
+    ) -> Result<Self, ObjectError> {
+        Self::publish_manifest_with_staging(service, manifest, update_time_ms,
+            Some(crate::staged_allocation::StagedAllocationChange { before: Some(allocation), after: None }),
+            None, Some(append))
     }
     fn publish_manifest_with_staging(
         service: &MatrixMetaService,
@@ -298,6 +344,7 @@ impl PlacementOutcome {
         update_time_ms: u64,
         staging: Option<crate::staged_allocation::StagedAllocationChange>,
         copy_source: Option<crate::manifest_copy::LiveCopySource>,
+        compact_append: Option<crate::manifest_append::ManifestAppend>,
     ) -> Result<Self, ObjectError> {
         manifest.validate()?;
         let after = manifest.after.as_ref().unwrap();
@@ -345,7 +392,7 @@ impl PlacementOutcome {
                 });
             }
         }
-        let outcome = Self {
+        let mut outcome = Self {
             version: if copy_source.is_some() { 6 } else if staging.is_some() { 4 } else { 2 },
             before_index: service.placement_commit_index,
             after_index: service
@@ -365,9 +412,19 @@ impl PlacementOutcome {
             retention_deadline: None,
             read_session_open: None,
             read_session_removal: None,
+            manifest_append: None,
         };
         outcome.validate_manifest_binding()?;
         outcome.validate_publication(service, true)?;
+        if let Some(append) = compact_append {
+            if crate::manifest_append::ManifestAppend::decide(outcome.manifest.as_ref().unwrap())? != append {
+                return Err(invalid("compact append differs from validated publication"));
+            }
+            outcome.version = 11;
+            outcome.manifest = None;
+            outcome.manifest_append = Some(append);
+            outcome.validate_manifest_binding()?;
+        }
         outcome.to_payload()?;
         Ok(outcome)
     }
@@ -489,6 +546,7 @@ impl PlacementOutcome {
             retention_deadline: None,
             read_session_open: None,
             read_session_removal: None,
+            manifest_append: None,
         })
     }
     pub fn finish(mut self, service: &MatrixMetaService) -> Result<Self, ObjectError> {
@@ -552,6 +610,15 @@ impl PlacementOutcome {
     }
     pub fn apply(&self, service: &mut MatrixMetaService) -> Result<(), ObjectError> {
         self.validate_manifest_binding()?;
+        if let Some(append) = &self.manifest_append {
+            let before = service.object_manifests.get(&ObjectId::new(append.bucket.clone(), append.key.clone()))
+                .ok_or_else(|| invalid("compact append prior manifest missing"))?;
+            let mut expanded = self.clone();
+            expanded.version = 4;
+            expanded.manifest = Some(append.expand(before)?);
+            expanded.manifest_append = None;
+            return expanded.apply(service);
+        }
         if self.before_index != service.placement_commit_index
             || !(self.before_index.checked_add(1) == Some(self.after_index)
                 || (self.after_index == self.before_index

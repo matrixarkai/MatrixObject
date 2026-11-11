@@ -599,7 +599,13 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --all-features --test network_metadata_consensus star_append_amplification -- --test-threads=1 --nocapture | tee /tmp/star-append-cost.log
-          grep -q '^test result: ok. 1 passed' /tmp/star-append-cost.log
+          grep -q '^test result: ok. 3 passed' /tmp/star-append-cost.log
+
+      - name: compact append decisions enforce ownership and committed identity
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib compact_append -- --test-threads=1 | tee /tmp/compact-append.log
+          grep -q '^test result: ok. 5 passed' /tmp/compact-append.log
 
       - name: leased readers verify concurrent payloads and bounded admission
         run: |
