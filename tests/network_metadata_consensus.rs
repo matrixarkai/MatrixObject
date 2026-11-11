@@ -2940,3 +2940,7 @@ mod star_auto_repair;
 #[cfg(feature = "replica-server")]
 #[path = "node_regime/leased_object_read_scale.rs"]
 mod leased_object_read_scale;
+
+#[cfg(feature = "replica-server")]
+#[path = "node_regime/star_append_amplification.rs"]
+mod star_append_amplification;
