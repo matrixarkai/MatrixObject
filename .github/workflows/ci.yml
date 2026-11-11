@@ -581,6 +581,12 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus automatic_staged_expiry_resumes_after_outage_requires_quorum_and_keeps_idle_wal_stable -- --exact | tee /tmp/automatic-staged-expiry.log
           grep -q 'test result: ok. 1 passed' /tmp/automatic-staged-expiry.log
 
+      - name: selected generation grants retain compact wire and committed identity
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib compact_selected_grants -- --test-threads=1 --nocapture | tee /tmp/compact-grants.log
+          grep -q '^test result: ok. 5 passed' /tmp/compact-grants.log
+
       - name: ordinary reads preserve selected generations and batch consistency
         run: |
           set -o pipefail
@@ -593,7 +599,7 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --all-features --lib read_session -- --test-threads=1 | tee /tmp/read-sessions.log
-          grep -q '^test result: ok. 10 passed' /tmp/read-sessions.log
+          grep -q '^test result: ok. 12 passed' /tmp/read-sessions.log
           cargo test --locked --all-features --test read_session_leases -- --test-threads=1 | tee /tmp/read-sessions.log
           grep -q '^test result: ok. 3 passed' /tmp/read-sessions.log
           cargo test --locked --all-features --test network_metadata_consensus read_sessions_survive_lagging_voter_transfer_and_expire_after_quorum_recovery -- --exact | tee /tmp/read-sessions.log

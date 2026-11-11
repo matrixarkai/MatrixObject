@@ -58,11 +58,31 @@ started before activation and upgrade all reader clients before any future
 reclamation rollout. This only protects supported SDK data-read methods; raw
 manifest retrieval and direct data-node reads do not acquire sessions.
 
-Automatic grants currently return full retained manifests, adding one full
-manifest response per distinct object and two metadata mutations per grant.
-Compact journal outcomes do not remove this network, hashing or catalog cost.
-Measure concurrent-reader admission, CPU, latency and transferred bytes before
-increasing limits. Compact grant replies remain a performance follow-up.
+Automatic grants bind the selected canonical manifest's SHA-256 and return a
+compact acknowledgement. Metadata request version 3 action 8 adds digest field 10;
+reply version 4 carries handle ID, absolute deadline, relative lease window and
+digest field 8, with no retained manifest. Generation and digest must match the
+current live object before admission. The client refuses a changed digest, lease
+window or reply kind. Upgrade serving metadata endpoints before deploying this
+SDK path; older endpoints refuse the new request without automatic fallback.
+
+The reply payload is at most 63 bytes for all permitted IDs, timestamps and TTLs.
+A local one-extent fixture measured 87 bytes for the full grant versus 44 bytes
+for the compact grant. At 4,096 extents, the corresponding payloads were 233,253
+and 44 bytes; each selected-grant request was 59 bytes with the same short names.
+These counts exclude transport framing, initial manifest lookup, release,
+checkpoints and data traffic. Public explicit session APIs retain their full
+record replies and existing request versions.
+
+Creation persists exactly the same binary protobuf version-9 outcome as a full
+grant. No new durable outcome or checkpoint format is introduced. Raft proposal
+rollback accounts for compact grants before any acknowledgement; speculative
+handles must disappear until commit.
+
+Two metadata mutations per distinct object, retained-manifest catalog storage,
+hashing and initial manifest transfer remain. Measure concurrent-reader admission,
+CPU, latency and total transferred bytes before increasing limits. Batched grant
+admission and reduced catalog work remain performance follow-ups.
 
 ## Bounded cleanup and recovery
 

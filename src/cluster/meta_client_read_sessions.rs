@@ -13,6 +13,32 @@ impl RemoteMetaClient {
     }
 
     #[cfg(feature = "replica-server")]
+    fn open_selected_read_session(
+        &mut self,
+        manifest: &crate::object_manifest::ObjectManifest,
+        ttl_ms: u64,
+    ) -> Result<u64, ObjectError> {
+        manifest.validate()?;
+        let digest = crate::read_session_outcome::manifest_sha256(manifest)?;
+        let reply = self.retention_call(crate::manifest_retention::ManifestRetentionRequest {
+            version: 3,
+            action: 8,
+            bucket: manifest.bucket.clone(),
+            key: manifest.key.clone(),
+            generation: manifest.generation,
+            ttl_ms,
+            manifest_sha256: digest.clone(),
+            ..Default::default()
+        })?;
+        if reply.version != 4 || reply.lease_ms != ttl_ms || reply.manifest_sha256 != digest {
+            return Err(ObjectError::Corruption(
+                "selected manifest grant changed identity or protection window".into(),
+            ));
+        }
+        Ok(reply.retention_id)
+    }
+
+    #[cfg(feature = "replica-server")]
     fn with_selected_read_sessions<T>(
         &mut self,
         entries: Vec<(
@@ -53,18 +79,7 @@ impl RemoteMetaClient {
                         }
                         continue;
                     }
-                    let session = client.open_read_session(
-                        &manifest.bucket,
-                        &manifest.key,
-                        Some(manifest.generation),
-                        TTL_MS,
-                    )?;
-                    handles.push(session.retention_id);
-                    if session.manifest.as_ref() != Some(manifest) {
-                        return Err(ObjectError::Corruption(
-                            "read session differs from selected manifest".into(),
-                        ));
-                    }
+                    handles.push(client.open_selected_read_session(manifest, TTL_MS)?);
                 }
                 client.check_operation_deadline()?;
                 read(client, entries, &bounded)
@@ -119,6 +134,80 @@ impl RemoteMetaClient {
                 })
                 .collect()
         })
+    }
+}
+
+#[cfg(all(test, feature = "replica-server"))]
+mod compact_selected_grants {
+    use super::*;
+
+    #[test]
+    fn client_refuses_changed_digest_window_or_reply_kind() {
+        for mode in 0..5 {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = listener.local_addr().unwrap().to_string();
+            let worker = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut header = [0; HEADER_BYTES];
+                socket.read_exact(&mut header).unwrap();
+                let mut payload =
+                    vec![0; u32::from_be_bytes(header[2..].try_into().unwrap()) as usize];
+                socket.read_exact(&mut payload).unwrap();
+                let MetaRequest::ManifestRetention(request) =
+                    MetaRequest::decode(MetaRequestCode::from_u8(header[1]).unwrap(), &payload)
+                        .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(
+                    (request.version, request.action, request.generation),
+                    (3, 8, 1)
+                );
+                let mut reply = crate::manifest_retention::ManifestRetentionReply {
+                    version: 4,
+                    retention_id: 42,
+                    expires_at_ms: 2000,
+                    lease_ms: 1000,
+                    manifest_sha256: request.manifest_sha256,
+                    ..Default::default()
+                };
+                match mode {
+                    1 => reply.manifest_sha256[0] ^= 1,
+                    2 => reply.lease_ms = 2000,
+                    3 => {
+                        reply.version = 2;
+                        reply.lease_ms = 0;
+                        reply.manifest_sha256.clear();
+                    }
+                    4 => reply.retention_id = 0,
+                    _ => {}
+                }
+                socket
+                    .write_all(&super::super::meta_message::encode_meta_reply(
+                        &MetaReply::ManifestRetention(reply),
+                    ))
+                    .unwrap();
+            });
+            let mut client =
+                RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+            let manifest = crate::object_manifest::ObjectManifest {
+                format_version: 2,
+                bucket: "bucket".into(),
+                key: "object".into(),
+                generation: 1,
+                ..Default::default()
+            };
+            let result = client.open_selected_read_session(&manifest, 1000);
+            if mode == 0 {
+                assert_eq!(result.unwrap(), 42);
+            } else {
+                assert!(result.is_err());
+            }
+            worker.join().unwrap();
+        }
     }
 }
 

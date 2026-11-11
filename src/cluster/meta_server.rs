@@ -942,7 +942,7 @@ pub(super) fn decide_retention(
 ) -> Result<(crate::placement_outcome::PlacementOutcome, MetaReply), ObjectError> {
     use crate::manifest_retention::{ManifestRetentionChange, ManifestRetentionReply, RetainedManifest};
     command.validate()?;
-    if command.version == 2 {
+    if matches!(command.version, 2 | 3) {
         return super::read_session_commands::prepare_at(service, command, limit,
             super::staged_lease_sweeper::now_ms()?);
     }
