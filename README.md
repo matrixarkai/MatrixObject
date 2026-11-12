@@ -8,6 +8,11 @@ per-page checksums and background repair.
 
 ## Related Projects
 
+**On this page:** [Start here](#start-here) | [Services](#services) |
+[Independent replicas](#replicas-in-their-own-processes) | [Building](#building) |
+[Configuration](#configuration) | [Limitations](#what-it-is-not) |
+[Contributing](#contributing).
+
 All six projects are independently usable under Apache-2.0. Choose by workload
 and execution model; installing one does not deploy the others.
 
