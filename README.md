@@ -36,6 +36,20 @@ certificates from configuration excerpts. Follow the [security policy](SECURITY.
 for sensitive reports, not a public issue. For code or documentation changes,
 start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Implementation entry points
+
+| Area | Start reading |
+|---|---|
+| Object API process | [Object server](src/bin/object_server.rs) |
+| Metadata process and control-plane configuration | [Metadata server](src/bin/metaserver.rs) |
+| Replica process and chunk configuration | [Chunk server](src/bin/chunkserver.rs) |
+| Metadata consensus integration | [Metadata state machine](src/raft/matrixraft_state_machine.rs) |
+| Chunk consensus integration | [Chunk state machine](src/raft/matrixraft_chunk_state_machine.rs) |
+
+These are distinct implementation entry points, not a ready-made cluster configuration.
+Use the deployment guides below to select durable storage, network endpoints, peer
+membership, and security settings before starting independent processes.
+
 ## Start Here
 
 | Task | Guide |
