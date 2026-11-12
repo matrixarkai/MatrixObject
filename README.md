@@ -83,6 +83,19 @@ store.put_object("photos", "cat.jpg", bytes, "image/jpeg", now_ms, opts)?;
 let object = store.get_object("photos", "cat.jpg")?;
 ```
 
+### Resume uncertain staged allocations
+
+For recoverable allocation, persist the prepared request handle before submitting
+it, then retry that exact handle after a timeout or client restart. Preparation
+does not reserve pages or its metadata position. A consumed position can indicate
+contention or a previously retired operation; absence of active ownership is not
+permission to allocate a replacement or delete data.
+
+See [staged request identity](docs/staged-request-identity.md) for admission and
+uncertain outcomes, and [compact staged append](docs/compact-staged-append.md)
+for publication. Upgrade all participating metadata consumers before using the
+new ownership records; keep placement and metadata recovery state together.
+
 ## Deployment Responsibilities
 
 ### Build features are not deployment modes
