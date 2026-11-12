@@ -155,6 +155,14 @@ an embedded call, or treat a successful staged allocation, page write, and objec
 publication as interchangeable acknowledgements. Configure metadata and data
 services using their own deployment contracts.
 
+For recoverable staged allocation, persist the exact prepared handle before
+submission and retry that handle after a transport failure. An uncertain reply
+is not permission to allocate a replacement. After ownership retires, a refusal
+does not distinguish earlier publication from abort or expiry: reconcile the
+saved candidate with the manifest. Preparation itself does not reserve pages or
+its proposed metadata position, so concurrent mutations can consume that position.
+See [request identity and uncertain outcomes](docs/staged-request-identity.md).
+
 ## How storage is laid out
 
 ### Immutable metadata catalogs
