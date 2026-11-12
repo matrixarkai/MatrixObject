@@ -949,12 +949,21 @@ verbs keep their codes and layouts; older nodes explicitly refuse the new invent
 
 ## Building
 
-```
-cargo build --release
+Check out the public source, then build from the repository root:
+
+```bash
+git clone https://github.com/matrixarkai/MatrixObject.git
+cd MatrixObject
+cargo build --locked --release
 cargo test
 ```
 
-Nothing external is required to build or run the tests.
+These commands use the default feature set; they do not start metadata or chunk
+services. Independent consensus builds require additional native build tools and
+explicit features. Follow [Deployment Responsibilities](#deployment-responsibilities)
+and the [metadata build prerequisites](docs/metadata-consensus.md) before enabling
+those paths. Configure separate service identities and durable directories before
+starting voters.
 
 ## Configuration
 
