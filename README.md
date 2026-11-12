@@ -15,6 +15,19 @@ per-page checksums and background repair.
 [MatrixAdsDemo](https://github.com/matrixarkai/MatrixAdsDemo) demonstrates ads serving.
 Each project is independently usable and Apache-2.0 licensed.
 
+## Getting Help
+
+Search [public issues](https://github.com/matrixarkai/MatrixObject/issues) before
+opening a report. Include the revision, enabled Cargo features, service topology,
+replica and quorum settings, object size, and the API operation involved. Describe
+whether a write was acknowledged, published, or awaiting placement; for reclamation,
+distinguish deleted objects from physical bytes returned to storage.
+
+Use synthetic object keys and payloads. Remove credentials, tokens, and private
+certificates from configuration excerpts. Follow the [security policy](SECURITY.md)
+for sensitive reports, not a public issue. For code or documentation changes,
+start with [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Start Here
 
 | Task | Guide |
