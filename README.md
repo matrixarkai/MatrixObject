@@ -3,8 +3,13 @@
 A distributed object store, in Rust. **Apache-2.0** open source: public, forkable,
 and open to issues and pull requests from anyone.
 
-Objects are stored across replicated nodes with quorum writes, quorum reads,
-per-page checksums and background repair.
+Objects are stored across replicated nodes with quorum publication, versioned
+manifests, per-page integrity checks, and explicit repair paths. New version 2
+manifests authenticate page reads against committed SHA-256 digests; version 1
+manifests retain exact quorum-voted reads. Configure repair workers explicitly;
+automatic returning-node repair scheduling is not complete. See
+[authenticated reads](docs/authenticated-object-reads.md) and
+[repair scheduling](docs/star-repair-worker.md).
 
 ## Related Projects
 
