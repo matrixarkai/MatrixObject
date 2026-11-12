@@ -169,7 +169,7 @@ policies. A local embedding example does not exercise these independent service 
 | Publish or replace an object | [Object manifests](docs/object-manifests.md) | Data placement and manifest publication are separate steps; generation checks prevent publishing against another version. |
 | Recover an interrupted write | [Staged writes](docs/staged-object-writes.md) and [request identity](docs/staged-request-identity.md) | Retain the prepared handle and exact candidate. A lost reply is not permission to allocate another namespace. |
 | Append a suffix | [Compact planning](docs/compact-append-planning.md) and [staged append](docs/compact-staged-append.md) | The stored prefix is not resent, but validation and hashing can still scale with it. |
-| Read a generation across replacement | [Read-session leases](docs/read-session-leases.md) | Supported fenced reads protect a selected generation until their bounded deadline; direct data-node reads do not acquire this protection. |
+| Read a generation across replacement | [Read-session leases](docs/read-session-leases.md) | Open a session for the current or exact expected generation. Once granted, its manifest survives replacement until its bounded deadline; direct data-node reads do not acquire this protection. |
 | Repair data on replicas | [Repair worker](docs/star-repair-worker.md) | Repair scheduling and durable replica placement require explicit configuration. |
 | Delete and recover capacity | [Namespace fences](docs/chunk-namespace-fences.md) | Removing visibility or closing a namespace does not reclaim physical storage. Physical reclamation remains disabled. |
 
@@ -177,6 +177,13 @@ These guides describe different API layers. Do not infer network behavior from
 an embedded call, or treat a successful staged allocation, page write, and object
 publication as interchangeable acknowledgements. Configure metadata and data
 services using their own deployment contracts.
+
+Read-session TTLs range from 1 second to 1 hour. Sessions and permanent retained
+handles share the 128-handle and 64-MiB catalog bounds; exhaustion refuses
+admission rather than silently dropping protection. Renewal compares the exact
+previous deadline and must extend a live session. After an uncertain renewal,
+inspect the handle instead of assuming the deadline advanced. Expired sessions
+refuse reads even if background cleanup has not removed their records.
 
 For recoverable staged allocation, persist the exact prepared handle before
 submission and retry that handle after a transport failure. An uncertain reply
