@@ -62,6 +62,12 @@ membership, and security settings before starting independent processes.
 
 ## Start Here
 
+For performance sizing, record object and range sizes, replica/quorum settings,
+metadata topology, and acknowledgement boundary. Separate upload throughput from
+publication latency and repair traffic. Logical deletion is not physical space
+reclamation: account for retained versions, active read leases, and pending reclaim
+before interpreting storage amplification. The guides below describe these paths.
+
 | Task | Guide |
 |---|---|
 | Build and configure the store | [Building](#building) and [configuration](docs/configuring.md) |
