@@ -253,7 +253,7 @@ fn mark_persistent_journal_initialized(path_key: &str) {
     }
 }
 
-fn forget_persistent_journal_path(path_key: &str) {
+pub(crate) fn forget_persistent_journal_path(path_key: &str) {
     if let Ok(mut states) = persistent_journal_sync_states().lock() {
         states.remove(path_key);
     }

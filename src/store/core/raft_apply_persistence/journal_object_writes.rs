@@ -94,6 +94,15 @@ impl MatrixObjectStore {
         append_persistent_journal_frame(&self.persistent_journal_path, &payload)
     }
 
+    /// Write the frame a put left for its own transaction, if it left one. Takes it, so
+    /// a payload can be written once and never outlives the put that set it.
+    fn append_pending_journal_payload(&mut self) -> Result<(), ObjectError> {
+        match self.pending_journal_payload.take() {
+            Some(payload) => self.append_object_journal_payload(&payload),
+            None => Ok(()),
+        }
+    }
+
     fn append_batch_put_journal_record(
         &self,
         requests: &[ObjectPutRequest],
