@@ -21,8 +21,13 @@ Measured at three replicas, 26-character keys, with the metadata counted:
 | object size | objects | amplification | data-only figure |
 |---:|---:|---:|---:|
 | 64 KiB | 1,000 | **3.01x** | 3.00x |
-| 4 KiB | 4,000 | **3.08x** | 3.00x |
-| 1 KiB | 8,000 | **3.32x** | 3.02x |
+| 4 KiB | 4,000 | **3.14x** | 3.05x |
+| 1 KiB | 8,000 | **3.34x** | 3.02x |
+
+A page written in large pieces holds exactly the floor (the 64 KiB row). A page grown by many
+small appends also holds up to a sixteenth of its length in spare room, because the allocator is
+asked to grow it about once per 6.25% instead of once per append -- that is the 0.05x above the
+floor on the 4 KiB row.
 
 Reproduce any row with the measurement harness:
 
@@ -33,8 +38,8 @@ MEASURE_OBJECTS=8000 MEASURE_SIZE=1024 cargo test --release --lib \
 
 **Lowering `replica_count` does not reach 1.0x.** A page with no peers keeps a
 redundancy fragment so that a partial corruption is still recoverable from the
-single copy it has, and a page with peers does not — which is why the data term
-above is exactly 3.00 rather than something above it. Measured at one replica:
+single copy it has, and a page with peers does not — which is why a page written in
+large pieces is exactly 3.00 rather than something above it. Measured at one replica:
 
 | bytes in the page | fragment | split | overhead |
 |---:|---:|---:|---:|

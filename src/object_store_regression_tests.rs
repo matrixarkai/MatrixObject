@@ -3049,6 +3049,50 @@ fn object_inventory_pages_metadata_and_placement() {
 }
 
 #[test]
+fn a_page_filled_by_small_appends_reallocates_rarely_and_holds_bounded_slack() {
+    // A page used to ask the allocator for exactly the bytes each append added, so every append
+    // could copy the whole page. The growth is geometric now, with headroom of a sixteenth of what
+    // the page holds. Two claims, because each alone is easy to satisfy: appends must not
+    // reallocate per write (doubling would pass that), and the spare room must stay bounded
+    // (reserving exactly would pass that).
+    const APPENDS: usize = 900;
+    const WIDTH: usize = 1024;
+    let mut chunk = MatrixReplicaService::new();
+    let page_id = PageId {
+        chunk_id: ChunkId::new(0, 992).unwrap(),
+        page_index: 0,
+    };
+    let mut expected: Vec<u8> = Vec::new();
+    let mut capacities = std::collections::BTreeSet::new();
+    for append in 0..APPENDS {
+        let bytes: Vec<u8> = (0..WIDTH).map(|i| (append * 31 + i) as u8).collect();
+        chunk
+            .write_chunk(page_id.clone(), expected.len() as u64, &bytes)
+            .unwrap();
+        expected.extend_from_slice(&bytes);
+        let page = chunk.pages_local().get(&page_id).unwrap();
+        capacities.insert(page.data.capacity());
+    }
+    let page = chunk.pages_local().get(&page_id).unwrap();
+    assert_eq!(page.data.as_slice(), expected.as_slice(), "the bytes are unchanged");
+
+    let len = page.data.len();
+    let capacity = page.data.capacity();
+    assert!(
+        capacity <= len + len / 16 + WIDTH,
+        "spare room must stay near a sixteenth of the page: capacity {capacity} for {len} bytes"
+    );
+    // One distinct capacity per reallocation. Growing to 900 KiB by a sixteenth each time is about
+    // eighty steps; the exact-reserve policy this replaced took one per append.
+    println!("PAGE_GROWTH appends={APPENDS} reallocations={} slack_bytes={}", capacities.len(), capacity - len);
+    assert!(
+        capacities.len() <= APPENDS / 8,
+        "{} reallocations for {APPENDS} appends: growth is not geometric",
+        capacities.len()
+    );
+}
+
+#[test]
 fn a_chunk_checksum_is_the_hash_of_its_payload_however_the_write_arrived() {
     // `write_chunk` resumes the FNV-1a fold over the appended bytes instead of re-hashing the
     // whole payload, which is only sound where the write begins at or past the old end. This
@@ -43966,21 +44010,27 @@ fn a_store_holds_one_and_a_half_copies_of_its_payload_when_it_stripes() {
         striped_logical, plain_logical,
         "both stores must have been given the same logical bytes for the figures to compare"
     );
-    assert_eq!(
-        plain_held * 1000 / plain_logical,
-        3000,
-        "three-way replication holds three copies, and this is the figure the payload floor \
-         has always reported"
+    // THE FLOOR, PLUS THE HEADROOM A GROWING PAGE CARRIES. Three copies is the floor and the
+    // figure never goes below it; a page built by small appends also holds up to a sixteenth of
+    // its length in spare room (`reserve_page_growth`), so the figure sits in a band above it.
+    // Pinned as that band rather than as the floor, because the floor alone is no longer what a
+    // store built by 1 KiB appends measures.
+    let plain_permille = plain_held * 1000 / plain_logical;
+    let striped_permille = striped_held * 1000 / striped_logical;
+    assert!(
+        (3000..=3188).contains(&plain_permille),
+        "three-way replication holds three copies plus at most a sixteenth of headroom: \
+         {plain_permille}"
     );
-    assert_eq!(
-        striped_held * 1000 / striped_logical,
-        1500,
-        "a striped store should hold one and a half"
+    assert!(
+        (1500..=1594).contains(&striped_permille),
+        "a striped store should hold one and a half copies plus at most a sixteenth of \
+         headroom: {striped_permille}"
     );
-    assert_eq!(
-        striped_held * 2,
-        plain_held,
-        "exactly half, asserted as a relation so it cannot drift into a near miss: \
+    // Half, within the headroom. Asserted as a relation so it cannot drift into a near miss.
+    assert!(
+        (striped_held * 2).abs_diff(plain_held) * 1000 / plain_held <= 63,
+        "striping should hold half what replication does, give or take headroom: \
          {striped_held} against {plain_held}"
     );
 }
@@ -44034,10 +44084,11 @@ fn a_striped_store_is_still_striping_after_a_snapshot_round_trip() {
             .get(key)
             .unwrap_or_else(|| panic!("the audit should report {key}"))
     };
-    assert_eq!(
-        get("replica.data.capacity") * 1000 / get("logical.written"),
-        1500,
-        "a restored striped store should still hold one and a half copies"
+    let restored_permille = get("replica.data.capacity") * 1000 / get("logical.written");
+    assert!(
+        (1500..=1594).contains(&restored_permille),
+        "a restored striped store should still hold one and a half copies plus at most a \
+         sixteenth of headroom: {restored_permille}"
     );
 }
 
@@ -47632,9 +47683,10 @@ fn the_published_striped_amplification_is_the_one_this_tree_produces() {
     // The data terms, so a total that happened to match cannot hide a layout that did not
     // take: 1.5x against 3.0x is the layout doing its job, and 1,504 rather than 1,500 is
     // the last page of 8,000 objects not filling a whole stripe group.
-    assert_eq!(
-        replicated_data, 3000,
-        "three-way replication holds three copies"
+    assert!(
+        (3000..=3188).contains(&replicated_data),
+        "three-way replication holds three copies plus at most a sixteenth of headroom: \
+         {replicated_data}"
     );
     assert!(
         (1500..=1560).contains(&striped_data),
