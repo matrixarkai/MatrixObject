@@ -120,8 +120,11 @@ impl MatrixObjectStore {
             options,
             operation,
         ) {
-            Ok(metadata) => match self.chunk_service.end_mutation_batch(&batch_id) {
-                Ok(_) => Ok(metadata),
+            Ok(metadata) => match self
+                .append_pending_journal_payload()
+                .and_then(|()| self.chunk_service.end_mutation_batch(&batch_id).map(|_| ()))
+            {
+                Ok(()) => Ok(metadata),
                 Err(err) => {
                     let _ = self.chunk_service.abort_mutation_batch(&batch_id);
                     self.restore_object_mutation_rollback(rollback);

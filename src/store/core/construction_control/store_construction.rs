@@ -180,6 +180,7 @@ impl MatrixObjectStore {
         let mut store = Self {
             persistent_snapshot_path,
             persistent_journal_path: persistent_journal_path.clone(),
+            pending_journal_payload: None,
             options,
             buckets: BTreeSet::new(),
             content_types: BTreeSet::new(),

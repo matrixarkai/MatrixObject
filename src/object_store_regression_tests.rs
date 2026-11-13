@@ -808,6 +808,51 @@ fn a_repaired_journal_accepts_new_writes_that_survive_a_reopen() {
 }
 
 #[test]
+fn a_put_whose_journal_write_fails_is_undone_and_leaves_nothing_behind() {
+    // The journal frame is written inside the put's own transaction, so a failed write has
+    // to come back through the put's narrow undo. The journal works for the bucket and one
+    // put, then its path becomes a directory, so the next frame cannot be opened.
+    let root = std::env::temp_dir().join(format!("mo-journal-failing-put-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("store.journal").to_string_lossy().into_owned();
+    let mut options = test_options();
+    options.persistent_journal_path = path.clone();
+    let mut store = MatrixObjectStore::new(options).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "kept", vec![3u8; 2048], "application/octet-stream")
+        .unwrap();
+    let listed_before = store.list_objects("bucket", "", None, 100).unwrap().len();
+    assert_eq!(listed_before, 1);
+
+    forget_persistent_journal_path(&path);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+
+    let error = store
+        .put_object("bucket", "doomed", vec![7u8; 4096], "application/octet-stream")
+        .expect_err("the journal cannot be written, so the put must not be acknowledged");
+    assert!(!error.to_string().is_empty());
+    assert!(
+        store.get_object("bucket", "doomed").is_err(),
+        "a put whose journal write failed must not be readable"
+    );
+    assert_eq!(
+        store.list_objects("bucket", "", None, 100).unwrap().len(),
+        listed_before,
+        "a failed put must not leave an object listed"
+    );
+    // The earlier object is untouched, and byte for byte.
+    assert_eq!(store.get_object("bucket", "kept").unwrap().data, vec![3u8; 2048]);
+    // A second attempt fails the same way: no frame was left standing for it to write.
+    assert!(store
+        .put_object("bucket", "second", vec![1u8; 16], "application/octet-stream")
+        .is_err());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn repair_refuses_a_complete_frame_with_a_bad_checksum_and_changes_nothing() {
     let (root, path, mut bytes) = torn_tail_fixture("badsum");
     let (_header_len, starts) = journal_frame_starts(&bytes);

@@ -172,6 +172,12 @@ pub struct MatrixObjectStore {
     pub(crate) options: StoreOptions,
     persistent_snapshot_path: String,
     persistent_journal_path: String,
+    /// The journal frame for the put now being applied, handed to
+    /// `apply_put_storage_batched` so it is written INSIDE the put's own transaction.
+    /// A journal failure then rolls back through the narrow undo the put already
+    /// holds, where the caller used to capture the whole store beforehand to do it.
+    /// Taken (never left standing) by the put that set it.
+    pending_journal_payload: Option<Vec<u8>>,
     pub(crate) buckets: BTreeSet<SharedText>,
     /// One allocation per distinct content type, up to
     /// `MAX_SHARED_CONTENT_TYPES`. Derived state: it is not in a snapshot, it

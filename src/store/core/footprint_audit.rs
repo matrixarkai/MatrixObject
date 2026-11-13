@@ -782,6 +782,12 @@ impl MatrixObjectStore {
         // with nothing excused.
         let mut store_identity = (self.persistent_snapshot_path.capacity()
             + self.persistent_journal_path.capacity()
+            // Held only while a journaled put is applying, so it is empty whenever the
+            // footprint is read; weighed anyway so the coverage guard has nothing excused.
+            + self
+                .pending_journal_payload
+                .as_ref()
+                .map_or(0, |frame| frame.capacity())
             + self.consensus_read_last_status.borrow().capacity())
             as u64;
         for node_id in &self.raft_voter_node_ids {
