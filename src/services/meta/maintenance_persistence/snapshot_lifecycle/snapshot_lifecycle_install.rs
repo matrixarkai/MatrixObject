@@ -25,7 +25,7 @@ impl MatrixMetaService {
         self.transactions = snapshot.transactions;
         self.transaction_receipts = snapshot.transaction_receipts;
         self.change_checkpoints = snapshot.change_checkpoints;
-        self.changes = snapshot.changes;
+        self.changes = snapshot.changes.into();
         self.next_commit_index = snapshot.next_commit_index;
         self.next_change_sequence = snapshot.next_change_sequence;
         self.compacted_tombstone_count = snapshot.compacted_tombstone_count;

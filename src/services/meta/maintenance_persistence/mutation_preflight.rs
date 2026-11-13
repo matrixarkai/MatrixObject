@@ -331,7 +331,7 @@ impl MatrixMetaService {
                 }
             }
         }
-        self.changes.push(change);
+        self.changes.push_back(change);
     }
 
     fn apply_mutation(

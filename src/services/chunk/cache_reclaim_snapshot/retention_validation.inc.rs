@@ -73,7 +73,12 @@ pub(crate) fn trim_btree_map_to_retention<K: Clone + Ord, V>(
     overflow as u64
 }
 
-pub(crate) fn trim_vec_front_to_retention<T>(items: &mut Vec<T>, retention: usize) -> u64 {
+/// Drop the oldest records past `retention`. A deque, because a `Vec` shifts every record it
+/// keeps down by one place -- once per append, for ever, on a log that is always at its bound.
+pub(crate) fn trim_deque_front_to_retention<T>(
+    items: &mut std::collections::VecDeque<T>,
+    retention: usize,
+) -> u64 {
     let overflow = items.len().saturating_sub(retention);
     if overflow > 0 {
         items.drain(0..overflow);

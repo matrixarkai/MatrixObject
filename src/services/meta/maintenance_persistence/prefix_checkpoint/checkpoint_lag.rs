@@ -34,16 +34,16 @@ impl MatrixMetaService {
             target_commit_index.unwrap_or_else(|| self.next_commit_index.saturating_sub(1));
         let first_retained_change_sequence = self
             .changes
-            .first()
+            .front()
             .map_or(self.next_change_sequence, |change| change.sequence);
-        let last_retained_change_sequence = self.changes.last().map_or(0, |change| change.sequence);
+        let last_retained_change_sequence = self.changes.back().map_or(0, |change| change.sequence);
         let first_retained_commit_index = self
             .changes
-            .first()
+            .front()
             .map_or(target_commit_index, |change| change.commit_index);
         let last_retained_commit_index = self
             .changes
-            .last()
+            .back()
             .map_or(target_commit_index, |change| change.commit_index);
 
         let mut plan = MetadataChangeCheckpointLagPlan {

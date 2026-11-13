@@ -48,7 +48,7 @@ impl MatrixMetaService {
             transactions: self.transactions.clone(),
             transaction_receipts: self.transaction_receipts.clone(),
             change_checkpoints: self.change_checkpoints.clone(),
-            changes: self.changes.clone(),
+            changes: self.changes.iter().cloned().collect(),
             next_commit_index: self.next_commit_index,
             // THE ROSTER, FROM THE SAME SERVICE STATE THE PLACEMENT EXPORT READS. Two export
             // functions reading one set of fields is what makes the agreement rule in

@@ -21,7 +21,7 @@ impl MatrixMetaService {
     }
     fn trim_meta_retention(&mut self) -> MetadataRetentionConfigReport {
         let trimmed_change_records =
-            trim_vec_front_to_retention(&mut self.changes, self.change_log_retention_limit);
+            trim_deque_front_to_retention(&mut self.changes, self.change_log_retention_limit);
         let trimmed_batch_receipts = trim_btree_map_to_retention(
             &mut self.batch_request_receipts,
             self.mutation_receipt_retention_limit,
