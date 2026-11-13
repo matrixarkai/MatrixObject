@@ -452,7 +452,8 @@ comment claiming they do.
 - **Erasure coding.** A page with no peers keeps a redundancy fragment, so a
   partial corruption is still recoverable from the single copy it has. The
   fragment is local to its page and is empty whenever the page has peers, which
-  is why the data term measures exactly 3.00x at three replicas.
+  is why a page written in large pieces measures exactly 3.00x at three replicas, with no
+  fragment on top.
 - **Striped payload, if you ask for it.** `stripe_redundancy_units` spreads a
   page across its replicas as fixed-size units instead of copying it to each, so
   the store holds `replica_count / (replica_count - stripe_redundancy_units)` of
@@ -483,12 +484,16 @@ At three replicas with the metadata counted, measured at 26-character keys:
 | object size | objects | amplification | data-only figure |
 |---:|---:|---:|---:|
 | 64 KiB | 1,000 | **3.01x** | 3.00x |
-| 4 KiB | 4,000 | **3.08x** | 3.00x |
-| 1 KiB | 8,000 | **3.32x** | 3.02x |
+| 4 KiB | 4,000 | **3.14x** | 3.05x |
+| 1 KiB | 8,000 | **3.34x** | 3.02x |
 
-The data term is exactly **3.00x** -- the replication floor for a store that
-copies every page to every replica -- so everything above it is metadata, which
-is **290 bytes an object plus 164,232 fixed** whatever the object size.
+The data term has a floor of **3.00x** -- the replication floor for a store that
+copies every page to every replica -- and reads exactly that when a page is written in
+large pieces (the 64 KiB row). A page grown by many small appends also holds up to a
+sixteenth of its length in spare room, so the allocator is asked to grow it about once per
+6.25% rather than once per append (`reserve_page_growth`); that is the 0.05x on the 4 KiB
+row. What sits above the data term is metadata, which is **290 bytes an object plus 164,232
+fixed** whatever the object size.
 
 **What that 3.00x buys depends on where the replicas are, and the figure cannot tell you.**
 Three copies measure 3.00x whether they are three `BTreeMap`s on one heap or three copies in
@@ -529,7 +534,8 @@ Those two numbers are a line, fitted from measurements at three object counts by
 if this file disagrees with the tree.
 
 A store that stripes moves the data term itself, to **1.5x** at three replicas and
-one unit of redundancy -- which is the least any layout can hold and still survive a
+one unit of redundancy (1.53x for a page built by 1 KiB appends, which carries its
+growth headroom) -- which is the least any layout can hold and still survive a
 loss. Every replica holds one unit of each stripe group, so keeping `p` units of
 redundancy over `R` replicas costs `R / (R - p)`, which is smallest at one unit; with
 no redundancy nothing is recoverable, and the only way further down is more replicas,
@@ -538,7 +544,7 @@ which is more hardware rather than less space.
 replicas to eight and fails if any of them undercuts that.
 
 Counted with the metadata, a thousand objects of 1 KiB measure
-**1.97x striped against 3.46x replicated**, both read out of `footprint_audit()` on a
+**2.00x striped against 3.54x replicated**, both read out of `footprint_audit()` on a
 store nothing has read back yet. What separates the total from the 1.5x data term is the
 metadata line above, which striping does not change: the same 290 bytes an object either
 way. Striping moves the payload and nothing else.

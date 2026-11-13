@@ -1,5 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
+/// Room for a page payload to grow to `needed_len`, with headroom proportional to what it holds.
+///
+/// A page filled by many small appends used to ask for EXACTLY the bytes each append added, so
+/// the allocator was asked to grow the buffer on every write and, once it could not extend it in
+/// place, copied the whole page: 33% of a 256 KiB-put profile was that copy, and 7% of a 1 KiB
+/// one. Doubling would amortise it but a page then holds up to ~1.9x the bytes it stores
+/// (measured 163 MB of capacity for 87 MB of data at three replicas).
+///
+/// A sixteenth of the current length sits between the two. Growth is geometric, so a page
+/// reallocates about once per 6.25% it grows rather than once per append, and the spare room is
+/// bounded at 6.25% of the page -- a figure that does not depend on how many writes built it.
+/// A write that grows the page by more than that asks for exactly what it needs, so a page
+/// filled by large objects carries no spare room at all.
+pub(crate) fn reserve_page_growth(payload: &mut Vec<u8>, needed_len: usize) {
+    if needed_len <= payload.capacity() {
+        return;
+    }
+    let len = payload.len();
+    let target = needed_len.max(len.saturating_add(len / 16));
+    payload.reserve_exact(target.saturating_sub(len));
+}
+
 impl MatrixReplicaService {
     pub fn write_chunk(
         &mut self,
@@ -47,10 +69,7 @@ impl MatrixReplicaService {
         let checksum_before_write = chunk.checksum_fnv1a64;
         if end_index > chunk.data.len() {
             let payload = std::sync::Arc::make_mut(&mut chunk.data);
-            // reserve_exact, not resize's doubling: a chunk filled by many small
-            // writes otherwise holds ~1.9x the bytes it stores (measured 163 MB
-            // of capacity for 87 MB of data at three replicas).
-            payload.reserve_exact(end_index.saturating_sub(payload.len()));
+            reserve_page_growth(payload, end_index);
             payload.resize(end_index, 0);
         }
         std::sync::Arc::make_mut(&mut chunk.data)[start_index..end_index].copy_from_slice(data);
@@ -345,7 +364,7 @@ impl MatrixReplicaService {
             })?;
             if projected_len_index > chunk.data.len() {
                 let payload = std::sync::Arc::make_mut(&mut chunk.data);
-                payload.reserve_exact(projected_len_index.saturating_sub(payload.len()));
+                reserve_page_growth(payload, projected_len_index);
                 payload.resize(projected_len_index, 0);
             }
             for (offset, data) in coalesced {
