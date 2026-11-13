@@ -29,8 +29,13 @@ impl MatrixObjectStore {
         let result =
             self.apply_append_inner(bucket, key, data, content_type, update_time_ms, options);
         match result {
-            Ok(metadata) => match self.chunk_service.end_mutation_batch(&batch_id) {
-                Ok(_) => {
+            // THE JOURNAL FRAME, if the caller left one, goes in BEFORE the batch ends, so a
+            // failed write aborts the batch and restores through this append's own narrow undo.
+            Ok(metadata) => match self
+                .append_pending_journal_payload()
+                .and_then(|()| self.chunk_service.end_mutation_batch(&batch_id).map(|_| ()))
+            {
+                Ok(()) => {
                     if self.options.persistent_snapshot_flush_on_commit {
                         self.flush_persistent_snapshot()?;
                         self.flush_object_checkpoint_indexes();

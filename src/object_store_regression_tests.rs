@@ -853,6 +853,73 @@ fn a_put_whose_journal_write_fails_is_undone_and_leaves_nothing_behind() {
 }
 
 #[test]
+fn an_append_whose_journal_write_fails_is_undone_and_leaves_the_object_as_it_was() {
+    // An append writes its journal frame inside its own transaction, as a put does, so a failed
+    // write has to come back through the append's narrow undo. The object must read back byte for
+    // byte what it was, at the same length, and a second failing append must find the same.
+    let root = std::env::temp_dir().join(format!("mo-journal-failing-append-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("store.journal").to_string_lossy().into_owned();
+    let mut options = test_options();
+    options.persistent_journal_path = path.clone();
+    let mut store = MatrixObjectStore::new(options).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .append_object("bucket", "wal", b"first".to_vec(), "application/octet-stream")
+        .unwrap();
+
+    forget_persistent_journal_path(&path);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+
+    let error = store
+        .append_object("bucket", "wal", b"second".to_vec(), "application/octet-stream")
+        .expect_err("the journal cannot be written, so the append must not be acknowledged");
+    assert!(!error.to_string().is_empty());
+    let after = store.get_object("bucket", "wal").unwrap();
+    assert_eq!(after.data, b"first", "a failed append must not change the object");
+    assert_eq!(after.metadata.length, 5, "or its length");
+    assert!(store
+        .append_object("bucket", "wal", b"third".to_vec(), "application/octet-stream")
+        .is_err());
+    assert_eq!(store.get_object("bucket", "wal").unwrap().data, b"first");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn journaled_appends_replay_to_the_object_they_built() {
+    // Each append's frame is written once, in order, inside its transaction: after a restart the
+    // journal has to rebuild exactly the concatenation, however many appends went in.
+    let root = std::env::temp_dir().join(format!("mo-journal-append-replay-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("store.journal").to_string_lossy().into_owned();
+    let mut options = test_options();
+    options.persistent_journal_path = path;
+    let mut expected: Vec<u8> = Vec::new();
+    {
+        let mut store = MatrixObjectStore::new(options.clone()).unwrap();
+        store.create_bucket("bucket").unwrap();
+        for round in 0..40usize {
+            let piece: Vec<u8> = (0..(7 + round * 3)).map(|i| (round * 31 + i) as u8).collect();
+            store
+                .append_object("bucket", "wal", piece.clone(), "application/octet-stream")
+                .unwrap();
+            expected.extend_from_slice(&piece);
+        }
+        assert_eq!(store.get_object("bucket", "wal").unwrap().data, expected);
+    }
+    let reopened = MatrixObjectStore::new(options).unwrap();
+    assert_eq!(
+        reopened.get_object("bucket", "wal").unwrap().data,
+        expected,
+        "the journal must rebuild the appended object exactly"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn repair_refuses_a_complete_frame_with_a_bad_checksum_and_changes_nothing() {
     let (root, path, mut bytes) = torn_tail_fixture("badsum");
     let (_header_len, starts) = journal_frame_starts(&bytes);
