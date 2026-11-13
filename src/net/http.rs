@@ -359,15 +359,23 @@ pub fn write_response(
     keep_alive: bool,
     head_only: bool,
 ) -> std::io::Result<()> {
+    let out = render_response(response, keep_alive, head_only);
+    stream.write_all(&out)?;
+    stream.flush()
+}
+
+/// The bytes of one response, head and body.
+///
+/// Built by appending bytes and decimal digits directly. This used to format every head line into
+/// a temporary `String` and copy it across: ten formatting calls per response, 7.65% of the
+/// door's instructions per put, to produce lines that are a name, a separator and a value.
+pub(crate) fn render_response(response: &Response, keep_alive: bool, head_only: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(256 + response.body.len());
-    out.extend_from_slice(
-        format!(
-            "HTTP/1.1 {} {}\r\n",
-            response.status,
-            reason_phrase(response.status)
-        )
-        .as_bytes(),
-    );
+    out.extend_from_slice(b"HTTP/1.1 ");
+    push_decimal(&mut out, u64::from(response.status));
+    out.push(b' ');
+    out.extend_from_slice(reason_phrase(response.status).as_bytes());
+    out.extend_from_slice(b"\r\n");
     for (name, value) in &response.headers {
         // A header value carrying CR or LF would end the head early and let a caller append
         // headers or a body of their choosing. Object keys and client-supplied metadata reach
@@ -375,25 +383,42 @@ pub fn write_response(
         if value.contains('\r') || value.contains('\n') {
             continue;
         }
-        out.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(value.as_bytes());
+        out.extend_from_slice(b"\r\n");
     }
     if !status_forbids_body(response.status) {
-        out.extend_from_slice(format!("content-length: {}\r\n", response.body.len()).as_bytes());
+        out.extend_from_slice(b"content-length: ");
+        push_decimal(&mut out, response.body.len() as u64);
+        out.extend_from_slice(b"\r\n");
     }
-    out.extend_from_slice(
-        if keep_alive {
-            "connection: keep-alive\r\n"
-        } else {
-            "connection: close\r\n"
-        }
-        .as_bytes(),
-    );
+    out.extend_from_slice(if keep_alive {
+        b"connection: keep-alive\r\n".as_slice()
+    } else {
+        b"connection: close\r\n".as_slice()
+    });
     out.extend_from_slice(b"\r\n");
     if !head_only && !status_forbids_body(response.status) && !response.body.is_empty() {
         out.extend_from_slice(&response.body);
     }
-    stream.write_all(&out)?;
-    stream.flush()
+    out
+}
+
+/// Append `value` in decimal, exactly as `{}` would print it.
+fn push_decimal(out: &mut Vec<u8>, value: u64) {
+    let mut digits = [0u8; 20];
+    let mut at = digits.len();
+    let mut rest = value;
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&digits[at..]);
 }
 
 /// Decode `%XX` escapes and `+`-as-space, leaving anything malformed as written.
@@ -585,14 +610,186 @@ pub fn http_date(epoch_ms: u64) -> String {
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
     let parts = civil_parts(epoch_ms);
-    format!(
-        "{weekday}, {day:02} {month_name} {year} {hour:02}:{minute:02}:{second:02} GMT",
-        weekday = DAY_NAMES[parts.weekday],
-        day = parts.day,
-        month_name = MONTH_NAMES[(parts.month - 1) as usize],
-        year = parts.year,
-        hour = parts.hour,
-        minute = parts.minute,
-        second = parts.second,
-    )
+    // Written field by field: this runs once per object response and the format machinery was
+    // 1.96% of the door's instructions per put for a fixed-width date.
+    fn two(out: &mut String, value: u64) {
+        out.push((b'0' + (value / 10 % 10) as u8) as char);
+        out.push((b'0' + (value % 10) as u8) as char);
+    }
+    let mut out = String::with_capacity(29);
+    out.push_str(DAY_NAMES[parts.weekday]);
+    out.push_str(", ");
+    two(&mut out, parts.day as u64);
+    out.push(' ');
+    out.push_str(MONTH_NAMES[(parts.month - 1) as usize]);
+    out.push(' ');
+    if (1000..=9999).contains(&parts.year) {
+        let year = parts.year as u64;
+        out.push((b'0' + (year / 1000) as u8) as char);
+        out.push((b'0' + (year / 100 % 10) as u8) as char);
+        out.push((b'0' + (year / 10 % 10) as u8) as char);
+        out.push((b'0' + (year % 10) as u8) as char);
+    } else {
+        // Any other year prints as `{}` does, unpadded.
+        out.push_str(&parts.year.to_string());
+    }
+    out.push(' ');
+    two(&mut out, parts.hour);
+    out.push(':');
+    two(&mut out, parts.minute);
+    out.push(':');
+    two(&mut out, parts.second);
+    out.push_str(" GMT");
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The response renderer this replaced, kept as the oracle: every head line formatted into a
+    /// temporary `String`. The new one has to produce the same bytes for every response.
+    fn render_by_format(response: &Response, keep_alive: bool, head_only: bool) -> Vec<u8> {
+        let mut out = Vec::with_capacity(256 + response.body.len());
+        out.extend_from_slice(
+            format!(
+                "HTTP/1.1 {} {}\r\n",
+                response.status,
+                reason_phrase(response.status)
+            )
+            .as_bytes(),
+        );
+        for (name, value) in &response.headers {
+            if value.contains('\r') || value.contains('\n') {
+                continue;
+            }
+            out.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+        }
+        if !status_forbids_body(response.status) {
+            out.extend_from_slice(
+                format!("content-length: {}\r\n", response.body.len()).as_bytes(),
+            );
+        }
+        out.extend_from_slice(
+            if keep_alive {
+                "connection: keep-alive\r\n"
+            } else {
+                "connection: close\r\n"
+            }
+            .as_bytes(),
+        );
+        out.extend_from_slice(b"\r\n");
+        if !head_only && !status_forbids_body(response.status) && !response.body.is_empty() {
+            out.extend_from_slice(&response.body);
+        }
+        out
+    }
+
+    /// The date formatter this replaced, kept as the oracle.
+    fn date_by_format(epoch_ms: u64) -> String {
+        const DAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+        const MONTH_NAMES: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        let parts = civil_parts(epoch_ms);
+        format!(
+            "{weekday}, {day:02} {month_name} {year} {hour:02}:{minute:02}:{second:02} GMT",
+            weekday = DAY_NAMES[parts.weekday],
+            day = parts.day,
+            month_name = MONTH_NAMES[(parts.month - 1) as usize],
+            year = parts.year,
+            hour = parts.hour,
+            minute = parts.minute,
+            second = parts.second,
+        )
+    }
+
+    #[test]
+    fn a_rendered_response_is_byte_for_byte_the_formatted_one() {
+        // Statuses that forbid a body, ones that carry one, one with a reason and one without.
+        let statuses = [100u16, 200, 201, 204, 206, 304, 400, 404, 412, 416, 500, 503, 599, 999];
+        let header_sets: Vec<Vec<(String, String)>> = vec![
+            vec![],
+            vec![("etag".into(), "\"abc\"".into())],
+            vec![
+                ("last-modified".into(), "Thu, 01 Jan 1970 00:00:00 GMT".into()),
+                ("x-amz-meta-note".into(), "naïve ✓".into()),
+                ("empty".into(), String::new()),
+            ],
+            // Values that would end the head early are dropped, and only those.
+            vec![
+                ("a".into(), "line\r\nInjected: yes".into()),
+                ("b".into(), "kept".into()),
+                ("c".into(), "cr\rhere".into()),
+                ("d".into(), "lf\nhere".into()),
+            ],
+        ];
+        let bodies: [usize; 5] = [0, 1, 299, 4096, 70_000];
+        let mut compared = 0usize;
+        for status in statuses {
+            for headers in &header_sets {
+                for body_len in bodies {
+                    for keep_alive in [true, false] {
+                        for head_only in [true, false] {
+                            let response = Response {
+                                status,
+                                headers: headers.clone(),
+                                body: (0..body_len).map(|i| (i % 251) as u8).collect(),
+                            };
+                            assert_eq!(
+                                render_response(&response, keep_alive, head_only),
+                                render_by_format(&response, keep_alive, head_only),
+                                "status {status}, {} headers, {body_len} body bytes, \
+                                 keep_alive {keep_alive}, head_only {head_only}",
+                                headers.len()
+                            );
+                            compared += 1;
+                        }
+                    }
+                }
+            }
+        }
+        // Not vacuous: 14 x 4 x 5 x 2 x 2 cases were actually compared.
+        assert_eq!(compared, 14 * 4 * 5 * 2 * 2);
+    }
+
+    #[test]
+    fn decimal_digits_are_printed_as_the_formatter_prints_them() {
+        for value in [0u64, 1, 9, 10, 99, 100, 255, 65_535, 1 << 32, u64::MAX - 1, u64::MAX] {
+            let mut out = Vec::new();
+            push_decimal(&mut out, value);
+            assert_eq!(out, value.to_string().into_bytes(), "{value}");
+        }
+    }
+
+    #[test]
+    fn an_http_date_is_the_formatted_one_over_a_wide_sweep() {
+        let mut values: Vec<u64> = vec![
+            0,
+            1,
+            999,
+            1_000,
+            86_399_999,
+            86_400_000,
+            951_782_400_000,   // 29 Feb 2000
+            1_709_164_800_000, // 29 Feb 2024
+            4_102_444_800_000, // 1 Jan 2100
+            // Around the four-digit year boundary the digits are written by hand.
+            253_402_300_799_999,
+            253_402_300_800_000,
+            253_402_300_800_001,
+            1_000_000_000_000_000,
+            u64::MAX,
+        ];
+        // A deterministic spread across 1970-2200, with no two neighbours alike.
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..20_000 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            values.push((state >> 20) % 7_258_118_400_000);
+        }
+        for value in &values {
+            assert_eq!(http_date(*value), date_by_format(*value), "epoch {value} ms");
+        }
+        assert!(values.len() > 20_000, "the sweep must actually run");
+    }
 }

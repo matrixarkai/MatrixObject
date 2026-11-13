@@ -310,14 +310,34 @@ pub struct ChunkMutationBatchStatus {
 }
 
 fn replica_mutation_batch_id(page_batch_id: &str, replica_index: usize) -> String {
-    let prefix = if page_batch_id.is_empty() {
-        "block-batch".to_string()
+    // Borrowed unless the id has to be hashed: the prefix used to be copied into a `String` only
+    // to be copied again into the one formatted below, and this runs twice per replica per put.
+    let hashed;
+    let prefix: &str = if page_batch_id.is_empty() {
+        "block-batch"
     } else if page_batch_id.len() > 220 {
-        etag(page_batch_id.as_bytes())
+        hashed = etag(page_batch_id.as_bytes());
+        &hashed
     } else {
-        page_batch_id.to_string()
+        page_batch_id
     };
-    format!("{prefix}-chunk-{replica_index}")
+    let mut id = String::with_capacity(prefix.len() + 7 + 20);
+    id.push_str(prefix);
+    id.push_str("-chunk-");
+    let mut digits = [0u8; 20];
+    let mut at = digits.len();
+    let mut rest = replica_index;
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    // The digits are ASCII by construction.
+    id.push_str(std::str::from_utf8(&digits[at..]).unwrap_or("0"));
+    id
 }
 
 impl ChunkServiceSnapshotChunk {
@@ -331,5 +351,57 @@ impl ChunkServiceSnapshotChunk {
             0,
             0,
         )
+    }
+}
+
+#[cfg(test)]
+mod replica_batch_id_tests {
+    use super::*;
+
+    /// The id builder this replaced, kept as the oracle: a `format!` over a copied prefix.
+    fn by_format(page_batch_id: &str, replica_index: usize) -> String {
+        let prefix = if page_batch_id.is_empty() {
+            "block-batch".to_string()
+        } else if page_batch_id.len() > 220 {
+            etag(page_batch_id.as_bytes())
+        } else {
+            page_batch_id.to_string()
+        };
+        format!("{prefix}-chunk-{replica_index}")
+    }
+
+    #[test]
+    fn a_replica_batch_id_is_the_formatted_one_for_every_shape_of_page_batch_id() {
+        // The id names a batch on a replica and is derived on begin, on end and on abort, so
+        // every one of those has to land on the same string.
+        let long = "x".repeat(1000);
+        let at_limit = "y".repeat(220);
+        let past_limit = "z".repeat(221);
+        let ids: [&str; 7] = [
+            "",
+            "object-put-0123456789abcdef",
+            "a",
+            "with spaces and unicode ✓",
+            &at_limit,
+            &past_limit,
+            &long,
+        ];
+        let indexes = [0usize, 1, 2, 9, 10, 11, 99, 100, 255, 1_000_000, usize::MAX];
+        let mut compared = 0usize;
+        for id in ids {
+            for index in indexes {
+                assert_eq!(
+                    replica_mutation_batch_id(id, index),
+                    by_format(id, index),
+                    "page batch id of {} bytes, replica {index}",
+                    id.len()
+                );
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, 7 * 11);
+        // The hashed arm really is the one taken past 220 bytes, and the limit itself is not.
+        assert!(replica_mutation_batch_id(&at_limit, 0).starts_with(&at_limit));
+        assert!(!replica_mutation_batch_id(&past_limit, 0).starts_with(&past_limit));
     }
 }
