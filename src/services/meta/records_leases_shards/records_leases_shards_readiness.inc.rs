@@ -7,7 +7,7 @@ impl MatrixMetaService {
 
     pub fn last_applied_metadata_mutation_commit_index(&self) -> u64 {
         let mut last_commit = self.next_commit_index.saturating_sub(1);
-        last_commit = last_commit.max(self.changes.last().map_or(0, |change| change.commit_index));
+        last_commit = last_commit.max(self.changes.back().map_or(0, |change| change.commit_index));
         for receipt in self.batch_request_receipts.values() {
             last_commit = last_commit.max(receipt.last_commit_index);
         }
@@ -36,7 +36,7 @@ impl MatrixMetaService {
     pub fn last_applied_metadata_mutation_time_ms(&self) -> u64 {
         let mut last_update = self
             .changes
-            .last()
+            .back()
             .map_or(0, |change| change.update_time_ms);
         for receipt in self.batch_request_receipts.values() {
             last_update = last_update.max(receipt.now_ms);
@@ -79,19 +79,19 @@ impl MatrixMetaService {
         };
         let max_retained_metadata_commit_index = self
             .changes
-            .last()
+            .back()
             .map(|change| change.commit_index)
             .unwrap_or(0)
             .max(self.raft_snapshot_floor_commit_index);
         let first_retained_change_sequence =
-            self.changes.first().map_or(0, |change| change.sequence);
-        let last_retained_change_sequence = self.changes.last().map_or(0, |change| change.sequence);
+            self.changes.front().map_or(0, |change| change.sequence);
+        let last_retained_change_sequence = self.changes.back().map_or(0, |change| change.sequence);
         let first_retained_metadata_commit_index =
-            self.changes.first().map_or(0, |change| change.commit_index);
+            self.changes.front().map_or(0, |change| change.commit_index);
         let last_retained_metadata_commit_index =
-            self.changes.last().map_or(0, |change| change.commit_index);
+            self.changes.back().map_or(0, |change| change.commit_index);
         let retained_mutation_receipts = self.retained_mutation_receipt_count();
-        let last_change_sequence = self.changes.last().map_or(0, |change| change.sequence);
+        let last_change_sequence = self.changes.back().map_or(0, |change| change.sequence);
         let max_change_checkpoint_lag = self
             .change_checkpoints
             .values()

@@ -72,12 +72,12 @@ impl MatrixMetaService {
             ));
         }
         let first_retained_change_sequence =
-            self.changes.first().map_or(0, |change| change.sequence);
-        let last_retained_change_sequence = self.changes.last().map_or(0, |change| change.sequence);
+            self.changes.front().map_or(0, |change| change.sequence);
+        let last_retained_change_sequence = self.changes.back().map_or(0, |change| change.sequence);
         let first_retained_commit_index =
-            self.changes.first().map_or(0, |change| change.commit_index);
+            self.changes.front().map_or(0, |change| change.commit_index);
         let last_retained_commit_index =
-            self.changes.last().map_or(0, |change| change.commit_index);
+            self.changes.back().map_or(0, |change| change.commit_index);
         let retained_changes_compacted = if first_retained_change_sequence > 0 {
             after_sequence.saturating_add(1) < first_retained_change_sequence
         } else {
@@ -166,7 +166,7 @@ impl MatrixMetaService {
             }
         }
         report.remaining_changes = retained.len() as u64;
-        self.changes = retained;
+        self.changes = retained.into();
         if report.compacted_changes > 0 {
             self.next_commit_index = self.next_commit_index.saturating_add(1);
         }
@@ -320,7 +320,7 @@ impl MatrixMetaService {
                 "prepared metadata changefeed compaction compacted set was incomplete".to_string(),
             ));
         }
-        self.changes = retained;
+        self.changes = retained.into();
         self.next_commit_index = self.next_commit_index.saturating_add(1);
         Ok(prepared.report)
     }

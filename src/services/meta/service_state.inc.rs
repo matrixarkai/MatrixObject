@@ -47,7 +47,7 @@ pub struct MatrixMetaService {
     pub(crate) transactions: BTreeMap<String, MetadataTransaction>,
     transaction_receipts: BTreeMap<String, MetadataTransactionReceipt>,
     change_checkpoints: BTreeMap<String, MetadataChangeCheckpoint>,
-    changes: Vec<MetadataChange>,
+    changes: std::collections::VecDeque<MetadataChange>,
     pub(crate) next_commit_index: u64,
     next_change_sequence: u64,
     compacted_tombstone_count: u64,

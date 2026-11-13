@@ -39,7 +39,7 @@ impl MatrixMetaService {
                 retained_changes.push(change);
             }
         }
-        self.changes = retained_changes;
+        self.changes = retained_changes.into();
 
         let mut compacted_batch_receipts = 0u64;
         if !self.batch_request_receipts.is_empty() {

@@ -3093,6 +3093,35 @@ fn a_page_filled_by_small_appends_reallocates_rarely_and_holds_bounded_slack() {
 }
 
 #[test]
+fn the_metadata_change_log_is_a_deque_because_it_drops_one_record_per_append() {
+    // THE LOG IS ALWAYS AT ITS BOUND once it has filled, and every append then drops its oldest
+    // record. Held as a `Vec`, that drop shifts every record the log keeps, once per put, for
+    // ever: 27.7% of the instructions of an 8,000-put profile, 50,000 a put on a log of
+    // 1,024 records, with the per-put cost 45% above what it was at 1,000 puts. It is a
+    // deque so the drop moves nothing. The object change feed had the same defect and the same
+    // cure; this is the second place it was found, so the declaration is pinned.
+    //
+    // Comments are excluded and the count is asserted, so a declaration that moved or was
+    // reworded cannot leave this checking nothing.
+    const STATE: &str = include_str!("services/meta/service_state.inc.rs");
+    let declared: Vec<&str> = STATE
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with("//") && line.starts_with("changes:") && line.ends_with(','))
+        .collect();
+    assert_eq!(
+        declared.len(),
+        1,
+        "the metadata service should declare its change log exactly once: {declared:?}"
+    );
+    assert!(
+        declared[0].contains("VecDeque<MetadataChange>"),
+        "the metadata change log must be a deque so trimming it moves no records: {}",
+        declared[0]
+    );
+}
+
+#[test]
 fn a_chunk_checksum_is_the_hash_of_its_payload_however_the_write_arrived() {
     // `write_chunk` resumes the FNV-1a fold over the appended bytes instead of re-hashing the
     // whole payload, which is only sound where the write begins at or past the old end. This

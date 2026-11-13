@@ -28,7 +28,7 @@ impl MatrixMetaService {
             transactions: BTreeMap::new(),
             transaction_receipts: BTreeMap::new(),
             change_checkpoints: BTreeMap::new(),
-            changes: Vec::new(),
+            changes: std::collections::VecDeque::new(),
             next_commit_index: 1,
             next_change_sequence: 1,
             compacted_tombstone_count: 0,

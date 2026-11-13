@@ -250,7 +250,7 @@ mod replica_service;
 pub use replica_service::*;
 use replica_service::{
     select_bounded_chunk_discard_ranges_from, select_bounded_chunk_write_ranges_from,
-    trim_btree_map_to_retention, trim_vec_front_to_retention, validate_page_route_qos_config,
+    trim_btree_map_to_retention, trim_deque_front_to_retention, validate_page_route_qos_config,
     validate_chunk_mutation_qos_config, validate_meta_retention_limit,
     validate_metadata_admission_policy, validate_metadata_qos_config,
     validate_metadata_route_cache_config, validate_storage_receipt_retention,
