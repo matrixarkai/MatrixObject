@@ -412,6 +412,22 @@ fn run(
         packets,
         outgoing,
     } = channels;
+    // A leader's append packets do not depend on its own copy being durable, so they leave as soon
+    // as the Ready is taken, before its journal write and fsync, and replication to the followers
+    // overlaps the leader's own fsync. Everything that does depend on durability is returned by
+    // `process_ready` and queued after it.
+    {
+        let (early, counters) = (outgoing.clone(), progress.peer_deliveries());
+        peer.set_early_packet_sink(Some(Box::new(move |packets| {
+            crate::cluster::peer_delivery::queue_packets(
+                &early,
+                &counters,
+                NETWORK_TIMEOUT,
+                packets,
+            );
+            Ok(())
+        })));
+    }
     let mut tick = Instant::now();
     let mut lease_sweep = Instant::now();
     let mut pending: VecDeque<Pending> = VecDeque::new();
@@ -501,17 +517,12 @@ fn run(
                 )));
             }
         }
-        for packet in output {
-            if let Some(tx) = outgoing.get(&packet.to) {
-                if tx.try_send(crate::cluster::peer_delivery::PeerDelivery::observed(
-                    packet.bytes,
-                    NETWORK_TIMEOUT,
-                    progress.peer_deliveries(),
-                )).is_err() {
-                    progress.peer_deliveries().queue_rejected();
-                }
-            }
-        }
+        crate::cluster::peer_delivery::queue_packets(
+            &outgoing,
+            &progress.peer_deliveries(),
+            NETWORK_TIMEOUT,
+            output,
+        );
         if pending
             .front()
             .is_some_and(|p| !peer.is_leader() || p.id.term != peer.term())
