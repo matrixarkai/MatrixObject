@@ -82,7 +82,7 @@ pub struct MatrixReplicaService {
     /// payload has been fully validated once, so later reads verify only their own
     /// pages instead of re-hashing the whole chunk. Never persisted.
     page_validation: RefCell<HashMap<PageId, (u64, String, Vec<u64>)>>,
-    read_cache_by_chunk: RefCell<HashMap<PageId, HashSet<ReplicaReadCacheRangeKey>>>,
+    read_cache_by_chunk: RefCell<HashMap<PageId, std::collections::BTreeSet<ReplicaReadCacheSpan>>>,
     read_cache_lru: RefCell<VecDeque<(u64, ReplicaReadCacheKey)>>,
     read_cache_bytes: Cell<u64>,
     max_read_cache_bytes: Cell<u64>,

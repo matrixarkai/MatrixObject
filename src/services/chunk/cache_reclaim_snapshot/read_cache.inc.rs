@@ -80,7 +80,7 @@ impl MatrixReplicaService {
             .borrow_mut()
             .entry(key.0.clone())
             .or_default()
-            .insert((key.1, key.2));
+            .insert(read_cache_span(key.1, key.2));
         let mut cache = self.read_cache.borrow_mut();
         if let Some(previous) = cache.insert(
             key,
@@ -268,7 +268,7 @@ impl MatrixReplicaService {
         if let Some(entry) = &removed {
             let mut by_chunk = self.read_cache_by_chunk.borrow_mut();
             if let Some(keys) = by_chunk.get_mut(&key.0) {
-                keys.remove(&(key.1, key.2));
+                keys.remove(&read_cache_span(key.1, key.2));
                 if keys.is_empty() {
                     by_chunk.remove(&key.0);
                 }
@@ -308,7 +308,7 @@ impl MatrixReplicaService {
             if let Some(removed) = cache.remove(&key) {
                 let mut by_chunk = self.read_cache_by_chunk.borrow_mut();
                 if let Some(keys) = by_chunk.get_mut(&key.0) {
-                    keys.remove(&(key.1, key.2));
+                    keys.remove(&read_cache_span(key.1, key.2));
                     if keys.is_empty() {
                         by_chunk.remove(&key.0);
                     }

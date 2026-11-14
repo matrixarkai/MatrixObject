@@ -48,13 +48,13 @@ impl MatrixReplicaService {
         read_cache_overhead = read_cache_overhead.saturating_add(
             (by_chunk.len() as u64).saturating_mul(
                 (std::mem::size_of::<PageId>()
-                    + std::mem::size_of::<HashSet<ReplicaReadCacheRangeKey>>()) as u64,
+                    + std::mem::size_of::<std::collections::BTreeSet<ReplicaReadCacheSpan>>()) as u64,
             ),
         );
         for ranges in by_chunk.values() {
             read_cache_overhead = read_cache_overhead.saturating_add(
                 (ranges.len() as u64)
-                    .saturating_mul(std::mem::size_of::<ReplicaReadCacheRangeKey>() as u64),
+                    .saturating_mul(std::mem::size_of::<ReplicaReadCacheSpan>() as u64),
             );
         }
         let lru = self.read_cache_lru.borrow();

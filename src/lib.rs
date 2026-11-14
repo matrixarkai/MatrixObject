@@ -12,7 +12,7 @@ pub mod placement_outcome;
 
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, VecDeque};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
