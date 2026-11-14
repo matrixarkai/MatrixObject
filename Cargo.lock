@@ -94,7 +94,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -272,11 +272,12 @@ dependencies = [
 [[package]]
 name = "matrixraft"
 version = "0.1.0"
-source = "git+https://github.com/matrixarkai/matrixraft.git?rev=2c6929ac551eea01a0750df8479d25fecbc1eaef#2c6929ac551eea01a0750df8479d25fecbc1eaef"
+source = "git+https://github.com/matrixarkai/matrixraft.git?rev=70ff96f6346c4ab93071ccd26e850b2f29e03488#70ff96f6346c4ab93071ccd26e850b2f29e03488"
 dependencies = [
  "fs2",
  "prost",
  "raft 0.7.0 (git+https://github.com/tikv/raft-rs?rev=ad13f3d90780f53aea2488c6a4b76c0d334bf136)",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
  "slog",
@@ -633,7 +634,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -795,7 +796,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
