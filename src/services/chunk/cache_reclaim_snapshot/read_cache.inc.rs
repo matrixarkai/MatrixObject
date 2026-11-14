@@ -176,18 +176,82 @@ impl MatrixReplicaService {
             return false;
         }
         let mut hashes = Vec::with_capacity(chunk.data.len() / page + 1);
-        let mut from = 0usize;
-        while from < chunk.data.len() {
-            let to = (from + page).min(chunk.data.len());
-            hashes.push(fnv1a64(&chunk.data[from..to]));
-            from = to;
-        }
+        Self::extend_page_hashes(&chunk.data, 0, &mut hashes);
         self.page_validation.borrow_mut().insert(
             page_id.clone(),
             // `checksum()` returns an owned String; the clone was a second allocation.
             (chunk.write_sequence, chunk.checksum(), hashes),
         );
         true
+    }
+
+    /// Hashes of the validation pages of `data` from the page that starts at `from` to the end.
+    /// `from` is a multiple of the page size, so every hash pushed is of a whole page except
+    /// possibly the last, which is the partial page at the end of the payload.
+    fn extend_page_hashes(data: &[u8], from: usize, hashes: &mut Vec<u64>) {
+        let page = CHUNK_VALIDATION_PAGE_BYTES;
+        debug_assert_eq!(from % page, 0);
+        let mut from = from;
+        while from < data.len() {
+            let to = (from + page).min(data.len());
+            hashes.push(fnv1a64(&data[from..to]));
+            from = to;
+        }
+    }
+
+    /// Takes the page's validation memo out, so a write that can prove it only appended may put
+    /// a corrected one back with `carry_page_validation_over_append`.
+    fn take_page_validation(&self, page_id: &PageId) -> Option<(u64, String, Vec<u64>)> {
+        self.page_validation.borrow_mut().remove(page_id)
+    }
+
+    /// A WRITE THAT ONLY APPENDED KEEPS THE MEMO IT TOOK, CORRECTED FOR WHAT IT ADDED.
+    ///
+    /// The memo is keyed by (write_sequence, checksum), and an append changes both, so before this
+    /// every append made the next read start from nothing: `chunk_pages_valid` hashed the whole
+    /// payload and then every page of it again. A page filled by appends and read after each one
+    /// therefore cost a read time proportional to the page, which is the shape a log that is
+    /// followed while it is written has.
+    ///
+    /// An append leaves every byte before the old end untouched, so the hash of each page that was
+    /// FULL at the old end is still the hash of that page. Those are kept. The page that held the
+    /// old end was partial and its hash is stale, and anything past it is new, so those are hashed
+    /// from the current bytes. The memo comes out describing the page exactly as a cold build of the
+    /// new payload would -- a test builds one and compares them -- so the integrity a read checks
+    /// is the same: a damaged byte fails its page.
+    ///
+    /// It carries only a memo that described the page as it was just before this write:
+    /// `prior_sequence` and `prior_checksum` are that page's, captured before the write changed
+    /// them. A memo that describes anything else is dropped and the next read builds a fresh one.
+    fn carry_page_validation_over_append(
+        &self,
+        page_id: &PageId,
+        taken: (u64, String, Vec<u64>),
+        prior_sequence: u64,
+        prior_checksum: &str,
+        bytes_before_write: usize,
+        chunk: &PageState,
+    ) {
+        let page = CHUNK_VALIDATION_PAGE_BYTES;
+        let (sequence, checksum, mut hashes) = taken;
+        if sequence != prior_sequence || checksum != prior_checksum {
+            return;
+        }
+        // The memo must have been built over exactly the bytes that were here.
+        if hashes.len() != bytes_before_write.div_ceil(page) || chunk.data.len() < bytes_before_write {
+            return;
+        }
+        let kept_pages = bytes_before_write / page;
+        hashes.truncate(kept_pages);
+        Self::extend_page_hashes(&chunk.data, kept_pages * page, &mut hashes);
+        self.page_validation
+            .borrow_mut()
+            .insert(page_id.clone(), (chunk.write_sequence, chunk.checksum(), hashes));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn page_validation_for_test(&self, page_id: &PageId) -> Option<(u64, String, Vec<u64>)> {
+        self.page_validation.borrow().get(page_id).cloned()
     }
 
     fn can_insert_read_cache_payload(&self, bytes: u64) -> bool {
