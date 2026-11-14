@@ -32,6 +32,31 @@ impl PeerDeliveryCounters {
     }
 }
 
+/// Queue `packets` for the peers they name. A packet whose peer has no queue is dropped, and one
+/// whose queue is full is counted as rejected. The packets a Ready returns after it is durable and
+/// the packets a leader hands over before it is durable go through this one rule.
+pub(super) fn queue_packets(
+    outgoing: &std::collections::BTreeMap<u64, std::sync::mpsc::SyncSender<PeerDelivery>>,
+    counters: &PeerDeliveryCounters,
+    timeout: Duration,
+    packets: Vec<matrixraft::peer_runtime::PeerPacket>,
+) {
+    for packet in packets {
+        if let Some(tx) = outgoing.get(&packet.to) {
+            if tx
+                .try_send(PeerDelivery::observed(
+                    packet.bytes,
+                    timeout,
+                    counters.clone(),
+                ))
+                .is_err()
+            {
+                counters.queue_rejected();
+            }
+        }
+    }
+}
+
 pub(super) struct PeerDelivery {
     bytes: Vec<u8>,
     deadline: Instant,
@@ -298,6 +323,55 @@ mod tests {
             .unwrap_err()
             .kind(),
             io::ErrorKind::TimedOut
+        );
+    }
+}
+
+#[cfg(test)]
+mod queue_packet_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::mpsc::sync_channel;
+
+    fn packet(to: u64, byte: u8) -> matrixraft::peer_runtime::PeerPacket {
+        matrixraft::peer_runtime::PeerPacket {
+            to,
+            bytes: vec![byte],
+        }
+    }
+
+    /// The rule shared by the packets a Ready returns after it is durable and the packets a leader
+    /// hands over before: each goes to the queue of the peer it names, a full queue is counted and
+    /// never waited on, and a packet for a peer with no queue is dropped.
+    #[test]
+    fn a_packet_goes_to_its_peer_and_a_full_queue_is_counted_not_waited_on() {
+        let (one, one_rx) = sync_channel(1);
+        let (two, two_rx) = sync_channel(8);
+        let outgoing = BTreeMap::from([(1u64, one), (2u64, two)]);
+        let counters = PeerDeliveryCounters::default();
+
+        queue_packets(
+            &outgoing,
+            &counters,
+            Duration::from_secs(1),
+            vec![packet(1, 10), packet(1, 11), packet(2, 20), packet(9, 90)],
+        );
+
+        assert!(one_rx.try_recv().is_ok(), "peer 1 gets its first packet");
+        assert!(
+            one_rx.try_recv().is_err(),
+            "peer 1's queue holds one, so its second packet was dropped, not queued"
+        );
+        assert!(two_rx.try_recv().is_ok(), "peer 2 gets its packet");
+        assert!(two_rx.try_recv().is_err());
+        let described = counters.describe();
+        assert!(
+            described.contains("peer_attempted=3;"),
+            "three packets named a peer with a queue: {described}"
+        );
+        assert!(
+            described.contains("peer_queue_rejected=1;"),
+            "the second packet to peer 1 found its queue full: {described}"
         );
     }
 }
