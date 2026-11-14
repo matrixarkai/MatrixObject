@@ -3159,6 +3159,146 @@ fn a_page_filled_by_small_appends_reallocates_rarely_and_holds_bounded_slack() {
     );
 }
 
+/// What a cold build of the validation memo of `page` would be: a hash per validation page.
+fn cold_page_validation_hashes(data: &[u8]) -> Vec<u64> {
+    data.chunks(CHUNK_VALIDATION_PAGE_BYTES)
+        .map(crate::fnv1a64)
+        .collect()
+}
+
+#[test]
+fn an_append_carries_the_page_validation_memo_and_it_equals_a_cold_build() {
+    // A READ AFTER EVERY APPEND USED TO HASH THE WHOLE PAGE EVERY TIME. The memo is keyed by
+    // (write_sequence, checksum), an append changes both, and the write also dropped the memo, so
+    // each read started from nothing: the work per read grew with the page. The memo is carried
+    // across an append now, and what it carries has to be what a cold build would have made --
+    // including the page that held the old end, whose hash is stale once the page grows.
+    //
+    // Widths straddle the validation page (4,096) on purpose: an append that fills the partial
+    // page, one that exactly reaches a boundary, and one that spans several pages are the shapes
+    // a carry gets wrong by one.
+    let widths: [usize; 14] = [
+        1, 100, 3995, 1, 4096, 5000, 3, 8189, 4096, 4095, 1, 12288, 7, 4093,
+    ];
+    let mut chunk = MatrixReplicaService::new();
+    let page_id = PageId {
+        chunk_id: ChunkId::new(0, 993).unwrap(),
+        page_index: 0,
+    };
+    let mut expected: Vec<u8> = Vec::new();
+    for (round, width) in widths.iter().enumerate() {
+        let bytes: Vec<u8> = (0..*width).map(|i| (round * 37 + i * 11) as u8).collect();
+        chunk
+            .write_chunk(page_id.clone(), expected.len() as u64, &bytes)
+            .unwrap();
+        expected.extend_from_slice(&bytes);
+
+        // The first round has no memo to carry; every later round does, because a read ran
+        // after the round before. Checked BEFORE any read, so it is the write that left it.
+        let memo = chunk.page_validation_for_test(&page_id);
+        if round > 0 {
+            let (sequence, checksum, hashes) =
+                memo.unwrap_or_else(|| panic!("round {round}: the append dropped the memo"));
+            let page = chunk.pages_local().get(&page_id).unwrap();
+            assert_eq!(sequence, page.write_sequence, "round {round}: stale sequence");
+            assert_eq!(checksum, page.checksum(), "round {round}: stale checksum");
+            assert_eq!(
+                hashes,
+                cold_page_validation_hashes(&expected),
+                "round {round}: the carried memo differs from a cold build"
+            );
+        }
+
+        // A read covering the whole page, which also builds the memo on round 0.
+        let read = chunk.read_chunk(&page_id, 0, expected.len() as u64).unwrap();
+        assert_eq!(read.data, expected, "round {round}: the bytes read back differ");
+    }
+}
+
+#[test]
+fn a_write_that_is_not_a_pure_append_does_not_carry_the_page_validation_memo() {
+    let mut chunk = MatrixReplicaService::new();
+    let page_id = PageId {
+        chunk_id: ChunkId::new(0, 994).unwrap(),
+        page_index: 0,
+    };
+    let mut expected: Vec<u8> = (0..10_000).map(|i| (i * 7) as u8).collect();
+    chunk.write_chunk(page_id.clone(), 0, &expected).unwrap();
+    chunk.read_chunk(&page_id, 0, 10_000).unwrap();
+    assert!(chunk.page_validation_for_test(&page_id).is_some(), "the read builds a memo");
+
+    // OVERWRITE INSIDE THE PAGE: the bytes before the old end changed, so nothing is carried.
+    chunk.write_chunk(page_id.clone(), 5_000, b"overwritten").unwrap();
+    expected[5_000..5_011].copy_from_slice(b"overwritten");
+    assert!(
+        chunk.page_validation_for_test(&page_id).is_none(),
+        "an overwrite carried a memo that no longer describes the page"
+    );
+    let read = chunk.read_chunk(&page_id, 0, 10_000).unwrap();
+    assert_eq!(read.data, expected, "the overwritten bytes must read back");
+    let (_, _, hashes) = chunk.page_validation_for_test(&page_id).unwrap();
+    assert_eq!(hashes, cold_page_validation_hashes(&expected));
+
+    // A WRITE PAST THE END WITH A HOLE: the skipped bytes are zero padding, an append, carried.
+    chunk.write_chunk(page_id.clone(), 12_000, b"tail").unwrap();
+    expected.resize(12_000, 0);
+    expected.extend_from_slice(b"tail");
+    let (_, _, hashes) = chunk
+        .page_validation_for_test(&page_id)
+        .expect("a write past the end is an append and carries the memo");
+    assert_eq!(hashes, cold_page_validation_hashes(&expected));
+    assert_eq!(
+        chunk.read_chunk(&page_id, 0, expected.len() as u64).unwrap().data,
+        expected
+    );
+}
+
+#[test]
+fn a_carried_page_validation_memo_still_catches_a_damaged_prefix() {
+    // The memo is what a read checks the bytes against, so a carry that kept hashes of bytes that
+    // were not the bytes would stop catching damage. Damage lands in a page that was full before
+    // the last append, so its hash is one the carry kept rather than one it recomputed.
+    let mut chunk = MatrixReplicaService::new();
+    let page_id = PageId {
+        chunk_id: ChunkId::new(0, 995).unwrap(),
+        page_index: 0,
+    };
+    let mut expected: Vec<u8> = Vec::new();
+    for round in 0..8usize {
+        let bytes: Vec<u8> = (0..2_500).map(|i| (round * 13 + i * 5) as u8).collect();
+        chunk
+            .write_chunk(page_id.clone(), expected.len() as u64, &bytes)
+            .unwrap();
+        expected.extend_from_slice(&bytes);
+        chunk.read_chunk(&page_id, 0, expected.len() as u64).unwrap();
+    }
+    // One more append, and no read: the memo in place is the carried one.
+    let last: Vec<u8> = (0..2_500).map(|i| (i * 3 + 1) as u8).collect();
+    chunk
+        .write_chunk(page_id.clone(), expected.len() as u64, &last)
+        .unwrap();
+    expected.extend_from_slice(&last);
+    assert!(chunk.page_validation_for_test(&page_id).is_some());
+
+    // Damage a byte in the SECOND validation page (offset 4,096..8,192), full before the append.
+    let damaged_at = 5_000usize;
+    {
+        let page = std::sync::Arc::make_mut(chunk.pages_local_mut().get_mut(&page_id).unwrap());
+        std::sync::Arc::make_mut(&mut page.data)[damaged_at] ^= 0xff;
+    }
+    let read = chunk.read_chunk(&page_id, 4_096, 4_096).unwrap();
+    assert_eq!(
+        read.data.as_slice(),
+        &expected[4_096..8_192],
+        "damaged bytes were served: the carried memo no longer catches damage in a kept page"
+    );
+    // A read that does not touch the damaged page is unaffected.
+    assert_eq!(
+        chunk.read_chunk(&page_id, 0, 4_096).unwrap().data.as_slice(),
+        &expected[0..4_096]
+    );
+}
+
 #[test]
 fn the_metadata_change_log_is_a_deque_because_it_drops_one_record_per_append() {
     // THE LOG IS ALWAYS AT ITS BOUND once it has filled, and every append then drops its oldest

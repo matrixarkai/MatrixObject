@@ -56,6 +56,10 @@ impl MatrixReplicaService {
         // An append leaves the undo a length, so `make_mut` below copies nothing.
         self.keep_page_undo_cheap_for_write(&page_id, start_index, end_index);
         let accounting_before = self.page_accounting(&page_id);
+        // TAKEN BEFORE THE WRITE, put back after it if the write only appended: see
+        // `carry_page_validation_over_append`. Nothing between here and the end can fail, so a
+        // memo taken here is never lost to an early return.
+        let validation_before_write = self.take_page_validation(&cache_chunk_id);
         // `make_mut` copies this one chunk's state if a snapshot still names
         // it, so the copy is per chunk WRITTEN rather than per chunk held.
         let chunk = std::sync::Arc::make_mut(
@@ -67,6 +71,11 @@ impl MatrixReplicaService {
         // of the bytes that were already here instead of re-reading them.
         let bytes_before_write = chunk.data.len();
         let checksum_before_write = chunk.checksum_fnv1a64;
+        let sequence_before_write = chunk.write_sequence;
+        // Only built when there is a memo to compare it with: `checksum()` allocates.
+        let checksum_text_before_write = validation_before_write
+            .as_ref()
+            .map(|_| chunk.checksum());
         if end_index > chunk.data.len() {
             let payload = std::sync::Arc::make_mut(&mut chunk.data);
             reserve_page_growth(payload, end_index);
@@ -108,7 +117,26 @@ impl MatrixReplicaService {
         } else {
             clear_chunk_ec_sidecars(chunk);
         }
+        // The pure-append test is the one the checksum above uses: the write begins at or past
+        // the old end, so no byte before the old end changed.
+        let appended_only = start_index >= bytes_before_write;
         self.invalidate_chunk_cache(&cache_chunk_id, offset, data.len() as u64);
+        if appended_only {
+            if let (Some(taken), Some(checksum_text)) =
+                (validation_before_write, checksum_text_before_write)
+            {
+                if let Some(page) = self.pages.get(&cache_chunk_id) {
+                    self.carry_page_validation_over_append(
+                        &cache_chunk_id,
+                        taken,
+                        sequence_before_write,
+                        &checksum_text,
+                        bytes_before_write,
+                        page,
+                    );
+                }
+            }
+        }
         self.reaccount_page(&cache_chunk_id, accounting_before);
         self.physical_write_count = self.physical_write_count.saturating_add(1);
         self.physical_write_bytes = self.physical_write_bytes.saturating_add(data.len() as u64);
