@@ -3,6 +3,18 @@
 pub(crate) type ReplicaReadCacheKey = (PageId, u64, u64);
 pub(crate) type ReplicaReadCacheRangeKey = (u64, u64);
 
+/// A cached range as the per-page index holds it: `(end, offset)`.
+///
+/// The index is ordered by END, so "the cached ranges a write can touch" starts at the first
+/// range that ends past the write's start instead of at the first range there is. A write at
+/// or past the end of every range cached for its page -- an append -- then finds none without
+/// looking at any, where it used to look at all of them.
+pub(crate) type ReplicaReadCacheSpan = (u64, u64);
+
+pub(crate) fn read_cache_span(offset: u64, length: u64) -> ReplicaReadCacheSpan {
+    (offset.saturating_add(length), offset)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ReplicaReadCacheEntry {
     pub(crate) result: ReplicaReadResult,

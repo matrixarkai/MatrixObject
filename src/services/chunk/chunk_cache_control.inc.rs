@@ -115,6 +115,29 @@ impl MatrixReplicaService {
         self.invalidate_chunk_cache_bounded(page_id, offset, length, 0)
     }
 
+    /// The cached ranges of `page_id` that intersect `[offset, offset + length)`, as
+    /// `(offset, length)`. Exactly the ranges `ranges_intersect` accepts, found by walking the
+    /// per-page index from the first range that ends past `offset` rather than from its start.
+    fn cached_ranges_a_write_can_touch(
+        &self,
+        page_id: &PageId,
+        offset: u64,
+        length: u64,
+    ) -> Vec<ReplicaReadCacheRangeKey> {
+        let Some(write_end) = offset.checked_add(length).filter(|_| length > 0) else {
+            return Vec::new();
+        };
+        let by_chunk = self.read_cache_by_chunk.borrow();
+        let Some(spans) = by_chunk.get(page_id) else {
+            return Vec::new();
+        };
+        spans
+            .range((offset.saturating_add(1), 0)..)
+            .filter(|(end, cached_offset)| *cached_offset < write_end && *end > *cached_offset)
+            .map(|(end, cached_offset)| (*cached_offset, end - cached_offset))
+            .collect()
+    }
+
     pub fn invalidate_chunk_cache_bounded(
         &self,
         page_id: &PageId,
@@ -130,17 +153,7 @@ impl MatrixReplicaService {
         self.read_cache_invalidations
             .set(self.read_cache_invalidations.get().saturating_add(1));
         if max_bytes == 0 {
-            let keys: Vec<ReplicaReadCacheRangeKey> = self
-                .read_cache_by_chunk
-                .borrow()
-                .get(page_id)
-                .into_iter()
-                .flat_map(|keys| keys.iter())
-                .filter(|(cached_offset, cached_length)| {
-                    ranges_intersect(offset, length, *cached_offset, *cached_length)
-                })
-                .copied()
-                .collect();
+            let keys = self.cached_ranges_a_write_can_touch(page_id, offset, length);
             for (cached_offset, cached_length) in keys {
                 let key = (page_id.clone(), cached_offset, cached_length);
                 if let Some(entry) = self.remove_read_cache_entry(&key) {
@@ -161,19 +174,13 @@ impl MatrixReplicaService {
         }
         let mut keys: Vec<(ReplicaReadCacheRangeKey, u64)> = {
             let cache = self.read_cache.borrow();
-            self.read_cache_by_chunk
-                .borrow()
-                .get(page_id)
+            self.cached_ranges_a_write_can_touch(page_id, offset, length)
                 .into_iter()
-                .flat_map(|page_keys| page_keys.iter())
                 .filter_map(|(cached_offset, cached_length)| {
-                    if !ranges_intersect(offset, length, *cached_offset, *cached_length) {
-                        return None;
-                    }
-                    let key = (page_id.clone(), *cached_offset, *cached_length);
+                    let key = (page_id.clone(), cached_offset, cached_length);
                     cache
                         .get(&key)
-                        .map(|entry| ((*cached_offset, *cached_length), entry.result.data.len() as u64))
+                        .map(|entry| ((cached_offset, cached_length), entry.result.data.len() as u64))
                 })
                 .collect()
         };

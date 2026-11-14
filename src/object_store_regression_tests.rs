@@ -55660,3 +55660,128 @@ fn malformed_manifest_publications_leave_all_metadata_unchanged() {
     assert!(PlacementOutcome::publish_manifest(&service, replace.manifest.unwrap(), 20).is_err());
     assert_eq!(service.export_snapshot(), saved);
 }
+
+/// The intersection a cached read range has with a write, stated independently of the code under
+/// test: both ranges are non-empty and each starts before the other ends.
+fn oracle_ranges_intersect(a_offset: u64, a_length: u64, b_offset: u64, b_length: u64) -> bool {
+    a_length > 0 && b_length > 0 && a_offset < b_offset + b_length && b_offset < a_offset + a_length
+}
+
+#[test]
+fn a_write_invalidates_exactly_the_cached_ranges_it_intersects() {
+    // THE PER-PAGE INDEX OF CACHED RANGES IS ORDERED BY END, so that a write finds what it can
+    // touch by starting at the first range that ends past its start. That is an index change,
+    // and an index change is where an off-by-one decides which cached bytes a write leaves
+    // standing. So the answer is compared, over many random pages, against the definition of
+    // intersection written out independently, and the writes are aimed at the places the
+    // boundary is: a write that starts exactly where a cached range ends, one that ends exactly
+    // where one starts, one that touches nothing at the tail of the page, and an empty one.
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = move |bound: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % bound
+    };
+    const PAGE_BYTES: u64 = 20_000;
+    let mut shapes = [0usize; 6];
+    for _trial in 0..200u32 {
+        let mut chunk = MatrixReplicaService::new();
+        chunk.set_read_cache_max_bytes(8 << 20);
+        let page_id = PageId {
+            chunk_id: ChunkId::new(0, 996).unwrap(),
+            page_index: 0,
+        };
+        let data: Vec<u8> = (0..PAGE_BYTES as u32).map(|i| (i * 7) as u8).collect();
+        chunk.write_chunk(page_id.clone(), 0, &data).unwrap();
+
+        let mut ranges: Vec<(u64, u64)> = Vec::new();
+        for _ in 0..(3 + next(10)) {
+            let offset = next(PAGE_BYTES - 1);
+            let length = 1 + next((PAGE_BYTES - offset).min(2_500));
+            if !ranges.contains(&(offset, length)) {
+                chunk.read_chunk(&page_id, offset, length).unwrap();
+                ranges.push((offset, length));
+            }
+        }
+        // They are all cached: this is what makes "still cached" mean something below.
+        for (offset, length) in &ranges {
+            let (_, hit) = chunk
+                .read_chunk_with_cache_status(&page_id, *offset, *length, ReadCacheIntent::Fill)
+                .unwrap();
+            assert!(hit, "range ({offset}, {length}) was not cached before the write");
+        }
+
+        let (cached_offset, cached_length) = ranges[next(ranges.len() as u64) as usize];
+        let shape = next(6) as usize;
+        shapes[shape] += 1;
+        let (write_offset, write_length) = match shape {
+            // starts exactly where a cached range ends
+            0 => (cached_offset + cached_length, 1 + next(50)),
+            // ends exactly where a cached range starts
+            1 if cached_offset > 0 => {
+                let length = 1 + next(cached_offset.min(30));
+                (cached_offset - length, length)
+            }
+            // at or past the end of the page: an append
+            2 => (PAGE_BYTES + next(100), 1 + next(100)),
+            // empty
+            3 => (next(PAGE_BYTES), 0),
+            // one byte inside a cached range
+            4 => (cached_offset + next(cached_length), 1),
+            _ => (next(PAGE_BYTES), 1 + next(4_000)),
+        };
+        chunk.invalidate_chunk_cache(&page_id, write_offset, write_length);
+
+        for (offset, length) in &ranges {
+            let (_, hit) = chunk
+                .read_chunk_with_cache_status(&page_id, *offset, *length, ReadCacheIntent::Fill)
+                .unwrap();
+            let should_survive =
+                !oracle_ranges_intersect(write_offset, write_length, *offset, *length);
+            assert_eq!(
+                hit, should_survive,
+                "write ({write_offset}, {write_length}) against cached ({offset}, {length}): \
+                 cached afterwards = {hit}, expected {should_survive}"
+            );
+        }
+    }
+    // The aim at boundaries has to have happened, or the comparison above proves little.
+    assert!(
+        shapes.iter().all(|count| *count > 5),
+        "a write shape was never exercised: {shapes:?}"
+    );
+}
+
+#[test]
+fn an_append_leaves_every_cached_range_of_the_page_alone() {
+    // The case the index is ordered for. Every range cached for a page ends at or before the
+    // page's length, an append starts there, so none can intersect and none may be removed.
+    let mut chunk = MatrixReplicaService::new();
+    chunk.set_read_cache_max_bytes(8 << 20);
+    let page_id = PageId {
+        chunk_id: ChunkId::new(0, 997).unwrap(),
+        page_index: 0,
+    };
+    let mut length = 0u64;
+    let mut cached: Vec<(u64, u64)> = Vec::new();
+    for round in 0..40u64 {
+        let bytes: Vec<u8> = (0..300).map(|i| (round * 3 + i) as u8).collect();
+        chunk.write_chunk(page_id.clone(), length, &bytes).unwrap();
+        let stats = chunk.invalidate_chunk_cache(&page_id, length, bytes.len() as u64);
+        assert_eq!(stats.invalidated_entries, 0, "round {round}: an append invalidated a range");
+        chunk.read_chunk(&page_id, length, 300).unwrap();
+        cached.push((length, 300));
+        length += 300;
+    }
+    // None of them was dropped by the appends. They are STALE -- a hit also needs the page's
+    // sequence and checksum to be the ones the entry was filled under, and every append changed
+    // both -- so asking for them back would miss; what the appends must not have done is lose
+    // them from the index, which is what invalidating the whole span finds out.
+    let stats = chunk.invalidate_chunk_cache(&page_id, 0, length);
+    assert_eq!(
+        stats.invalidated_entries as usize,
+        cached.len(),
+        "the index lost cached ranges that no write intersected"
+    );
+}
