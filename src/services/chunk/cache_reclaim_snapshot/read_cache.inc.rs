@@ -215,10 +215,11 @@ impl MatrixReplicaService {
     ///
     /// An append leaves every byte before the old end untouched, so the hash of each page that was
     /// FULL at the old end is still the hash of that page. Those are kept. The page that held the
-    /// old end was partial and its hash is stale, and anything past it is new, so those are hashed
-    /// from the current bytes. The memo comes out describing the page exactly as a cold build of the
-    /// new payload would -- a test builds one and compares them -- so the integrity a read checks
-    /// is the same: a damaged byte fails its page.
+    /// old end was partial: its hash is the hash of its bytes so far, so it is carried on over the
+    /// bytes appended to it rather than recomputed from the page's start. Anything past that page
+    /// is new and is hashed from the current bytes. The memo comes out describing the page exactly
+    /// as a cold build of the new payload would -- a test builds one and compares them -- so the
+    /// integrity a read checks is the same: a damaged byte fails its page.
     ///
     /// It carries only a memo that described the page as it was just before this write:
     /// `prior_sequence` and `prior_checksum` are that page's, captured before the write changed
@@ -241,9 +242,22 @@ impl MatrixReplicaService {
         if hashes.len() != bytes_before_write.div_ceil(page) || chunk.data.len() < bytes_before_write {
             return;
         }
-        let kept_pages = bytes_before_write / page;
-        hashes.truncate(kept_pages);
-        Self::extend_page_hashes(&chunk.data, kept_pages * page, &mut hashes);
+        let full_pages = bytes_before_write / page;
+        let mut next_page_start = full_pages * page;
+        if bytes_before_write > next_page_start {
+            // THE PAGE THAT HELD THE OLD END WAS PARTIAL, AND ITS HASH IS A LEFT FOLD OVER ITS
+            // BYTES, so the hash of the page as it is now is that hash carried on over the bytes
+            // appended to it -- the identity the page checksum already relies on in `write_chunk`.
+            // Rehashing the page from its start made every append cost a page of hashing to add a
+            // few bytes. The bytes past this page's end are new and are hashed whole below.
+            let partial_end = (next_page_start + page).min(chunk.data.len());
+            hashes[full_pages] = fnv1a64_resumed(
+                hashes[full_pages],
+                &chunk.data[bytes_before_write..partial_end],
+            );
+            next_page_start += page;
+        }
+        Self::extend_page_hashes(&chunk.data, next_page_start, &mut hashes);
         self.page_validation
             .borrow_mut()
             .insert(page_id.clone(), (chunk.write_sequence, chunk.checksum(), hashes));
