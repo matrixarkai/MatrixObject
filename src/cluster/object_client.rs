@@ -687,7 +687,7 @@ impl RemoteMetaClient {
         self.with_operation_deadline(options.replica.deadline, |client| {
             let mut bounded = options.clone();
             bounded.replica.deadline = client.operation_deadline();
-            client.write_object_inner(bucket, key, expected, data, &bounded, false, None, false)
+            client.write_object_inner(bucket, key, expected, data, &bounded, false, None, false, None)
         })
     }
 
@@ -746,7 +746,96 @@ impl RemoteMetaClient {
             bounded.replica.deadline = client.operation_deadline();
             let bucket = expected.bucket.clone();
             let key = expected.key.clone();
-            client.write_object_inner(&bucket, &key, Some(expected), data, &bounded, true, None, false)
+            client.write_object_inner(&bucket, &key, Some(expected), data, &bounded, true, None, false, None)
+        })
+    }
+
+    /// Append to a log-shaped object while keeping its extent count at or below `max_extents`.
+    ///
+    /// Every plain append adds at least one extent, and a manifest holds at most 4096, so a
+    /// log of small records stops accepting writes long before its byte limit. When the append
+    /// would pass `max_extents`, the run of short extents at the tail (each shorter than
+    /// `page_bytes`) is read back, joined with `data` and written as fresh full pages, and ONE
+    /// generation replaces that tail by compare-and-set against `expected`. Extents before the
+    /// short run are untouched and no existing page is modified, so a reader holding the old
+    /// manifest still verifies every page it names. The replaced pages become garbage until the
+    /// metadata plane can reclaim them.
+    ///
+    /// A concurrent writer makes the publication fail like any append against a stale
+    /// generation: nothing is published, the caller re-reads the manifest and retries. Pages
+    /// written by the losing attempt are orphans, never visible.
+    ///
+    /// Amortised cost: one tail read of at most `max_extents * page_bytes` bytes (in practice
+    /// about the bytes appended since the previous compaction, plus one short page) per
+    /// `max_extents - tail_pages` appends.
+    pub fn append_object_compacting(
+        &mut self,
+        expected: ObjectManifest,
+        data: &[u8],
+        options: &ObjectWriteOptions,
+        max_extents: usize,
+    ) -> Result<ObjectManifest, ObjectWriteFailure> {
+        if !(2..=4096).contains(&max_extents) || options.page_bytes == 0 {
+            return Err(before(invalid("invalid compaction extent bound")));
+        }
+        let page_bytes = options.page_bytes as u64;
+        let needed = data.len().div_ceil(options.page_bytes);
+        if expected.deleted || expected.format_version != 2
+            || expected.extents.len() + needed <= max_extents
+        {
+            return self.append_object(expected, data, options);
+        }
+        let first_short = expected
+            .extents
+            .iter()
+            .rposition(|extent| extent.length >= page_bytes)
+            .map_or(0, |index| index + 1);
+        let tail_extents = expected.extents.len() - first_short;
+        let base = expected
+            .extents
+            .get(first_short)
+            .map_or(expected.length, |extent| extent.object_offset);
+        let tail_length = expected.length - base;
+        let merged_pages = (tail_length as usize + data.len()).div_ceil(options.page_bytes);
+        if tail_extents == 0
+            || merged_pages >= tail_extents + needed
+            || first_short + merged_pages > 4096
+        {
+            // Nothing to merge, or merging would not shrink the manifest.
+            return self.append_object(expected, data, options);
+        }
+        let (bucket, key) = (expected.bucket.clone(), expected.key.clone());
+        let (current, tail) = self
+            .read_object_range(
+                &bucket,
+                &key,
+                base,
+                tail_length,
+                tail_length as usize,
+                &options.replica,
+            )
+            .map_err(before)?;
+        if current != expected || tail.len() as u64 != tail_length {
+            return Err(before(ObjectError::PreconditionFailed(
+                "object manifest changed before compaction".into(),
+            )));
+        }
+        let mut joined = tail;
+        joined.extend_from_slice(data);
+        self.with_operation_deadline(options.replica.deadline, |client| {
+            let mut bounded = options.clone();
+            bounded.replica.deadline = client.operation_deadline();
+            client.write_object_inner(
+                &bucket,
+                &key,
+                Some(expected),
+                &joined,
+                &bounded,
+                true,
+                None,
+                false,
+                Some(first_short),
+            )
         })
     }
 
@@ -759,7 +848,7 @@ impl RemoteMetaClient {
             let mut bounded = options.clone();
             bounded.replica.deadline = client.operation_deadline();
             client.write_object_inner(&allocation.bucket, &allocation.key, expected, data, &bounded,
-                allocation.append, Some(allocation), false)
+                allocation.append, Some(allocation), false, None)
         })
     }
 
@@ -774,7 +863,7 @@ impl RemoteMetaClient {
             let mut bounded = options.clone();
             bounded.replica.deadline = client.operation_deadline();
             client.write_object_inner(&allocation.bucket, &allocation.key, Some(expected), data,
-                &bounded, true, Some(allocation), true)
+                &bounded, true, Some(allocation), true, None)
         })
     }
 
@@ -801,6 +890,7 @@ impl RemoteMetaClient {
         append: bool,
         owned: Option<&crate::staged_allocation::StagedAllocation>,
         compact: bool,
+        tail_from: Option<usize>,
     ) -> Result<ObjectManifest, ObjectWriteFailure> {
         self.check_operation_deadline().map_err(before)?;
         let (pages, generation) =
@@ -816,10 +906,21 @@ impl RemoteMetaClient {
         }
         if append {
             let previous = expected.as_ref().unwrap();
+            // A tail replacement drops `tail_from..` extents and re-covers those bytes,
+            // so the caller's data starts at that extent's object offset.
+            let (kept, base) = match tail_from {
+                Some(kept) if kept <= previous.extents.len() => (
+                    kept,
+                    previous.extents.get(kept).map_or(previous.length, |e| e.object_offset),
+                ),
+                Some(_) => return Err(before(invalid("tail replacement starts past the last extent"))),
+                None => (previous.extents.len(), previous.length),
+            };
             if previous.deleted || previous.format_version != 2
-                || previous.length.checked_add(data.len() as u64)
+                || base.checked_add(data.len() as u64)
                     .is_none_or(|length| length > options.max_object_bytes as u64)
-                || previous.extents.len() + pages as usize > 4096
+                || kept + pages as usize > 4096
+                || (tail_from.is_some() && (owned.is_some() || compact))
             {
                 return Err(before(invalid("invalid object append size or generation")));
             }
@@ -950,12 +1051,14 @@ impl RemoteMetaClient {
         }
         let published = if append {
             let previous = expected.as_ref().unwrap();
+            let kept = tail_from.unwrap_or(previous.extents.len());
+            let base = previous.extents.get(kept).map_or(previous.length, |e| e.object_offset);
             let mut combined = manifest.clone();
-            combined.length += previous.length;
+            combined.length += base;
             for extent in &mut combined.extents {
-                extent.object_offset += previous.length;
+                extent.object_offset += base;
             }
-            let mut extents = previous.extents.clone();
+            let mut extents = previous.extents[..kept].to_vec();
             extents.extend(combined.extents);
             combined.extents = extents;
             combined

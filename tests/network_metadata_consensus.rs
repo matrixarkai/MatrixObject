@@ -2944,3 +2944,7 @@ mod leased_object_read_scale;
 #[cfg(feature = "replica-server")]
 #[path = "node_regime/star_append_amplification.rs"]
 mod star_append_amplification;
+
+#[cfg(feature = "replica-server")]
+#[path = "node_regime/log_append_extent_cap.rs"]
+mod log_append_extent_cap;
