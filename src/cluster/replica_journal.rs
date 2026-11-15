@@ -38,6 +38,15 @@ pub(super) struct ReplicaJournal {
     sync_count: u64,
 }
 
+/// Where a scrub stands: `next` is the offset to pass to the following step, always a frame
+/// boundary, and `done` is true once the log has been walked to its end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ScrubStep {
+    pub(super) next: u64,
+    pub(super) total: u64,
+    pub(super) done: bool,
+}
+
 /// One past the last nonzero byte in `[from, to)`, or `from` when all of it is zero.
 fn zero_scan(file: &mut File, from: u64, to: u64) -> io::Result<u64> {
     file.seek(SeekFrom::Start(from))?;
@@ -417,6 +426,98 @@ impl ReplicaJournal {
             self.physical = target;
         }
         Ok(())
+    }
+
+    /// Validate the journal from `from` (zero, or the `next` of a previous step) until at least
+    /// `max_bytes` have been read or the log ends: each frame's header, payload digest and
+    /// terminator, and, from zero, the checkpoint image and its digest. Nothing is applied and the
+    /// journal is not changed; reads use positioned I/O, so the append cursor does not move. A
+    /// step from zero covers the whole checkpoint image, so it can exceed `max_bytes`. A host
+    /// calls this off the write path at a pace of its own choosing.
+    #[cfg(unix)]
+    pub(super) fn scrub_step(&self, from: u64, max_bytes: u64) -> io::Result<ScrubStep> {
+        use std::os::unix::fs::FileExt;
+        if from > self.length {
+            return Err(invalid("scrub position is past the end of the journal"));
+        }
+        let mut at = from;
+        if at == 0 {
+            let mut prefix = [0u8; 4];
+            let count = self.length.min(4) as usize;
+            self.file.read_exact_at(&mut prefix[..count], 0)?;
+            if count == 4 && &prefix == b"MOSJ" {
+                let mut header = [0; BASE_HEADER_LEN];
+                self.file.read_exact_at(&mut header, 0)?;
+                if header[4..8] != 1u32.to_be_bytes()
+                    || fnv1a64(&header[..24])
+                        != u64::from_be_bytes(header[24..].try_into().unwrap())
+                {
+                    return Err(invalid("replica checkpoint header is invalid"));
+                }
+                let length = u64::from_be_bytes(header[8..16].try_into().unwrap());
+                if BASE_HEADER_LEN as u64 + length > self.length {
+                    return Err(invalid("replica checkpoint is incomplete or oversized"));
+                }
+                let mut hash = Digest::new(io::sink());
+                let mut buffer = vec![0u8; 1 << 20];
+                let mut done = 0;
+                while done < length {
+                    let want = ((length - done) as usize).min(buffer.len());
+                    self.file
+                        .read_exact_at(&mut buffer[..want], BASE_HEADER_LEN as u64 + done)?;
+                    hash.update(&buffer[..want]);
+                    done += want as u64;
+                }
+                if hash.hash != u64::from_be_bytes(header[16..24].try_into().unwrap()) {
+                    return Err(invalid("replica checkpoint checksum mismatch"));
+                }
+                at = BASE_HEADER_LEN as u64 + length;
+            }
+        }
+        let start = at;
+        let tail = u64::from(self.chain);
+        while at < self.length && at - start < max_bytes.max(1) {
+            if self.length - at < HEADER_LEN as u64 {
+                return Err(invalid("replica journal has a damaged final header"));
+            }
+            let mut header = [0; HEADER_LEN];
+            self.file.read_exact_at(&mut header, at)?;
+            let known = if self.chain {
+                &header[..4] == MAGIC_ZERO_TAIL
+            } else {
+                &header[..4] == MAGIC || &header[..4] == b"MOR2"
+            };
+            if !known
+                || fnv1a64(&header[..8]) != u64::from_be_bytes(header[8..16].try_into().unwrap())
+            {
+                return Err(invalid("replica journal header checksum mismatch"));
+            }
+            let length = u32::from_be_bytes(header[4..8].try_into().unwrap()) as usize;
+            if length == 0
+                || length > MAX_PAYLOAD_BYTES + 1
+                || self.length - at - (HEADER_LEN as u64) < length as u64 + tail
+            {
+                return Err(invalid("replica journal record exceeds its length bound"));
+            }
+            let mut payload = vec![0; length + tail as usize];
+            self.file
+                .read_exact_at(&mut payload, at + HEADER_LEN as u64)?;
+            if self.chain {
+                let last = payload.pop().unwrap();
+                if last != FRAME_END && last != 0 {
+                    return Err(invalid("replica journal frame terminator damaged"));
+                }
+            }
+            if fnv1a64(&payload) != u64::from_be_bytes(header[16..24].try_into().unwrap()) {
+                return Err(invalid("replica journal payload checksum mismatch"));
+            }
+            at += HEADER_LEN as u64 + length as u64 + tail;
+        }
+        Ok(ScrubStep {
+            next: at,
+            total: self.length,
+            done: at == self.length,
+        })
     }
 
     /// The log's own length, which in a zero-tail journal is shorter than the file.
@@ -1127,6 +1228,88 @@ mod zero_tail_tests {
         assert_eq!(recovered.read_chunk(&page(0), 0, 300).unwrap().data, vec![11u8; 300]);
         drop(journal);
         remove(&path);
+    }
+
+    fn deferred(journal: &mut ReplicaJournal, service: &mut MatrixReplicaService, value: u8) {
+        let before = service.read_chunk_state(&page(0)).ok();
+        let counters = crate::outcome::PageOutcome::counters(service);
+        service.write_chunk(page(0), 0, &[value; 300]).unwrap();
+        let outcome = crate::outcome::PageOutcome::between(
+            &page(0),
+            before.as_ref(),
+            &service.read_chunk_state(&page(0)).unwrap(),
+        )
+        .unwrap()
+        .with_counters(counters, crate::outcome::PageOutcome::counters(service));
+        journal.append_outcome_deferred(&outcome).unwrap();
+    }
+
+    /// Group commit: however many outcomes a batch holds, it costs one sync, in both layouts.
+    #[test]
+    fn a_batch_of_outcomes_costs_one_sync_in_both_layouts() {
+        for zero in [false, true] {
+            let path = path("batch");
+            let mut state = service();
+            let mut journal = open(&path, &mut state, zero).unwrap();
+            let before = journal.sync_count();
+            for value in 1..=8 {
+                deferred(&mut journal, &mut state, value);
+            }
+            assert_eq!(journal.sync_count(), before, "a deferred append must not sync");
+            journal.sync_deferred().unwrap();
+            assert_eq!(journal.sync_count(), before + 1, "zero={zero}");
+            drop(journal);
+            remove(&path);
+        }
+    }
+
+    /// A scrub walks bounded steps to the log's end (never the zero fill) and finds damage in
+    /// the checkpoint image or in any frame.
+    #[test]
+    fn a_scrub_walks_in_steps_and_finds_damage_in_both_layouts() {
+        for zero in [false, true] {
+            let path = path("scrub");
+            let mut state = service();
+            let mut journal = open(&path, &mut state, zero).unwrap();
+            for value in 1..=6 {
+                append(&mut journal, &mut state, value);
+            }
+            journal.checkpoint(&state).unwrap();
+            for value in 7..=20 {
+                append(&mut journal, &mut state, value);
+            }
+            let end = journal.logical_len();
+            let (mut at, mut steps) = (0, 0);
+            loop {
+                let step = journal.scrub_step(at, 500).unwrap();
+                assert!(step.next > at);
+                at = step.next;
+                steps += 1;
+                if step.done {
+                    break;
+                }
+            }
+            assert_eq!(at, end, "zero={zero}: the scrub covers the log, not the file");
+            assert!(steps > 5);
+            assert!(journal.scrub_step(end + 1, 10).is_err());
+            let image = std::fs::read(&path).unwrap();
+            for index in (0..end as usize).step_by(13) {
+                let mut damaged = image.clone();
+                damaged[index] ^= 1;
+                std::fs::write(&path, &damaged).unwrap();
+                let mut at = 0;
+                let outcome = loop {
+                    match journal.scrub_step(at, 500) {
+                        Ok(step) if step.done => break Ok(()),
+                        Ok(step) => at = step.next,
+                        Err(error) => break Err(error),
+                    }
+                };
+                assert!(outcome.is_err(), "zero={zero}: damage at byte {index} went unnoticed");
+            }
+            drop(journal);
+            remove(&path);
+        }
     }
 
     #[test]
