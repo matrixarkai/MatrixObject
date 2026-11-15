@@ -85,7 +85,7 @@ impl Fixture {
             None,
             None,
             Some(catalog.to_bytes().unwrap()),
-            0,
+            std::env::var("LOG_CHECKPOINT_BYTES").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
             false,
             5000,
         );
@@ -174,15 +174,31 @@ fn drive_to_failure(record_bytes: usize, window: usize, limit: usize, compacting
     let mut count = 0usize;
     let mut wal_mark = fixture.wal();
     let mut failure = String::new();
+    let bound: Option<usize> = std::env::var("LOG_BOUND").ok().and_then(|v| v.parse().ok());
+    let mut compactions = 0usize;
     while count < limit {
         let data = record(count, record_bytes);
         let started = Instant::now();
         let result = match manifest.clone() {
+            None if compacting => {
+                let allocation = fixture.reserve(&mut client, "log", None, 1, false);
+                client.write_staged_object(&allocation, None, &data, &options)
+            }
             None => client.write_object("append", "log", None, &data, &options),
             Some(previous) if compacting => {
                 // Owned allocation + digest-bound publication: the prefix list is not shipped.
                 let allocation = fixture.reserve(&mut client, "log", Some(previous.generation), 1, true);
                 client.append_staged_object_compact(&allocation, previous, &data, &options)
+            }
+            Some(previous) if bound.is_some() => {
+                let before = previous.extents.len();
+                let next = client.append_object_compacting(previous, &data, &options, bound.unwrap());
+                if let Ok(next) = &next {
+                    if next.extents.len() <= before {
+                        compactions += 1;
+                    }
+                }
+                next
             }
             Some(previous) => client.append_object(previous, &data, &options),
         };
@@ -203,8 +219,16 @@ fn drive_to_failure(record_bytes: usize, window: usize, limit: usize, compacting
             let mut sorted = times.clone();
             sorted.sort_unstable();
             let wal = fixture.wal();
+            let fds: Vec<usize> = fixture
+                .meta
+                .nodes
+                .iter()
+                .flatten()
+                .map(|node| std::fs::read_dir(format!("/proc/{}/fd", node.pid)).map(|d| d.count()).unwrap_or(0))
+                .collect();
+            println!("LOG_APPEND_FDS meta_fds={fds:?}");
             println!(
-                "LOG_APPEND_CURVE record_bytes={record_bytes} appends={count} extents={} manifest_bytes={} outcome_bytes={} p50_us={} p99_us={} max_us={} meta_wal_bytes_per_append={}",
+                "LOG_APPEND_CURVE record_bytes={record_bytes} bound={bound:?} compactions={compactions} appends={count} extents={} manifest_bytes={} outcome_bytes={} p50_us={} p99_us={} max_us={} meta_wal_bytes_per_append={}",
                 current.extents.len(),
                 current.encoded_len(),
                 ManifestOutcome::decide(Some(current.clone()), {
@@ -217,21 +241,25 @@ fn drive_to_failure(record_bytes: usize, window: usize, limit: usize, compacting
                 percentile(&sorted, 50),
                 percentile(&sorted, 99),
                 sorted[sorted.len() - 1],
-                (wal - wal_mark) / window as u64,
+                (wal as i64 - wal_mark as i64) / window as i64,
             );
             wal_mark = wal;
             times.clear();
         }
     }
     let current = manifest.unwrap();
+    let mut fixture = fixture;
+    for (i, node) in fixture.meta.nodes.iter_mut().enumerate() {
+        if let Some(node) = node {
+            println!("LOG_APPEND_NODE meta={i} pid={} exit={:?}", node.pid, node.child.try_wait());
+        }
+    }
+    let mut client = fixture.client();
     println!(
         "LOG_APPEND_END record_bytes={record_bytes} appends={count} extents={} length={} failure={failure:?}",
         current.extents.len(),
         current.length
     );
-    if limit == usize::MAX || failure.is_empty() {
-        return;
-    }
     // The bytes that were accepted must still read back exactly.
     let expected: Vec<u8> = (0..count).flat_map(|i| record(i, record_bytes)).collect();
     let (read, bytes) = client
@@ -252,7 +280,8 @@ fn measure_small_appends_until_the_extent_cap() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(250);
-    drive_to_failure(bytes, window, usize::MAX / 2, false);
+    let limit = std::env::var("LOG_LIMIT").ok().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX / 2);
+    drive_to_failure(bytes, window, limit, false);
 }
 
 #[test]
