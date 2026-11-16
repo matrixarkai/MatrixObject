@@ -396,3 +396,81 @@ fn two_compacting_appenders_race_and_exactly_one_wins_then_the_loser_retries() {
     assert!(retried.extents.len() <= bound);
     assert_eq!(read_all(&mut reader, "race", expected.len()), (retried, expected));
 }
+
+/// Fill a fresh log to exactly `bound` extents of 50-byte records, so the next append compacts.
+fn full_log(client: &mut RemoteMetaClient, key: &str, options: &ObjectWriteOptions, bound: usize) -> (ObjectManifest, Vec<u8>) {
+    let mut manifest = client
+        .write_object("append", key, None, &record(0, 50), options)
+        .unwrap();
+    let mut expected = record(0, 50);
+    while manifest.extents.len() < bound {
+        let data = record(manifest.extents.len(), 50);
+        manifest = client.append_object(manifest, &data, options).unwrap();
+        expected.extend_from_slice(&data);
+    }
+    (manifest, expected)
+}
+
+#[test]
+fn a_chunkserver_killed_before_a_compaction_leaves_the_log_unchanged_and_readable() {
+    let mut fixture = Fixture::new();
+    let mut client = fixture.client();
+    let options = small_options(1024);
+    let bound = 6;
+    let (manifest, expected) = full_log(&mut client, "crash-chunk", &options, bound);
+    // A star group needs every member, so the compacting append cannot land its pages.
+    fixture._chunks[0].child.kill().unwrap();
+    let _ = fixture._chunks[0].child.wait();
+    let data = record(200, 80);
+    let result = client.append_object_compacting(manifest.clone(), &data, &options, bound);
+    assert!(result.is_err(), "a write with a dead star member must not be acknowledged");
+    // Nothing was published: same manifest, same bytes, readable with the member still down.
+    let mut reader = fixture.client();
+    assert_eq!(reader.read_manifest("append", "crash-chunk").unwrap(), manifest);
+    assert_eq!(read_all(&mut reader, "crash-chunk", expected.len()), (manifest, expected));
+}
+
+#[test]
+fn a_metadata_leader_killed_before_a_compaction_never_leaves_a_half_applied_log() {
+    let mut fixture = Fixture::new();
+    let mut client = fixture.client();
+    let options = small_options(1024);
+    let bound = 6;
+    let (manifest, mut expected) = full_log(&mut client, "crash-meta", &options, bound);
+    let leader = fixture.meta.leader();
+    fixture.meta.kill(leader);
+    let data = record(300, 80);
+    let mut writer = fixture.client();
+    let outcome = writer.append_object_compacting(manifest.clone(), &data, &options, bound);
+    // Whatever the client was told, the object is exactly before or exactly after, never a mix.
+    let mut reader = fixture.client();
+    let mut current = None;
+    for _ in 0..40 {
+        match reader.read_manifest("append", "crash-meta") {
+            Ok(m) => {
+                current = Some(m);
+                break;
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(500)),
+        }
+    }
+    let current = current.expect("two of three metadata nodes are alive, a read must succeed");
+    let published = current.length == (expected.len() + data.len()) as u64;
+    if outcome.is_ok() {
+        assert!(published, "an acknowledged append must be published");
+    }
+    if published {
+        expected.extend_from_slice(&data);
+    } else {
+        assert_eq!(current, manifest, "an unpublished append must leave the manifest as it was");
+    }
+    assert_eq!(read_all(&mut reader, "crash-meta", expected.len()), (current.clone(), expected.clone()));
+    assert!(current.extents.len() <= bound);
+    if !published {
+        let retried = reader
+            .append_object_compacting(current, &data, &options, bound)
+            .unwrap();
+        expected.extend_from_slice(&data);
+        assert_eq!(read_all(&mut reader, "crash-meta", expected.len()), (retried, expected));
+    }
+}
