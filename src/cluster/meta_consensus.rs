@@ -54,6 +54,9 @@ pub struct MetaRaftOptions {
     /// Reclaim this many newly persisted WAL bytes; zero disables capture.
     /// Enable only after every voter supports application checkpoint restoration.
     pub checkpoint_after_bytes: u64,
+    /// Zero-fill chunk for the Raft WAL, 4 KiB through 512 MiB; `None` keeps the original layout.
+    /// See [`wal_zero_fill_from_env`](crate::cluster::wal_zero_fill_from_env).
+    pub wal_zero_fill_bytes: Option<u64>,
 }
 #[derive(Clone, PartialEq, Message)]
 struct Entry {
@@ -246,10 +249,19 @@ impl MetaConsensus {
             voters,
             wal_path: wal,
         };
+        let tuning = matrixraft::peer_runtime::PeerTuning {
+            wal_zero_fill_bytes: super::validate_wal_zero_fill_bytes(options.wal_zero_fill_bytes)
+                .map_err(invalid)?,
+            ..Default::default()
+        };
         let mut peer = if options.bootstrap_voters.is_some() {
-            DurablePeer::open_with_membership(peer_options, options.peers.keys().copied().collect())
+            DurablePeer::open_with_membership_and_tuning(
+                peer_options,
+                options.peers.keys().copied().collect(),
+                tuning,
+            )
         } else {
-            DurablePeer::open(peer_options)
+            DurablePeer::open_with_tuning(peer_options, tuning)
         }
         .map_err(invalid)?;
         if !base.exists() {

@@ -162,6 +162,68 @@ cargo test --release --locked --all-features --test replica_restart_recovery int
 ```
 
 
+## Zero-filled write-ahead logs
+
+`MATRIXOBJECT_WAL_ZERO_FILL_BYTES` makes the chunk server and the metadata server
+lay their logs out as a file filled with zeros ahead of the log, so an append
+overwrites space that already exists and does not grow the file. A write then
+costs one durability barrier that does not also commit a new file length. It is
+off when absent or empty, and every log keeps the layout it has always had. A
+value outside 4,096 through 536,870,912 bytes, or one that is not a number, stops
+the process at startup with status 2.
+
+It applies to the Raft WAL of a chunk voter or a metadata voter, and to the
+standalone chunk journal (`MATRIXOBJECT_REPLICA_JOURNAL`). The value is the chunk
+the file is filled by: the first chunk is written when the log is created, and
+another once the log has used the last one, by the write that needs it.
+
+What changes on disk:
+
+- The file is longer than the log. The first four bytes name the layout, `MRPZ`
+  for a Raft WAL (`MRPW` is the original) and `MOZ2` for a standalone journal
+  frame (`MOR2` is the original). Every frame ends in one extra non-zero byte.
+  Persisted-length figures and the 512 MiB WAL limit count the log, not the file,
+  so a 512 MiB chunk does not trip that limit; the file simply holds up to that
+  much more than the log.
+- A log written without the setting is read as before and keeps its layout until
+  a checkpoint replaces it, and a zero-filled log is read whether or not the
+  setting is still present. A binary that does not know the layout refuses the
+  file at its first frame, so upgrade every process that may open a log before
+  turning it on. Turning it off again is the same: the log keeps its layout until a
+  checkpoint replaces it.
+- Each checkpoint writes a new log and so fills one chunk again. Choose a chunk no
+  larger than the checkpoint interval, or the zeros written per checkpoint
+  outweigh the log it keeps. Metadata servers need
+  `MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES` for any log workload, as before.
+- Budget disk for the log plus one chunk per log. The fill is real data, not a
+  sparse file.
+
+What recovery does differently. A zero-filled log ends at the first all-zero
+frame header, and nothing but zeros may follow it, so a stray byte past the end
+refuses the open. A frame that was cut short by a crash is dropped only when its
+last byte is zero and nothing but zeros follows it, which only a write that did
+not finish can leave. A frame with its last byte present, or with anything after
+it, was written in full, so any damage to it refuses the open rather than being
+dropped as if it were a cut write: an acknowledged record is never discarded to
+make a log open. Two things this cannot see: a device that zeroes the final
+sector of the last acknowledged record, terminator included, looks like a write
+that never finished and is dropped; and a node that persists a later sector of
+a write before an earlier one is refused loudly, not dropped.
+
+The standalone journal can also be walked without applying it: `scrub_step`
+validates frames from a boundary until a byte budget is read, through the end of
+the log and never into the fill. No server calls it yet.
+
+Measured on one disk, interleaved in both orders, on a quiet host: a write to a
+single-voter peer is about 2.4 times faster with the setting on (median of twelve
+rounds, every round between 2.2 and 2.5; about 1.5 ms down to 0.6 ms). Through
+the three-process chunk group the replicated write showed no difference (median
+ratio 0.99 with a 4 MiB chunk and 1.03 with 32 MiB, twelve rounds each, about 3.3
+ms per write). That fixture puts three voters on one disk, so their flushes share
+a device; a disk per voter was not measured. On a host that was busy with other
+work the same group showed ratios from 0.8 to 2.9 round to round, so do not read
+a gain into a noisy measurement.
+
 ## Bounded page-state reads
 
 Updated chunk clients can read complete page state with `read_chunk_state`.

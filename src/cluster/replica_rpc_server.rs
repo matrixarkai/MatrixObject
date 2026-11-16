@@ -100,6 +100,9 @@ pub struct ReplicaNodeOptions {
     pub read_timeout: Duration,
     /// Deadline for sending a complete response.
     pub write_timeout: Duration,
+    /// Zero-fill chunk for the standalone journal, 4 KiB through 512 MiB; `None` keeps the
+    /// original layout. See [`wal_zero_fill_from_env`](crate::cluster::wal_zero_fill_from_env).
+    pub wal_zero_fill_bytes: Option<u64>,
 }
 
 impl Default for ReplicaNodeOptions {
@@ -113,6 +116,7 @@ impl Default for ReplicaNodeOptions {
             worker_threads: 4,
             read_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
+            wal_zero_fill_bytes: None,
         }
     }
 }
@@ -199,7 +203,14 @@ impl ReplicaNodeServer {
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
             })?;
         let journal = path
-            .map(|path| ReplicaJournal::open_with_limits(path, &mut service, options.max_pages))
+            .map(|path| {
+                ReplicaJournal::open_with_options(
+                    path,
+                    &mut service,
+                    options.max_pages,
+                    options.wal_zero_fill_bytes.unwrap_or(0),
+                )
+            })
             .transpose()?;
         if let Some(path) = path {
             super::api_tls::pin_file(&super::api_tls::journal_pin(path), options.tls.is_some())?;

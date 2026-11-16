@@ -14,7 +14,12 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
+thread_local! {
+    /// The zero-fill chunk the next `Group` created on this thread gives its voters.
+    static ZERO_FILL: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
 struct Group {
+    zero_fill: Option<u64>,
     nodes: Vec<Option<NodeProcess>>,
     peers: BTreeMap<u64, std::net::SocketAddr>,
     root: PathBuf,
@@ -97,6 +102,7 @@ impl Group {
             path
         });
         let mut group = Self {
+            zero_fill: ZERO_FILL.with(|chunk| chunk.get()),
             nodes: (0..if membership { 4 } else { 3 }).map(|_| None).collect(),
             peers,
             root,
@@ -127,6 +133,7 @@ impl Group {
         let id = (i + 1).to_string();
         let checkpoint_bytes = self.checkpoint_bytes.to_string();
         let request_timeout_ms = self.request_timeout_ms.to_string();
+        let zero_fill = self.zero_fill.map(|bytes| bytes.to_string());
         let path = self.root.join(i.to_string());
         let bind = self.api_addresses[i].to_string();
         let mut environment = vec![
@@ -149,6 +156,9 @@ impl Group {
         ];
         if self.membership {
             environment.push(("MATRIXOBJECT_METASERVER_RAFT_BOOTSTRAP_VOTERS", "1,2,3"));
+        }
+        if let Some(bytes) = &zero_fill {
+            environment.push(("MATRIXOBJECT_WAL_ZERO_FILL_BYTES", bytes.as_str()));
         }
         let roster = self.roster.as_ref().map(|roster| {
             let mut entries: Vec<_> = roster.split(',').collect();
@@ -919,6 +929,7 @@ fn a_slow_peer_connection_does_not_prevent_shutdown() {
             bootstrap_voters: None,
             peer_tls: None,
             checkpoint_after_bytes: 0,
+            wal_zero_fill_bytes: None,
             node_id: 1,
             group_id: 1,
             peers: BTreeMap::from([(1, address)]),
@@ -1006,6 +1017,7 @@ fn peer_storage_refuses_missing_zeroed_or_reidentified_history() {
         bootstrap_voters: None,
         peer_tls: None,
         checkpoint_after_bytes: 0,
+        wal_zero_fill_bytes: None,
         node_id: 1,
         group_id: 1,
         peers: BTreeMap::from([(1, address)]),
@@ -2948,3 +2960,84 @@ mod star_append_amplification;
 #[cfg(feature = "replica-server")]
 #[path = "node_regime/log_append_extent_cap.rs"]
 mod log_append_extent_cap;
+
+
+#[test]
+fn zero_filled_metadata_wals_keep_every_committed_placement_across_leader_loss_and_restart() {
+    ZERO_FILL.with(|chunk| chunk.set(Some(1 << 20)));
+    let mut group = Group::new();
+    ZERO_FILL.with(|chunk| chunk.set(None));
+    let first = group.leader();
+    let mut saved = Vec::new();
+    let mut client = group.client(first);
+    for n in 0..32 {
+        let key = format!("object-{n}");
+        let plan = client
+            .plan_object_placement("bucket", &key, 1024, 2)
+            .unwrap();
+        let placement = CommittedPlacement {
+            bucket: plan.bucket,
+            key: plan.key,
+            length: plan.length,
+            node_ids: plan.node_ids,
+            version: 1,
+            update_time_ms: n + 10,
+        };
+        saved.push(
+            client
+                .commit_object_placement(placement, &plan.plan_checksum)
+                .unwrap(),
+        );
+    }
+    drop(client);
+    group.kill(first);
+    let next = group.leader();
+    assert_ne!(next, first);
+    let mut client = group.client(next);
+    for value in &saved {
+        assert_eq!(
+            client.object_placement(&value.bucket, &value.key).unwrap(),
+            *value
+        );
+    }
+    drop(client);
+    for i in 0..3 {
+        if group.nodes[i].is_some() {
+            group.kill(i);
+        }
+    }
+    for i in 0..3 {
+        group.start(i);
+    }
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    for value in &saved {
+        assert_eq!(
+            client.object_placement(&value.bucket, &value.key).unwrap(),
+            *value
+        );
+    }
+    for i in 0..3 {
+        let bytes =
+            std::fs::read(group.root.join(i.to_string()).join("metadata.peer.wal")).unwrap();
+        assert_eq!(&bytes[..4], b"MRPZ", "voter {i} must use the zero-filled layout");
+        assert!(bytes.len() >= 1 << 20);
+        assert!(bytes.windows(4).any(|w| w == b"MOMP"));
+    }
+}
+
+#[test]
+fn an_out_of_range_zero_fill_stops_the_metaserver_at_startup() {
+    for value in ["4095", "536870913", "lots"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_metaserver"))
+            .env("MATRIXOBJECT_WAL_ZERO_FILL_BYTES", value)
+            .env("MATRIXOBJECT_METASERVER_ADDR", "127.0.0.1:0")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{value}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("MATRIXOBJECT_WAL_ZERO_FILL_BYTES"),
+            "{value}"
+        );
+    }
+}

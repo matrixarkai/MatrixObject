@@ -129,6 +129,13 @@ fn main() {
     }
 
     let addr = env_string("MATRIXOBJECT_METASERVER_ADDR", "127.0.0.1:17200");
+    // Validated here for every build so a bad value stops the process at startup; only the
+    // consensus build hands it to a peer.
+    #[cfg_attr(not(feature = "metadata-consensus"), allow(unused_variables))]
+    let wal_zero_fill = matrixobjectstore_rs::cluster::wal_zero_fill_from_env().unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(2);
+    });
     let worker_threads = env_usize(
         "MATRIXOBJECT_METASERVER_THREADS",
         default_worker_threads(),
@@ -323,6 +330,7 @@ fn main() {
                         "MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES",
                         0,
                     ) as u64,
+                    wal_zero_fill_bytes: wal_zero_fill,
                     node_id,
                     group_id: env_usize("MATRIXOBJECT_METASERVER_RAFT_GROUP_ID", 1) as u64,
                     peers,

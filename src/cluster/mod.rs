@@ -293,3 +293,9 @@ pub use peer_tls::PeerTlsOptions;
 mod tls_config;
 mod api_tls;
 pub use api_tls::{ApiTlsConfig, ApiTlsOptions};
+
+mod wal_zero_fill;
+pub use wal_zero_fill::{
+    validate_wal_zero_fill_bytes, wal_zero_fill_from_env, WAL_ZERO_FILL_ENV,
+    WAL_ZERO_FILL_MAX_BYTES, WAL_ZERO_FILL_MIN_BYTES,
+};

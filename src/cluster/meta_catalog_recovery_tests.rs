@@ -58,6 +58,7 @@ fn start(
             directory,
             request_timeout: Duration::from_secs(5),
             checkpoint_after_bytes: 4096,
+            wal_zero_fill_bytes: None,
         })
         .unwrap();
     Running {

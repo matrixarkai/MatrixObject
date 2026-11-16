@@ -283,6 +283,7 @@ fn catalog_commands_cross_metadata_quorum_and_survive_full_restart() {
                 directory: path,
                 request_timeout: Duration::from_secs(2),
                 checkpoint_after_bytes: 4096,
+                wal_zero_fill_bytes: None,
                 bootstrap_voters: None,
                 peer_tls: None,
             })

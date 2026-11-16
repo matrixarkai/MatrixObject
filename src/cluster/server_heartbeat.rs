@@ -601,6 +601,7 @@ mod tests {
                     directory: directory.clone(),
                     request_timeout: Duration::from_secs(1),
                     checkpoint_after_bytes: 0,
+                    wal_zero_fill_bytes: None,
                 })
                 .unwrap_err();
             assert!(error.to_string().contains("maintenance mode"));
