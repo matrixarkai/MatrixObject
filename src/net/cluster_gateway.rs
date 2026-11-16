@@ -763,7 +763,7 @@ impl ClusterGateway {
                     }
                     // A refusal decided from a REMEMBERED manifest may only mean the memory is
                     // stale (another gateway appended), so it is checked once against a read.
-                    if decided && used_cache && matches!(failure.error, ObjectError::PreconditionFailed(_)) {
+                    if decided && used_cache && lost_race(&failure.error) {
                         continue;
                     }
                     return error_response(failure.error, &resource, false);
@@ -983,7 +983,25 @@ fn closed_range(header: &str) -> Option<(u64, u64)> {
 /// Whether a refusal says another writer published first, as opposed to a refusal of the
 /// request itself.
 fn lost_race(error: &ObjectError) -> bool {
-    matches!(error, ObjectError::PreconditionFailed(_))
+    matches!(error, ObjectError::PreconditionFailed(_)) && !plane_unreachable(error)
+}
+
+/// A failure of the connection to a metadata or chunk node, as opposed to a refusal by the
+/// plane. The SDK words these as "the metaserver at <endpoint> could not be reached while ..."
+/// (reported as a failed precondition so that a caller is not told its data is damaged) and
+/// "the replica at <endpoint> failed while ..." (reported as corruption). Neither says
+/// anything about the request or the stored object, so neither is a lost publish race nor a
+/// server fault in the stored state: the client should retry later.
+fn plane_unreachable(error: &ObjectError) -> bool {
+    match error {
+        ObjectError::PreconditionFailed(message) => {
+            message.starts_with("the metaserver at ") && message.contains(" could not be reached while ")
+        }
+        ObjectError::Corruption(message) => {
+            message.starts_with("the replica at ") && message.contains(" failed while ")
+        }
+        _ => false,
+    }
 }
 
 fn etag_of(generation: u64) -> String {
@@ -1055,6 +1073,7 @@ fn error_response(error: ObjectError, resource: &str, missing_is_bucket: bool) -
         ObjectError::InvalidArgument(message) if message.starts_with("append refused") => {
             s3::S3ErrorCode::InvalidRequest
         }
+        _ if plane_unreachable(&error) => s3::S3ErrorCode::ServiceUnavailable,
         _ => s3::code_for(&error, missing_is_bucket),
     };
     s3::error_response(code, &error.to_string(), resource)
@@ -1064,6 +1083,28 @@ fn error_response(error: ObjectError, resource: &str, missing_is_bucket: bool) -
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn an_unreachable_node_answers_service_unavailable_and_is_not_a_lost_race() {
+        let metadata = ObjectError::PreconditionFailed(
+            "the metaserver at 127.0.0.1:1 could not be reached while reading a response header: metadata frame deadline".into(),
+        );
+        let replica = ObjectError::Corruption(
+            "the replica at 127.0.0.1:2 failed while collecting a fan-out response: incomplete frame".into(),
+        );
+        for error in [metadata.clone(), replica.clone()] {
+            assert!(plane_unreachable(&error));
+            assert!(!lost_race(&error));
+            assert_eq!(error_response(error, "/b/k", false).status, 503);
+        }
+        // A real conflict or real corruption keeps its answer.
+        let conflict = ObjectError::PreconditionFailed("object manifest changed before write".into());
+        assert!(lost_race(&conflict));
+        assert_eq!(error_response(conflict, "/b/k", false).status, 412);
+        let damaged = ObjectError::Corruption("manifest digest mismatch".into());
+        assert!(!plane_unreachable(&damaged));
+        assert_eq!(error_response(damaged, "/b/k", false).status, 500);
+    }
 
     /// An in-memory plane with the SDK's contract: a write names the generation it builds on,
     /// an append adds extents, and an object holds at most `MAX_OBJECT_EXTENTS` of them.
