@@ -331,6 +331,23 @@ impl MatrixObjectStore {
         let mut stats = ChunkReadStats::default();
         let mut chunk_reads = 0u64;
         let mut object_cursor = 0u64;
+        // A SPAN READ SERVES SEVERAL EXTENTS WITH ONE QUORUM READ. Every extent read pays a whole
+        // chunk-range read -- admission, the page map, the head stats and a replica vote that
+        // hashes what it returns -- and an object built by appends has one extent per append, so
+        // a whole-object read of it was paying that fixed price once per append. It is only
+        // taken when the caller set no payload or chunk-count budget, because a span reads the
+        // bytes between two extents and a budget is a promise about what a read touches.
+        let spans_allowed = max_payload_bytes == 0 && max_chunk_read_count == 0;
+        let mut pending: Vec<(ObjectExtent, u64, u64)> = Vec::new();
+        let mut pending_end = 0u64;
+        macro_rules! flush_pending {
+            () => {
+                if !pending.is_empty() {
+                    let batch = std::mem::take(&mut pending);
+                    self.read_extent_batch(&batch, &mut out, &mut stats, &mut chunk_reads)?;
+                }
+            };
+        }
         for extent in extents {
             let extent_start = object_cursor;
             let extent_end = object_cursor.checked_add(extent.length()).ok_or_else(|| {
@@ -344,6 +361,24 @@ impl MatrixObjectStore {
             let read_end = range_end.min(extent_end);
             let local_offset = read_start - extent_start;
             let local_len = read_end - read_start;
+            if spans_allowed {
+                let abs = extent.offset() + local_offset;
+                let joins = match pending.first() {
+                    Some((first, first_abs, _)) => {
+                        first.chunk_id == extent.chunk_id
+                            && abs >= pending_end
+                            && abs - pending_end <= SPAN_MAX_GAP_BYTES
+                            && abs + local_len - *first_abs <= SPAN_MAX_BYTES
+                    }
+                    None => true,
+                };
+                if !joins {
+                    flush_pending!();
+                }
+                pending.push((extent.clone(), abs, local_len));
+                pending_end = abs + local_len;
+                continue;
+            }
             let remaining_budget = if max_payload_bytes == 0 {
                 0
             } else {
@@ -365,6 +400,69 @@ impl MatrixObjectStore {
             merge_page_read_stats(&mut stats, read_stats);
             out.extend_from_slice(&payload);
         }
+        flush_pending!();
         Ok((out, stats))
     }
+
+    /// Read one batch of consecutive extents of one chunk with a single chunk-range read when
+    /// that is possible, and one read per extent when it is not.
+    ///
+    /// The batch is `(extent, absolute chunk offset, length)` in object order. A batch of one,
+    /// and a span that cannot be read, take the per-extent path -- the bytes between two extents
+    /// belong to another object that may since have been discarded, and a failed read of them
+    /// must not fail a read of this object, whose own bytes are all still there.
+    fn read_extent_batch(
+        &self,
+        batch: &[(ObjectExtent, u64, u64)],
+        out: &mut Vec<u8>,
+        stats: &mut ChunkReadStats,
+        chunk_reads: &mut u64,
+    ) -> Result<(), ObjectError> {
+        if batch.len() > 1 {
+            let span_start = batch[0].1;
+            let (_, last_abs, last_len) = &batch[batch.len() - 1];
+            let span_len = last_abs + last_len - span_start;
+            if let Ok((span, read_stats)) = self.chunk_service.read_chunk_range_bounded_by_chunks(
+                &batch[0].0.chunk_id,
+                span_start,
+                span_len,
+                0,
+                0,
+            ) {
+                let sliced = batch.iter().all(|(_, abs, len)| {
+                    let from = abs - span_start;
+                    usize::try_from(from + len).map_or(false, |end| end <= span.len())
+                });
+                if sliced {
+                    *chunk_reads = chunk_reads.saturating_add(read_stats.chunk_reads);
+                    merge_page_read_stats(stats, read_stats);
+                    for (_, abs, len) in batch {
+                        let from = (abs - span_start) as usize;
+                        out.extend_from_slice(&span[from..from + *len as usize]);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        for (extent, abs, len) in batch {
+            let (payload, read_stats) = self.chunk_service.read_chunk_range_bounded_by_chunks(
+                &extent.chunk_id,
+                *abs,
+                *len,
+                0,
+                0,
+            )?;
+            *chunk_reads = chunk_reads.saturating_add(read_stats.chunk_reads);
+            merge_page_read_stats(stats, read_stats);
+            out.extend_from_slice(&payload);
+        }
+        Ok(())
+    }
 }
+
+/// The widest gap between two extents of one chunk that a span read will read across. Appends to
+/// two objects that share a chunk interleave, so the neighbours of an object's extents are
+/// usually another object's appends, a few hundred bytes each.
+const SPAN_MAX_GAP_BYTES: u64 = 4096;
+/// The longest span one read covers: a page, which is what one replica read already serves.
+const SPAN_MAX_BYTES: u64 = 1 << 20;

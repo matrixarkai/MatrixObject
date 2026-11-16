@@ -55785,3 +55785,96 @@ fn an_append_leaves_every_cached_range_of_the_page_alone() {
         "the index lost cached ranges that no write intersected"
     );
 }
+
+fn span_read_options() -> StoreOptions {
+    StoreOptions {
+        chunk_size: 1 << 20,
+        max_extent_bytes: 1 << 12,
+        page_size: 1 << 12,
+        ..test_options()
+    }
+}
+
+/// Two objects appended in turn share a chunk, so each one's extents are separated by the
+/// other's. The oracle is the bytes the test appended, not anything the store reports.
+fn interleaved_appends(store: &mut MatrixObjectStore, rounds: usize) -> (Vec<u8>, Vec<u8>) {
+    store.create_bucket("bucket").unwrap();
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    for round in 0..rounds {
+        let piece_a: Vec<u8> = (0..90).map(|i| (round * 7 + i) as u8).collect();
+        let piece_b: Vec<u8> = (0..130).map(|i| (round * 13 + i + 5) as u8).collect();
+        store
+            .append_object("bucket", "a", piece_a.clone(), "application/octet-stream")
+            .unwrap();
+        store
+            .append_object("bucket", "b", piece_b.clone(), "application/octet-stream")
+            .unwrap();
+        a.extend_from_slice(&piece_a);
+        b.extend_from_slice(&piece_b);
+    }
+    (a, b)
+}
+
+#[test]
+fn a_whole_object_read_of_interleaved_appends_reads_the_chunk_once_per_span() {
+    let mut store = MatrixObjectStore::new(span_read_options()).unwrap();
+    let (a, b) = interleaved_appends(&mut store, 200);
+    let extents = store.head_object("bucket", "a").unwrap().extents.len();
+    assert!(extents >= 200, "one extent per append, got {extents}");
+
+    let (read, stats) = store.get_object_with_read_stats("bucket", "a").unwrap();
+    assert_eq!(read.data, a, "the bytes read are the bytes appended");
+    println!("extents={extents} chunk_reads={}", stats.chunk_reads);
+    assert!(
+        (stats.chunk_reads as usize) * 4 < extents,
+        "{extents} extents were read with {} chunk reads: a span should serve many of them",
+        stats.chunk_reads
+    );
+    assert_eq!(store.get_object("bucket", "b").unwrap().data, b);
+}
+
+#[test]
+fn a_span_read_does_not_depend_on_the_bytes_between_its_extents() {
+    let mut store = MatrixObjectStore::new(span_read_options()).unwrap();
+    let (a, _b) = interleaved_appends(&mut store, 120);
+    store.delete_object("bucket", "b").unwrap();
+    assert_eq!(
+        store.get_object("bucket", "a").unwrap().data,
+        a,
+        "deleting the neighbour left this object's own bytes readable"
+    );
+    let (partial, _) = store
+        .get_object_range("bucket", "a", 1000, 5000)
+        .map(|o| (o.data, ()))
+        .unwrap();
+    assert_eq!(partial, a[1000..6000].to_vec());
+}
+
+/// 
+#[test]
+#[ignore]
+fn bench_whole_object_read_of_appended_object() {
+    for rounds in [250usize, 1000, 4000] {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            chunk_size: 64 << 20,
+            max_extent_bytes: 1 << 16,
+            page_size: 1 << 20,
+            ..test_options()
+        })
+        .unwrap();
+        let (a, _b) = interleaved_appends(&mut store, rounds);
+        let extents = store.head_object("bucket", "a").unwrap().extents.len();
+        let reps = 20usize;
+        let start = std::time::Instant::now();
+        for _ in 0..reps {
+            let read = store.get_object("bucket", "a").unwrap();
+            assert_eq!(read.data.len(), a.len());
+        }
+        let per = start.elapsed().as_secs_f64() * 1e3 / reps as f64;
+        println!(
+            "rounds={rounds} extents={extents} bytes={} get_ms={per:.3} MB/s={:.1}",
+            a.len(),
+            a.len() as f64 / 1048576.0 / (per / 1e3)
+        );
+    }
+}
