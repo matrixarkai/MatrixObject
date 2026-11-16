@@ -57,14 +57,47 @@ publish. A page that exists on some members of a refused attempt belongs to no m
 * A distinct read-only or draining mode is not carried by the chunkserver's own report.
   An administrator's draining flag is preserved by reports, and maintenance mode already
   reports the node offline.
-* A returning node is not held out of placement until it has caught up. What was measured
-  instead is in the tests: a returning member with no data never made an acknowledged read
-  return wrong bytes, and the repair worker restores its pages. Repair order by remaining
-  replica count is not implemented; the worker sweeps groups in catalog order.
-* The abandoned pages are returned to the caller, not recorded durably in metadata.
+* A returning node is not held out of placement until it has caught up, because under the
+  all-members write rule it cannot be behind on acknowledged data (see above). This would
+  change only for a Star group configured with a write quorum below its member count.
+* Repair order covers the pages inside one batch (short of copies first, complete pages next,
+  pages without a source quorum last). Groups are still swept in catalog order.
+* The abandoned pages are recorded in a durable client-side log (`AppendFailoverPolicy::
+  abandoned_log`), not in replicated metadata; a replicated record needs a new metadata
+  command.
 * The member switch reports an offline suspicion to metadata on the client's own evidence;
   the member's next report restores it.
-* Everything above was exercised against a single metadata server, not a metadata quorum.
+* The kill-and-continue run was repeated against a three-voter metadata quorum with the
+  metadata leader also killed mid-stream. Failover through metadata election is as fast as
+  the election; the client's catalog connection follows the new leader.
+
+## Returning node
+
+A fixed three-member Star group acknowledges a write only after every member has it
+(`standalone_star_route` sets the quorum to the member count, `chunk_group_route.rs`; a
+write is refused unless that many members hold matching page state, `replica_set.rs`). So a
+member that was stopped is never part of an acknowledged write, and it cannot return missing
+data that was acknowledged in its own group. Nothing shrinks a fixed Star group's member list:
+its identity has no membership fence, and a fence on a fixed identity is rejected as a
+mismatch (`membership_fence`). A member in maintenance mode stays in the group, refuses
+mutations and reports offline, so writes are refused rather than acknowledged without it.
+
+What a returning member can hold that the others do not is the pages of attempts that were
+refused while it was stopped. They belong to no manifest, are never read, and are recorded
+(see the abandoned-pages log) so a later reclamation can find them.
+
+A member that returns with no journal at all is refused at startup unless its marker is gone
+too (`replica_journal.rs`); a replaced disk comes back empty. Measured: 60 of 60 object reads
+stayed exact with the empty member present, and the repair worker restored its pages. The
+mechanism that kept those reads exact was not isolated.
+
+The one configurable path with a write quorum below the member count is a remote placement
+set built with explicit quorums (for example 2 of 3). Its read quorum must overlap every write
+quorum, so a stale returning member is outvoted on reads and repair then completes it. The
+tests below exercise that path and the maintenance path.
+
+Raft groups keep their own rule: a returning voter catches up through its log or a snapshot
+before it counts toward a quorum. This change does not alter that.
 
 ## Tests
 
