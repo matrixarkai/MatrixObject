@@ -333,6 +333,16 @@ fn main() {
                     ) as u64),
                 })
             })();
+            if let Ok(options) = &configured {
+                if options.checkpoint_after_bytes == 0 {
+                    eprintln!(
+                        "warning: MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES is unset; the \
+                         metadata Raft WAL is never truncated and refuses appends at 512 MiB. \
+                         Set it (1024..134217728) for any workload that publishes many objects \
+                         or appends to log objects"
+                    );
+                }
+            }
             let options = match configured {
                 Ok(options) => options,
                 Err(error) => {
