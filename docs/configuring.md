@@ -214,11 +214,15 @@ The standalone journal can also be walked without applying it: `scrub_step`
 validates frames from a boundary until a byte budget is read, through the end of
 the log and never into the fill. No server calls it yet.
 
-Measured on a single-voter peer, a write through the zero-filled layout is about
-three times faster than through the original (median of eight interleaved rounds);
-through the three-process chunk group the replicated write is about 1.2 to 1.5
-times faster, because the quorum round trip is unchanged. Treat both as ratios on
-one noisy disk, not as promises.
+Measured on one disk, interleaved in both orders, on a quiet host: a write to a
+single-voter peer is about 2.4 times faster with the setting on (median of twelve
+rounds, every round between 2.2 and 2.5; about 1.5 ms down to 0.6 ms). Through
+the three-process chunk group the replicated write showed no difference (median
+ratio 0.99 with a 4 MiB chunk and 1.03 with 32 MiB, twelve rounds each, about 3.3
+ms per write). That fixture puts three voters on one disk, so their flushes share
+a device; a disk per voter was not measured. On a host that was busy with other
+work the same group showed ratios from 0.8 to 2.9 round to round, so do not read
+a gain into a noisy measurement.
 
 ## Bounded page-state reads
 
