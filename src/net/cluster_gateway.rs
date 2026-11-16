@@ -15,7 +15,7 @@
 //! against real metadata and chunk processes is `scripts/cluster_gateway_bringup.sh`.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::http::{self, Request, ResolvedRange, Response};
@@ -85,6 +85,15 @@ pub trait ObjectPlane: Send {
         expected: ObjectManifest,
         data: &[u8],
     ) -> Result<ObjectManifest, PlaneFailure>;
+    /// Append through whatever bounded-publication or compacting path this plane has, falling
+    /// back to [`ObjectPlane::append`].
+    fn append_best(
+        &mut self,
+        expected: ObjectManifest,
+        data: &[u8],
+    ) -> Result<ObjectManifest, PlaneFailure> {
+        self.append(expected, data)
+    }
     fn read(&mut self, bucket: &str, key: &str) -> Result<(ObjectManifest, Vec<u8>), ObjectError>;
     fn read_range(
         &mut self,
@@ -117,6 +126,14 @@ pub struct GatewayOptions {
     pub cache_entries: usize,
     /// Idle metadata connections kept for reuse.
     pub pool_max: usize,
+    /// Publish appends as compact digest-bound decisions under a staged allocation. Every
+    /// metadata voter and journal reader must support the version 11 outcome.
+    pub compact_append: bool,
+    /// Keep a log object appendable past the extent bound by merging its short tail once it
+    /// holds this many extents (2 to 4096). Uses the plain publish path.
+    pub compact_extents: Option<usize>,
+    /// Lease for a staged allocation made for one compact append.
+    pub staged_ttl_ms: u64,
 }
 
 impl Default for GatewayOptions {
@@ -128,6 +145,9 @@ impl Default for GatewayOptions {
             max_object_bytes: 64 * 1024 * 1024,
             cache_entries: 64,
             pool_max: 8,
+            compact_append: false,
+            compact_extents: None,
+            staged_ttl_ms: 60_000,
         }
     }
 }
@@ -136,11 +156,82 @@ impl Default for GatewayOptions {
 pub struct SdkPlane {
     client: RemoteMetaClient,
     options: GatewayOptions,
+    compact: Arc<CompactState>,
 }
 
+/// Whether the compact append path is usable, shared by every connection of one gateway.
+/// 0: untried, 1: enabled, 2: refused once and switched off for the life of the process.
+#[derive(Default)]
+pub struct CompactState(std::sync::atomic::AtomicU8);
+
 impl SdkPlane {
-    pub fn new(client: RemoteMetaClient, options: GatewayOptions) -> Self {
-        Self { client, options }
+    pub fn new(client: RemoteMetaClient, options: GatewayOptions, compact: Arc<CompactState>) -> Self {
+        Self {
+            client,
+            options,
+            compact,
+        }
+    }
+
+    /// One append under a staged allocation. An error here means nothing was published unless
+    /// the failure says it is unconfirmed.
+    fn append_compact_path(
+        &mut self,
+        expected: &ObjectManifest,
+        data: &[u8],
+    ) -> Result<ObjectManifest, PlaneFailure> {
+        use std::sync::atomic::Ordering;
+        if self.compact.0.load(Ordering::Relaxed) == 0 {
+            // The durable publication fence is a cluster-wide switch the leased allocation needs.
+            match self.client.enable_publication_fence() {
+                Ok(_) => self.compact.0.store(1, Ordering::Relaxed),
+                Err(error) => return Err(self.compact_refused("enabling the publication fence", error)),
+            }
+        }
+        let pages = data.len().div_ceil(self.options.write.page_bytes.max(1)).max(1) as u32;
+        let allocation = match self.client.allocate_leased_staged_object(
+            &expected.bucket,
+            &expected.key,
+            Some(expected.generation),
+            pages,
+            true,
+            self.options.staged_ttl_ms,
+        ) {
+            Ok(allocation) => allocation,
+            Err(error) => return Err(self.compact_refused("allocating a staged append", error)),
+        };
+        let options = self.write_options();
+        match self
+            .client
+            .append_staged_object_compact(&allocation, expected.clone(), data, &options)
+        {
+            Ok(manifest) => Ok(manifest),
+            Err(failure) => {
+                let failure: PlaneFailure = failure.into();
+                if !failure.unconfirmed {
+                    // Nothing was published; give the namespace back.
+                    let _ = self.client.abort_staged_allocation(allocation.allocation_id);
+                }
+                Err(failure)
+            }
+        }
+    }
+
+    /// A refusal to start the compact path. A lost generation race is the caller's to retry;
+    /// anything else switches the compact path off and says so once.
+    fn compact_refused(&self, what: &str, error: ObjectError) -> PlaneFailure {
+        use std::sync::atomic::Ordering;
+        // Only a refusal to ENABLE the fence falls back: once the fence is on, the plain path
+        // is refused cluster-wide, so every later write must stay on the owned path and a
+        // failure there is reported as the failure it is.
+        if what.contains("fence") {
+            if self.compact.0.swap(2, Ordering::Relaxed) != 2 {
+                eprintln!(
+                    "cluster gateway: compact append is unavailable ({what}: {error}); using the plain publish path from here on"
+                );
+            }
+        }
+        PlaneFailure::from(error)
     }
 
     fn write_options(&self) -> ObjectWriteOptions {
@@ -170,6 +261,33 @@ impl ObjectPlane for SdkPlane {
         data: &[u8],
     ) -> Result<ObjectManifest, PlaneFailure> {
         let options = self.write_options();
+        // ONCE THE PUBLICATION FENCE IS ON, fresh extents may only be published under an owned
+        // allocation, for every write and not just an append. A whole-object write takes the
+        // same staged path; an empty one has no extents and needs no ownership.
+        if self.compact.0.load(std::sync::atomic::Ordering::Relaxed) == 1 && !data.is_empty() {
+            let pages = data.len().div_ceil(self.options.write.page_bytes.max(1)) as u32;
+            let allocation = self.client.allocate_leased_staged_object(
+                bucket,
+                key,
+                expected.as_ref().map(|manifest| manifest.generation),
+                pages,
+                false,
+                self.options.staged_ttl_ms,
+            )?;
+            return match self
+                .client
+                .write_staged_object(&allocation, expected, data, &options)
+            {
+                Ok(manifest) => Ok(manifest),
+                Err(failure) => {
+                    let failure: PlaneFailure = failure.into();
+                    if !failure.unconfirmed {
+                        let _ = self.client.abort_staged_allocation(allocation.allocation_id);
+                    }
+                    Err(failure)
+                }
+            };
+        }
         self.client
             .write_object(bucket, key, expected, data, &options)
             .map_err(Into::into)
@@ -183,6 +301,41 @@ impl ObjectPlane for SdkPlane {
         self.client
             .append_object(expected, data, &options)
             .map_err(Into::into)
+    }
+    fn append_best(
+        &mut self,
+        expected: ObjectManifest,
+        data: &[u8],
+    ) -> Result<ObjectManifest, PlaneFailure> {
+        use std::sync::atomic::Ordering;
+        let pages = data.len().div_ceil(self.options.write.page_bytes.max(1));
+        let route = choose_append_route(
+            &self.options,
+            self.compact.0.load(Ordering::Relaxed),
+            expected.extents.len(),
+            pages,
+            data.is_empty(),
+        );
+        match route {
+            AppendRoute::Compacting(max) => {
+                let options = self.write_options();
+                self.client
+                    .append_object_compacting(expected, data, &options, max)
+                    .map_err(Into::into)
+            }
+            AppendRoute::Staged => match self.append_compact_path(&expected, data) {
+                Ok(manifest) => Ok(manifest),
+                // Refused before anything was published and now switched off: the plain path
+                // is safe.
+                Err(failure)
+                    if !failure.unconfirmed && self.compact.0.load(Ordering::Relaxed) == 2 =>
+                {
+                    self.append(expected, data)
+                }
+                Err(failure) => Err(failure),
+            },
+            AppendRoute::Plain => self.append(expected, data),
+        }
     }
     fn read(&mut self, bucket: &str, key: &str) -> Result<(ObjectManifest, Vec<u8>), ObjectError> {
         let replica = self.replica_options();
@@ -217,6 +370,37 @@ impl ObjectPlane for SdkPlane {
     ) -> Result<ManifestListPage, ObjectError> {
         self.client.list_manifests(bucket, after, limit)
     }
+}
+
+/// Which publication an append takes. The default options always choose [`AppendRoute::Plain`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum AppendRoute {
+    /// `append_object`: the full manifest is published.
+    Plain,
+    /// A staged allocation and a compact digest-bound publication.
+    Staged,
+    /// `append_object_compacting` with this extent bound (plain publication).
+    Compacting(usize),
+}
+
+/// Pick the route for one append. `compact_state` is [`CompactState`]'s value: 2 means the
+/// compact path was refused once and is off for the life of the process.
+pub fn choose_append_route(
+    options: &GatewayOptions,
+    compact_state: u8,
+    extents: usize,
+    pages: usize,
+    empty: bool,
+) -> AppendRoute {
+    if let Some(max) = options.compact_extents {
+        if extents + pages > max {
+            return AppendRoute::Compacting(max);
+        }
+    }
+    if options.compact_append && compact_state != 2 && !empty {
+        return AppendRoute::Staged;
+    }
+    AppendRoute::Plain
 }
 
 fn now_ms() -> u64 {
@@ -262,8 +446,12 @@ impl ClusterGateway {
         F: Fn() -> Result<RemoteMetaClient, ObjectError> + Send + Sync + 'static,
     {
         let sdk_options = options.clone();
+        let compact = Arc::new(CompactState::default());
         Self::new(
-            move || Ok(Box::new(SdkPlane::new(open()?, sdk_options.clone())) as Box<dyn ObjectPlane>),
+            move || {
+                Ok(Box::new(SdkPlane::new(open()?, sdk_options.clone(), Arc::clone(&compact)))
+                    as Box<dyn ObjectPlane>)
+            },
             options,
             bucket_hint,
         )
@@ -540,7 +728,9 @@ impl ClusterGateway {
                 let result = match current {
                     Some(manifest) if !manifest.deleted => {
                         let pages = body.len().div_ceil(self.options.write.page_bytes.max(1));
-                        if manifest.extents.len() + pages > MAX_OBJECT_EXTENTS {
+                        if self.options.compact_extents.is_none()
+                            && manifest.extents.len() + pages > MAX_OBJECT_EXTENTS
+                        {
                             return Ok(Err((
                                 PlaneFailure::from(ObjectError::InvalidArgument(format!(
                                     "append refused: the object already holds {} extents and this append adds {pages}; the replica plane allows {MAX_OBJECT_EXTENTS} extents per object",
@@ -549,7 +739,7 @@ impl ClusterGateway {
                                 true,
                             )));
                         }
-                        plane.append(manifest, body)
+                        plane.append_best(manifest, body)
                     }
                     other => plane.write(bucket, key, other, body),
                 };
@@ -873,7 +1063,6 @@ fn error_response(error: ObjectError, resource: &str, missing_is_bucket: bool) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::collections::BTreeMap;
 
     /// An in-memory plane with the SDK's contract: a write names the generation it builds on,
@@ -1155,6 +1344,85 @@ mod tests {
         let shared = shared.lock().unwrap();
         let (m, bytes) = shared.objects.get(&("b".to_string(), "wal".to_string())).unwrap();
         assert_eq!((m.length, bytes.len()), (MAX_OBJECT_EXTENTS as u64, MAX_OBJECT_EXTENTS));
+    }
+
+    #[test]
+    fn plain_publication_is_the_default_and_the_options_are_off() {
+        let options = GatewayOptions::default();
+        assert!(!options.compact_append);
+        assert_eq!(options.compact_extents, None);
+        for (extents, pages, empty) in [(0, 1, false), (1, 1, false), (4095, 1, false), (4096, 1, false), (3, 0, true)] {
+            for state in [0u8, 1, 2] {
+                assert_eq!(choose_append_route(&options, state, extents, pages, empty), AppendRoute::Plain);
+            }
+        }
+    }
+
+    #[test]
+    fn the_staged_path_is_chosen_until_the_fence_refuses_it() {
+        let options = GatewayOptions { compact_append: true, ..GatewayOptions::default() };
+        assert_eq!(choose_append_route(&options, 0, 10, 1, false), AppendRoute::Staged);
+        assert_eq!(choose_append_route(&options, 1, 10, 1, false), AppendRoute::Staged);
+        // Refused once (state 2): plain from then on.
+        assert_eq!(choose_append_route(&options, 2, 10, 1, false), AppendRoute::Plain);
+        // An empty append has no extents to own.
+        assert_eq!(choose_append_route(&options, 1, 10, 0, true), AppendRoute::Plain);
+    }
+
+    #[test]
+    fn tail_compaction_starts_exactly_at_its_bound_and_wins_over_compact_publication() {
+        let options = GatewayOptions { compact_extents: Some(3500), compact_append: true, ..GatewayOptions::default() };
+        assert_eq!(choose_append_route(&options, 1, 3498, 2, false), AppendRoute::Staged);
+        assert_eq!(choose_append_route(&options, 1, 3499, 2, false), AppendRoute::Compacting(3500));
+        assert_eq!(choose_append_route(&options, 0, 3500, 1, false), AppendRoute::Compacting(3500));
+        let only = GatewayOptions { compact_extents: Some(3500), ..GatewayOptions::default() };
+        assert_eq!(choose_append_route(&only, 0, 3499, 1, false), AppendRoute::Plain);
+    }
+
+    /// A plane whose `append_best` keeps the extent count bounded the way tail compaction does.
+    struct CompactingPlane(MemoryPlane, usize);
+
+    impl ObjectPlane for CompactingPlane {
+        fn read_manifest(&mut self, b: &str, k: &str) -> Result<ObjectManifest, ObjectError> { self.0.read_manifest(b, k) }
+        fn write(&mut self, b: &str, k: &str, e: Option<ObjectManifest>, d: &[u8]) -> Result<ObjectManifest, PlaneFailure> { self.0.write(b, k, e, d) }
+        fn append(&mut self, e: ObjectManifest, d: &[u8]) -> Result<ObjectManifest, PlaneFailure> { self.0.append(e, d) }
+        fn append_best(&mut self, expected: ObjectManifest, data: &[u8]) -> Result<ObjectManifest, PlaneFailure> {
+            let mut shared = self.0 .0.lock().unwrap();
+            shared.calls.push("append_best");
+            let slot = (expected.bucket.clone(), expected.key.clone());
+            let (current, bytes) = shared.objects.get(&slot).cloned().unwrap();
+            if current != expected {
+                return Err(ObjectError::PreconditionFailed("object manifest changed before write".into()).into());
+            }
+            let mut joined = bytes;
+            joined.extend_from_slice(data);
+            let extents = if current.extents.len() + 1 > self.1 { 2 } else { current.extents.len() + 1 };
+            let m = manifest(&expected.bucket, &expected.key, current.generation + 1, joined.len() as u64, extents);
+            shared.objects.insert(slot, (m.clone(), joined));
+            Ok(m)
+        }
+        fn read(&mut self, b: &str, k: &str) -> Result<(ObjectManifest, Vec<u8>), ObjectError> { self.0.read(b, k) }
+        fn read_range(&mut self, b: &str, k: &str, o: u64, l: u64) -> Result<(ObjectManifest, Vec<u8>), ObjectError> { self.0.read_range(b, k, o, l) }
+        fn delete(&mut self, b: &str, k: &str) -> Result<ObjectManifest, ObjectError> { self.0.delete(b, k) }
+        fn list(&mut self, b: &str, a: Option<&str>, l: u32) -> Result<ManifestListPage, ObjectError> { self.0.list(b, a, l) }
+    }
+
+    #[test]
+    fn with_tail_compaction_an_object_stays_appendable_past_the_extent_limit() {
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let handle = Arc::clone(&shared);
+        let gateway = ClusterGateway::new(
+            move || Ok(Box::new(CompactingPlane(MemoryPlane(Arc::clone(&handle)), 3500)) as Box<dyn ObjectPlane>),
+            GatewayOptions { compact_extents: Some(3500), ..GatewayOptions::default() },
+            "b",
+        );
+        for offset in 0..(MAX_OBJECT_EXTENTS as u64 + 200) {
+            let response = append(&gateway, "wal", offset, b"x");
+            assert_eq!(response.status, 200, "append {} was refused", offset + 1);
+        }
+        let got = gateway.handle(&request("GET", "/b/wal", &[], b""));
+        assert_eq!(got.body.len(), MAX_OBJECT_EXTENTS + 200);
+        assert!(shared.lock().unwrap().calls.iter().any(|c| *c == "append_best"));
     }
 
     #[test]

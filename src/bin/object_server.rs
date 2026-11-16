@@ -26,6 +26,8 @@
 //! | `MATRIXOBJECT_CLUSTER_META_GROUP` | *(unset)* | metadata Raft group id; set for a Raft metadata quorum (several endpoints imply `1`) |
 //! | `MATRIXOBJECT_CLUSTER_TIMEOUT_MS` | `10000` | bound on one cluster operation |
 //! | `MATRIXOBJECT_CLUSTER_PAGE_BYTES` | `1048576` | page size for written data, 1 to 1048576 |
+//! | `MATRIXOBJECT_CLUSTER_COMPACT_APPEND` | `0` | `1` publishes appends as compact staged decisions; every metadata voter must support the version 11 outcome |
+//! | `MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS` | *(unset)* | 2 to 4096: merge a log object's short tail once it holds this many extents, so it stays appendable past 4096 |
 //! | `MATRIXOBJECT_CLUSTER_TARGET_GROUPS` | `1` | data groups one object is spread over |
 //!
 //! # CLUSTER MODE
@@ -128,6 +130,15 @@ fn main() {
         let timeout_ms = env_usize("MATRIXOBJECT_CLUSTER_TIMEOUT_MS", 10_000).max(1) as u64;
         let page_bytes = env_usize("MATRIXOBJECT_CLUSTER_PAGE_BYTES", 1024 * 1024);
         let target_groups = env_usize("MATRIXOBJECT_CLUSTER_TARGET_GROUPS", 1);
+        let compact_append = env_usize("MATRIXOBJECT_CLUSTER_COMPACT_APPEND", 0) != 0;
+        let compact_extents = match env_usize("MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS", 0) {
+            0 => None,
+            bound if (2..=4096).contains(&bound) => Some(bound),
+            bound => {
+                eprintln!("MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS={bound} is outside 2 to 4096");
+                std::process::exit(2);
+            }
+        };
         let group = std::env::var("MATRIXOBJECT_CLUSTER_META_GROUP")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -142,6 +153,8 @@ fn main() {
             Duration::from_millis(timeout_ms),
             page_bytes,
             target_groups as u32,
+            compact_append,
+            compact_extents,
         );
     }
 
@@ -268,6 +281,8 @@ fn run_cluster_gateway(
     timeout: std::time::Duration,
     page_bytes: usize,
     target_groups: u32,
+    compact_append: bool,
+    compact_extents: Option<usize>,
 ) -> ! {
     use std::sync::Arc;
 
@@ -302,6 +317,8 @@ fn run_cluster_gateway(
         operation_timeout: timeout,
         max_object_bytes: max_body_bytes,
         pool_max: worker_threads.max(1),
+        compact_append,
+        compact_extents,
         ..GatewayOptions::default()
     };
     let meta_options = ClusterGateway::meta_options(timeout);
