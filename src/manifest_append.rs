@@ -35,6 +35,10 @@ impl ManifestAppend {
     /// Bind the exact live prefix and immutable suffix for compact staged publication.
     pub fn decide(outcome: &ManifestOutcome) -> Result<Self, ObjectError> {
         outcome.validate()?;
+        Self::decide_validated(outcome)
+    }
+    /// `decide` for an outcome the caller has just validated in full.
+    pub(crate) fn decide_validated(outcome: &ManifestOutcome) -> Result<Self, ObjectError> {
         let before = outcome
             .before
             .as_ref()

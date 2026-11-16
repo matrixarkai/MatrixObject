@@ -110,8 +110,14 @@ pub(super) fn prepare_at(service: &MatrixMetaService, groups: &ChunkGroupCatalog
             if allocation.expires_at_ms != 0 && (now == 0 || now >= allocation.expires_at_ms) {
                 return Err(ObjectError::PreconditionFailed("staged allocation lease expired".into()));
             }
-            allocation.check_publication(&manifest)?;
-            groups.check_manifest(&manifest)?;
+            if command.manifest_append.is_some() {
+                // `expand` validated this outcome in full.
+                allocation.check_publication_validated(&manifest)?;
+                groups.check_manifest_validated(&manifest)?;
+            } else {
+                allocation.check_publication(&manifest)?;
+                groups.check_manifest(&manifest)?;
+            }
             if let Some(append) = &command.manifest_append {
                 outcome = PlacementOutcome::publish_staged_append(service, manifest,
                     command.update_time_ms, allocation, append.clone())?;

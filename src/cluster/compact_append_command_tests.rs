@@ -315,3 +315,20 @@ fn compact_append_mixed_journal_reopens_without_clocked_revalidation() {
     assert!(recovered);
     assert_eq!(restored.export_snapshot().to_bytes().unwrap(), expected);
 }
+
+#[test]
+fn an_append_validates_whole_manifests_a_bounded_number_of_times() {
+    let (mut service, groups, command) = compact_append_fixture(1000);
+    crate::object_manifest::reset_validate_calls();
+    let (outcome, _) = super::super::staged_allocation_commands::prepare_at(
+        &service, &groups, &command, 8192, 1500,
+    )
+    .unwrap();
+    let after_prepare = crate::object_manifest::validate_calls();
+    outcome.apply(&mut service).unwrap();
+    let total = crate::object_manifest::validate_calls();
+    // Preparing validates the stored manifest once and the new one once; applying does the
+    // same again. A change that validates again at each call site raises these numbers.
+    assert!(after_prepare <= 4, "prepare validated {after_prepare} whole manifests");
+    assert!(total <= 8, "prepare and apply validated {total} whole manifests");
+}

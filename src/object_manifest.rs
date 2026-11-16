@@ -115,11 +115,26 @@ pub struct ObjectManifest {
 fn invalid(message: &str) -> ObjectError {
     ObjectError::Corruption(message.into())
 }
+#[cfg(test)]
+thread_local! {
+    static VALIDATE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+/// Full manifest validations on this thread since the last reset (tests only).
+#[cfg(test)]
+pub(crate) fn validate_calls() -> usize {
+    VALIDATE_CALLS.with(|calls| calls.get())
+}
+#[cfg(test)]
+pub(crate) fn reset_validate_calls() {
+    VALIDATE_CALLS.with(|calls| calls.set(0));
+}
 impl ObjectManifest {
     pub fn object_id(&self) -> ObjectId {
         ObjectId::new(self.bucket.clone(), self.key.clone())
     }
     pub fn validate(&self) -> Result<(), ObjectError> {
+        #[cfg(test)]
+        VALIDATE_CALLS.with(|calls| calls.set(calls.get() + 1));
         crate::validate_bucket(&self.bucket)?;
         crate::validate_key(&self.key)?;
         if !(1..=2).contains(&self.format_version)
@@ -182,6 +197,7 @@ impl ObjectManifest {
         crate::validate_key(&self.key)?;
         let kept = prefix.extents.len();
         if !(1..=2).contains(&self.format_version)
+            || self.format_version != prefix.format_version
             || self.generation == 0
             || self.extents.len() > 4096
             || self.extents.len() < kept
@@ -254,6 +270,41 @@ impl ObjectManifest {
         }
         Ok(())
     }
+    /// Validate `self` when its extents are exactly the first extents of `after`, which the
+    /// caller has validated. Every per-extent rule then already holds for `self` (it is a prefix
+    /// of a valid extent list), so only the header and the covered length are left to check.
+    /// Equivalent to `validate` for such a pair.
+    pub(crate) fn validate_as_prefix_of(&self, after: &ObjectManifest) -> Result<(), ObjectError> {
+        crate::validate_bucket(&self.bucket)?;
+        crate::validate_key(&self.key)?;
+        let kept = self.extents.len();
+        if !(1..=2).contains(&self.format_version)
+            || self.generation == 0
+            || kept > 4096
+            || kept > after.extents.len()
+        {
+            return Err(invalid(
+                "invalid object manifest version, generation or size",
+            ));
+        }
+        if self.deleted && (self.length != 0 || !self.extents.is_empty()) {
+            return Err(invalid("deleted object manifest contains data"));
+        }
+        let covered = if kept == after.extents.len() {
+            after.length
+        } else {
+            after.extents[kept].object_offset
+        };
+        if covered != self.length {
+            return Err(invalid("object extents do not cover its length"));
+        }
+        if self.encoded_len() > MAX_MANIFEST {
+            return Err(invalid(
+                "invalid object manifest version, generation or size",
+            ));
+        }
+        Ok(())
+    }
     pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
         self.validate()?;
         frame(b"MOMF", self, MAX_MANIFEST)
@@ -297,7 +348,11 @@ impl ManifestOutcome {
             .ok_or_else(|| invalid("manifest outcome has no resulting state"))?;
         after.validate()?;
         let generation = if let Some(before) = &self.before {
-            before.validate()?;
+            if before.format_version == after.format_version && after.extents.starts_with(&before.extents) {
+                before.validate_as_prefix_of(after)?;
+            } else {
+                before.validate()?;
+            }
             if before.object_id() != after.object_id() {
                 return Err(invalid("manifest outcome changes object identity"));
             }
@@ -934,6 +989,76 @@ mod tests {
                 .collect(),
             ..Default::default()
         }
+    }
+    /// What `ManifestOutcome::validate` decided before prior manifests were validated as
+    /// prefixes: both manifests in full.
+    fn full_outcome_validation(outcome: &ManifestOutcome) -> bool {
+        if outcome.format_version != 1 {
+            return false;
+        }
+        let Some(after) = &outcome.after else { return false };
+        if after.validate().is_err() {
+            return false;
+        }
+        let generation = if let Some(before) = &outcome.before {
+            if before.validate().is_err() || before.object_id() != after.object_id() {
+                return false;
+            }
+            match before.generation.checked_add(1) {
+                Some(value) => value,
+                None => return false,
+            }
+        } else {
+            1
+        };
+        after.generation == generation
+    }
+    #[test]
+    fn outcome_validation_agrees_with_validating_both_manifests_in_full() {
+        let mut checked = 0;
+        for count in [0usize, 1, 2, 40] {
+            for added in [1usize, 3] {
+                let before = sized_manifest(count);
+                let mut after = sized_manifest(count + added);
+                after.generation = 2;
+                for extent in &mut after.extents[count..] {
+                    extent.chunk_id += 10_000;
+                }
+                let changes: Vec<(&str, Box<dyn Fn(&mut ObjectManifest, &mut ObjectManifest)>)> = vec![
+                    ("none", Box::new(|_, _| {})),
+                    ("before length", Box::new(|b, _| b.length += 1)),
+                    ("before length down", Box::new(|b, _| b.length = b.length.saturating_sub(1))),
+                    ("before generation zero", Box::new(|b, _| b.generation = 0)),
+                    ("before generation max", Box::new(|b, _| b.generation = u64::MAX)),
+                    ("before deleted", Box::new(|b, _| b.deleted = true)),
+                    ("before bucket", Box::new(|b, _| b.bucket = "other".into())),
+                    ("before key", Box::new(|b, _| b.key = "bad key ".into())),
+                    ("before version", Box::new(|b, _| b.format_version = 3)),
+                    ("before version one", Box::new(|b, _| b.format_version = 1)),
+                    ("before extent", Box::new(|b, _| if let Some(e) = b.extents.last_mut() { e.length += 1 })),
+                    ("before drops an extent", Box::new(|b, _| { b.extents.pop(); })),
+                    ("after generation", Box::new(|_, a| a.generation = 5)),
+                    ("after length", Box::new(|_, a| a.length += 1)),
+                    ("after prefix extent", Box::new(|_, a| if let Some(e) = a.extents.first_mut() { e.data_sha256[0] ^= 1 })),
+                    ("after duplicate page", Box::new(move |_, a| {
+                        let last = a.extents.len() - 1;
+                        a.extents[last].chunk_id = a.extents[0].chunk_id;
+                    })),
+                ];
+                for (name, change) in changes {
+                    let (mut b, mut a) = (before.clone(), after.clone());
+                    change(&mut b, &mut a);
+                    let outcome = ManifestOutcome { format_version: 1, before: Some(b), after: Some(a) };
+                    assert_eq!(
+                        outcome.validate().is_ok(),
+                        full_outcome_validation(&outcome),
+                        "{name} ({count}+{added})"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100);
     }
     #[test]
     fn the_page_hasher_spreads_sequential_pages_and_validation_still_refuses_repeats() {

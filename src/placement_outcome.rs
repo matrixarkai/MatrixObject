@@ -346,7 +346,11 @@ impl PlacementOutcome {
         copy_source: Option<crate::manifest_copy::LiveCopySource>,
         compact_append: Option<crate::manifest_append::ManifestAppend>,
     ) -> Result<Self, ObjectError> {
-        manifest.validate()?;
+        // A compact append's outcome comes from `ManifestAppend::expand`, which validated it,
+        // and `validate_publication` below validates every outcome in full again.
+        if compact_append.is_none() {
+            manifest.validate()?;
+        }
         let after = manifest.after.as_ref().unwrap();
         let before = service
             .placements
@@ -417,7 +421,8 @@ impl PlacementOutcome {
         outcome.validate_manifest_binding()?;
         outcome.validate_publication(service, true)?;
         if let Some(append) = compact_append {
-            if crate::manifest_append::ManifestAppend::decide(outcome.manifest.as_ref().unwrap())? != append {
+            // `validate_publication` above validated the outcome in full.
+            if crate::manifest_append::ManifestAppend::decide_validated(outcome.manifest.as_ref().unwrap())? != append {
                 return Err(invalid("compact append differs from validated publication"));
             }
             outcome.version = 11;
