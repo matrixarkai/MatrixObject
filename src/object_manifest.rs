@@ -3,7 +3,7 @@
 //! Binary object extents and conditional publication state. Node wiring is separate.
 use crate::{ChunkId, ObjectError, ObjectId};
 use prost::Message;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 const MAX_MANIFEST: usize = 1024 * 1024;
 const MAX_SNAPSHOT: usize = 64 * 1024 * 1024;
@@ -110,7 +110,7 @@ impl ObjectManifest {
             return Err(invalid("deleted object manifest contains data"));
         }
         let mut offset = 0u64;
-        let mut pages = BTreeSet::new();
+        let mut pages = std::collections::HashSet::with_capacity(self.extents.len());
         for extent in &self.extents {
             ChunkId::new(extent.volume_id, extent.chunk_id)?;
             if extent.group.is_empty()
@@ -145,6 +145,87 @@ impl ObjectManifest {
         }
         if offset != self.length {
             return Err(invalid("object extents do not cover its length"));
+        }
+        Ok(())
+    }
+    /// Validate `self` where the first `prefix.extents.len()` extents are exactly those of
+    /// `prefix`, which the caller has already validated. Only what the append added is checked
+    /// in full: the header, the new extents, their continuity with the prefix, and that none
+    /// of their pages is already named by the prefix. Equivalent to `validate` for such a pair.
+    pub(crate) fn validate_extension(&self, prefix: &ObjectManifest) -> Result<(), ObjectError> {
+        crate::validate_bucket(&self.bucket)?;
+        crate::validate_key(&self.key)?;
+        let kept = prefix.extents.len();
+        if !(1..=2).contains(&self.format_version)
+            || self.generation == 0
+            || self.extents.len() > 4096
+            || self.extents.len() < kept
+            || self.encoded_len() > MAX_MANIFEST
+        {
+            return Err(invalid(
+                "invalid object manifest version, generation or size",
+            ));
+        }
+        if self.deleted && (self.length != 0 || !self.extents.is_empty()) {
+            return Err(invalid("deleted object manifest contains data"));
+        }
+        let suffix = &self.extents[kept..];
+        let mut offset = prefix.length;
+        for extent in suffix {
+            ChunkId::new(extent.volume_id, extent.chunk_id)?;
+            if extent.group.is_empty()
+                || extent.group.len() > 128
+                || !extent
+                    .group
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+                || extent.length == 0
+                || extent.write_sequence == 0
+                || (self.format_version == 1 && !extent.data_sha256.is_empty())
+                || (self.format_version == 2 && extent.data_sha256.len() != 32)
+                || extent.object_offset != offset
+                || extent
+                    .page_offset
+                    .checked_add(extent.length)
+                    .map_or(true, |n| n > 256 * 1024 * 1024)
+            {
+                return Err(invalid(
+                    "invalid object extent ordering, identity or bounds",
+                ));
+            }
+            offset = offset
+                .checked_add(extent.length)
+                .ok_or_else(|| invalid("object length overflow"))?;
+        }
+        if offset != self.length {
+            return Err(invalid("object extents do not cover its length"));
+        }
+        // A page may be named once: among the new extents, and against the prefix.
+        let same_page = |a: &ObjectExtent, b: &ObjectExtent| {
+            a.chunk_id == b.chunk_id
+                && a.page_index == b.page_index
+                && a.volume_id == b.volume_id
+                && a.group == b.group
+        };
+        if suffix.len() <= 16 {
+            for (index, extent) in suffix.iter().enumerate() {
+                if suffix[..index].iter().any(|other| same_page(extent, other))
+                    || prefix.extents.iter().any(|other| same_page(extent, other))
+                {
+                    return Err(invalid(
+                        "invalid object extent ordering, identity or bounds",
+                    ));
+                }
+            }
+        } else {
+            let mut pages = std::collections::HashSet::with_capacity(self.extents.len());
+            for extent in &self.extents {
+                if !pages.insert((&extent.group, extent.volume_id, extent.chunk_id, extent.page_index)) {
+                    return Err(invalid(
+                        "invalid object extent ordering, identity or bounds",
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -808,6 +889,79 @@ fn unframe<T: Message + Default>(
 mod tests {
     use super::*;
     include!("manifest_catalog_sharing_tests.rs");
+    fn sized_manifest(count: usize) -> ObjectManifest {
+        ObjectManifest {
+            format_version: 2,
+            bucket: "bucket".into(),
+            key: "key".into(),
+            generation: 1,
+            length: count as u64,
+            extents: (0..count)
+                .map(|index| ObjectExtent {
+                    group: "group".into(),
+                    chunk_id: index as u64 + 1,
+                    object_offset: index as u64,
+                    length: 1,
+                    write_sequence: 1,
+                    data_sha256: vec![1; 32],
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn extension_validation_agrees_with_full_validation() {
+        for count in [0usize, 1, 17, 300, 4000] {
+            let before = sized_manifest(count);
+            assert!(before.validate().is_ok());
+            for added in [1usize, 2, 16, 17, 60] {
+                if count + added > 4096 {
+                    continue;
+                }
+                let mut after = sized_manifest(count + added);
+                after.generation = 2;
+                for extent in &mut after.extents[count..] {
+                    extent.chunk_id += 10_000;
+                }
+                assert!(after.validate().is_ok());
+                assert!(after.validate_extension(&before).is_ok(), "{count}+{added}");
+                let damage: Vec<(&str, Box<dyn Fn(&mut ObjectManifest)>)> = vec![
+                    ("offset", Box::new(move |m| m.extents[count].object_offset += 1)),
+                    ("zero length", Box::new(move |m| m.extents[count].length = 0)),
+                    ("digest length", Box::new(move |m| { m.extents[count].data_sha256.pop(); })),
+                    ("sequence", Box::new(move |m| m.extents[count].write_sequence = 0)),
+                    ("total length", Box::new(|m| m.length += 1)),
+                    ("generation", Box::new(|m| m.generation = 0)),
+                    ("group name", Box::new(move |m| m.extents[count].group = "bad group".into())),
+                    ("duplicate inside the append", Box::new(move |m| {
+                        let first = m.extents[count].clone();
+                        let last = m.extents.len() - 1;
+                        m.extents[last].chunk_id = first.chunk_id;
+                        m.extents[last].page_index = first.page_index;
+                    })),
+                    ("duplicate of a prefix page", Box::new(move |m| {
+                        if count > 0 {
+                            m.extents[count].chunk_id = m.extents[0].chunk_id;
+                        } else {
+                            m.extents[count].length = 0;
+                        }
+                    })),
+                ];
+                for (name, change) in damage {
+                    let mut wrong = after.clone();
+                    change(&mut wrong);
+                    if added == 1 && name == "duplicate inside the append" {
+                        continue; // one new extent cannot repeat itself
+                    }
+                    let full = wrong.validate().is_err();
+                    let incremental = wrong.validate_extension(&before).is_err();
+                    assert!(full, "{name} must be refused by full validation ({count}+{added})");
+                    assert_eq!(full, incremental, "{name} ({count}+{added})");
+                }
+            }
+        }
+    }
     #[test]
     fn manifest_listing_is_bounded_ordered_and_bucket_scoped() {
         let mut catalog = ManifestCatalog::default();

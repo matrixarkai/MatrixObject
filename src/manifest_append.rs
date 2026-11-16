@@ -116,7 +116,14 @@ impl ManifestAppend {
         after.generation += 1;
         after.length = self.after_length;
         after.extents.extend(self.suffix.iter().cloned());
-        let outcome = ManifestOutcome::decide(Some(before.clone()), after)?;
+        // `before` was validated above and `after` is `before` plus the suffix, so only the
+        // suffix needs a full check; `decide` would validate both whole manifests again.
+        after.validate_extension(before)?;
+        let outcome = ManifestOutcome {
+            format_version: 1,
+            before: Some(before.clone()),
+            after: Some(after),
+        };
         if crate::read_session_outcome::manifest_sha256(outcome.after.as_ref().unwrap())?
             != self.after_sha256
         {
