@@ -156,10 +156,14 @@ report subtracts the larger of physical usage and committed allocations from
 capacity, so overlapping bytes are not counted twice. Invalid or partial configuration is
 refused before the process begins serving.
 
-Set `MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS` on each metaserver to enable expiry
-(1000..3600000 ms, default 0 disables it). Use a TTL comfortably larger than the
-report interval plus expected election, network, and storage delays, for example
-15000 ms with 3000 ms reports. Maintenance checks at most once a second and uses
+Expiry is on by default: `MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS` defaults to
+15000 ms (range 1000..3600000 ms) and `0` turns it off. The metaserver prints the
+value it runs with as `heartbeat_ttl_ms=` on its startup line. Use a TTL comfortably
+larger than the report interval plus expected election, network, and storage delays;
+the default is five of the chunkserver's default 3000 ms report intervals. A node
+expired by silence returns on its next report. Placement treats a fixed three-member
+Star group as available only while all three members report online and not draining,
+because a Star write needs every member; Raft groups keep the majority rule. Maintenance checks at most once a second and uses
 the normal durable mutation path; only a consensus leader can commit expiry.
 Expiry records contain only changed nodes. An empty local pass appends nothing;
 an empty consensus pass uses a compact read barrier. Clocks must be synchronized
