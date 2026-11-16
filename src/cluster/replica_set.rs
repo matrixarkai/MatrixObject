@@ -2503,7 +2503,20 @@ impl RemoteReplicaSet {
             has_more,
             blocked: false,
         };
-        let pages: Vec<_> = selected.into_iter().collect();
+        let by_id: Vec<_> = selected.into_iter().collect();
+        // Repair order inside the batch: short of copies first, complete pages after, pages
+        // that no source quorum can vouch for last so they cannot stall the others. The
+        // cursor then moves only when the whole batch is resolved.
+        let pages = match self.page_copy_counts(&by_id) {
+            Some(copies) => {
+                let mut order: Vec<usize> = (0..by_id.len()).collect();
+                let (members, quorum) = (self.replicas.len(), self.read_quorum);
+                order.sort_by_key(|&i| (repair_priority(copies[i], members, quorum), i));
+                order.into_iter().map(|i| by_id[i].clone()).collect()
+            }
+            None => by_id.clone(),
+        };
+        let reordered = pages != by_id;
         for group in pages.chunks(8) {
             let uniform = if head_first {
                 self.uniform_heads_batch(group).ok().flatten()
@@ -2542,10 +2555,52 @@ impl RemoteReplicaSet {
                     batch.has_more = true;
                     return Ok(batch);
                 }
-                batch.resume_after = Some(page.clone());
+                if !reordered {
+                    batch.resume_after = Some(page.clone());
+                }
             }
         }
+        if reordered {
+            batch.resume_after = by_id.last().cloned();
+        }
         Ok(batch)
+    }
+
+    /// For each page, how many members hold the same head: the copies a repair could copy
+    /// from. `None` when members cannot answer head batches.
+    fn page_copy_counts(&mut self, pages: &[PageId]) -> Option<Vec<usize>> {
+        if self.repair_head_batch == Some(false) || pages.is_empty() {
+            return None;
+        }
+        let mut counts = vec![0usize; pages.len()];
+        for (start, group) in pages.chunks(8).enumerate() {
+            let deadline = self.read_wave_deadline().ok()?;
+            let request = ReplicaRequest::HeadChunkBatch { pages: group.to_vec() };
+            let mut answers: Vec<Option<Vec<Option<ReplicaHead>>>> = vec![None; self.replicas.len()];
+            let mut unsupported = false;
+            self.fan_out_each_before(&request, None, deadline, None, |index, reply| match reply {
+                Ok(ReplicaReply::Heads(heads)) if heads.len() == group.len() => {
+                    answers[index] = Some(heads);
+                }
+                Err(_) => unsupported = true,
+                _ => {}
+            });
+            if unsupported {
+                return None;
+            }
+            for position in 0..group.len() {
+                let heads: Vec<&ReplicaHead> = answers
+                    .iter()
+                    .filter_map(|a| a.as_ref().and_then(|h| h[position].as_ref()))
+                    .collect();
+                counts[start * 8 + position] = heads
+                    .iter()
+                    .map(|head| heads.iter().filter(|other| *other == head).count())
+                    .max()
+                    .unwrap_or(0);
+            }
+        }
+        Some(counts)
     }
 
     fn uniform_heads_batch(
@@ -3668,5 +3723,35 @@ mod send_progress_tests {
             first.is_ok() && second.is_ok(),
             "healthy members waited behind the stalled sender"
         );
+    }
+}
+
+/// Sort key for repair order. Lower repairs first: a page a quorum can vouch for but that is
+/// short of copies, fewest copies first; then complete pages (nothing to copy); then pages no
+/// source quorum can vouch for, which a repair must not trust or let block the rest.
+pub(crate) fn repair_priority(copies: usize, members: usize, source_quorum: usize) -> (u8, usize) {
+    if copies < source_quorum {
+        (2, copies)
+    } else if copies < members {
+        (0, copies)
+    } else {
+        (1, copies)
+    }
+}
+
+#[cfg(test)]
+mod repair_order_tests {
+    use super::repair_priority;
+
+    #[test]
+    fn short_pages_repair_before_complete_ones_and_unvouched_pages_last() {
+        let mut pages = [("a", 3), ("b", 2), ("c", 1), ("d", 3), ("e", 2)];
+        pages.sort_by_key(|(_, copies)| repair_priority(*copies, 3, 2));
+        let order: Vec<_> = pages.iter().map(|(name, _)| *name).collect();
+        assert_eq!(order, ["b", "e", "a", "d", "c"]);
+        // With five members and a source quorum of three, fewer copies come first.
+        let mut wide = [("x", 4), ("y", 3), ("z", 5)];
+        wide.sort_by_key(|(_, copies)| repair_priority(*copies, 5, 3));
+        assert_eq!(wide.map(|(name, _)| name), ["y", "x", "z"]);
     }
 }
