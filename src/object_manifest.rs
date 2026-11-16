@@ -6,6 +6,31 @@ use prost::Message;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 const MAX_MANIFEST: usize = 1024 * 1024;
+
+/// A multiply-and-rotate hasher for the page-uniqueness sets in manifest validation. The keys
+/// are small and bounded (at most 4096 per manifest), nothing is stored or sent from it, and
+/// the default hasher's resistance to crafted collisions is not worth its cost here: a
+/// pathological set costs at most 4096 squared comparisons.
+#[derive(Default)]
+struct PageHasher(u64);
+impl std::hash::Hasher for PageHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = 0u64;
+            for (index, byte) in chunk.iter().enumerate() {
+                word |= u64::from(*byte) << (8 * index);
+            }
+            self.write_u64(word ^ ((chunk.len() as u64) << 56));
+        }
+    }
+    fn write_u64(&mut self, value: u64) {
+        self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+type PageSet<K> = std::collections::HashSet<K, std::hash::BuildHasherDefault<PageHasher>>;
 const MAX_SNAPSHOT: usize = 64 * 1024 * 1024;
 const MAX_OBJECTS: usize = 100_000;
 
@@ -110,7 +135,7 @@ impl ObjectManifest {
             return Err(invalid("deleted object manifest contains data"));
         }
         let mut offset = 0u64;
-        let mut pages = std::collections::HashSet::with_capacity(self.extents.len());
+        let mut pages = PageSet::with_capacity_and_hasher(self.extents.len(), Default::default());
         for extent in &self.extents {
             ChunkId::new(extent.volume_id, extent.chunk_id)?;
             if extent.group.is_empty()
@@ -218,7 +243,7 @@ impl ObjectManifest {
                 }
             }
         } else {
-            let mut pages = std::collections::HashSet::with_capacity(self.extents.len());
+            let mut pages = PageSet::with_capacity_and_hasher(self.extents.len(), Default::default());
             for extent in &self.extents {
                 if !pages.insert((&extent.group, extent.volume_id, extent.chunk_id, extent.page_index)) {
                     return Err(invalid(
@@ -908,6 +933,24 @@ mod tests {
                 })
                 .collect(),
             ..Default::default()
+        }
+    }
+    #[test]
+    fn the_page_hasher_spreads_sequential_pages_and_validation_still_refuses_repeats() {
+        use std::hash::BuildHasher;
+        let build = std::hash::BuildHasherDefault::<PageHasher>::default();
+        let hashes: std::collections::HashSet<u64> = (0..4096u64)
+            .map(|index| build.hash_one(("group-a", 0u64, index + 1, 0u64)))
+            .collect();
+        assert!(hashes.len() >= 4090, "only {} distinct hashes for 4096 pages", hashes.len());
+        let largest = sized_manifest(4096);
+        assert!(largest.validate().is_ok());
+        for position in [1usize, 17, 2047, 4095] {
+            let mut repeated = sized_manifest(4096);
+            let first = repeated.extents[0].clone();
+            repeated.extents[position].chunk_id = first.chunk_id;
+            repeated.extents[position].page_index = first.page_index;
+            assert!(repeated.validate().is_err(), "repeat at {position}");
         }
     }
     #[test]
