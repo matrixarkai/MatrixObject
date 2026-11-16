@@ -33,8 +33,23 @@ pub mod s3_versions;
 #[path = "net_service.rs"]
 pub mod service;
 
+#[cfg(all(feature = "http-server", feature = "replica-server", feature = "meta-server"))]
+pub mod cluster_gateway;
+
 pub use http::{Request, Response};
 pub use service::ObjectService;
+
+/// Anything that can answer one HTTP request, so the same listener can front the in-process
+/// store ([`ObjectService`]) or another backend such as the cluster gateway.
+pub trait RequestHandler: Send + Sync {
+    fn handle(&self, request: &Request) -> Response;
+}
+
+impl RequestHandler for ObjectService {
+    fn handle(&self, request: &Request) -> Response {
+        ObjectService::handle(self, request)
+    }
+}
 
 use std::io::BufReader;
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -81,7 +96,10 @@ impl Default for ServerOptions {
 /// A bound listener and the store behind it.
 pub struct ObjectHttpServer {
     listener: TcpListener,
-    store: Arc<Mutex<MatrixObjectStore>>,
+    /// The in-process store, when this listener serves one; `None` with a custom handler.
+    store: Option<Arc<Mutex<MatrixObjectStore>>>,
+    /// A backend other than the in-process store; takes precedence over `store`.
+    handler: Option<Arc<dyn RequestHandler>>,
     bucket_hint: Option<String>,
     options: ServerOptions,
     stop: Arc<AtomicBool>,
@@ -126,7 +144,26 @@ impl ObjectHttpServer {
         listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
-            store,
+            store: Some(store),
+            handler: None,
+            bucket_hint: None,
+            options,
+            stop: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// Bind `addr` and serve every request with `handler` instead of an in-process store.
+    pub fn bind_handler(
+        addr: impl ToSocketAddrs,
+        handler: Arc<dyn RequestHandler>,
+        options: ServerOptions,
+    ) -> std::io::Result<Self> {
+        let listener = TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
+        Ok(Self {
+            listener,
+            store: None,
+            handler: Some(handler),
             bucket_hint: None,
             options,
             stop: Arc::new(AtomicBool::new(false)),
@@ -165,11 +202,17 @@ impl ObjectHttpServer {
         // BUILT ONCE, HERE, so the bucket hint is in place before any thread can answer. Building
         // it in `bind` and then rebuilding it in `with_bucket_hint` would have meant unwrapping an
         // `Arc` that the threads may already hold.
-        let mut service = ObjectService::new(Arc::clone(&self.store));
-        if let Some(bucket) = self.bucket_hint.clone() {
-            service = service.with_bucket_hint(bucket);
-        }
-        let service = Arc::new(service);
+        let service: Arc<dyn RequestHandler> = match (&self.handler, &self.store) {
+            (Some(handler), _) => Arc::clone(handler),
+            (None, Some(store)) => {
+                let mut service = ObjectService::new(Arc::clone(store));
+                if let Some(bucket) = self.bucket_hint.clone() {
+                    service = service.with_bucket_hint(bucket);
+                }
+                Arc::new(service)
+            }
+            (None, None) => unreachable!("a server is bound with a store or a handler"),
+        };
         let mut threads = Vec::with_capacity(self.options.worker_threads.max(1));
         for index in 0..self.options.worker_threads.max(1) {
             let listener = self.listener.try_clone()?;
@@ -191,7 +234,7 @@ impl ObjectHttpServer {
 
 fn accept_loop(
     listener: TcpListener,
-    service: Arc<ObjectService>,
+    service: Arc<dyn RequestHandler>,
     options: ServerOptions,
     stop: Arc<AtomicBool>,
 ) {
@@ -207,7 +250,7 @@ fn accept_loop(
                 }
                 let _ = stream.set_read_timeout(Some(options.read_timeout));
                 let _ = stream.set_write_timeout(Some(options.write_timeout));
-                serve_connection(stream, &service, &options);
+                serve_connection(stream, &*service, &options);
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(options.accept_poll_interval);
@@ -222,7 +265,7 @@ fn accept_loop(
     }
 }
 
-fn serve_connection(stream: TcpStream, service: &ObjectService, options: &ServerOptions) {
+fn serve_connection(stream: TcpStream, service: &dyn RequestHandler, options: &ServerOptions) {
     let Ok(write_half) = stream.try_clone() else {
         return;
     };

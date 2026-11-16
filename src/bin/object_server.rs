@@ -22,6 +22,20 @@
 //! | `MATRIXOBJECT_JOURNAL_REPAIR_TORN_TAIL` | *(unset)* | `1` drops a torn final journal frame at start, keeping it beside the journal |
 //! | `MATRIXOBJECT_MAX_BODY_BYTES` | `67108864` | largest object this door accepts |
 //! | `MATRIXOBJECT_THREADS` | `4` | accept threads |
+//! | `MATRIXOBJECT_CLUSTER_META` | *(unset)* | `host:port[,host:port...]`: serve the replicated object plane through these metadata endpoints instead of an in-process store (see below) |
+//! | `MATRIXOBJECT_CLUSTER_META_GROUP` | *(unset)* | metadata Raft group id; set for a Raft metadata quorum (several endpoints imply `1`) |
+//! | `MATRIXOBJECT_CLUSTER_TIMEOUT_MS` | `10000` | bound on one cluster operation |
+//! | `MATRIXOBJECT_CLUSTER_PAGE_BYTES` | `1048576` | page size for written data, 1 to 1048576 |
+//! | `MATRIXOBJECT_CLUSTER_TARGET_GROUPS` | `1` | data groups one object is spread over |
+//!
+//! # CLUSTER MODE
+//!
+//! With `MATRIXOBJECT_CLUSTER_META` set this door serves a metadata quorum and its chunk
+//! groups, running as separate processes, rather than a store in its own memory. It answers
+//! PUT, append (`x-amz-write-offset-bytes`), GET with `Range`, HEAD, DELETE and ListObjectsV2,
+//! and answers every other S3 verb `NotImplemented`. The snapshot, journal and in-process
+//! replica variables do not apply and are refused when combined with it. See
+//! `docs/cluster-gateway.md`.
 //!
 //! # TWO THINGS TO KNOW BEFORE PUTTING DATA IN IT
 //!
@@ -95,6 +109,40 @@ fn main() {
             "MATRIXOBJECT_SNAPSHOT_PATH and MATRIXOBJECT_JOURNAL_PATH are mutually exclusive"
         );
         std::process::exit(2);
+    }
+
+    #[cfg(all(feature = "replica-server", feature = "meta-server"))]
+    if let Some(meta) = std::env::var("MATRIXOBJECT_CLUSTER_META")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        if snapshot_path.is_some()
+            || journal_path.is_some()
+            || std::env::var("MATRIXOBJECT_REPLICAS").map_or(false, |v| !v.trim().is_empty())
+        {
+            eprintln!(
+                "MATRIXOBJECT_CLUSTER_META serves the cluster; MATRIXOBJECT_SNAPSHOT_PATH,                  MATRIXOBJECT_JOURNAL_PATH and MATRIXOBJECT_REPLICAS describe an in-process store                  and cannot be combined with it"
+            );
+            std::process::exit(2);
+        }
+        let timeout_ms = env_usize("MATRIXOBJECT_CLUSTER_TIMEOUT_MS", 10_000).max(1) as u64;
+        let page_bytes = env_usize("MATRIXOBJECT_CLUSTER_PAGE_BYTES", 1024 * 1024);
+        let target_groups = env_usize("MATRIXOBJECT_CLUSTER_TARGET_GROUPS", 1);
+        let group = std::env::var("MATRIXOBJECT_CLUSTER_META_GROUP")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(|_| env_usize("MATRIXOBJECT_CLUSTER_META_GROUP", 1) as u64);
+        run_cluster_gateway(
+            &addr,
+            &bucket,
+            &meta,
+            group,
+            max_body_bytes,
+            worker_threads,
+            Duration::from_millis(timeout_ms),
+            page_bytes,
+            target_groups as u32,
+        );
     }
 
     let mut options = StoreOptions {
@@ -206,4 +254,105 @@ fn main() {
         eprintln!("the accept loop stopped: {err}");
         std::process::exit(1);
     }
+}
+
+#[cfg(all(feature = "http-server", feature = "replica-server", feature = "meta-server"))]
+#[allow(clippy::too_many_arguments)]
+fn run_cluster_gateway(
+    addr: &str,
+    bucket: &str,
+    meta: &str,
+    group: Option<u64>,
+    max_body_bytes: usize,
+    worker_threads: usize,
+    timeout: std::time::Duration,
+    page_bytes: usize,
+    target_groups: u32,
+) -> ! {
+    use std::sync::Arc;
+
+    use matrixobjectstore_rs::cluster::{
+        ObjectWriteOptions, RemoteMetaClient, ReplicaClientOptions,
+    };
+    use matrixobjectstore_rs::net::cluster_gateway::{ClusterGateway, GatewayOptions};
+    use matrixobjectstore_rs::net::{ObjectHttpServer, ServerOptions};
+
+    let endpoints: Vec<String> = meta
+        .split(',')
+        .map(|endpoint| endpoint.trim().to_string())
+        .filter(|endpoint| !endpoint.is_empty())
+        .collect();
+    if endpoints.is_empty() {
+        eprintln!("MATRIXOBJECT_CLUSTER_META names no endpoint");
+        std::process::exit(2);
+    }
+    let mut write = ObjectWriteOptions::default();
+    write.page_bytes = page_bytes;
+    write.target_groups = target_groups;
+    write.max_object_bytes = max_body_bytes;
+    let replica = ReplicaClientOptions {
+        connect_timeout: timeout,
+        read_timeout: timeout,
+        write_timeout: timeout,
+        ..ReplicaClientOptions::default()
+    };
+    let options = GatewayOptions {
+        write,
+        replica,
+        operation_timeout: timeout,
+        max_object_bytes: max_body_bytes,
+        pool_max: worker_threads.max(1),
+        ..GatewayOptions::default()
+    };
+    let meta_options = ClusterGateway::meta_options(timeout);
+    let open_endpoints = endpoints.clone();
+    let open = move || {
+        if let Some(group) = group.or(if open_endpoints.len() > 1 { Some(1) } else { None }) {
+            RemoteMetaClient::connect_raft_catalog(&open_endpoints, group, &meta_options)
+        } else {
+            RemoteMetaClient::connect(&open_endpoints[0], &meta_options)
+        }
+    };
+    // THE CLUSTER MUST ANSWER BEFORE THIS BINDS: a door that listens while its metadata quorum
+    // is unreachable reports ready and then fails every request.
+    if let Err(err) = open() {
+        eprintln!("no metadata endpoint in {meta} answered: {err}");
+        std::process::exit(1);
+    }
+    let gateway = Arc::new(ClusterGateway::over_sdk(open, options, bucket.to_string()));
+    let server = match ObjectHttpServer::bind_handler(
+        addr,
+        gateway,
+        ServerOptions {
+            max_body_bytes,
+            worker_threads,
+            ..ServerOptions::default()
+        },
+    ) {
+        Ok(server) => server,
+        Err(err) => {
+            eprintln!("binding {addr} failed: {err}");
+            std::process::exit(1);
+        }
+    };
+    let bound = match server.local_addr() {
+        Ok(bound) => bound,
+        Err(err) => {
+            eprintln!("the bound address could not be read back: {err}");
+            std::process::exit(1);
+        }
+    };
+    println!(
+        "object_server listening on {bound} bucket={bucket} backend=cluster meta={meta}          max_body_bytes={max_body_bytes} threads={worker_threads} auth=none"
+    );
+    if !bound.ip().is_loopback() {
+        println!(
+            "WARNING: {bound} is not loopback and this server is unauthenticated, so anything              that can reach this port can read, overwrite and delete every object"
+        );
+    }
+    if let Err(err) = server.serve() {
+        eprintln!("the accept loop stopped: {err}");
+        std::process::exit(1);
+    }
+    std::process::exit(0);
 }
