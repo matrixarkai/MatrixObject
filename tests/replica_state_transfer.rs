@@ -46,8 +46,11 @@ fn head_first_repair_skips_equal_heads_and_repairs_equal_sequence_divergence() {
     let repaired = set.repair_inventory_batch_head_first(None, 16).unwrap();
     assert!(!repaired.blocked, "{repaired:?}");
     assert_eq!(repaired.pages.len(), 16);
+    // Pages are reported in repair order, and the short page (85) is repaired first, so it is
+    // found by id and not by its position in the page-id sequence.
+    let short = repaired.pages.iter().find(|entry| entry.page == page(85)).unwrap();
     assert_eq!(
-        repaired.pages[5].result.as_ref().unwrap().members,
+        short.result.as_ref().unwrap().members,
         vec![
             PageRepairStatus::Current,
             PageRepairStatus::Current,

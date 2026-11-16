@@ -2507,7 +2507,12 @@ impl RemoteReplicaSet {
         // Repair order inside the batch: short of copies first, complete pages after, pages
         // that no source quorum can vouch for last so they cannot stall the others. The
         // cursor then moves only when the whole batch is resolved.
-        let pages = match self.page_copy_counts(&by_id) {
+        let counts = if should_order_by_copies(by_id.len()) {
+            self.page_copy_counts(&by_id)
+        } else {
+            None
+        };
+        let pages = match counts {
             Some(copies) => {
                 let mut order: Vec<usize> = (0..by_id.len()).collect();
                 let (members, quorum) = (self.replicas.len(), self.read_quorum);
@@ -3726,6 +3731,12 @@ mod send_progress_tests {
     }
 }
 
+/// A batch of fewer than two pages has nothing to reorder, so it sends no extra head probe and
+/// repairs with exactly the requests it always did.
+pub(crate) fn should_order_by_copies(pages: usize) -> bool {
+    pages >= 2
+}
+
 /// Sort key for repair order. Lower repairs first: a page a quorum can vouch for but that is
 /// short of copies, fewest copies first; then complete pages (nothing to copy); then pages no
 /// source quorum can vouch for, which a repair must not trust or let block the rest.
@@ -3741,7 +3752,14 @@ pub(crate) fn repair_priority(copies: usize, members: usize, source_quorum: usiz
 
 #[cfg(test)]
 mod repair_order_tests {
-    use super::repair_priority;
+    use super::{repair_priority, should_order_by_copies};
+
+    #[test]
+    fn a_batch_with_nothing_to_reorder_sends_no_ordering_probe() {
+        assert!(!should_order_by_copies(0));
+        assert!(!should_order_by_copies(1));
+        assert!(should_order_by_copies(2));
+    }
 
     #[test]
     fn short_pages_repair_before_complete_ones_and_unvouched_pages_last() {
