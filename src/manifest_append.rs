@@ -136,6 +136,54 @@ impl ManifestAppend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The outcome an append expands to is byte-for-byte the one built the long way, by
+    /// cloning the manifest, extending it and validating both whole manifests.
+    #[test]
+    fn expansion_encodes_to_the_same_bytes_as_full_validation() {
+        for count in [0usize, 1, 128, 3000, 4000] {
+            let before = ObjectManifest {
+                format_version: 2,
+                bucket: "bucket".into(),
+                key: "key".into(),
+                generation: 5,
+                length: count as u64,
+                extents: (0..count)
+                    .map(|index| ObjectExtent {
+                        group: "group".into(),
+                        chunk_id: index as u64 + 1,
+                        object_offset: index as u64,
+                        length: 1,
+                        write_sequence: 1,
+                        data_sha256: vec![(index % 251) as u8; 32],
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            let mut after = before.clone();
+            after.generation += 1;
+            for step in 0..3u64 {
+                after.extents.push(ObjectExtent {
+                    group: "group".into(),
+                    chunk_id: 90_000 + step,
+                    object_offset: after.length,
+                    length: 1,
+                    write_sequence: 1,
+                    data_sha256: vec![9 + step as u8; 32],
+                    ..Default::default()
+                });
+                after.length += 1;
+            }
+            let long_way = ManifestOutcome::decide(Some(before.clone()), after).unwrap();
+            let delta = ManifestAppend::decide(&long_way).unwrap();
+            let expanded = delta.expand(&before).unwrap();
+            assert_eq!(expanded, long_way);
+            assert_eq!(expanded.encode_to_vec(), long_way.encode_to_vec());
+            assert_eq!(expanded.to_bytes().unwrap(), long_way.to_bytes().unwrap());
+            assert_eq!(delta.encode_to_vec(), ManifestAppend::decide(&expanded).unwrap().encode_to_vec());
+        }
+    }
     #[test]
     fn compact_append_size_depends_on_suffix_and_checks_both_digests() {
         for count in [0, 1, 128, 4095] {
