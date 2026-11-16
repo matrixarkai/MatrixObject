@@ -43,8 +43,70 @@ struct NodeMeta {
     storage: Option<MetaSnapshotFile>,
     recovered: bool,
     failed: bool,
+    snapshot_bound: SnapshotBound,
     #[cfg(feature = "metadata-consensus")]
     consensus: Option<Arc<super::meta_consensus::MetaConsensus>>,
+}
+
+/// The largest metadata snapshot a node will persist.
+const SNAPSHOT_LIMIT: usize = 64 * 1024 * 1024;
+/// How far below the limit a tracked size must stay before the exact check is skipped.
+const SNAPSHOT_MARGIN: usize = 1024 * 1024;
+/// Writes admitted from the tracked size before the exact size is measured again.
+const SNAPSHOT_RECHECK_WRITES: u32 = 256;
+
+/// Tracks an upper bound on the encoded metadata snapshot so that a write does not have to
+/// clone and encode all metadata state just to learn that it is nowhere near the limit.
+///
+/// `estimate` is the exact encoded size at the last exact measurement plus a bound on every
+/// growth admitted since. Whenever the bound plus a margin could reach the limit, or after a
+/// fixed number of writes, the exact size is measured again, so the accept-or-refuse decision
+/// near the limit is made on the exact size, as before.
+struct SnapshotBound {
+    limit: usize,
+    estimate: Option<usize>,
+    writes_since_exact: u32,
+    exact_checks: u64,
+}
+
+impl SnapshotBound {
+    fn new() -> Self {
+        Self { limit: SNAPSHOT_LIMIT, estimate: None, writes_since_exact: 0, exact_checks: 0 }
+    }
+    /// True when `growth` more bytes are known to leave the snapshot within the limit.
+    fn admits_without_measuring(&self, growth: usize) -> bool {
+        let margin = SNAPSHOT_MARGIN.min(self.limit / 4);
+        self.writes_since_exact < SNAPSHOT_RECHECK_WRITES
+            && self
+                .estimate
+                .and_then(|estimate| estimate.checked_add(growth))
+                .and_then(|bound| bound.checked_add(margin))
+                .is_some_and(|bound| bound <= self.limit)
+    }
+    fn admitted(&mut self, growth: usize) {
+        self.estimate = self.estimate.map(|estimate| estimate.saturating_add(growth));
+        self.writes_since_exact += 1;
+    }
+    fn measured(&mut self, exact: usize) {
+        self.estimate = Some(exact);
+        self.writes_since_exact = 0;
+        self.exact_checks += 1;
+    }
+}
+
+/// An upper bound on how much a decided outcome can add to the encoded snapshot: whatever it
+/// carries besides its manifest pair, plus the growth of the manifest it replaces.
+fn snapshot_growth_bound(decided: &crate::placement_outcome::PlacementOutcome) -> usize {
+    use prost::Message as _;
+    let manifest = decided.manifest.as_ref();
+    let pair = manifest.map_or(0, |outcome| outcome.encoded_len());
+    let rest = decided.encoded_len().saturating_sub(pair);
+    let manifest_growth = manifest.map_or(0, |outcome| {
+        let before = outcome.before.as_ref().map_or(0, |m| m.encoded_len());
+        let after = outcome.after.as_ref().map_or(0, |m| m.encoded_len());
+        after.saturating_sub(before)
+    });
+    rest + manifest_growth + 512
 }
 
 impl std::ops::Deref for NodeMeta {
@@ -273,6 +335,7 @@ impl MetaNodeServer {
                 storage,
                 recovered,
                 failed: false,
+                snapshot_bound: SnapshotBound::new(),
                 #[cfg(feature = "metadata-consensus")]
                 consensus: None,
             })),
@@ -762,14 +825,34 @@ fn apply(
                 prost::encoding::encoded_len_varint(change.after) > prost::encoding::encoded_len_varint(change.before));
             if decided.manifest.is_some() || decided.retention.is_some() || decided.staging.is_some()
                 || decided.publication_fence.is_some() || decided.read_session_open.is_some() || renewal_grows {
-                let mut preview = guard.service.clone();
-                decided.apply(&mut preview)?;
-                if super::chunk_groups::encode_bootstrap(&preview, &guard.groups)?.len()
-                    > 64 * 1024 * 1024
-                {
-                    return Err(ObjectError::InvalidArgument(
-                        "metadata snapshot exceeds 64 MiB".into(),
-                    ));
+                let growth = snapshot_growth_bound(&decided);
+                if guard.snapshot_bound.admits_without_measuring(growth) {
+                    guard.snapshot_bound.admitted(growth);
+                    #[cfg(test)]
+                    {
+                        // Under test every admitted write is also measured exactly, so any
+                        // test that reaches this path checks that the bound is never low.
+                        let mut preview = guard.service.clone();
+                        decided.apply(&mut preview)?;
+                        let exact =
+                            super::chunk_groups::encode_bootstrap(&preview, &guard.groups)?.len();
+                        assert!(
+                            exact <= guard.snapshot_bound.estimate.unwrap(),
+                            "tracked snapshot bound {} is below the exact size {}",
+                            guard.snapshot_bound.estimate.unwrap(),
+                            exact
+                        );
+                    }
+                } else {
+                    let mut preview = guard.service.clone();
+                    decided.apply(&mut preview)?;
+                    let exact = super::chunk_groups::encode_bootstrap(&preview, &guard.groups)?.len();
+                    if exact > guard.snapshot_bound.limit {
+                        return Err(ObjectError::InvalidArgument(
+                            "metadata snapshot exceeds 64 MiB".into(),
+                        ));
+                    }
+                    guard.snapshot_bound.measured(exact);
                 }
             }
             if !guard.recovered {
@@ -1875,3 +1958,75 @@ mod catalog_command_tests;
 #[cfg(test)]
 #[path = "manifest_retention_tests.rs"]
 mod manifest_retention_tests;
+
+
+#[cfg(test)]
+mod snapshot_bound_tests {
+    use super::{SnapshotBound, SNAPSHOT_MARGIN, SNAPSHOT_RECHECK_WRITES};
+
+    /// Deterministic pseudo-random sequence (no external dependency).
+    fn next(state: &mut u64) -> u64 {
+        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *state >> 33
+    }
+
+    /// Replay the same growth sequence against an exact measurement and against the tracker:
+    /// both must refuse the same write, and the tracker must not need an exact measurement
+    /// for most writes.
+    fn first_refusal(limit: usize, seed: u64, tracked: bool) -> (Option<usize>, usize, u64) {
+        let mut bound = SnapshotBound::new();
+        bound.limit = limit;
+        let mut size = 40_000usize; // the exact size at start
+        let mut state = seed;
+        for write in 0..1_000_000usize {
+            let actual = (next(&mut state) % 3_000) as usize;
+            let claimed = actual + (next(&mut state) % 600) as usize; // an upper bound
+            if tracked && bound.admits_without_measuring(claimed) {
+                size += actual;
+                assert!(size <= limit, "an admitted write exceeded the limit at {write}");
+                assert!(size <= bound.estimate.unwrap() + claimed, "bound below exact size");
+                bound.admitted(claimed);
+                continue;
+            }
+            size += actual;
+            if size > limit {
+                return (Some(write), size, bound.exact_checks);
+            }
+            bound.measured(size);
+        }
+        (None, size, bound.exact_checks)
+    }
+
+    #[test]
+    fn tracked_snapshot_bound_refuses_the_same_write_as_exact_measurement() {
+        for (limit, seed) in [(1 << 20, 1u64), (1 << 20, 7), (3 << 20, 99), (300_000, 5), (64 << 20, 11)] {
+            let exact = first_refusal(limit, seed, false);
+            let tracked = first_refusal(limit, seed, true);
+            assert_eq!(exact.0, tracked.0, "limit {limit} seed {seed}");
+            assert_eq!(exact.1, tracked.1, "limit {limit} seed {seed}");
+            let writes = exact.0.expect("the sequence reaches the limit");
+            // At the real limit, far fewer exact measurements than writes. (A tiny limit
+            // keeps most writes inside the margin, where measuring is the point.)
+            assert!(
+                limit < (32 << 20) || tracked.2 < (writes as u64) / 25 + 8,
+                "limit {limit}: {} measurements for {writes} writes",
+                tracked.2
+            );
+        }
+    }
+
+    #[test]
+    fn tracked_snapshot_bound_measures_when_unknown_near_the_limit_and_periodically() {
+        let mut bound = SnapshotBound::new();
+        assert!(!bound.admits_without_measuring(0), "no measurement yet");
+        bound.measured(1_000);
+        assert!(bound.admits_without_measuring(10));
+        assert!(!bound.admits_without_measuring(bound.limit - SNAPSHOT_MARGIN), "close to the limit");
+        for _ in 0..SNAPSHOT_RECHECK_WRITES {
+            bound.admitted(1);
+        }
+        assert!(!bound.admits_without_measuring(1), "periodic exact measurement is due");
+        bound.measured(1_000);
+        assert!(bound.admits_without_measuring(1));
+    }
+}
