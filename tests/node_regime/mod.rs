@@ -158,6 +158,17 @@ pub mod processes {
         for (name, value) in env {
             command.env(name, value);
         }
+        // The metaserver expires silent nodes by default. Most node tests register nodes with
+        // invented timestamps and no heartbeating process, so they would expire at once; they
+        // run with expiry off unless the test names a TTL. The tests of the default itself
+        // spawn the binary directly.
+        if binary.ends_with("metaserver")
+            && !env
+                .iter()
+                .any(|(name, _)| *name == "MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS")
+        {
+            command.env("MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS", "0");
+        }
         let mut child = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

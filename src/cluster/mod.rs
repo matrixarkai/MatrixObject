@@ -276,6 +276,12 @@ mod meta_checkpoint;
 mod object_client;
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
 pub use object_client::{ObjectWriteFailure, ObjectWriteOptions};
+#[cfg(all(feature = "meta-server", feature = "replica-server"))]
+mod append_failover;
+#[cfg(all(feature = "meta-server", feature = "replica-server"))]
+pub use append_failover::{
+    AbandonedAttempt, AppendFailoverPolicy, FailoverAppend, FailoverFailure,
+};
 
 #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
 mod peer_receiver;

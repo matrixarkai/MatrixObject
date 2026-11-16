@@ -476,8 +476,14 @@ impl PlacementOutcome {
                 .checked_sub(released)
                 .and_then(|v| v.checked_add(added))
                 .ok_or_else(|| invalid("manifest capacity accounting overflow"))?;
+            // Only a group this publication adds bytes to or newly names must be writable.
+            // An append that moves on to another group keeps the older extents on a group
+            // that may since have stopped, and must not be refused for them.
+            let newly_charged = added > released
+                || !change.before.as_ref().is_some_and(|p| p.node_ids.contains(&id));
             if admit
                 && placement.node_ids.contains(&id)
+                && newly_charged
                 && ((if self.copy_source.is_some() { node.draining } else { !MatrixMetaService::node_accepts_new_placement(node) })
                     // Verified staged pages already consume reported free space.
                     || after.committed_bytes > node.capacity_bytes)

@@ -22,7 +22,7 @@
 //! |---|---|---|
 //! | `MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES` | `0` | opt-in WAL checkpoint interval; 1024..134217728 bytes when enabled |
 //! | `MATRIXOBJECT_METASERVER_ADDR` | `127.0.0.1:17200` | address to bind; port `0` lets the kernel choose |
-//! | `MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS` | `0` | automatic expiry TTL, 1000..3600000 ms; zero disables |
+//! | `MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS` | `15000` | automatic expiry TTL, 1000..3600000 ms; `0` turns expiry off. The default is five chunk report intervals |
 //! | `MATRIXOBJECT_METASERVER_THREADS` | logical CPUs, clamped to `4..=16` | connections served at once |
 //! | `MATRIXOBJECT_METASERVER_CONNECTIONS_PER_WORKER` | `1024` | persistent API connections shared by each I/O loop |
 //! | `MATRIXOBJECT_METASERVER_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
@@ -254,7 +254,11 @@ fn main() {
         }
     };
 
-    let heartbeat_ttl_ms = env_usize("MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS", 0) as u64;
+    // ON BY DEFAULT. A data node that stops reporting must leave placement; with expiry off a
+    // stopped node stays "online" until something else notices. The default is five of the
+    // chunkserver's default 3 s report intervals, so two lost reports never expire a live node.
+    // `0` is the explicit off switch, for deployments that drive health some other way.
+    let heartbeat_ttl_ms = env_usize("MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS", 15_000) as u64;
     if heartbeat_ttl_ms != 0 {
         if let Err(error) = server.enable_heartbeat_expiry(heartbeat_ttl_ms) {
             eprintln!("invalid heartbeat expiry: {error}");
@@ -381,7 +385,7 @@ fn main() {
         "metaserver listening on {bound} pid={} protocol_stamp={PROTOCOL_STAMP} \
          threads={worker_threads} connections_per_worker={connections_per_worker} \
          max_payload_bytes={max_payload_bytes} auth=none \
-         storage={storage} roster_nodes={seeded}",
+         storage={storage} roster_nodes={seeded} heartbeat_ttl_ms={heartbeat_ttl_ms}",
         std::process::id()
     );
     if !bound.ip().is_loopback() {

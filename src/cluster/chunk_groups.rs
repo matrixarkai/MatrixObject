@@ -113,6 +113,33 @@ pub(super) fn project_voter_health(
     (timestamp.is_some(), used, timestamp)
 }
 
+/// A standalone Star group acknowledges a write only when every member does, so it can take
+/// placement only while every member reports online and not draining. The heartbeat is the
+/// oldest member report: the group is no fresher than its stalest member.
+pub(super) fn project_star_health(
+    voters: &[u64],
+    report: impl Fn(u64) -> Option<VoterHealth>,
+) -> (bool, u64, Option<u64>) {
+    let mut oldest: Option<u64> = None;
+    let mut used = 0u64;
+    let mut all_ready = !voters.is_empty();
+    for id in voters {
+        match report(*id) {
+            Some(health) => {
+                used = used.max(health.used_bytes);
+                if health.online && !health.draining {
+                    oldest = Some(oldest.map_or(health.heartbeat_ms, |t| t.min(health.heartbeat_ms)));
+                } else {
+                    all_ready = false;
+                }
+            }
+            None => all_ready = false,
+        }
+    }
+    let timestamp = if all_ready { oldest } else { None };
+    (timestamp.is_some(), used, timestamp)
+}
+
 impl ChunkGroupCatalog {
     pub(super) fn check_manifest(&self, outcome: &crate::object_manifest::ManifestOutcome) -> Result<(), ObjectError> {
         outcome.validate()?;
@@ -428,7 +455,7 @@ impl ChunkGroupCatalog {
                         .unwrap_or((false, false))
                 })
             } else {
-                project_voter_health(voters, &[], |voter| {
+                let report = |voter: u64| {
                     let index = voters.binary_search(&voter).ok()?;
                     service
                         .nodes
@@ -439,7 +466,12 @@ impl ChunkGroupCatalog {
                             used_bytes: node.used_bytes,
                             heartbeat_ms: node.last_heartbeat_ms,
                         })
-                })
+                };
+                if group.identity.as_ref().unwrap().is_standalone_star() {
+                    project_star_health(voters, report)
+                } else {
+                    project_voter_health(voters, &[], report)
+                }
             };
             let target = service.nodes.get_mut(id).unwrap();
             target.online = online;
@@ -748,6 +780,42 @@ pub(super) mod tests {
             project_voter_health(&[1, 2, 3], &[], report),
             (true, 30, Some(100))
         );
+    }
+
+    #[test]
+    fn a_star_group_takes_placement_only_while_every_member_is_ready() {
+        let report = |online: [bool; 3], draining: [bool; 3]| {
+            move |id: u64| {
+                Some(VoterHealth {
+                    online: online[id as usize - 1],
+                    draining: draining[id as usize - 1],
+                    used_bytes: id * 10,
+                    heartbeat_ms: 100 + id,
+                })
+            }
+        };
+        let all = project_star_health(&[1, 2, 3], report([true; 3], [false; 3]));
+        assert_eq!(all, (true, 30, Some(101)), "oldest member report dates the group");
+        for dead in 0..3 {
+            let mut online = [true; 3];
+            online[dead] = false;
+            assert!(
+                !project_star_health(&[1, 2, 3], report(online, [false; 3])).0,
+                "member {dead} offline must remove the group"
+            );
+            let mut draining = [false; 3];
+            draining[dead] = true;
+            assert!(
+                !project_star_health(&[1, 2, 3], report([true; 3], draining)).0,
+                "member {dead} draining must remove the group"
+            );
+        }
+        let missing = |id: u64| if id == 2 { None } else { report([true; 3], [false; 3])(id) };
+        assert!(!project_star_health(&[1, 2, 3], missing).0);
+        assert!(!project_star_health(&[], report([true; 3], [false; 3])).0);
+        // The majority rule that Raft groups use would have kept this group online.
+        let two_of_three = report([true, true, false], [false; 3]);
+        assert!(project_voter_health(&[1, 2, 3], &[], two_of_three).0);
     }
 
     #[test]
