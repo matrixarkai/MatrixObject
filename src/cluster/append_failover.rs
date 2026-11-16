@@ -32,6 +32,9 @@ use super::{
 };
 use crate::object_manifest::{ObjectExtent, ObjectManifest};
 use crate::ObjectError;
+use prost::Message;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// How long to wait before switching, and how often to switch, for one append.
@@ -46,6 +49,10 @@ pub struct AppendFailoverPolicy {
     /// Report members that do not answer a probe as offline, so placement stops choosing
     /// their group before heartbeat expiry would. Their own heartbeat restores them.
     pub report_unreachable: bool,
+    /// Append one durable record per refused attempt here before switching, so a later
+    /// reclamation can find the pages. The record is written and synced first; if it cannot
+    /// be written the append stops and returns the refusal rather than retry unrecorded.
+    pub abandoned_log: Option<PathBuf>,
 }
 
 impl Default for AppendFailoverPolicy {
@@ -55,6 +62,7 @@ impl Default for AppendFailoverPolicy {
             max_wait: Duration::from_secs(64),
             max_switches: 6,
             report_unreachable: true,
+            abandoned_log: None,
         }
     }
 }
@@ -101,6 +109,80 @@ impl std::fmt::Display for FailoverFailure {
 }
 impl std::error::Error for FailoverFailure {}
 
+/// One refused attempt, as stored in the abandoned-pages log. The pages belong to no manifest;
+/// nothing deletes them. A reclamation pass must still confirm against live manifests,
+/// retained generations and staged ownership before it frees anything.
+#[derive(Clone, PartialEq, Message)]
+pub struct AbandonedRecord {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(string, tag = "2")]
+    pub bucket: String,
+    #[prost(string, tag = "3")]
+    pub key: String,
+    /// Generation of the manifest the attempt was to extend.
+    #[prost(uint64, tag = "4")]
+    pub expected_generation: u64,
+    #[prost(string, tag = "5")]
+    pub error: String,
+    #[prost(message, repeated, tag = "6")]
+    pub extents: Vec<ObjectExtent>,
+    #[prost(string, repeated, tag = "7")]
+    pub unreachable_members: Vec<String>,
+}
+
+const MAX_ABANDONED_RECORD_BYTES: usize = 4 * 1024 * 1024;
+
+/// Frame: 4-byte big-endian length, protobuf body, 8-byte big-endian FNV-1a of the body.
+fn append_abandoned_record(path: &Path, record: &AbandonedRecord) -> std::io::Result<()> {
+    let body = record.encode_to_vec();
+    if body.len() > MAX_ABANDONED_RECORD_BYTES {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "record too large"));
+    }
+    let mut frame = Vec::with_capacity(body.len() + 12);
+    frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&body);
+    frame.extend_from_slice(&crate::fnv1a64(&body).to_be_bytes());
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    file.write_all(&frame)?;
+    file.sync_data()
+}
+
+/// Read every complete record. A torn final frame (a crash during the append) is ignored; a
+/// complete frame whose checksum fails is damage and is reported, never skipped.
+pub fn read_abandoned_log(path: &Path) -> Result<Vec<AbandonedRecord>, ObjectError> {
+    let mut bytes = Vec::new();
+    match std::fs::File::open(path) {
+        Ok(mut file) => {
+            file.read_to_end(&mut bytes)
+                .map_err(|e| ObjectError::Corruption(format!("abandoned log unreadable: {e}")))?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(ObjectError::Corruption(format!("abandoned log unreadable: {e}"))),
+    }
+    let damaged = |why: &str| ObjectError::Corruption(format!("abandoned log damaged: {why}"));
+    let mut records = Vec::new();
+    let mut at = 0usize;
+    while at + 4 <= bytes.len() {
+        let length = u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+        if length > MAX_ABANDONED_RECORD_BYTES {
+            return Err(damaged("record length exceeds bound"));
+        }
+        let end = at + 4 + length + 8;
+        if end > bytes.len() {
+            break; // torn tail
+        }
+        let body = &bytes[at + 4..at + 4 + length];
+        let stored = u64::from_be_bytes(bytes[at + 4 + length..end].try_into().unwrap());
+        if stored != crate::fnv1a64(body) {
+            return Err(damaged("checksum mismatch"));
+        }
+        records.push(AbandonedRecord::decode(body).map_err(|_| damaged("undecodable record"))?);
+        at = end;
+    }
+    Ok(records)
+}
+
 struct Probed {
     member_id: String,
     endpoint: String,
@@ -138,11 +220,31 @@ impl RemoteMetaClient {
                 _ => return Err(FailoverFailure { failure, switches, abandoned }),
             }
             let unreachable = self.unreachable_next_members(&expected, data.len(), options, &staged);
-            abandoned.push(AbandonedAttempt {
+            let attempt = AbandonedAttempt {
                 error,
-                extents: staged.map(|m| m.extents).unwrap_or_default(),
+                // The staged candidate carries the object's existing extents first; only the
+                // extents after them belong to this attempt.
+                extents: staged
+                    .map(|m| m.extents.into_iter().skip(expected.extents.len()).collect())
+                    .unwrap_or_default(),
                 unreachable_members: unreachable.iter().map(|m| m.member_id.clone()).collect(),
-            });
+            };
+            if let Some(path) = &policy.abandoned_log {
+                let record = AbandonedRecord {
+                    version: 1,
+                    bucket: expected.bucket.clone(),
+                    key: expected.key.clone(),
+                    expected_generation: expected.generation,
+                    error: attempt.error.clone(),
+                    extents: attempt.extents.clone(),
+                    unreachable_members: attempt.unreachable_members.clone(),
+                };
+                if append_abandoned_record(path, &record).is_err() {
+                    abandoned.push(attempt);
+                    return Err(FailoverFailure { failure, switches, abandoned });
+                }
+            }
+            abandoned.push(attempt);
             if switches >= policy.max_switches {
                 return Err(FailoverFailure { failure, switches, abandoned });
             }

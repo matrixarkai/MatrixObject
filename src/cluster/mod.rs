@@ -280,7 +280,8 @@ pub use object_client::{ObjectWriteFailure, ObjectWriteOptions};
 mod append_failover;
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
 pub use append_failover::{
-    AbandonedAttempt, AppendFailoverPolicy, FailoverAppend, FailoverFailure,
+    read_abandoned_log, AbandonedAttempt, AbandonedRecord, AppendFailoverPolicy, FailoverAppend,
+    FailoverFailure,
 };
 
 #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
