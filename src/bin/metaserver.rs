@@ -129,6 +129,9 @@ fn main() {
     }
 
     let addr = env_string("MATRIXOBJECT_METASERVER_ADDR", "127.0.0.1:17200");
+    // Validated here for every build so a bad value stops the process at startup; only the
+    // consensus build hands it to a peer.
+    #[cfg_attr(not(feature = "metadata-consensus"), allow(unused_variables))]
     let wal_zero_fill = matrixobjectstore_rs::cluster::wal_zero_fill_from_env().unwrap_or_else(|error| {
         eprintln!("{error}");
         std::process::exit(2);
