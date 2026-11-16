@@ -108,6 +108,10 @@ fn main() {
         }
     }
 
+    let wal_zero_fill = matrixobjectstore_rs::cluster::wal_zero_fill_from_env().unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(2);
+    });
     let addr = env_string("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:17300");
     let worker_threads = env_usize("MATRIXOBJECT_REPLICA_THREADS", 4).max(1);
     let max_payload_bytes = env_usize("MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES", MAX_PAYLOAD_BYTES);
@@ -135,6 +139,7 @@ fn main() {
         worker_threads,
         capacity_bytes,
         max_pages,
+        wal_zero_fill_bytes: wal_zero_fill,
         ..Default::default()
     };
     let journal = std::env::var_os("MATRIXOBJECT_REPLICA_JOURNAL");
@@ -240,6 +245,7 @@ fn main() {
                     .map_err(|e| e.to_string())?,
                     checkpoint_after_bytes: env_usize("MATRIXOBJECT_CHUNK_RAFT_CHECKPOINT_BYTES", 0)
                         as u64,
+                    wal_zero_fill_bytes: wal_zero_fill,
                     node_id,
                     group_id: env_usize("MATRIXOBJECT_CHUNK_RAFT_GROUP_ID", 1) as u64,
                     peers,

@@ -50,6 +50,7 @@ struct Group {
     api_addresses: Vec<SocketAddr>,
     reservations: Vec<Option<(TcpListener, TcpListener)>>,
     report: Option<(String, Vec<SocketAddr>)>,
+    zero_fill: Option<u64>,
 }
 impl Group {
     fn new() -> Self {
@@ -61,6 +62,18 @@ impl Group {
             group.start(i);
         }
         group
+    }
+    /// Three voters whose Raft WALs use the zero-filled layout with this chunk.
+    fn with_zero_fill(bytes: u64) -> Self {
+        let mut group = Self::configured(65536);
+        group.zero_fill = Some(bytes);
+        for i in 0..3 {
+            group.start(i);
+        }
+        group
+    }
+    fn wal_path(&self, i: usize) -> PathBuf {
+        self.root.join(i.to_string()).join("chunk.peer.wal")
     }
     fn configured(capacity: u64) -> Self {
         Self::configured_voters(capacity, 3)
@@ -103,6 +116,7 @@ impl Group {
             api_addresses,
             reservations: reserved.into_iter().map(Some).collect(),
             report: None,
+            zero_fill: None,
         };
         for i in 0..voters {
             std::fs::create_dir(g.root.join(i.to_string())).unwrap();
@@ -143,6 +157,7 @@ impl Group {
         let max_pages = self.max_pages.to_string();
         let capacity = self.capacity.to_string();
         let checkpoint_bytes = self.checkpoint_bytes.to_string();
+        let zero_fill = self.zero_fill.map(|bytes| bytes.to_string());
         let timeout = if self.capacity > 65536 { "10000" } else { "700" };
         let mut environment = vec![
             ("MATRIXOBJECT_REPLICA_ADDR", bind.as_str()),
@@ -160,6 +175,9 @@ impl Group {
         ];
         if self.membership {
             environment.push(("MATRIXOBJECT_CHUNK_RAFT_BOOTSTRAP_VOTERS", "1,2,3"));
+        }
+        if let Some(bytes) = &zero_fill {
+            environment.push(("MATRIXOBJECT_WAL_ZERO_FILL_BYTES", bytes.as_str()));
         }
         if let Some((metadata, _)) = &self.report {
             if self.membership { environment.push(("MATRIXOBJECT_CHUNK_PLACEMENT_ID", placement_id.as_str())); }
@@ -488,6 +506,7 @@ fn chunk_peer_storage_lock_configuration_and_truncation_fail_closed() {
         bootstrap_voters: None,
         peer_tls: None,
         checkpoint_after_bytes: 0,
+        wal_zero_fill_bytes: None,
         node_id: 1,
         group_id: 8,
         peers: BTreeMap::from([(1, address)]),
@@ -534,6 +553,7 @@ fn slow_chunk_peer_packets_do_not_prevent_shutdown() {
             bootstrap_voters: None,
             peer_tls: None,
             checkpoint_after_bytes: 0,
+            wal_zero_fill_bytes: None,
             node_id: 1,
             group_id: 4,
             peers: BTreeMap::from([(1, address)]),
@@ -620,6 +640,7 @@ fn chunk_voter_catalog_rejects_aliases_and_invalid_addresses_before_storage() {
                 bootstrap_voters: None,
                 peer_tls: None,
                 checkpoint_after_bytes: 0,
+                wal_zero_fill_bytes: None,
                 node_id: 1,
                 group_id: 1,
                 peers,
@@ -714,6 +735,7 @@ fn oversized_chunk_outcome_is_refused_without_poisoning_the_group() {
             bootstrap_voters: None,
             peer_tls: None,
             checkpoint_after_bytes: 0,
+            wal_zero_fill_bytes: None,
             node_id: 1,
             group_id: 9,
             peers: BTreeMap::from([(1, address)]),
@@ -4583,4 +4605,151 @@ fn chunk_membership_requires_quorum_and_removes_the_serving_leader() {
         .client(next)
         .write_chunk(page(0), 0, b"remaining quorum")
         .unwrap();
+}
+
+
+/// Write through the leader, lose the leader, restart every voter, and read every acknowledged
+/// page back. Returns the group so the caller can look at the WALs.
+fn write_lose_leader_restart_and_read(mut g: Group) -> Group {
+    let first = g.leader();
+    let mut saved = Vec::new();
+    for i in 0..24 {
+        let p = page(i);
+        let data = format!("acknowledged-{i:02}").into_bytes();
+        let mut c = g.client(first);
+        c.write_chunk(p.clone(), 0, &data).unwrap();
+        saved.push((p.clone(), data, c.head_chunk(&p).unwrap()));
+    }
+    g.kill(first);
+    let next = g.leader();
+    assert_ne!(next, first);
+    for (p, data, head) in &saved {
+        let mut c = g.client(next);
+        assert_eq!(&c.read_chunk(p, 0, data.len() as u64).unwrap().data, data);
+        assert_eq!(&c.head_chunk(p).unwrap(), head);
+    }
+    for i in 0..3 {
+        if g.nodes[i].is_some() {
+            g.kill(i);
+        }
+    }
+    for i in 0..3 {
+        g.start(i);
+    }
+    let leader = g.leader();
+    for (p, data, head) in &saved {
+        let mut c = g.client(leader);
+        assert_eq!(&c.read_chunk(p, 0, data.len() as u64).unwrap().data, data);
+        assert_eq!(&c.head_chunk(p).unwrap(), head);
+    }
+    g.client(leader)
+        .write_chunk(page(40), 0, b"after the restart")
+        .unwrap();
+    assert_eq!(
+        g.client(leader).read_chunk(&page(40), 0, 17).unwrap().data,
+        b"after the restart"
+    );
+    g
+}
+
+#[test]
+fn zero_filled_voter_wals_keep_every_acknowledged_page_across_leader_loss_and_restart() {
+    let g = write_lose_leader_restart_and_read(Group::with_zero_fill(1 << 20));
+    for i in 0..3 {
+        let wal = std::fs::read(g.wal_path(i)).unwrap();
+        assert_eq!(&wal[..4], b"MRPZ", "voter {i} must use the zero-filled layout");
+        assert!(wal.len() >= 1 << 20, "voter {i}: the file holds its fill");
+        let end = wal.iter().rposition(|byte| *byte != 0).unwrap() + 1;
+        assert!(end < wal.len(), "voter {i}: the log ends before the file does");
+        assert!(wal.windows(4).any(|w| w == b"MOPO"));
+    }
+}
+
+#[test]
+fn without_the_setting_the_voter_wals_keep_the_original_layout() {
+    let g = write_lose_leader_restart_and_read(Group::new());
+    for i in 0..3 {
+        let wal = std::fs::read(g.wal_path(i)).unwrap();
+        assert_eq!(&wal[..4], b"MRPW", "voter {i} must use the original layout");
+        assert!(
+            wal.last().copied() != Some(0) || wal.len() < 1 << 20,
+            "voter {i}: the original layout holds no zero fill"
+        );
+        assert!(wal.len() < 1 << 20);
+    }
+}
+
+#[test]
+fn an_out_of_range_zero_fill_stops_the_chunkserver_at_startup() {
+    for value in ["4095", "536870913", "lots"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_chunkserver"))
+            .env("MATRIXOBJECT_WAL_ZERO_FILL_BYTES", value)
+            .env("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{value}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("MATRIXOBJECT_WAL_ZERO_FILL_BYTES"),
+            "{value}"
+        );
+    }
+}
+
+
+/// Per-write latency through a three-process chunk group with and without the zero-filled WAL
+/// layout, interleaved in both orders. Run with `--ignored --nocapture`; `AB_ROUNDS`, `AB_WRITES`
+/// and `AB_CHUNK` size it. Prints the median, the slowest write and the file against the log.
+#[test]
+#[ignore]
+fn zero_fill_chunk_write_latency_ab() {
+    let var = |name: &str, default: u64| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    };
+    let (rounds, writes, chunk) = (var("AB_ROUNDS", 8), var("AB_WRITES", 200), var("AB_CHUNK", 4 << 20));
+    let run = |zero: bool| -> (f64, f64, u64, u64) {
+        let g = if zero {
+            Group::with_zero_fill(chunk)
+        } else {
+            Group::new()
+        };
+        let leader = g.leader();
+        let mut c = g.client(leader);
+        for i in 0..5u64 {
+            let _ = c.write_chunk(page(i), 0, &[1u8; 256]);
+        }
+        let mut times = Vec::with_capacity(writes as usize);
+        let mut failed = 0;
+        for i in 0..writes {
+            let start = std::time::Instant::now();
+            match c.write_chunk(page(i % 64), 0, &[7u8; 256]) {
+                Ok(_) => times.push(start.elapsed().as_secs_f64() * 1e6),
+                Err(_) => failed += 1,
+            }
+        }
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let wal = std::fs::read(g.wal_path(leader)).unwrap();
+        let log = wal.iter().rposition(|byte| *byte != 0).map_or(0, |at| at as u64 + 1);
+        let _ = failed;
+        (times[times.len() / 2], *times.last().unwrap(), log, wal.len() as u64)
+    };
+    let mut ratios = Vec::new();
+    for round in 0..rounds {
+        let (off, on) = if round % 2 == 0 {
+            let off = run(false);
+            (off, run(true))
+        } else {
+            let on = run(true);
+            (run(false), on)
+        };
+        println!(
+            "round {round}: off {:.0} us (max {:.0}, log~{} file {}) on {:.0} us (max {:.0}, log~{} file {}) ratio {:.2}",
+            off.0, off.1, off.2, off.3, on.0, on.1, on.2, on.3, off.0 / on.0
+        );
+        ratios.push(off.0 / on.0);
+    }
+    ratios.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    println!("median off/on ratio {:.2}", ratios[ratios.len() / 2]);
 }

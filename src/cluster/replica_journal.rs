@@ -41,6 +41,7 @@ pub(super) struct ReplicaJournal {
 /// Where a scrub stands: `next` is the offset to pass to the following step, always a frame
 /// boundary, and `done` is true once the log has been walked to its end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // no server walks the journal yet
 pub(super) struct ScrubStep {
     pub(super) next: u64,
     pub(super) total: u64,
@@ -112,6 +113,7 @@ impl ReplicaJournal {
         Self::open_with_limits(path, service, usize::MAX)
     }
 
+    #[cfg(test)]
     pub(super) fn open_with_limits(
         path: &Path,
         service: &mut MatrixReplicaService,
@@ -129,6 +131,10 @@ impl ReplicaJournal {
         max_pages: usize,
         zero_chunk: u64,
     ) -> io::Result<Self> {
+        if zero_chunk != 0 {
+            super::validate_wal_zero_fill_bytes(Some(zero_chunk))
+                .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
+        }
         let path = match path.canonicalize() {
             Ok(path) => path,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -450,6 +456,7 @@ impl ReplicaJournal {
     /// step from zero covers the whole checkpoint image, so it can exceed `max_bytes`. A host
     /// calls this off the write path at a pace of its own choosing.
     #[cfg(unix)]
+    #[cfg_attr(not(test), allow(dead_code))] // no server walks the journal yet
     pub(super) fn scrub_step(&self, from: u64, max_bytes: u64) -> io::Result<ScrubStep> {
         use std::os::unix::fs::FileExt;
         if from > self.length {
