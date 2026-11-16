@@ -681,3 +681,29 @@ fn a_returning_member_with_no_data_never_serves_wrong_bytes_and_is_resynced() {
         }
     }
 }
+
+/// A writer holding a stale manifest is told so at once; it is a conflict, not a node failure,
+/// and no switch is attempted.
+#[test]
+fn a_conflicting_append_is_returned_to_the_caller_without_a_switch() {
+    let cluster = Cluster::start(1, Some(3000), 200);
+    let mut first = cluster.meta_client();
+    let mut second = cluster.meta_client();
+    let base = first
+        .write_object("bucket", "log", None, &payload(1, PAGE_BYTES), &write_options(Duration::from_secs(10)))
+        .unwrap();
+    let winner = first
+        .append_object(base.clone(), &payload(2, 100), &write_options(Duration::from_secs(10)))
+        .unwrap();
+    let failed = second
+        .append_object_with_failover(
+            base,
+            &payload(3, 100),
+            &write_options(Duration::from_secs(10)),
+            &fast_policy(4),
+        )
+        .unwrap_err();
+    assert_eq!(failed.switches, 0, "a conflict was retried as if a node had failed");
+    assert!(matches!(failed.failure, ObjectWriteFailure::BeforePublication { .. }));
+    assert_eq!(first.read_manifest("bucket", "log").unwrap(), winner);
+}
