@@ -324,6 +324,8 @@ impl ReplicaJournal {
             #[cfg(test)]
             sync_count: 0,
         };
+        // Fill the first chunk now, while the node is not serving, so no request waits on it.
+        journal.prefill()?;
         if offset != 0 {
             journal.mark_initialized()?;
         }
@@ -406,6 +408,19 @@ impl ReplicaJournal {
         }
         self.bytes_since_checkpoint = next_bytes;
         self.length += frame;
+        Ok(())
+    }
+
+    /// Zero-fill one chunk ahead of the log if the file does not already hold that much, so the
+    /// fill is paid when the journal opens and not by a write.
+    fn prefill(&mut self) -> io::Result<()> {
+        if self.chain && self.zero_chunk != 0 {
+            let target = self.length.saturating_add(self.zero_chunk);
+            if target > self.physical {
+                zero_range(&self.file, self.physical, target)?;
+                self.physical = target;
+            }
+        }
         Ok(())
     }
 
