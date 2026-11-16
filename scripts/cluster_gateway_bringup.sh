@@ -13,6 +13,9 @@
 #   META       single | raft3 : one metadata server, or a three-voter quorum (default single)
 #   BUCKET     bucket the gateway reports as ready                 (default temporalstore)
 #   THREADS    gateway accept threads                              (default 8)
+#   GATEWAY_ENV   extra NAME=VALUE pairs for the gateway, space separated, e.g.
+#                 "MATRIXOBJECT_CLUSTER_COMPACT_APPEND=1"
+#   CHECKPOINT_BYTES  MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES for raft3 voters (default unset)
 #
 # Only processes this script started are signalled: their pids are recorded in $RUN/pids and
 # `down` reads that file. Nothing is matched by name.
@@ -103,7 +106,8 @@ up() {
     META_EPS="127.0.0.1:$BASE"
   elif [ "$META" = raft3 ]; then
     # api ports BASE+4..6, peer ports BASE+7..9
-    local PEERS="" a p
+    local PEERS="" a p CKPT_ENV=()
+    [ -n "${CHECKPOINT_BYTES:-}" ] && CKPT_ENV=(MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES="$CHECKPOINT_BYTES")
     for i in 1 2 3; do PEERS="$PEERS${PEERS:+,}$i@127.0.0.1:$((BASE + 6 + i))"; done
     for i in 1 2 3; do
       mkdir -p "$RUN/meta$i"
@@ -112,7 +116,7 @@ up() {
         MATRIXOBJECT_METASERVER_RAFT_PEERS="$PEERS" \
         MATRIXOBJECT_METASERVER_RAFT_NODE_ID="$i" \
         MATRIXOBJECT_METASERVER_RAFT_STATE_DIR="$RUN/meta$i" \
-        MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS=3000 \
+        MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS=3000         "${CKPT_ENV[@]}" \
         MATRIXOBJECT_METASERVER_CHUNK_GROUPS_FILE="$RUN/catalog.bin" \
         MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS=5000 \
         "$BIN/metaserver"
@@ -146,7 +150,7 @@ up() {
     MATRIXOBJECT_BUCKET="$BUCKET" \
     MATRIXOBJECT_THREADS="$THREADS" \
     MATRIXOBJECT_CLUSTER_META="$META_EPS" \
-    "${GROUP_ENV[@]}" \
+    "${GROUP_ENV[@]}"     ${GATEWAY_ENV:-} \
     "$BIN/object_server"
   wait_line "$RUN/gateway.log" 20 || fail "gateway did not report listening; see $RUN/gateway.log"
 

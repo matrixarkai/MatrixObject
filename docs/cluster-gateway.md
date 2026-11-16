@@ -56,6 +56,75 @@ Refused with `NotImplemented`: multipart, copy, tagging, versioning, `versionId`
 * Whole-object GET reads the entire object into the gateway before answering.
 * The gateway is unauthenticated, like the in-process door.
 
+## Opt-in append modes
+
+Both modes are off by default, and the default append is the plain one described above.
+
+| Variable | Mode |
+|---|---|
+| `MATRIXOBJECT_CLUSTER_COMPACT_APPEND=1` | compact publication |
+| `MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS=N` (2 to 4096, for example 3500) | tail compaction |
+
+**Compact publication.** Each append takes a leased staged allocation (60 s) and publishes a
+digest-bound decision with `append_staged_object_compact`, instead of the whole manifest. On
+the measured workload the metadata plane wrote about 1.5 KB per write instead of about
+134 KB, at the price of one more metadata commit per append (higher sync write latency).
+Requirements:
+
+* Every metadata voter and journal reader must support the version 11 outcome; downgrading
+  after use is unsupported.
+* It turns on the durable publication fence the first time it is used. The fence is
+  cluster-wide and permanent, and from then on the plain publish path is refused for EVERY
+  write ("fresh extents require owned publication"). The gateway therefore also publishes
+  whole-object PUTs under an owned allocation while this mode is on.
+* If enabling the fence is refused, the gateway prints one line,
+  `cluster gateway: compact append is unavailable (enabling the publication fence: ...); using the plain publish path from here on`,
+  and uses the plain path for the rest of the process. Once the fence is on there is no
+  fallback: a failed staged write is reported as the failure it is, and a failed append
+  releases its allocation.
+
+**Tail compaction.** When an object holds `N` extents, the next append goes through
+`append_object_compacting`: the short tail is merged into full pages by compare-and-set, so a
+log object stays appendable past 4096 extents. This is plain publication (the full manifest
+per append) and so cannot be combined with compact publication, because the fence refuses
+plain publication. Do not set both: below its bound compact publication would turn the fence
+on, and at the bound tail compaction would then be refused. With tail compaction on, the
+gateway no longer refuses appends at 4096 extents itself.
+
+### What was measured
+
+TemporalStore's shared-store harness, three nodes, 2000 operations per phase (4000 writes),
+one host, loopback, a single metaserver and three chunk servers, release builds. The in-process
+door is the same server with its journal.
+
+| | sync write p50 / p99 | metadata written per write |
+|---|---|---|
+| plain append (default) | 42-59 ms / 150-167 ms | about 134 KB |
+| compact publication | 77-81 ms / 143-161 ms (earlier round, loaded machine: 101-131 ms) | about 1.35 KB |
+| in-process door | about 6 ms / 11-14 ms | not applicable |
+
+* Compact publication cuts the metadata written per append by about 100 times. The sync write
+  p50 is not better than the plain path: every append now costs one more metadata commit (the
+  allocation). The compact-publication figures above were taken on a machine whose door
+  latency was itself higher than on the plain-path round, so compare within a round.
+* The plain path fails at the 4097th append to one object with
+  `400 InvalidRequest` ("the object already holds 4096 extents"). Compact publication does not
+  lift that bound.
+* Crossing 4096 extents worked only with tail compaction on and compact publication off
+  (16000 writes at 8000 operations per phase, sync p50 95 ms against 8 ms for the door), and
+  that run wrote 3.45 GB of metadata because it is plain publication. The disk was 97 percent
+  full during that run, so its absolute latencies are inflated.
+* Not measured: failure injection, and any metadata checkpoint setting (the Raft checkpoint
+  size was left unset; 4000 writes ran without it).
+
+### Which mode for a log workload
+
+For a log that stays below 4096 appends per object (rotate the object before that), compact
+publication: it removes the metadata growth that dominates the plain path, at a latency cost
+that the extra allocation commit explains. For a log that must grow one object past 4096
+appends, tail compaction, accepting plain publication's metadata cost, until a staged variant
+of the tail merge exists. The default remains the plain path.
+
 ## Concurrency
 
 The SDK client takes `&mut self`, so the gateway keeps a small pool of metadata connections and
