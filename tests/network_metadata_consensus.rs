@@ -3041,3 +3041,5 @@ fn an_out_of_range_zero_fill_stops_the_metaserver_at_startup() {
         );
     }
 }
+#[path = "node_regime/cluster_gateway_processes.rs"]
+mod cluster_gateway_processes;
