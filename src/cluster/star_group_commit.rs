@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 use super::*;
+use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::TryLockError;
 use std::thread::JoinHandle;
 
 const MAX_GROUP_REQUESTS: usize = 64;
@@ -16,9 +18,24 @@ struct Job {
 }
 
 pub(super) struct Committer {
+    replica: Arc<Mutex<NodeReplica>>,
+    offered_requests: AtomicUsize,
     sender: Option<SyncSender<Job>>,
     worker: Option<JoinHandle<()>>,
     max_payload_bytes: usize,
+}
+
+struct Offer<'a>(&'a AtomicUsize);
+impl<'a> Offer<'a> {
+    fn new(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        Self(counter)
+    }
+}
+impl Drop for Offer<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
 }
 
 pub(super) fn eligible(request: &ReplicaRequest) -> bool {
@@ -52,10 +69,13 @@ impl Committer {
         // Waiting request executors retain their existing bounded input charges.
         // A rendezvous channel adds no separately buffered queue of payloads.
         let (sender, receiver) = mpsc::sync_channel(0);
+        let worker_replica = Arc::clone(&replica);
         let worker = std::thread::Builder::new()
             .name("star-journal-sync".into())
-            .spawn(move || run(receiver, replica, max_payload_bytes))?;
+            .spawn(move || run(receiver, worker_replica, max_payload_bytes))?;
         Ok(Arc::new(Self {
+            replica,
+            offered_requests: AtomicUsize::new(0),
             sender: Some(sender),
             worker: Some(worker),
             max_payload_bytes,
@@ -71,6 +91,35 @@ impl Committer {
                 "invalid grouped replica request".into(),
             ));
         }
+        if self
+            .worker
+            .as_ref()
+            .is_none_or(|worker| worker.is_finished())
+        {
+            return Err(self.stopped("replica journal worker stopped"));
+        }
+        // An idle request uses the executor already handling its frame. Once a
+        // request is offered, new requests join that backlog rather than barging
+        // ahead with repeated individual synchronizations.
+        if self.offered_requests.load(Ordering::Acquire) == 0 {
+            match self.replica.try_lock() {
+                Ok(mut guard) => {
+                    if self.offered_requests.load(Ordering::Acquire) == 0 {
+                        let before = guard.journal.as_ref().map(ReplicaJournal::logical_length);
+                        let result = apply_queued(&mut guard, request, self.max_payload_bytes);
+                        finish_mutations(&mut guard, before, finish_deferred_journal)?;
+                        return result;
+                    }
+                }
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(ObjectError::Corruption(
+                        "replica state lock is poisoned".into(),
+                    ));
+                }
+                Err(TryLockError::WouldBlock) => {}
+            }
+        }
+        let _offer = Offer::new(&self.offered_requests);
         let (reply, receive) = mpsc::sync_channel(1);
         self.sender
             .as_ref()
@@ -81,12 +130,17 @@ impl Committer {
                 wire_bytes,
                 reply,
             })
-            .map_err(|_| ObjectError::Corruption("replica journal worker stopped".into()))?;
+            .map_err(|_| self.stopped("replica journal worker stopped"))?;
         receive.recv().map_err(|_| {
-            ObjectError::Corruption(
-                "replica journal worker stopped before confirming persistence".into(),
-            )
+            self.stopped("replica journal worker stopped before confirming persistence")
         })?
+    }
+
+    fn stopped(&self, message: &str) -> ObjectError {
+        if let Ok(mut guard) = self.replica.lock() {
+            guard.failed = true;
+        }
+        ObjectError::Corruption(message.into())
     }
 }
 
@@ -174,15 +228,7 @@ fn commit_jobs(
                     max_payload_bytes,
                 ));
             }
-            let outcome = if guard.failed {
-                Err(ObjectError::Corruption(
-                    "replica failed before group synchronization".into(),
-                ))
-            } else if before != guard.journal.as_ref().map(ReplicaJournal::logical_length) {
-                sync(&mut guard)
-            } else {
-                Ok(())
-            };
+            let outcome = finish_mutations(&mut guard, before, sync);
             match outcome {
                 Ok(()) => None,
                 Err(error) => {
@@ -203,6 +249,25 @@ fn commit_jobs(
         };
         let _ = job.reply.send(result);
     }
+}
+
+fn finish_mutations(
+    guard: &mut NodeReplica,
+    before: Option<u64>,
+    sync: impl FnOnce(&mut NodeReplica) -> Result<(), ObjectError>,
+) -> Result<(), ObjectError> {
+    if guard.failed {
+        return Err(ObjectError::Corruption(
+            "replica failed before group synchronization".into(),
+        ));
+    }
+    if before != guard.journal.as_ref().map(ReplicaJournal::logical_length) {
+        if let Err(error) = sync(guard) {
+            guard.failed = true;
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(all(test, unix))]

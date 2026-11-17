@@ -27,9 +27,10 @@ input payload is at most the configured frame limit, 8 MiB by default. An offere
 request that would exceed a group bound is held for the next group. Requests
 are not split across groups.
 
-The writer drains available offers without a batch-fill delay. On an idle node,
-one request proceeds directly to mutation and synchronization. The thread handoff
-still has a cost, so low-concurrency latency must be measured as well as throughput.
+The writer drains available offers without a batch-fill delay. When the service
+is idle and no offers are outstanding, a request mutates and synchronizes on its
+current executor. Contended requests join the writer; new requests do not bypass
+an existing backlog. Measure low-concurrency latency as well as throughput.
 
 The service lock covers ordered mutation, outcome append and synchronization.
 Reads, repair and checkpoint installation cannot observe an unsynchronized group.

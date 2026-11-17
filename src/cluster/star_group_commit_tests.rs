@@ -341,3 +341,108 @@ fn shared_sync_busy_service_does_not_block_server_startup_shutdown() {
         "journal worker startup or shutdown waited for service state"
     );
 }
+
+#[test]
+fn shared_sync_concurrent_conditional_requests_have_one_durable_winner() {
+    let fixture = Fixture::new();
+    base(&fixture);
+    let before = fixture
+        .node
+        .lock()
+        .unwrap()
+        .journal
+        .as_ref()
+        .unwrap()
+        .sync_count();
+    let committer = Committer::start(Arc::clone(&fixture.node), MAX_PAYLOAD_BYTES).unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(17));
+    let (done, results) = mpsc::channel();
+    let mut workers = Vec::new();
+    for _ in 0..16 {
+        let committer = Arc::clone(&committer);
+        let barrier = Arc::clone(&barrier);
+        let done = done.clone();
+        workers.push(std::thread::spawn(move || {
+            barrier.wait();
+            done.send(committer.request(write(0, 4, b"ok", 1), 128))
+                .unwrap();
+        }));
+    }
+    drop(done);
+    barrier.wait();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let values = (0..16)
+        .map(|_| {
+            results
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("conditional requests stalled")
+        })
+        .collect::<Vec<_>>();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert_eq!(values.iter().filter(|value| value.is_ok()).count(), 1);
+    assert_eq!(
+        values
+            .iter()
+            .filter(|value| matches!(value, Err(ObjectError::PreconditionFailed(_))))
+            .count(),
+        15
+    );
+    assert_eq!(committer.offered_requests.load(Ordering::Acquire), 0);
+    let guard = fixture.node.lock().unwrap();
+    assert_eq!(guard.journal.as_ref().unwrap().sync_count(), before + 1);
+    assert_eq!(
+        guard.service.read_chunk(&page(), 0, 6).unwrap().data,
+        b"baseok"
+    );
+    assert_eq!(guard.service.head_chunk(&page()).unwrap().write_sequence, 2);
+}
+
+#[test]
+fn shared_sync_idle_path_refuses_failed_persistence() {
+    let fixture = Fixture::new();
+    base(&fixture);
+    let disk = std::fs::read(&fixture.path).unwrap();
+    let committer = Committer::start(Arc::clone(&fixture.node), MAX_PAYLOAD_BYTES).unwrap();
+    fixture.node.lock().unwrap().journal = Some(ReplicaJournal::read_only_for_test(&fixture.path));
+    assert!(matches!(
+        committer.request(write(0, 4, b"tail", 1), 128),
+        Err(ObjectError::Corruption(_))
+    ));
+    assert!(fixture.node.lock().unwrap().failed);
+    assert_eq!(committer.offered_requests.load(Ordering::Acquire), 0);
+    assert!(fixture.request(ReplicaRequest::Ping).is_err());
+    assert_eq!(std::fs::read(&fixture.path).unwrap(), disk);
+}
+
+#[test]
+fn shared_sync_stopped_worker_prevents_idle_writes() {
+    let fixture = Fixture::new();
+    base(&fixture);
+    let disk = std::fs::read(&fixture.path).unwrap();
+    let mut committer = match Arc::try_unwrap(
+        Committer::start(Arc::clone(&fixture.node), MAX_PAYLOAD_BYTES).unwrap(),
+    ) {
+        Ok(committer) => committer,
+        Err(_) => panic!("unexpected committer owner"),
+    };
+    let (closed_sender, closed_receiver) = mpsc::sync_channel(0);
+    drop(closed_receiver);
+    drop(committer.sender.replace(closed_sender));
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !committer.worker.as_ref().unwrap().is_finished() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "journal worker did not stop"
+        );
+        std::thread::yield_now();
+    }
+    assert!(matches!(
+        committer.request(write(0, 4, b"tail", 1), 128),
+        Err(ObjectError::Corruption(_))
+    ));
+    assert!(fixture.node.lock().unwrap().failed);
+    assert!(fixture.request(ReplicaRequest::Ping).is_err());
+    assert_eq!(std::fs::read(&fixture.path).unwrap(), disk);
+}
