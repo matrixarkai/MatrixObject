@@ -428,6 +428,57 @@ impl MetaNodeServer {
         self.seed_roster(&nodes, capacity_bytes, false)
     }
 
+    /// Declare object gateways in the roster before serving. A gateway is a roster node of
+    /// kind `objectstore`: it starts offline, comes online by heartbeating, and takes no data.
+    /// Ids already in the roster (a restart that recovered state) are left as they are, so a
+    /// restart never resets a gateway's liveness or drain flag.
+    pub fn seed_gateway_roster(&self, nodes: &[DataNodeSeed]) -> Result<usize, ObjectError> {
+        let nodes = DataNodeSeed::validated(nodes)?;
+        let mut guard = self.meta.lock().map_err(|_| {
+            ObjectError::Corruption("this metaserver's state is locked".to_string())
+        })?;
+        guard.ensure_healthy()?;
+        #[cfg(feature = "metadata-consensus")]
+        if guard.consensus.is_some() {
+            return Err(ObjectError::InvalidArgument("seed before enabling consensus".into()));
+        }
+        let mut staged = guard.service.clone();
+        for node in &nodes {
+            if staged.nodes.contains_key(&node.node_id) {
+                continue;
+            }
+            staged.register_node(PlacementNode {
+                node_id: node.node_id.clone(),
+                endpoint: node.endpoint.to_string(),
+                service_kind: super::gateway_roster::GATEWAY_SERVICE_KIND.to_string(),
+                failure_domain: node.failure_domain.clone(),
+                metadata_eligible: false,
+                data_eligible: false,
+                gateway_eligible: true,
+                serves_page_tier: false,
+                metadata_value_bytes: 0,
+                capacity_bytes: 0,
+                used_bytes: 0,
+                committed_bytes: 0,
+                draining: false,
+                online: false,
+                last_heartbeat_ms: 0,
+                page_allocator_shard_index: 0,
+                page_allocator_shard_count: 1,
+                meta_health: NodeMetaHealth::default(),
+                page_health: NodePageHealth::default(),
+                chunk_health: NodeChunkHealth::default(),
+            })?;
+        }
+        guard.service = staged;
+        guard.persist()?;
+        Ok(guard
+            .nodes
+            .values()
+            .filter(|node| node.service_kind == super::gateway_roster::GATEWAY_SERVICE_KIND)
+            .count())
+    }
+
     fn seed_roster(
         &self,
         nodes: &[DataNodeSeed],
@@ -1654,6 +1705,73 @@ mod chunk_group_tests {
         assert!(apply(&recovered.meta, stale, 65536).is_err());
         drop(recovered);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_seeded_gateway_is_listed_only_while_it_heartbeats_online_and_is_not_draining() {
+        use crate::cluster::gateway_roster::live_gateways;
+        let server = MetaNodeServer::bind("127.0.0.1:0", MetaNodeOptions::default()).unwrap();
+        server
+            .seed_data_roster(&DataNodeSeed::parse_roster("chunk-1@127.0.0.1:9100@rack").unwrap(), 1024)
+            .unwrap();
+        server
+            .seed_gateway_roster(
+                &DataNodeSeed::parse_roster("gw-1@127.0.0.1:9200@rack-a,gw-2@127.0.0.1:9201@rack-b").unwrap(),
+            )
+            .unwrap();
+        let roster = |server: &MetaNodeServer| {
+            let MetaReply::RootNodes(nodes) = apply(&server.meta, MetaRequest::ListRootNodes, 65536).unwrap()
+            else {
+                panic!("missing roster")
+            };
+            nodes
+        };
+        let nodes = roster(&server);
+        let gateway = nodes.iter().find(|n| n.node_id == "gw-1").unwrap();
+        assert!(gateway.gateway_eligible && !gateway.data_eligible && !gateway.online);
+        assert_eq!(gateway.service_kind, "objectstore");
+        assert!(live_gateways(&nodes).is_empty(), "declared but silent gateways are not live");
+        let beat = |id: &str, draining: bool, now_ms: u64| MetaRequest::HeartbeatRootNode {
+            node_id: id.into(),
+            used_bytes: 0,
+            capacity_bytes: 0,
+            draining,
+            online: true,
+            now_ms,
+        };
+        apply(&server.meta, beat("gw-1", false, 1_000), 65536).unwrap();
+        apply(&server.meta, beat("gw-2", false, 1_000), 65536).unwrap();
+        let live: Vec<_> = live_gateways(&roster(&server)).into_iter().map(|g| g.node_id).collect();
+        assert_eq!(live, ["gw-1", "gw-2"], "the chunk node is never a gateway");
+        // gw-2 withdraws; gw-1 goes silent and the expiry loop's command takes it offline.
+        apply(&server.meta, beat("gw-2", true, 2_000), 65536).unwrap();
+        apply(&server.meta, beat("gw-1", false, 1_500), 65536).unwrap();
+        apply(&server.meta, MetaRequest::ExpireRootNodeHeartbeats { ttl_ms: 1_000, now_ms: 9_000 }, 65536).unwrap();
+        assert!(live_gateways(&roster(&server)).is_empty());
+        // And it comes back by heartbeating again.
+        apply(&server.meta, beat("gw-1", false, 10_000), 65536).unwrap();
+        let live: Vec<_> = live_gateways(&roster(&server)).into_iter().map(|g| g.node_id).collect();
+        assert_eq!(live, ["gw-1"]);
+    }
+
+    #[test]
+    fn seeding_a_gateway_roster_twice_keeps_the_liveness_it_already_has() {
+        let server = MetaNodeServer::bind("127.0.0.1:0", MetaNodeOptions::default()).unwrap();
+        let roster = DataNodeSeed::parse_roster("gw-1@127.0.0.1:9200@rack-a").unwrap();
+        server.seed_gateway_roster(&roster).unwrap();
+        apply(
+            &server.meta,
+            MetaRequest::HeartbeatRootNode {
+                node_id: "gw-1".into(), used_bytes: 0, capacity_bytes: 0, draining: false, online: true, now_ms: 5,
+            },
+            65536,
+        )
+        .unwrap();
+        assert_eq!(server.seed_gateway_roster(&roster).unwrap(), 1);
+        let MetaReply::RootNodes(nodes) = apply(&server.meta, MetaRequest::ListRootNodes, 65536).unwrap() else {
+            panic!("missing roster")
+        };
+        assert!(nodes.iter().find(|n| n.node_id == "gw-1").unwrap().online);
     }
 
     use super::*;

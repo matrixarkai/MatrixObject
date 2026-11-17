@@ -170,6 +170,8 @@ mod meta_identity;
 mod peer_membership;
 pub use peer_membership::{MembershipOperation, MembershipRequest, MembershipStatus};
 #[cfg(feature = "meta-server")]
+pub mod gateway_roster;
+#[cfg(feature = "meta-server")]
 pub mod meta_message;
 #[cfg(feature = "meta-server")]
 pub mod append_plan;

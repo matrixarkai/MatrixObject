@@ -30,6 +30,9 @@
 //! | `MATRIXOBJECT_CLUSTER_RESERVE_NEXT` | `0` | `1` (with compact append) reserves the next append's staged allocation in the commit that publishes the current one, one metadata commit per append instead of two; every metadata voter must support the version 13 outcome |
 //! | `MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS` | *(unset)* | 2 to 4096: merge a log object's short tail once it holds this many extents, so it stays appendable past 4096 |
 //! | `MATRIXOBJECT_CLUSTER_TARGET_GROUPS` | `1` | data groups one object is spread over |
+//! | `MATRIXOBJECT_GATEWAY_NODE_ID` | *(unset)* | cluster mode: this door's id in the metaserver roster (declared there with `MATRIXOBJECT_METASERVER_GATEWAY_ROSTER`). When set, the door heartbeats that node online, withdraws it (draining) on SIGTERM, and clients find live doors with `RemoteMetaClient::list_gateways` |
+//! | `MATRIXOBJECT_GATEWAY_HEARTBEAT_MS` | `3000` | roster heartbeat interval, 100..60000 |
+//! | `MATRIXOBJECT_GATEWAY_DRAIN_GRACE_MS` | `5000` | after SIGTERM: how long to keep answering after withdrawing from the roster, so requests already routed here finish |
 //! | `MATRIXOBJECT_CLIENT_TLS_CA_CERT`, `MATRIXOBJECT_CLIENT_TLS_CERT`, `MATRIXOBJECT_CLIENT_TLS_KEY` | *(unset)* | mutual TLS from this door to the metadata and chunk servers (cluster mode only); the door itself still listens in plaintext |
 //!
 //! # CLUSTER MODE
@@ -52,6 +55,81 @@
 //! entirely in memory. The variable is reported at startup, including when it is unset, so an
 //! operator reading the first line of the log can see which of the two they have rather than
 //! finding out at the next restart.
+
+/// Set by the SIGTERM handler; polled by the thread that withdraws this door from the roster.
+#[cfg(all(feature = "http-server", unix))]
+static TERMINATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(all(feature = "http-server", unix))]
+extern "C" fn on_terminate(_signal: i32) {
+    TERMINATE.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// With `MATRIXOBJECT_GATEWAY_NODE_ID` set, heartbeat this door's roster node online, and on
+/// SIGTERM mark it draining, keep serving for the grace period, then exit. Without it nothing
+/// is registered and SIGTERM keeps its default meaning.
+#[cfg(all(feature = "http-server", unix))]
+fn start_roster_heartbeat<F>(
+    open: std::sync::Arc<F>,
+    drain_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) where
+    F: Fn() -> Result<matrixobjectstore_rs::cluster::RemoteMetaClient, matrixobjectstore_rs::ObjectError>
+        + Send
+        + Sync
+        + 'static,
+{
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    let Ok(node_id) = std::env::var("MATRIXOBJECT_GATEWAY_NODE_ID") else { return };
+    let number = |name: &str, default: u64, low: u64, high: u64| -> u64 {
+        match std::env::var(name) {
+            Err(_) => default,
+            Ok(raw) => match raw.trim().parse::<u64>() {
+                Ok(value) if (low..=high).contains(&value) => value,
+                _ => {
+                    eprintln!("{name} must be a number from {low} to {high}");
+                    std::process::exit(2);
+                }
+            },
+        }
+    };
+    let interval = number("MATRIXOBJECT_GATEWAY_HEARTBEAT_MS", 3_000, 100, 60_000);
+    let grace = number("MATRIXOBJECT_GATEWAY_DRAIN_GRACE_MS", 5_000, 0, 600_000);
+    let mut client = None;
+    let id = node_id.clone();
+    let advertiser = matrixobjectstore_rs::net::gateway_door::GatewayAdvertiser::start(
+        Duration::from_millis(interval),
+        move |draining| {
+            if client.is_none() {
+                client = Some((*open)()?);
+            }
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_millis() as u64)
+                .unwrap_or(0);
+            let result = client.as_mut().unwrap().heartbeat_placement_node(&id, 0, 0, draining, true, now_ms);
+            if let Err(error) = &result {
+                // A connection that failed is dropped so the next beat opens a new one.
+                client = None;
+                eprintln!("gateway roster heartbeat for {id} failed: {error}");
+            }
+            result.map(|_| ())
+        },
+    );
+    unsafe {
+        libc::signal(libc::SIGTERM, on_terminate as extern "C" fn(i32) as usize);
+    }
+    std::thread::spawn(move || {
+        while !TERMINATE.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        drain_flag.store(true, Ordering::SeqCst);
+        advertiser.drain();
+        std::thread::sleep(Duration::from_millis(grace));
+        std::process::exit(0);
+    });
+    println!("object_server roster node={node_id} heartbeat_ms={interval} drain_grace_ms={grace}");
+}
 
 #[cfg(not(feature = "http-server"))]
 fn main() {
@@ -357,7 +435,17 @@ fn run_cluster_gateway(
         eprintln!("no metadata endpoint in {meta} answered: {err}");
         std::process::exit(1);
     }
-    let gateway = Arc::new(ClusterGateway::over_sdk(open, options, bucket.to_string()));
+    let open = Arc::new(open);
+    let for_gateway = Arc::clone(&open);
+    let gateway = Arc::new(ClusterGateway::over_sdk(move || (*for_gateway)(), options, bucket.to_string()));
+    // `/livez` and `/readyz` in front of the gateway, and the drain switch behind them.
+    let door = matrixobjectstore_rs::net::gateway_door::GatewayDoor::new(gateway);
+    let drain_flag = door.drain_flag();
+    let gateway = Arc::new(door);
+    #[cfg(unix)]
+    start_roster_heartbeat(Arc::clone(&open), drain_flag);
+    #[cfg(not(unix))]
+    let _ = drain_flag;
     let server = match ObjectHttpServer::bind_handler(
         addr,
         gateway,
