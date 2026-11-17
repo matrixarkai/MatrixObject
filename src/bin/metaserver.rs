@@ -28,6 +28,7 @@
 //! | `MATRIXOBJECT_METASERVER_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
 //! | `MATRIXOBJECT_METASERVER_STATE_DIR` | *(unset)* | existing directory for locked, atomic metadata snapshots |
 //! | `MATRIXOBJECT_METASERVER_DATA_ROSTER` | *(unset)* | comma-separated `node-id@socket-address@failure-domain`; starts offline until heartbeat |
+//! | `MATRIXOBJECT_METASERVER_GATEWAY_ROSTER` | *(unset)* | comma-separated `node-id@socket-address@failure-domain` object gateways; each starts offline until its `object_server` heartbeats it, and is listed by `list_gateways` only while online and not draining |
 //! | `MATRIXOBJECT_METASERVER_SEED_DATA_NODES` | `0` | data nodes to put in the roster before serving |
 //! | `MATRIXOBJECT_METASERVER_SEED_CAPACITY_BYTES` | `1073741824` | capacity each seeded node reports |
 //!
@@ -284,6 +285,16 @@ fn main() {
         eprintln!("seeding data roster failed: {err}");
         std::process::exit(1);
     });
+
+    if let Ok(raw) = std::env::var("MATRIXOBJECT_METASERVER_GATEWAY_ROSTER") {
+        let gateways = DataNodeSeed::parse_roster(&raw)
+            .and_then(|nodes| server.seed_gateway_roster(&nodes))
+            .unwrap_or_else(|err| {
+                eprintln!("seeding the gateway roster failed: {err}");
+                std::process::exit(2);
+            });
+        seeded += gateways;
+    }
 
     if let Some(raw) = raft_peers {
         #[cfg(not(feature = "metadata-consensus"))]
