@@ -135,6 +135,9 @@ pub struct PlacementOutcome {
     pub read_session_removal: Option<crate::read_session_outcome::ReadSessionRemoval>,
     #[prost(message, optional, tag = "14")]
     pub manifest_append: Option<crate::manifest_append::ManifestAppend>,
+    /// The next append's allocation, created by the commit that publishes this one.
+    #[prost(message, optional, tag = "15")]
+    pub reserved: Option<crate::staged_allocation::StagedAllocation>,
 }
 fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
@@ -174,13 +177,17 @@ impl PlacementOutcome {
     /// `manifest_validated` says the publication's manifests were validated by the caller
     /// (the expansion of a compact append), so they are not walked again.
     fn validate_manifest_binding_with(&self, manifest_validated: bool) -> Result<(), ObjectError> {
+        if self.reserved.is_some() && !(self.version == 13 || (self.version == 4 && self.manifest.is_some())) {
+            return Err(invalid("a reservation belongs to a publication"));
+        }
         if let Some(append) = &self.manifest_append {
             append.validate()?;
             let record = self.staging.as_ref().and_then(|change|
                 if change.after.is_none() { change.before.as_ref() } else { None })
                 .ok_or_else(|| invalid("compact append must consume staged ownership"))?;
             record.validate()?;
-            if self.version != 12 || self.before_index.checked_add(1) != Some(self.after_index)
+            if !matches!(self.version, 12 | 13) || (self.version == 13) != self.reserved.is_some()
+                || self.before_index.checked_add(1) != Some(self.after_index)
                 || self.manifest.is_some() || self.retention.is_some() || self.retention_deadline.is_some()
                 || self.publication_fence.is_some() || self.copy_source.is_some()
                 || self.read_session_open.is_some() || self.read_session_removal.is_some()
@@ -188,6 +195,14 @@ impl PlacementOutcome {
                 || record.expected_generation != append.before_generation
                 || record.allocation_id > self.before_index || self.placements.len() != 1 {
                 return Err(invalid("invalid compact append outcome binding"));
+            }
+            if let Some(reserved) = &self.reserved {
+                reserved.validate()?;
+                if reserved.version != 2 || !reserved.append || reserved.allocation_id != self.after_index
+                    || reserved.bucket != append.bucket || reserved.key != append.key
+                    || reserved.expected_generation != append.before_generation.wrapping_add(1) {
+                    return Err(invalid("invalid compact append reservation binding"));
+                }
             }
             let placement = &self.placements[0];
             let before = placement.before.as_ref().ok_or_else(|| invalid("compact append lacks prior placement"))?;
@@ -208,7 +223,7 @@ impl PlacementOutcome {
                 }
             }
             return Ok(());
-        } else if self.version == 12 { return Err(invalid("compact append outcome lacks suffix")); }
+        } else if matches!(self.version, 12 | 13) { return Err(invalid("compact append outcome lacks suffix")); }
         if self.read_session_open.is_some() || self.read_session_removal.is_some() {
             if self.before_index.checked_add(1) != Some(self.after_index)
                 || self.manifest.is_some() || self.retention.is_some() || self.staging.is_some()
@@ -296,6 +311,15 @@ impl PlacementOutcome {
                 if !manifest_validated {
                     manifest.validate()?;
                 }
+                if let Some(reserved) = &self.reserved {
+                    let after = manifest.after.as_ref().unwrap();
+                    reserved.validate()?;
+                    if reserved.version != 2 || !reserved.append || reserved.allocation_id != self.after_index
+                        || after.deleted || after.format_version != 2 || reserved.bucket != after.bucket
+                        || reserved.key != after.key || reserved.expected_generation != after.generation {
+                        return Err(invalid("invalid reservation binding"));
+                    }
+                }
                 if self.placements.len() != 1 {
                     return Err(invalid("manifest publication needs one placement change"));
                 }
@@ -319,6 +343,18 @@ impl PlacementOutcome {
         }
     }
 
+    /// A compact append outcome that also reserves the next append's allocation: one durable
+    /// record publishes the append, removes the allocation it consumed and creates the
+    /// reservation, so they become durable together or not at all.
+    pub(crate) fn with_reservation(mut self, reserved: crate::staged_allocation::StagedAllocation) -> Result<Self, ObjectError> {
+        if self.version != 12 || self.manifest_append.is_none() {
+            return Err(invalid("only a compact append outcome can reserve the next allocation"));
+        }
+        self.version = 13;
+        self.reserved = Some(reserved);
+        self.validate_manifest_binding()?;
+        Ok(self)
+    }
     /// Decide one atomic placement and manifest transition without changing service state.
     /// The caller must verify configured group identities and durable data extents before
     /// proposing this outcome; structural validation alone cannot establish either fact.
@@ -430,6 +466,7 @@ impl PlacementOutcome {
             read_session_open: None,
             read_session_removal: None,
             manifest_append: None,
+            reserved: None,
         };
         outcome.validate_manifest_binding_with(compact_append.is_some())?;
         outcome.validate_publication(service, true, compact_append.is_some())?;
@@ -445,14 +482,14 @@ impl PlacementOutcome {
                 append.after_sha256.clone(),
             )?;
             #[cfg(test)]
-            crate::manifest_chain::uncounted(|| -> Result<(), ObjectError> {
+            crate::manifest_chain::uncounted(|| {
                 assert_eq!(
                     decided,
-                    crate::manifest_append::ManifestAppend::decide_validated(outcome.manifest.as_ref().unwrap())?,
+                    crate::manifest_append::ManifestAppend::decide_validated(outcome.manifest.as_ref().unwrap())
+                        .expect("the outcome was just validated"),
                     "the decision's digests are not those of the manifests it was expanded to"
                 );
-                Ok(())
-            })?;
+            });
             if decided != append {
                 return Err(invalid("compact append differs from validated publication"));
             }
@@ -593,6 +630,7 @@ impl PlacementOutcome {
             read_session_open: None,
             read_session_removal: None,
             manifest_append: None,
+            reserved: None,
         })
     }
     pub fn finish(mut self, service: &MatrixMetaService) -> Result<Self, ObjectError> {
@@ -668,6 +706,7 @@ impl PlacementOutcome {
             expanded.version = 4;
             expanded.manifest = Some(append.expand_stored(before, stored)?);
             expanded.manifest_append = None;
+            // `reserved` stays: the expanded publication carries the reservation it creates.
             return expanded.apply_with(service, true);
         }
         if self.before_index != service.placement_commit_index
@@ -745,6 +784,12 @@ impl PlacementOutcome {
             Some((removal.retention_id, service.object_manifests.check_read_session_removal(removal)?))
         } else { None };
         let publication_bytes = if self.manifest.is_some() { self.validate_publication(service, false, manifest_validated)? } else { None };
+        if let (Some(reserved), Some(bytes)) = (&self.reserved, publication_bytes) {
+            let manifest = self.manifest.as_ref().ok_or_else(|| invalid("reservation without a publication"))?;
+            let consumed = self.staging.as_ref().and_then(|change| change.before.as_ref())
+                .ok_or_else(|| invalid("reservation without the consumed allocation"))?;
+            service.object_manifests.check_reservation(reserved, manifest.after.as_ref().unwrap(), bytes, consumed)?;
+        }
         if let Some(staging) = &self.staging {
             service.object_manifests.apply_staging(staging)?;
         }
@@ -762,6 +807,9 @@ impl PlacementOutcome {
         if let Some(manifest) = &self.manifest {
             // Catalog capacity and expected-state checks happen before any other writes.
             if let Some(bytes) = publication_bytes { service.object_manifests.commit_checked_manifest(manifest, bytes); }
+        }
+        if let (Some(reserved), Some(_)) = (&self.reserved, publication_bytes) {
+            service.object_manifests.restore_staging(reserved.allocation_id, Some(reserved.clone()));
         }
         // All checks precede mutation; replay never invokes placement planning or heartbeat expiry.
         for change in &self.nodes {

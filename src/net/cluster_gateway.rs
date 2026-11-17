@@ -134,6 +134,10 @@ pub struct GatewayOptions {
     pub compact_extents: Option<usize>,
     /// Lease for a staged allocation made for one compact append.
     pub staged_ttl_ms: u64,
+    /// With compact publication, reserve the next append's allocation in the same durable
+    /// commit as the current append, so an append to a busy log costs one metadata commit.
+    /// Every metadata voter and journal reader must support the version 13 outcome.
+    pub reserve_next: bool,
 }
 
 impl Default for GatewayOptions {
@@ -148,6 +152,7 @@ impl Default for GatewayOptions {
             compact_append: false,
             compact_extents: None,
             staged_ttl_ms: 60_000,
+            reserve_next: false,
         }
     }
 }
@@ -162,7 +167,49 @@ pub struct SdkPlane {
 /// Whether the compact append path is usable, shared by every connection of one gateway.
 /// 0: untried, 1: enabled, 2: refused once and switched off for the life of the process.
 #[derive(Default)]
-pub struct CompactState(std::sync::atomic::AtomicU8);
+pub struct CompactState(
+    std::sync::atomic::AtomicU8,
+    /// Allocations reserved by the last append to each object, with when they were stored.
+    std::sync::Mutex<std::collections::HashMap<(String, String), (crate::staged_allocation::StagedAllocation, std::time::Instant)>>,
+);
+
+/// Lease of an allocation reserved for the next append. Short, because a reservation nobody
+/// uses (an idle log, another writer got there first) holds one of the metadata plane's 128
+/// allocations until it expires.
+const RESERVATION_TTL_MS: u64 = 10_000;
+
+impl CompactState {
+    /// The allocation the last append to this object reserved, if it is still for the manifest
+    /// being extended and well inside its lease (`ttl_ms` is the lease it was made with). A
+    /// reservation is used once: it is removed whether or not it fits, and an append that fails
+    /// with it (an expired lease, a changed object) is retried by the caller with a fresh
+    /// allocation.
+    pub(crate) fn take_reservation(
+        &self,
+        expected: &ObjectManifest,
+        pages: u32,
+        ttl_ms: u64,
+    ) -> Option<crate::staged_allocation::StagedAllocation> {
+        let mut map = self.1.lock().ok()?;
+        let (allocation, stored_at) = map.remove(&(expected.bucket.clone(), expected.key.clone()))?;
+        (stored_at.elapsed() < std::time::Duration::from_millis(ttl_ms / 2)
+            && allocation.append
+            && allocation.expected_generation == expected.generation
+            && allocation.page_count >= pages)
+            .then_some(allocation)
+    }
+
+    /// Remember the allocation an append reserved for the next one to the same object.
+    pub(crate) fn store_reservation(&self, allocation: crate::staged_allocation::StagedAllocation) {
+        if let Ok(mut map) = self.1.lock() {
+            // The metadata plane holds at most 128 allocations; keep well under half of them.
+            if map.len() >= 48 {
+                map.clear();
+            }
+            map.insert((allocation.bucket.clone(), allocation.key.clone()), (allocation, std::time::Instant::now()));
+        }
+    }
+}
 
 impl SdkPlane {
     pub fn new(client: RemoteMetaClient, options: GatewayOptions, compact: Arc<CompactState>) -> Self {
@@ -189,22 +236,46 @@ impl SdkPlane {
             }
         }
         let pages = data.len().div_ceil(self.options.write.page_bytes.max(1)).max(1) as u32;
-        let allocation = match self.client.allocate_leased_staged_object(
-            &expected.bucket,
-            &expected.key,
-            Some(expected.generation),
-            pages,
-            true,
-            self.options.staged_ttl_ms,
-        ) {
-            Ok(allocation) => allocation,
-            Err(error) => return Err(self.compact_refused("allocating a staged append", error)),
+        let reserved = if self.options.reserve_next {
+            self.compact.take_reservation(expected, pages, self.options.staged_ttl_ms.min(RESERVATION_TTL_MS))
+        } else {
+            None
+        };
+        let allocation = match reserved {
+            Some(allocation) => allocation,
+            None => match self.client.allocate_leased_staged_object(
+                &expected.bucket,
+                &expected.key,
+                Some(expected.generation),
+                pages,
+                true,
+                self.options.staged_ttl_ms,
+            ) {
+                Ok(allocation) => allocation,
+                Err(error) => return Err(self.compact_refused("allocating a staged append", error)),
+            },
         };
         let options = self.write_options();
-        match self
-            .client
-            .append_staged_object_compact(&allocation, expected.clone(), data, &options)
-        {
+        let result = if self.options.reserve_next {
+            self.client
+                .append_staged_object_compact_reserving(
+                    &allocation,
+                    expected.clone(),
+                    data,
+                    &options,
+                    pages,
+                    self.options.staged_ttl_ms.min(RESERVATION_TTL_MS),
+                )
+                .map(|(manifest, next)| {
+                    if let Some(next) = next {
+                        self.compact.store_reservation(next);
+                    }
+                    manifest
+                })
+        } else {
+            self.client.append_staged_object_compact(&allocation, expected.clone(), data, &options)
+        };
+        match result {
             Ok(manifest) => Ok(manifest),
             Err(failure) => {
                 let failure: PlaneFailure = failure.into();
@@ -1083,6 +1154,64 @@ fn error_response(error: ObjectError, resource: &str, missing_is_bucket: bool) -
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    fn reservation(generation: u64, pages: u32) -> crate::staged_allocation::StagedAllocation {
+        crate::staged_allocation::StagedAllocation {
+            version: 2,
+            allocation_id: 9,
+            page_count: pages,
+            bucket: "b".into(),
+            key: "k".into(),
+            expected_generation: generation,
+            append: true,
+            expires_at_ms: 1_000_000,
+            ..Default::default()
+        }
+    }
+    fn manifest_at(generation: u64) -> ObjectManifest {
+        ObjectManifest {
+            format_version: 2,
+            bucket: "b".into(),
+            key: "k".into(),
+            generation,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_reservation_is_used_once_and_only_for_the_manifest_and_size_it_was_made_for() {
+        let state = CompactState::default();
+        state.store_reservation(reservation(5, 2));
+        // the manifest it extends, a request it covers
+        assert_eq!(state.take_reservation(&manifest_at(5), 2, 60_000), Some(reservation(5, 2)));
+        // used once
+        assert_eq!(state.take_reservation(&manifest_at(5), 2, 60_000), None);
+        // another generation (another writer got there first): removed, not reused
+        state.store_reservation(reservation(5, 2));
+        assert_eq!(state.take_reservation(&manifest_at(6), 1, 60_000), None);
+        assert_eq!(state.take_reservation(&manifest_at(5), 1, 60_000), None);
+        // too few pages for the append
+        state.store_reservation(reservation(5, 1));
+        assert_eq!(state.take_reservation(&manifest_at(5), 2, 60_000), None);
+        // a smaller append can use a larger reservation
+        state.store_reservation(reservation(5, 4));
+        assert!(state.take_reservation(&manifest_at(5), 1, 60_000).is_some());
+        // too old to trust: half the lease it was made with
+        state.store_reservation(reservation(5, 1));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert_eq!(state.take_reservation(&manifest_at(5), 1, 40), None);
+    }
+
+    #[test]
+    fn the_reservation_cache_is_bounded() {
+        let state = CompactState::default();
+        for index in 0..200usize {
+            let mut value = reservation(1, 1);
+            value.key = format!("key-{index}");
+            state.store_reservation(value);
+        }
+        assert!(state.1.lock().unwrap().len() <= 48);
+    }
 
     #[test]
     fn an_unreachable_node_answers_service_unavailable_and_is_not_a_lost_race() {

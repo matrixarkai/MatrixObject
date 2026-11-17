@@ -194,6 +194,18 @@ impl StagedAllocationRequest {
         matches!(self.action, 2 | 5 | 7 | 10)
     }
     pub(crate) fn validate(&self) -> Result<(), ObjectError> {
+        if self.version == 5 {
+            // Publish a compact append and reserve the next append's allocation in the same
+            // durable commit. `page_count` and `ttl_ms` describe the reservation.
+            if self.action != 12 || self.allocation_id == 0 || !(1..=4096).contains(&self.page_count)
+                || !(1_000..=3_600_000).contains(&self.ttl_ms)
+                || !self.bucket.is_empty() || !self.key.is_empty() || self.expected_generation != 0
+                || self.append || self.outcome.is_some() || self.limit != 0
+                || self.expected_expiry_ms != 0 || !self.request_nonce.is_empty() {
+                return Err(invalid("invalid compact append reservation request"));
+            }
+            return self.manifest_append.as_ref().ok_or_else(|| invalid("compact append missing"))?.validate();
+        }
         if self.version == 4 {
             if self.action != 11 || self.allocation_id == 0 || self.page_count != 0
                 || !self.bucket.is_empty() || !self.key.is_empty() || self.expected_generation != 0
@@ -335,6 +347,15 @@ pub struct StagedAllocationReply {
 impl StagedAllocationReply {
     pub(crate) fn from_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
         let value: Self = decode(bytes, 1024 * 1024 + 8192)?;
+        if value.version == 5 {
+            if value.committed_allocation_id == 0 || value.manifest_sha256.len() != 32
+                || value.allocation.is_none() || value.manifest.is_some() || !value.allocation_ids.is_empty()
+                || value.has_more || value.publication_fence != 0 || value.allocation_cursor != 0 {
+                return Err(invalid("invalid compact append reservation acknowledgement"));
+            }
+            value.allocation.as_ref().unwrap().validate()?;
+            return Ok(value);
+        }
         if value.version == 3 {
             if value.committed_allocation_id == 0 || value.manifest_sha256.len() != 32
                 || value.allocation.is_some() || value.manifest.is_some() || !value.allocation_ids.is_empty()

@@ -94,7 +94,7 @@ pub(super) fn prepare_at(service: &MatrixMetaService, groups: &ChunkGroupCatalog
                     after: None,
                 })
         }
-        4 | 11 => {
+        4 | 11 | 12 => {
             let allocation = service
                 .object_manifests
                 .staged_allocation(command.allocation_id)
@@ -124,6 +124,28 @@ pub(super) fn prepare_at(service: &MatrixMetaService, groups: &ChunkGroupCatalog
                 reply.version = 3;
                 reply.committed_allocation_id = command.allocation_id;
                 reply.manifest_sha256 = append.after_sha256.clone();
+                if command.action == 12 {
+                    // Publish and reserve in one durable commit: the allocation for the next
+                    // append is created by the record that publishes this one.
+                    let expires_at_ms = now.checked_add(command.ttl_ms).filter(|_| now != 0).ok_or_else(|| {
+                        ObjectError::PreconditionFailed("metadata lease clock is zero or overflowed".into())
+                    })?;
+                    let reserved = StagedAllocation {
+                        version: 2,
+                        allocation_id: outcome.after_index,
+                        page_count: command.page_count,
+                        bucket: append.bucket.clone(),
+                        key: append.key.clone(),
+                        expected_generation: append.before_generation + 1,
+                        append: true,
+                        expires_at_ms,
+                        request_nonce: Vec::new(),
+                        request_ttl_ms: 0,
+                    };
+                    outcome = outcome.with_reservation(reserved.clone())?;
+                    reply.version = 5;
+                    reply.allocation = Some(reserved);
+                }
             } else {
                 outcome = PlacementOutcome::publish_staged_manifest(service, manifest,
                     command.update_time_ms, allocation)?;

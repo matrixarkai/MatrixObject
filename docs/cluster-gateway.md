@@ -63,6 +63,7 @@ Both modes are off by default, and the default append is the plain one described
 | Variable | Mode |
 |---|---|
 | `MATRIXOBJECT_CLUSTER_COMPACT_APPEND=1` | compact publication |
+| `MATRIXOBJECT_CLUSTER_RESERVE_NEXT=1` | with compact publication, reserve the next append's allocation in the publishing commit (one metadata commit per append) |
 | `MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS=N` (2 to 4096, for example 3500) | tail compaction |
 
 **Compact publication.** Each append takes a leased staged allocation (60 s) and publishes a

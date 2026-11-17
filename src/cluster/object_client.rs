@@ -867,6 +867,20 @@ impl RemoteMetaClient {
         })
     }
 
+    /// `append_staged_object_compact` that also reserves the allocation for the next append in
+    /// the same durable commit. The reservation is `None` only when the append did not publish.
+    /// All metadata voters and journal readers must support the version 13 outcome.
+    pub fn append_staged_object_compact_reserving(&mut self, allocation: &crate::staged_allocation::StagedAllocation,
+        expected: ObjectManifest, data: &[u8], options: &ObjectWriteOptions, next_pages: u32, next_ttl_ms: u64)
+        -> Result<(ObjectManifest, Option<crate::staged_allocation::StagedAllocation>), ObjectWriteFailure> {
+        self.reserve_next = Some((next_pages, next_ttl_ms));
+        self.reservation = None;
+        let result = self.append_staged_object_compact(allocation, expected, data, options);
+        self.reserve_next = None;
+        let manifest = result?;
+        Ok((manifest, self.reservation.take()))
+    }
+
     /// Probe and complete the same owned candidate without allocating or replaying publication.
     pub fn resume_staged_object(&mut self, allocation: &crate::staged_allocation::StagedAllocation,
         expected: Option<ObjectManifest>, staged: ObjectManifest, data: &[u8], options: &ObjectWriteOptions)
@@ -1150,8 +1164,18 @@ impl RemoteMetaClient {
         }
         self.check_operation_deadline().map_err(&staged_error)?;
         let (publication, unadmitted, outcome) = if compact {
-            self.publish_compact_append_preserving_outcome(outcome,
-                owned.expect("compact append requires owned staging").allocation_id, options.update_time_ms)
+            let allocation_id = owned.expect("compact append requires owned staging").allocation_id;
+            if let Some((pages, ttl_ms)) = self.reserve_next.take() {
+                let (result, unadmitted, outcome) = self.publish_compact_append_reserving(
+                    outcome, allocation_id, options.update_time_ms, pages, ttl_ms);
+                let result = result.map(|(manifest, reserved)| {
+                    self.reservation = Some(reserved);
+                    manifest
+                });
+                (result, unadmitted, outcome)
+            } else {
+                self.publish_compact_append_preserving_outcome(outcome, allocation_id, options.update_time_ms)
+            }
         } else {
             self.publish_preserving_outcome(outcome, owned.map(|allocation| allocation.allocation_id), options.update_time_ms)
         };

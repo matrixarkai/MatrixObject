@@ -62,3 +62,35 @@ publication frames and 2,226–2,283 bytes of three-voter metadata WAL growth fo
 one 4-KiB suffix at 1, 128 and 4,095 prior extents. Data journal growth remains
 12,552 bytes. That initial publication measurement retained the full planning
 reply; the subsequent compact-planning measurement records its removal.
+
+## Reserving the next allocation in the publishing commit
+
+A log that appends in a loop needs a staged allocation per append and so two metadata
+commits per append: one to reserve pages, one to publish. `StagedAllocationRequest` version 5,
+action 12 publishes a compact append exactly as version 4 does and, in the same durable
+record, creates the allocation for the append after it (`page_count` pages, `ttl_ms` lease,
+both in the request). The placement outcome for it is version 13: the compact decision, the
+removal of the consumed allocation and the new reservation (field 15) are one record, so
+they become durable together or not at all, and replay of that record gives exactly the
+state the live node reached. The reply (version 5) returns the reservation.
+
+What the record guarantees, and what it does not:
+
+* Nothing is acknowledged before the record is durable, as for every metadata commit.
+* The reservation is created at the metadata position of the record that publishes the
+  append, for the generation that append produces, in the same object, as an append, with a
+  lease. An allocation can therefore only ever be reserved after the publication it follows,
+  and it cannot publish over any manifest but that one; a record that publishes without
+  consuming the allocation it names, or reserves at another position, for another object or
+  for another generation, is refused whole.
+* The allocation table still holds 128 active allocations. A reservation is one of them, so
+  a gateway that keeps one reservation per active log can serve fewer than 128 logs, and an
+  idle log's reservation stays until its lease ends. The gateway keeps at most 48, gives a
+  reservation a 10 second lease, and reuses one only inside the first half of it.
+* If the reply is lost the reservation exists but the client does not know it; it expires
+  with its lease, as an allocation whose publication was never sent does today.
+
+The gateway uses it with `MATRIXOBJECT_CLUSTER_RESERVE_NEXT=1` (requires compact append);
+an append that finds a usable reservation for the manifest it extends skips the allocation
+commit. Every metadata voter, recovery binary and journal reader must support the version 13
+outcome before the first use; downgrading afterwards is unsupported.
