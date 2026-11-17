@@ -2503,7 +2503,25 @@ impl RemoteReplicaSet {
             has_more,
             blocked: false,
         };
-        let pages: Vec<_> = selected.into_iter().collect();
+        let by_id: Vec<_> = selected.into_iter().collect();
+        // Repair order inside the batch: among the pages before the first page that no source
+        // quorum can vouch for, those short of copies go first and complete pages after. The
+        // batch still STOPS at that unvouched page and never repairs past it, exactly as an
+        // id-ordered batch does, so the resume cursor and head-of-line safety are unchanged.
+        let counts = if should_order_by_copies(by_id.len()) {
+            self.page_copy_counts(&by_id)
+        } else {
+            None
+        };
+        let (members, quorum) = (self.replicas.len(), self.read_quorum);
+        let (pages, prefix_len): (Vec<PageId>, usize) = match counts {
+            Some(copies) => {
+                let (order, prefix_len) = repair_order(&copies, members, quorum);
+                (order.into_iter().map(|i| by_id[i].clone()).collect(), prefix_len)
+            }
+            None => (by_id.clone(), by_id.len()),
+        };
+        let reordered = pages != by_id;
         for group in pages.chunks(8) {
             let uniform = if head_first {
                 self.uniform_heads_batch(group).ok().flatten()
@@ -2540,12 +2558,65 @@ impl RemoteReplicaSet {
                 if !resolved {
                     batch.blocked = true;
                     batch.has_more = true;
+                    if reordered {
+                        // Every page before the unvouched one was processed, so the cursor is
+                        // where an id-ordered batch would have left it; any other block leaves
+                        // the cursor at the batch start.
+                        if prefix_len < by_id.len() && *page == by_id[prefix_len] {
+                            batch.resume_after = match prefix_len.checked_sub(1) {
+                                Some(last) => Some(by_id[last].clone()),
+                                None => after.cloned(),
+                            };
+                        }
+                    }
                     return Ok(batch);
                 }
-                batch.resume_after = Some(page.clone());
+                if !reordered {
+                    batch.resume_after = Some(page.clone());
+                }
             }
         }
+        if reordered {
+            batch.resume_after = by_id.last().cloned();
+        }
         Ok(batch)
+    }
+
+    /// For each page, how many members hold the same head: the copies a repair could copy
+    /// from. `None` when members cannot answer head batches.
+    fn page_copy_counts(&mut self, pages: &[PageId]) -> Option<Vec<usize>> {
+        if self.repair_head_batch == Some(false) || pages.is_empty() {
+            return None;
+        }
+        let mut counts = vec![0usize; pages.len()];
+        for (start, group) in pages.chunks(8).enumerate() {
+            let deadline = self.read_wave_deadline().ok()?;
+            let request = ReplicaRequest::HeadChunkBatch { pages: group.to_vec() };
+            let mut answers: Vec<Option<Vec<Option<ReplicaHead>>>> = vec![None; self.replicas.len()];
+            let mut unsupported = false;
+            self.fan_out_each_before(&request, None, deadline, None, |index, reply| match reply {
+                Ok(ReplicaReply::Heads(heads)) if heads.len() == group.len() => {
+                    answers[index] = Some(heads);
+                }
+                Err(_) => unsupported = true,
+                _ => {}
+            });
+            if unsupported {
+                return None;
+            }
+            for position in 0..group.len() {
+                let heads: Vec<&ReplicaHead> = answers
+                    .iter()
+                    .filter_map(|a| a.as_ref().and_then(|h| h[position].as_ref()))
+                    .collect();
+                counts[start * 8 + position] = heads
+                    .iter()
+                    .map(|head| heads.iter().filter(|other| *other == head).count())
+                    .max()
+                    .unwrap_or(0);
+            }
+        }
+        Some(counts)
     }
 
     fn uniform_heads_batch(
@@ -3668,5 +3739,76 @@ mod send_progress_tests {
             first.is_ok() && second.is_ok(),
             "healthy members waited behind the stalled sender"
         );
+    }
+}
+
+/// A batch of fewer than two pages has nothing to reorder, so it sends no extra head probe and
+/// repairs with exactly the requests it always did.
+pub(crate) fn should_order_by_copies(pages: usize) -> bool {
+    pages >= 2
+}
+
+/// Repair order for a batch given each page's agreeing-copy count (pages in id order). Returns
+/// the processing order as indexes, and the length of the prefix that was reordered. Pages
+/// before the first page with fewer copies than the source quorum are ordered short-of-copies
+/// first, then complete pages; that first unvouched page and everything after it keep id order
+/// so the batch stops at it exactly as an id-ordered batch would.
+pub(crate) fn repair_order(copies: &[usize], members: usize, source_quorum: usize) -> (Vec<usize>, usize) {
+    let prefix_len = copies
+        .iter()
+        .position(|&c| c < source_quorum)
+        .unwrap_or(copies.len());
+    let mut order: Vec<usize> = (0..prefix_len).collect();
+    order.sort_by_key(|&i| (repair_priority(copies[i], members, source_quorum), i));
+    order.extend(prefix_len..copies.len());
+    (order, prefix_len)
+}
+
+/// Sort key for repair order. Lower repairs first: a page a quorum can vouch for but that is
+/// short of copies, fewest copies first; then complete pages (nothing to copy). Pages no source
+/// quorum can vouch for sort last (used inside `repair_order` only for the prefix).
+pub(crate) fn repair_priority(copies: usize, members: usize, source_quorum: usize) -> (u8, usize) {
+    if copies < source_quorum {
+        (2, copies)
+    } else if copies < members {
+        (0, copies)
+    } else {
+        (1, copies)
+    }
+}
+
+#[cfg(test)]
+mod repair_order_tests {
+    use super::{repair_order, repair_priority, should_order_by_copies};
+
+    #[test]
+    fn a_batch_stops_at_the_first_unvouched_page_and_reorders_only_before_it() {
+        // Pinned rule: with page 2 unvouched and page 3 repairable, page 2 is processed first
+        // (and blocks), exactly as in id order.
+        assert_eq!(repair_order(&[1, 2], 3, 2), (vec![0, 1], 0));
+        // Before the unvouched page, short pages go first.
+        assert_eq!(repair_order(&[3, 2, 1, 3, 2], 3, 2), (vec![1, 0, 2, 3, 4], 2));
+        // No unvouched page: the whole batch is ordered.
+        assert_eq!(repair_order(&[3, 2, 3, 2], 3, 2), (vec![1, 3, 0, 2], 4));
+        assert_eq!(repair_order(&[], 3, 2), (vec![], 0));
+    }
+
+    #[test]
+    fn a_batch_with_nothing_to_reorder_sends_no_ordering_probe() {
+        assert!(!should_order_by_copies(0));
+        assert!(!should_order_by_copies(1));
+        assert!(should_order_by_copies(2));
+    }
+
+    #[test]
+    fn short_pages_repair_before_complete_ones_and_unvouched_pages_last() {
+        let mut pages = [("a", 3), ("b", 2), ("c", 1), ("d", 3), ("e", 2)];
+        pages.sort_by_key(|(_, copies)| repair_priority(*copies, 3, 2));
+        let order: Vec<_> = pages.iter().map(|(name, _)| *name).collect();
+        assert_eq!(order, ["b", "e", "a", "d", "c"]);
+        // With five members and a source quorum of three, fewer copies come first.
+        let mut wide = [("x", 4), ("y", 3), ("z", 5)];
+        wide.sort_by_key(|(_, copies)| repair_priority(*copies, 5, 3));
+        assert_eq!(wide.map(|(name, _)| name), ["y", "x", "z"]);
     }
 }
