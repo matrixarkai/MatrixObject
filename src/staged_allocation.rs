@@ -99,10 +99,18 @@ impl StagedAllocation {
     pub(crate) fn check_publication(&self, outcome: &ManifestOutcome) -> Result<(), ObjectError> {
         self.validate()?;
         outcome.validate()?;
-        self.check_publication_validated(outcome)
+        self.check_publication_with(outcome, false)
     }
-    /// `check_publication` for an outcome the caller has just validated in full.
+    /// `check_publication` for the expansion of a compact append against the stored manifest
+    /// (`ManifestAppend::expand_stored`): validated there, and extending the stored manifest by
+    /// construction. Do not call it with an outcome from any other source.
     pub(crate) fn check_publication_validated(&self, outcome: &ManifestOutcome) -> Result<(), ObjectError> {
+        self.check_publication_with(outcome, true)
+    }
+    /// `prefix_known`: the outcome is the expansion of a compact append against the stored
+    /// manifest, so `after` is `before` plus a suffix by construction and the prefix is not
+    /// compared extent by extent. Any other outcome has it compared.
+    fn check_publication_with(&self, outcome: &ManifestOutcome, prefix_known: bool) -> Result<(), ObjectError> {
         self.validate()?;
         let after = outcome.after.as_ref().unwrap();
         if after.deleted
@@ -124,7 +132,11 @@ impl StagedAllocation {
                 .ok_or_else(|| invalid("staged append lacks prior manifest"))?;
             if before.deleted
                 || before.format_version != 2
-                || after.extents.get(..before.extents.len()) != Some(before.extents.as_slice())
+                || if prefix_known {
+                    after.extents.len() < before.extents.len()
+                } else {
+                    after.extents.get(..before.extents.len()) != Some(before.extents.as_slice())
+                }
             {
                 return Err(invalid("staged append does not retain prior extents"));
             }

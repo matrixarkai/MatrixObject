@@ -859,11 +859,17 @@ impl ManifestCatalog {
         &self, outcome: &ManifestOutcome, allocation_id: Option<u64>, source: Option<&crate::manifest_copy::LiveCopySource>,
     ) -> Result<Option<usize>, ObjectError> {
         outcome.validate()?;
-        self.check_validated_outcome_with_admission(outcome, allocation_id, source)
+        self.check_validated_outcome_with_admission(outcome, allocation_id, source, false)
     }
     /// `check_outcome_with_admission` for an outcome the caller has validated in full.
+    ///
+    /// `prefix_known`: the outcome is the expansion of a compact append against the stored
+    /// manifest (its `before` is that manifest and its `after` is `before` plus a suffix), so
+    /// the extents already stored are known to be unchanged and are neither compared nor
+    /// checked again; only the header of `before` is compared and only the suffix is checked.
     pub(crate) fn check_validated_outcome_with_admission(
         &self, outcome: &ManifestOutcome, allocation_id: Option<u64>, source: Option<&crate::manifest_copy::LiveCopySource>,
+        prefix_known: bool,
     ) -> Result<Option<usize>, ObjectError> {
         let after = outcome.after.as_ref().unwrap();
         let id = after.object_id();
@@ -871,7 +877,24 @@ impl ManifestCatalog {
         if current == Some(after) {
             return Ok(None);
         }
-        if current != outcome.before.as_ref() {
+        let prior_unchanged = if prefix_known {
+            match (current, outcome.before.as_ref()) {
+                (Some(stored), Some(before)) => {
+                    stored.bucket == before.bucket
+                        && stored.key == before.key
+                        && stored.generation == before.generation
+                        && stored.length == before.length
+                        && stored.deleted == before.deleted
+                        && stored.format_version == before.format_version
+                        && stored.extents.len() == before.extents.len()
+                }
+                (None, None) => true,
+                _ => false,
+            }
+        } else {
+            current == outcome.before.as_ref()
+        };
+        if !prior_unchanged {
             return Err(ObjectError::PreconditionFailed(
                 "object manifest changed before publication".into(),
             ));
@@ -895,7 +918,8 @@ impl ManifestCatalog {
         }
         let body_bytes = self.body_bytes - self.objects.get(&id).map_or(0, |entry| entry.encoded_bytes) + entry_size(after);
         if !self.staged.is_empty() {
-            for extent in &after.extents {
+            let unchecked = if prefix_known { outcome.before.as_ref().map_or(0, |before| before.extents.len()) } else { 0 };
+            for extent in &after.extents[unchecked.min(after.extents.len())..] {
                 let id = extent.volume_id.checked_shl(32).filter(|_| extent.volume_id <= u32::MAX as u64)
                     .and_then(|volume| if extent.chunk_id <= u32::MAX as u64 { Some(volume | extent.chunk_id) } else { None });
                 if id.is_some_and(|id| self.staged.contains_key(&id) && Some(id) != allocation_id) {
@@ -915,21 +939,57 @@ impl ManifestCatalog {
         let Some(body_bytes) = self.check_outcome(outcome)? else {
             return Ok(false);
         };
-        self.commit_checked_manifest(outcome, body_bytes);
+        self.commit_checked_manifest(outcome, body_bytes, false);
         Ok(true)
     }
-    pub(crate) fn commit_checked_manifest(&mut self, outcome: &ManifestOutcome, body_bytes: usize) {
+    /// `prefix_known`: `outcome.after` extends the stored manifest, as in
+    /// `check_validated_outcome_with_admission`, so the stored extents are not compared again.
+    pub(crate) fn commit_checked_manifest(&mut self, outcome: &ManifestOutcome, body_bytes: usize, prefix_known: bool) {
         let after = outcome.after.as_ref().unwrap();
         let id = after.object_id();
         let old_bytes = self.objects.get(&id).map_or(0, |entry| entry.encoded_bytes);
         let encoded_bytes = body_bytes - (self.body_bytes - old_bytes);
+        // An append to an entry nothing else holds extends it in place: the stored extents are
+        // not copied into a new entry and the old one is not freed. When a snapshot or an undo
+        // still shares the entry it must stay as it is, and the general path below builds a new
+        // one.
+        if prefix_known {
+            if let Some(entry) = self.objects.get_mut(&id).and_then(Arc::get_mut) {
+                let kept = entry.manifest.extents.len();
+                if after.extents.len() >= kept {
+                    let seeded = entry.digest.get().map(|stored| {
+                        let chain = stored.chain.extended(&after.extents[kept..]);
+                        StoredDigest { digest: chain.digest(after), chain }
+                    });
+                    entry.manifest.extents.extend(after.extents[kept..].iter().cloned());
+                    entry.manifest.generation = after.generation;
+                    entry.manifest.length = after.length;
+                    entry.encoded_bytes = encoded_bytes;
+                    entry.digest = std::sync::OnceLock::new();
+                    if let Some(seeded) = seeded {
+                        #[cfg(test)]
+                        crate::manifest_chain::uncounted(|| {
+                            assert_eq!(seeded, StoredDigest::of(after), "a carried-forward digest differs from a fresh one")
+                        });
+                        let _ = entry.digest.set(seeded);
+                    }
+                    #[cfg(test)]
+                    crate::manifest_chain::uncounted(|| {
+                        assert_eq!(entry.manifest, *after, "an in-place append differs from the outcome's manifest")
+                    });
+                    self.revision += 1;
+                    self.body_bytes = body_bytes;
+                    return;
+                }
+            }
+        }
         // An append keeps every extent of the entry it replaces: its chain and digest are
         // the old chain extended by the new extents, not a pass over all of them.
         let digest = std::sync::OnceLock::new();
         if let Some(previous) = self.objects.get(&id) {
             let kept = previous.manifest.extents.len();
             if let Some(stored) = previous.digest.get() {
-                if after.extents.len() >= kept && after.extents[..kept] == previous.manifest.extents[..] {
+                if after.extents.len() >= kept && (prefix_known || after.extents[..kept] == previous.manifest.extents[..]) {
                     let chain = stored.chain.extended(&after.extents[kept..]);
                     let seeded = StoredDigest { digest: chain.digest(after), chain };
                     #[cfg(test)]

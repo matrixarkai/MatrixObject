@@ -143,6 +143,36 @@ fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
 }
 
+thread_local! {
+    /// The expansion of the compact append this thread prepared last. Preparing expands the
+    /// decision against the stored manifest to validate it, and applying the same decision
+    /// would expand it again, copying the whole extent list twice more. A single slot: an
+    /// apply that is not for this decision (a replay, another append) finds it does not match
+    /// and expands for itself.
+    static PREPARED_EXPANSION: std::cell::RefCell<Option<(crate::manifest_append::ManifestAppend, ManifestOutcome)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn stash_expansion(append: crate::manifest_append::ManifestAppend, expanded: ManifestOutcome) {
+    PREPARED_EXPANSION.with(|slot| *slot.borrow_mut() = Some((append, expanded)));
+}
+
+/// Forget a stashed expansion, so the next apply expands for itself (tests of the slow path).
+#[cfg(all(test, feature = "metadata-consensus"))]
+pub(crate) fn forget_prepared_expansion() {
+    PREPARED_EXPANSION.with(|slot| *slot.borrow_mut() = None);
+}
+
+fn take_expansion(append: &crate::manifest_append::ManifestAppend) -> Option<ManifestOutcome> {
+    PREPARED_EXPANSION.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        match slot.as_ref() {
+            Some((prepared, _)) if prepared == append => slot.take().map(|(_, expanded)| expanded),
+            _ => None,
+        }
+    })
+}
+
 #[cfg(test)]
 thread_local! {
     static FULL_DERIVATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -561,8 +591,13 @@ impl PlacementOutcome {
                 return Err(invalid("compact append differs from validated publication"));
             }
             outcome.version = 12;
-            outcome.manifest = None;
-            outcome.manifest_append = Some(append);
+            // The expansion is kept for the apply that follows on this thread, instead of
+            // being dropped here and rebuilt there.
+            let expanded = outcome.manifest.take();
+            outcome.manifest_append = Some(append.clone());
+            if let Some(expanded) = expanded {
+                stash_expansion(append, expanded);
+            }
             outcome.validate_manifest_binding()?;
         }
         outcome.to_payload()?;
@@ -577,12 +612,15 @@ impl PlacementOutcome {
     ) -> Result<Option<usize>, ObjectError> {
         let manifest = self.manifest.as_ref().unwrap();
         let after = manifest.after.as_ref().unwrap();
-        if service.object_manifests.get(&after.object_id()) != manifest.before.as_ref() {
+        // An expanded compact append's `before` is the stored manifest itself; the stored
+        // extents are not compared with their own copy (`check_validated_outcome_with_admission`
+        // compares the header, and the digest was matched when the append was expanded).
+        if !manifest_validated && service.object_manifests.get(&after.object_id()) != manifest.before.as_ref() {
             return Err(invalid("manifest publication prior state mismatch"));
         }
         let allocation_id = self.staging.as_ref().and_then(|change| change.before.as_ref()).map(|record| record.allocation_id);
         let body_bytes = if manifest_validated {
-            service.object_manifests.check_validated_outcome_with_admission(manifest, allocation_id, self.copy_source.as_ref())?
+            service.object_manifests.check_validated_outcome_with_admission(manifest, allocation_id, self.copy_source.as_ref(), true)?
         } else {
             service.object_manifests.check_outcome_with_admission(manifest, allocation_id, self.copy_source.as_ref())?
         };
@@ -771,7 +809,16 @@ impl PlacementOutcome {
                 .ok_or_else(|| invalid("compact append prior manifest missing"))?;
             let mut expanded = self.clone();
             expanded.version = 4;
-            expanded.manifest = Some(append.expand_stored(before, stored)?);
+            expanded.manifest = Some(match take_expansion(append) {
+                // Prepared on this thread against a manifest with the same digest: the
+                // expansion is the same, and only the prior must be confirmed.
+                Some(prepared) => {
+                    append.validate()?;
+                    append.check_prior(before, stored)?;
+                    prepared
+                }
+                None => append.expand_stored(before, stored)?,
+            });
             expanded.manifest_append = None;
             // `reserved` stays: the expanded publication carries the reservation it creates.
             return expanded.apply_with(service, true);
@@ -873,7 +920,7 @@ impl PlacementOutcome {
         }
         if let Some(manifest) = &self.manifest {
             // Catalog capacity and expected-state checks happen before any other writes.
-            if let Some(bytes) = publication_bytes { service.object_manifests.commit_checked_manifest(manifest, bytes); }
+            if let Some(bytes) = publication_bytes { service.object_manifests.commit_checked_manifest(manifest, bytes, manifest_validated); }
         }
         if let (Some(reserved), Some(_)) = (&self.reserved, publication_bytes) {
             service.object_manifests.restore_staging(reserved.allocation_id, Some(reserved.clone()));
