@@ -53,11 +53,12 @@ impl RequestHandler for ObjectService {
     }
 }
 
+use std::collections::HashMap;
 use std::io::BufReader;
-use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::MatrixObjectStore;
 
@@ -66,21 +67,20 @@ use crate::MatrixObjectStore;
 pub struct ServerOptions {
     /// Largest request body accepted, which is the largest object this door can write.
     pub max_body_bytes: usize,
-    /// Threads accepting connections.
-    ///
-    /// More than a couple buys little: the store is behind one lock (see [`ObjectService`]), so
-    /// extra threads wait on it rather than working. What they do buy is that a slow client
-    /// reading its response cannot stall every other request.
+    /// Threads blocked in `accept`. Each accepted connection is served on a thread of its own, so
+    /// this bounds how fast connections are taken, not how many are served at once: that is
+    /// `max_connections`.
     pub worker_threads: usize,
-    /// How long a connection may go without sending, before it is dropped.
-    ///
-    /// Set, not optional, because a fixed pool of accept threads and no read timeout is a
-    /// denial-of-service by one idle connection per thread.
+    /// How long a connection may go without sending, before it is dropped. It is what frees the
+    /// slot of a client that vanished without closing.
     pub read_timeout: Duration,
     /// How long a write to a client may block.
     pub write_timeout: Duration,
-    /// How long an accept loop sleeps between polls when idle.
+    /// Ignored: accept now blocks, so there is no idle poll. Kept so existing option literals
+    /// still compile.
     pub accept_poll_interval: Duration,
+    /// Most connections open at once. A connection past it is answered `503` and closed.
+    pub max_connections: usize,
 }
 
 impl Default for ServerOptions {
@@ -91,6 +91,7 @@ impl Default for ServerOptions {
             read_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
             accept_poll_interval: Duration::from_millis(20),
+            max_connections: 1024,
         }
     }
 }
@@ -104,30 +105,84 @@ pub struct ObjectHttpServer {
     handler: Option<Arc<dyn RequestHandler>>,
     bucket_hint: Option<String>,
     options: ServerOptions,
-    stop: Arc<AtomicBool>,
+}
+
+/// One open connection, as the shutdown path sees it.
+struct Conn {
+    stream: TcpStream,
+    /// True from the moment a request has been read until its response is written.
+    busy: Arc<AtomicBool>,
+}
+
+/// What the accept threads and the connection threads share.
+struct Shared {
+    stop: AtomicBool,
+    active: AtomicUsize,
+    next_id: AtomicU64,
+    conns: Mutex<HashMap<u64, Conn>>,
 }
 
 /// A running server: the address it is on, and the flag that stops it.
 pub struct ServerHandle {
     /// The address accepted on, resolved -- so a caller that bound port 0 can learn the port.
     pub local_addr: SocketAddr,
-    stop: Arc<AtomicBool>,
+    shared: Arc<Shared>,
     threads: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl ServerHandle {
-    /// Ask the accept loops to stop, and wait for them.
-    ///
-    /// The loops notice between polls, so this returns within roughly one
-    /// `accept_poll_interval` plus however long an in-flight request takes.
+    /// Stop accepting, close idle connections, and wait up to a minute for requests in flight.
     pub fn shutdown(self) {
-        self.stop.store(true, Ordering::SeqCst);
+        self.shutdown_within(Duration::from_secs(60));
+    }
+
+    /// Stop accepting and close every connection that is between requests at once; wait up to
+    /// `timeout` for the ones answering a request, then close those too.
+    ///
+    /// Returns when the accept threads have ended, so the port is free.
+    pub fn shutdown_within(self, timeout: Duration) {
+        self.shared.stop.store(true, Ordering::SeqCst);
+        // A thread blocked in `accept` notices the flag only when a connection arrives, so one
+        // is made for each: a woken thread sees the flag and ends, and cannot take a second.
+        for _ in &self.threads {
+            let _ = TcpStream::connect_timeout(&wake_addr(self.local_addr), Duration::from_secs(1));
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            let force = Instant::now() >= deadline;
+            {
+                let conns = self.shared.conns.lock().unwrap_or_else(|e| e.into_inner());
+                for conn in conns.values() {
+                    if force || !conn.busy.load(Ordering::SeqCst) {
+                        let _ = conn.stream.shutdown(Shutdown::Both);
+                    }
+                }
+            }
+            if self.shared.active.load(Ordering::SeqCst) == 0 || force {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
         for thread in self.threads {
             // A panicking worker has already been reported by the thread itself; joining is to
             // wait for the port to be free, so a failed join is not worth propagating here.
             let _ = thread.join();
         }
     }
+}
+
+/// The address to connect to in order to wake an accept thread: a wildcard bind is reached
+/// through loopback.
+fn wake_addr(bound: SocketAddr) -> SocketAddr {
+    let mut addr = bound;
+    if addr.ip().is_unspecified() {
+        addr.set_ip(if addr.is_ipv4() {
+            std::net::Ipv4Addr::LOCALHOST.into()
+        } else {
+            std::net::Ipv6Addr::LOCALHOST.into()
+        });
+    }
+    addr
 }
 
 impl ObjectHttpServer {
@@ -138,19 +193,15 @@ impl ObjectHttpServer {
         options: ServerOptions,
     ) -> std::io::Result<Self> {
         let listener = TcpListener::bind(addr)?;
-        // NONBLOCKING, SO THE LOOP CAN BE STOPPED. `accept` has no timeout in the standard
-        // library, so a blocking listener gives a server that can only be ended by ending the
-        // process -- which makes it untestable in-process and unusable as a component. The cost
-        // is a poll every `accept_poll_interval` while idle, which is the right trade for a door
-        // whose work is bounded by a single store lock anyway.
-        listener.set_nonblocking(true)?;
+        // BLOCKING, AND STOPPED BY A CONNECTION TO ITSELF. A nonblocking listener polled on a
+        // timer cost every idle gateway a wake-up per thread every few milliseconds and added
+        // the poll interval to the setup of each new connection.
         Ok(Self {
             listener,
             store: Some(store),
             handler: None,
             bucket_hint: None,
             options,
-            stop: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -161,14 +212,12 @@ impl ObjectHttpServer {
         options: ServerOptions,
     ) -> std::io::Result<Self> {
         let listener = TcpListener::bind(addr)?;
-        listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
             store: None,
             handler: Some(handler),
             bucket_hint: None,
             options,
-            stop: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -215,20 +264,26 @@ impl ObjectHttpServer {
             }
             (None, None) => unreachable!("a server is bound with a store or a handler"),
         };
+        let shared = Arc::new(Shared {
+            stop: AtomicBool::new(false),
+            active: AtomicUsize::new(0),
+            next_id: AtomicU64::new(0),
+            conns: Mutex::new(HashMap::new()),
+        });
         let mut threads = Vec::with_capacity(self.options.worker_threads.max(1));
         for index in 0..self.options.worker_threads.max(1) {
             let listener = self.listener.try_clone()?;
             let service = Arc::clone(&service);
             let options = self.options.clone();
-            let stop = Arc::clone(&self.stop);
+            let shared = Arc::clone(&shared);
             let thread = std::thread::Builder::new()
                 .name(format!("object-http-{index}"))
-                .spawn(move || accept_loop(listener, service, options, stop))?;
+                .spawn(move || accept_loop(listener, service, options, shared))?;
             threads.push(thread);
         }
         Ok(ServerHandle {
             local_addr,
-            stop: self.stop,
+            shared,
             threads,
         })
     }
@@ -238,36 +293,77 @@ fn accept_loop(
     listener: TcpListener,
     service: Arc<dyn RequestHandler>,
     options: ServerOptions,
-    stop: Arc<AtomicBool>,
+    shared: Arc<Shared>,
 ) {
-    while !stop.load(Ordering::SeqCst) {
-        match listener.accept() {
-            Ok((stream, _peer)) => {
-                // BACK TO BLOCKING FOR THE CONNECTION. The listener is nonblocking so the loop can
-                // be stopped; a nonblocking *stream* would make every read return `WouldBlock` and
-                // turn the request reader into a spin. The timeouts below are what bound a
-                // connection instead.
-                if stream.set_nonblocking(false).is_err() {
-                    continue;
-                }
-                let _ = stream.set_read_timeout(Some(options.read_timeout));
-                let _ = stream.set_write_timeout(Some(options.write_timeout));
-                serve_connection(stream, &*service, &options);
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(options.accept_poll_interval);
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+    loop {
+        let accepted = listener.accept();
+        if shared.stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let stream = match accepted {
+            Ok((stream, _peer)) => stream,
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => {
-                // A listener that has stopped accepting will keep doing so; sleeping rather than
-                // spinning keeps a broken socket from burning a core.
-                std::thread::sleep(options.accept_poll_interval);
+                // A listener that has failed will keep failing (or a descriptor limit is hit);
+                // sleeping rather than spinning keeps it from burning a core.
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
             }
+        };
+        // THE BOUND IS TAKEN BEFORE THE THREAD IS SPAWNED, so a flood of connections cannot spawn
+        // past it while the count catches up.
+        if shared.active.fetch_add(1, Ordering::SeqCst) >= options.max_connections {
+            shared.active.fetch_sub(1, Ordering::SeqCst);
+            refuse(stream);
+            continue;
+        }
+        let _ = stream.set_read_timeout(Some(options.read_timeout));
+        let _ = stream.set_write_timeout(Some(options.write_timeout));
+        let _ = stream.set_nodelay(true);
+        let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
+        let busy = Arc::new(AtomicBool::new(false));
+        if let Ok(clone) = stream.try_clone() {
+            shared.conns.lock().unwrap_or_else(|e| e.into_inner()).insert(
+                id,
+                Conn {
+                    stream: clone,
+                    busy: Arc::clone(&busy),
+                },
+            );
+        }
+        let service = Arc::clone(&service);
+        let conn_options = options.clone();
+        let conn_shared = Arc::clone(&shared);
+        let spawned = std::thread::Builder::new()
+            .name("object-http-conn".to_string())
+            .spawn(move || {
+                serve_connection(stream, &*service, &conn_options, &busy, &conn_shared.stop);
+                conn_shared.conns.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+                conn_shared.active.fetch_sub(1, Ordering::SeqCst);
+            });
+        if spawned.is_err() {
+            shared.conns.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+            shared.active.fetch_sub(1, Ordering::SeqCst);
         }
     }
 }
 
-fn serve_connection(stream: TcpStream, service: &dyn RequestHandler, options: &ServerOptions) {
+/// Tell a connection over the bound so, and close it. Bounded by a short write timeout so a
+/// client that does not read cannot hold the accept thread.
+fn refuse(mut stream: TcpStream) {
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+    let response = Response::text(503, "too many connections
+").with_header("retry-after", "1");
+    let _ = http::write_response(&mut stream, &response, false, false);
+}
+
+fn serve_connection(
+    stream: TcpStream,
+    service: &dyn RequestHandler,
+    options: &ServerOptions,
+    busy: &AtomicBool,
+    stop: &AtomicBool,
+) {
     let Ok(write_half) = stream.try_clone() else {
         return;
     };
@@ -277,13 +373,13 @@ fn serve_connection(stream: TcpStream, service: &dyn RequestHandler, options: &S
         match http::read_request(&mut reader, options.max_body_bytes) {
             Ok(None) => return,
             Ok(Some(request)) => {
+                busy.store(true, Ordering::SeqCst);
                 let head_only = request.method == "HEAD";
-                let keep_alive = request.keep_alive;
+                let keep_alive = request.keep_alive && !stop.load(Ordering::SeqCst);
                 let response = service.handle(&request);
-                if http::write_response(&mut writer, &response, keep_alive, head_only).is_err() {
-                    return;
-                }
-                if !keep_alive {
+                let wrote = http::write_response(&mut writer, &response, keep_alive, head_only);
+                busy.store(false, Ordering::SeqCst);
+                if wrote.is_err() || !keep_alive {
                     return;
                 }
             }
@@ -369,6 +465,168 @@ mod tests {
 
     fn body_of(response: &str) -> &str {
         response.split_once("\r\n\r\n").map_or("", |(_, body)| body)
+    }
+
+    /// A server with `threads` accept threads and room for `max_connections` open connections.
+    fn serve_sized(threads: usize, max_connections: usize) -> (ServerHandle, String) {
+        let server = ObjectHttpServer::bind(
+            "127.0.0.1:0",
+            store_with_bucket("b"),
+            ServerOptions {
+                worker_threads: threads,
+                max_connections,
+                read_timeout: Duration::from_secs(30),
+                write_timeout: Duration::from_secs(5),
+                accept_poll_interval: Duration::from_millis(2),
+                ..ServerOptions::default()
+            },
+        )
+        .expect("binding loopback on an ephemeral port");
+        let handle = server.spawn().expect("the accept threads start");
+        let addr = handle.local_addr.to_string();
+        (handle, addr)
+    }
+
+    /// One keep-alive request on an open connection, and the status of its answer (0 when nothing
+    /// arrived within `wait`).
+    fn keep_alive_status(stream: &mut TcpStream, wait: Duration) -> u16 {
+        stream.set_read_timeout(Some(wait)).expect("setting a read timeout");
+        let _ = stream.write_all(b"GET /healthz HTTP/1.1\r\nhost: localhost\r\n\r\n");
+        let mut seen = Vec::new();
+        let mut chunk = [0u8; 512];
+        while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+            match stream.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => seen.extend_from_slice(&chunk[..n]),
+            }
+        }
+        status_of(&String::from_utf8_lossy(&seen))
+    }
+
+    #[test]
+    fn an_idle_keep_alive_connection_does_not_hold_the_only_accept_thread() {
+        // ONE ACCEPT THREAD USED TO SERVE ONE CONNECTION AT A TIME, FOR AS LONG AS IT STAYED OPEN.
+        // A client that answered its request and kept the connection (every pooled client does)
+        // held the thread until the read timeout, and every connection after it waited in the
+        // listen queue: with N threads, connection N+1 was never served while N were open. Under
+        // an open-loop load of eight connections on four threads the slowest requests took 7.8 s.
+        let (handle, addr) = serve_sized(1, 64);
+        let mut first = TcpStream::connect(&addr).expect("first connection");
+        assert_eq!(keep_alive_status(&mut first, Duration::from_secs(5)), 200);
+        // `first` stays open and idle; a second connection must still be served promptly.
+        let mut second = TcpStream::connect(&addr).expect("second connection");
+        assert_eq!(
+            keep_alive_status(&mut second, Duration::from_secs(5)),
+            200,
+            "a second connection was not served while the first sat idle"
+        );
+        // and both keep working
+        assert_eq!(keep_alive_status(&mut first, Duration::from_secs(5)), 200);
+        drop((first, second));
+        handle.shutdown();
+    }
+
+    #[test]
+    fn connections_past_the_bound_are_refused_with_503_and_a_slot_frees_when_one_closes() {
+        let (handle, addr) = serve_sized(1, 2);
+        let mut a = TcpStream::connect(&addr).expect("a");
+        let mut b = TcpStream::connect(&addr).expect("b");
+        assert_eq!(keep_alive_status(&mut a, Duration::from_secs(5)), 200);
+        assert_eq!(keep_alive_status(&mut b, Duration::from_secs(5)), 200);
+        let mut c = TcpStream::connect(&addr).expect("c");
+        assert_eq!(
+            keep_alive_status(&mut c, Duration::from_secs(5)),
+            503,
+            "the third connection is over the bound and must be told so"
+        );
+        drop(a);
+        // the slot is released when the connection thread notices the close
+        let mut served = 0;
+        for _ in 0..100 {
+            let mut d = TcpStream::connect(&addr).expect("d");
+            served = keep_alive_status(&mut d, Duration::from_secs(5));
+            if served == 200 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(served, 200, "a closed connection must give its slot back");
+        drop(b);
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_connection_that_goes_silent_gives_its_slot_back_at_the_read_timeout() {
+        let server = ObjectHttpServer::bind(
+            "127.0.0.1:0",
+            store_with_bucket("b"),
+            ServerOptions {
+                worker_threads: 1,
+                max_connections: 1,
+                read_timeout: Duration::from_millis(300),
+                ..ServerOptions::default()
+            },
+        )
+        .expect("binding");
+        let handle = server.spawn().expect("spawn");
+        let addr = handle.local_addr.to_string();
+        let mut silent = TcpStream::connect(&addr).expect("silent");
+        assert_eq!(keep_alive_status(&mut silent, Duration::from_secs(5)), 200);
+        let mut other = TcpStream::connect(&addr).expect("other");
+        assert_eq!(keep_alive_status(&mut other, Duration::from_secs(5)), 503);
+        std::thread::sleep(Duration::from_millis(800));
+        let mut after = TcpStream::connect(&addr).expect("after");
+        assert_eq!(
+            keep_alive_status(&mut after, Duration::from_secs(5)),
+            200,
+            "the silent connection's slot was not released by the read timeout"
+        );
+        drop((silent, other, after));
+        handle.shutdown();
+    }
+
+    #[test]
+    fn eight_keep_alive_clients_on_four_accept_threads_all_make_progress() {
+        let (handle, addr) = serve_sized(4, 64);
+        let mut clients: Vec<TcpStream> =
+            (0..8).map(|_| TcpStream::connect(&addr).expect("connect")).collect();
+        for round in 0..3 {
+            for (i, c) in clients.iter_mut().enumerate() {
+                assert_eq!(
+                    keep_alive_status(c, Duration::from_secs(5)),
+                    200,
+                    "client {i} starved in round {round}"
+                );
+            }
+        }
+        drop(clients);
+        handle.shutdown();
+    }
+
+    #[test]
+    fn shutdown_within_closes_idle_connections_and_returns_inside_the_bound() {
+        let (handle, addr) = serve_sized(2, 64);
+        let mut idle = TcpStream::connect(&addr).expect("idle");
+        assert_eq!(keep_alive_status(&mut idle, Duration::from_secs(5)), 200);
+        let started = Instant::now();
+        handle.shutdown_within(Duration::from_secs(2));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        // the idle connection was closed by the server
+        assert_eq!(keep_alive_status(&mut idle, Duration::from_millis(500)), 0);
+    }
+
+    #[test]
+    fn shutdown_returns_promptly_with_idle_connections_open() {
+        let (handle, addr) = serve_sized(2, 64);
+        let mut idle = TcpStream::connect(&addr).expect("idle connection");
+        assert_eq!(keep_alive_status(&mut idle, Duration::from_secs(5)), 200);
+        let started = std::time::Instant::now();
+        handle.shutdown();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "shutdown waited {:?} for an idle connection (the read timeout is 30 s)",
+            started.elapsed()
+        );
     }
 
     #[test]
