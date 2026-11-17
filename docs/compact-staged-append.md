@@ -94,3 +94,11 @@ The gateway uses it with `MATRIXOBJECT_CLUSTER_RESERVE_NEXT=1` (requires compact
 an append that finds a usable reservation for the manifest it extends skips the allocation
 commit. Every metadata voter, recovery binary and journal reader must support the version 13
 outcome before the first use; downgrading afterwards is unsupported.
+
+### Reservation limit
+
+Each object that keeps a reservation holds one slot of the metadata plane's table of 128 active
+staged allocations until the lease ends. A publication therefore reserves the next allocation only
+while the table holds at most 64 (`MAX_STAGED_FOR_RESERVATION`). Above that the append is
+published without a reservation, the reply carries no allocation, and the next append to the object
+allocates as it did before reservations existed. A reservation is never taken from another object.

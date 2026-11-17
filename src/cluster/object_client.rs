@@ -1169,7 +1169,7 @@ impl RemoteMetaClient {
                 let (result, unadmitted, outcome) = self.publish_compact_append_reserving(
                     outcome, allocation_id, options.update_time_ms, pages, ttl_ms);
                 let result = result.map(|(manifest, reserved)| {
-                    self.reservation = Some(reserved);
+                    self.reservation = reserved;
                     manifest
                 });
                 (result, unadmitted, outcome)

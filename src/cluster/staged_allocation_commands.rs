@@ -125,8 +125,13 @@ pub(super) fn prepare_at(service: &MatrixMetaService, groups: &ChunkGroupCatalog
                 reply.committed_allocation_id = command.allocation_id;
                 reply.manifest_sha256 = append.after_sha256.clone();
                 if command.action == 12 {
+                    reply.version = 5;
+                }
+                if command.action == 12
+                    && service.object_manifests.staged_count() <= crate::staged_allocation::MAX_STAGED_FOR_RESERVATION {
                     // Publish and reserve in one durable commit: the allocation for the next
-                    // append is created by the record that publishes this one.
+                    // append is created by the record that publishes this one. With the table
+                    // past the limit the append is published without a reservation.
                     let expires_at_ms = now.checked_add(command.ttl_ms).filter(|_| now != 0).ok_or_else(|| {
                         ObjectError::PreconditionFailed("metadata lease clock is zero or overflowed".into())
                     })?;
@@ -143,7 +148,6 @@ pub(super) fn prepare_at(service: &MatrixMetaService, groups: &ChunkGroupCatalog
                         request_ttl_ms: 0,
                     };
                     outcome = outcome.with_reservation(reserved.clone())?;
-                    reply.version = 5;
                     reply.allocation = Some(reserved);
                 }
             } else {

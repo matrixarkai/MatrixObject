@@ -1871,7 +1871,7 @@ impl RemoteMetaClient {
     pub(super) fn publish_compact_append_reserving(&mut self,
         outcome: crate::object_manifest::ManifestOutcome, allocation_id: u64, update_time_ms: u64,
         next_pages: u32, next_ttl_ms: u64)
-        -> (Result<(crate::object_manifest::ObjectManifest, crate::staged_allocation::StagedAllocation), ObjectError>, bool,
+        -> (Result<(crate::object_manifest::ObjectManifest, Option<crate::staged_allocation::StagedAllocation>), ObjectError>, bool,
             crate::object_manifest::ManifestOutcome) {
         let append = match self.decide_compact_append(&outcome) {
             Ok(value) => value, Err(error) => return (Err(error), true, outcome),
@@ -1887,10 +1887,8 @@ impl RemoteMetaClient {
         let result = reply.into_result().and_then(|reply| match reply {
             MetaReply::StagedAllocation(value) if value.version == 5
                 && value.committed_allocation_id == allocation_id && value.manifest_sha256 == digest => {
-                match value.allocation {
-                    Some(reserved) => Ok((outcome.after.as_ref().unwrap().clone(), reserved)),
-                    None => Err(ObjectError::Corruption("compact append acknowledgement lacks its reservation".into())),
-                }
+                // No allocation means the append is published and the table had no room.
+                Ok((outcome.after.as_ref().unwrap().clone(), value.allocation))
             }
             _ => Err(ObjectError::Corruption("unexpected compact append acknowledgement".into())),
         });

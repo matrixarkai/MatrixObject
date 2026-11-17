@@ -581,6 +581,7 @@ impl ManifestCatalog {
         let ids = rows.by_ref().take(limit).map(|(id, _)| *id).collect();
         (ids, rows.next().is_some())
     }
+    pub(crate) fn staged_count(&self) -> usize { self.staged.len() }
     pub(crate) fn max_staged_id(&self) -> u64 { self.staged.last_key_value().map_or(0, |(id, _)| *id) }
     pub(crate) fn check_staging(&self, change: &crate::staged_allocation::StagedAllocationChange) -> Result<(), ObjectError> {
         let record = match (&change.before, &change.after) {
