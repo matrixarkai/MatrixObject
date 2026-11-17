@@ -623,6 +623,24 @@ jobs:
           cargo test --locked --all-features --test replica_recovery_policy -- --test-threads=1 | tee /tmp/replica-recovery-policy.log
           grep -q '^test result: ok. 1 passed; 0 failed;' /tmp/replica-recovery-policy.log
 
+      - name: durable payload extents preserve integrity and killed-writer recovery
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib durable_payload -- --test-threads=1 | tee /tmp/payload-unit.log
+          grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/payload-unit.log
+          for test_name in durable_payload_binary_header_and_descriptor_bytes_are_stable durable_payload_sync_and_write_failures_return_no_descriptors_and_fence durable_payload_verified_read_does_not_wait_for_writer_sync
+          do
+            grep -Fq "${test_name} ... ok" /tmp/payload-unit.log
+          done
+          cargo test --locked --all-features --test durable_payload_recovery -- --test-threads=1 | tee /tmp/payload-process.log
+          grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/payload-process.log
+          for test_name in synchronized_payload_and_binary_descriptor_survive_process_kill partial_unpublished_tail_requires_validated_roots_after_process_kill complete_unpublished_tail_is_reclaimed_without_overwriting_published_bytes
+          do
+            grep -Fq "test ${test_name} ... ok" /tmp/payload-process.log
+          done
+          cargo test --locked --all-features --test durable_payload_allocations -- --test-threads=1 --nocapture | tee /tmp/payload-allocations.log
+          grep -q '^test result: ok. 1 passed; 0 failed;' /tmp/payload-allocations.log
+
       - name: shared Star journal sync preserves durability and bounded groups
         run: |
           set -o pipefail

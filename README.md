@@ -1101,6 +1101,8 @@ On pushes to `main` and on every pull request, four jobs:
   verifies append copies and recovery while a foreground checkpoint runs.
   [Shared journal sync](docs/star-journal-synchronization.md) guards also cover
   conditional ordering, durable completion, failure fencing and group bounds.
+  [Durable payload extents](docs/durable-payload-extents.md) add binary-format,
+  integrity, killed-writer recovery and bounded allocation guards.
   The guards over
   [replica processes](#replicas-in-their-own-processes) check their output for
   `running 1 test` as well: they name a test of an integration target rather than a

@@ -9,6 +9,8 @@ pub mod read_session_outcome;
 pub mod staged_allocation;
 pub mod manifest_copy;
 pub mod outcome;
+#[cfg(any(feature = "replica-server", feature = "meta-server"))]
+pub mod durable_payload;
 pub mod chunk_namespace_fence;
 pub mod placement_outcome;
 
