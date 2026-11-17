@@ -192,7 +192,6 @@ impl ObjectManifest {
     /// `prefix`, which the caller has already validated. Only what the append added is checked
     /// in full: the header, the new extents, their continuity with the prefix, and that none
     /// of their pages is already named by the prefix. Equivalent to `validate` for such a pair.
-    #[cfg(test)]
     pub(crate) fn validate_extension(&self, prefix: &ObjectManifest) -> Result<(), ObjectError> {
         crate::validate_bucket(&self.bucket)?;
         crate::validate_key(&self.key)?;
@@ -276,6 +275,11 @@ impl ObjectManifest {
     /// of a valid extent list), so only the header and the covered length are left to check.
     /// Equivalent to `validate` for such a pair.
     pub(crate) fn validate_as_prefix_of(&self, after: &ObjectManifest) -> Result<(), ObjectError> {
+        self.validate_as_prefix_of_sized(after, true)
+    }
+    /// `validate_as_prefix_of`; with `check_size` false the encoded size is not measured, for a
+    /// caller that has bounded the size of `after` (which holds every extent of `self`).
+    fn validate_as_prefix_of_sized(&self, after: &ObjectManifest, check_size: bool) -> Result<(), ObjectError> {
         crate::validate_bucket(&self.bucket)?;
         crate::validate_key(&self.key)?;
         let kept = self.extents.len();
@@ -299,7 +303,7 @@ impl ObjectManifest {
         if covered != self.length {
             return Err(invalid("object extents do not cover its length"));
         }
-        if self.encoded_len() > MAX_MANIFEST {
+        if check_size && self.encoded_len() > MAX_MANIFEST {
             return Err(invalid(
                 "invalid object manifest version, generation or size",
             ));
@@ -337,6 +341,36 @@ impl ManifestOutcome {
             after: Some(after),
         };
         value.validate()?;
+        Ok(value)
+    }
+    /// The decision of an append for a compact publication. Only what the append adds is
+    /// validated in full (`validate_extension`); the prior manifest is bound by its digest, which
+    /// the metaserver checks against the manifest it holds before it applies the append, so a
+    /// prior that was not valid is refused there. Cost: the new extents, plus the cheap
+    /// comparisons of the prefix, instead of a pass of hashing over every extent.
+    pub(crate) fn decide_append(before: ObjectManifest, after: ObjectManifest) -> Result<Self, ObjectError> {
+        let value = Self {
+            format_version: 1,
+            before: Some(before),
+            after: Some(after),
+        };
+        let (before, after) = (value.before.as_ref().unwrap(), value.after.as_ref().unwrap());
+        if before.format_version != after.format_version || !after.extents.starts_with(&before.extents) {
+            return Err(invalid("append changes immutable prefix"));
+        }
+        // `validate_extension` bounds the encoded size of `after`, which holds every extent of `before`
+        after.validate_extension(before)?;
+        before.validate_as_prefix_of_sized(after, false)?;
+        if before.object_id() != after.object_id() {
+            return Err(invalid("manifest outcome changes object identity"));
+        }
+        let generation = before
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| invalid("manifest generation exhausted"))?;
+        if after.generation != generation {
+            return Err(invalid("manifest outcome generation is not consecutive"));
+        }
         Ok(value)
     }
     pub(crate) fn validate(&self) -> Result<(), ObjectError> {
@@ -1498,6 +1532,78 @@ mod tests {
                 }
             }
         }
+    }
+    /// `decide_append` decides what `decide` decides for an append onto a valid manifest, and
+    /// refuses what is not an append: only the validation of a prior that was never valid is
+    /// left to the metaserver's digest check.
+    #[test]
+    fn deciding_an_append_agrees_with_deciding_it_in_full() {
+        for count in [0usize, 1, 17, 300, 4000] {
+            let before = sized_manifest(count);
+            assert!(before.validate().is_ok());
+            for added in [1usize, 2, 17, 60] {
+                if count + added > 4096 {
+                    continue;
+                }
+                let mut after = sized_manifest(count + added);
+                after.generation = 2;
+                for extent in &mut after.extents[count..] {
+                    extent.chunk_id += 10_000;
+                }
+                let damage: Vec<(&str, Box<dyn Fn(&mut ObjectManifest)>)> = vec![
+                    ("none", Box::new(|_| {})),
+                    ("offset", Box::new(move |m| m.extents[count].object_offset += 1)),
+                    ("zero length", Box::new(move |m| m.extents[count].length = 0)),
+                    ("digest length", Box::new(move |m| { m.extents[count].data_sha256.pop(); })),
+                    ("sequence", Box::new(move |m| m.extents[count].write_sequence = 0)),
+                    ("total length", Box::new(|m| m.length += 1)),
+                    ("generation", Box::new(|m| m.generation = 5)),
+                    ("same generation", Box::new(|m| m.generation = 1)),
+                    ("group name", Box::new(move |m| m.extents[count].group = "bad group".into())),
+                    ("other bucket", Box::new(|m| m.bucket = "other".into())),
+                    ("other key", Box::new(|m| m.key = "other".into())),
+                    ("duplicate inside the append", Box::new(move |m| {
+                        let first = m.extents[count].clone();
+                        let last = m.extents.len() - 1;
+                        m.extents[last].chunk_id = first.chunk_id;
+                        m.extents[last].page_index = first.page_index;
+                    })),
+                    ("duplicate of a prefix page", Box::new(move |m| {
+                        if count > 0 {
+                            m.extents[count].chunk_id = m.extents[0].chunk_id;
+                        } else {
+                            m.extents[count].length = 0;
+                        }
+                    })),
+                ];
+                for (name, change) in damage {
+                    if added == 1 && name == "duplicate inside the append" {
+                        continue;
+                    }
+                    let mut wrong = after.clone();
+                    change(&mut wrong);
+                    let full = ManifestOutcome::decide(Some(before.clone()), wrong.clone());
+                    let append = ManifestOutcome::decide_append(before.clone(), wrong);
+                    assert_eq!(full.is_ok(), append.is_ok(), "{name} ({count}+{added})");
+                    if let (Ok(full), Ok(append)) = (full, append) {
+                        assert_eq!(full, append, "{name} ({count}+{added})");
+                    }
+                }
+            }
+        }
+        // what is not an append is refused: the prior's extents are not the first of the result
+        let before = sized_manifest(20);
+        let mut replaced = sized_manifest(21);
+        replaced.generation = 2;
+        replaced.extents[3].data_sha256[0] ^= 1;
+        assert!(ManifestOutcome::decide_append(before.clone(), replaced).is_err());
+        let mut other_format = sized_manifest(21);
+        other_format.generation = 2;
+        other_format.format_version = 1;
+        for extent in &mut other_format.extents {
+            extent.data_sha256.clear();
+        }
+        assert!(ManifestOutcome::decide_append(before, other_format).is_err());
     }
     #[test]
     fn manifest_listing_is_bounded_ordered_and_bucket_scoped() {

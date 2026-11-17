@@ -714,6 +714,139 @@ fn append_cpu_cost_through_the_leaders_draft() {
     );
 }
 
+/// What the writing client does with the manifest for one compact append, apart from any I/O: it
+/// builds the published manifest from the prior one, decides the outcome, extends the remembered
+/// chain and makes the bounded `ManifestAppend`. Meant for a profiler, like the leader-path
+/// measurement above: `BENCH_PREFILL` extents, `BENCH_APPENDS` appends.
+#[test]
+#[ignore = "profiling aid: run under callgrind"]
+fn client_append_cpu_cost_at_extents() {
+    use crate::object_manifest::{ManifestOutcome, ObjectExtent, ObjectManifest, StoredDigest};
+    let prefill: usize = std::env::var("BENCH_PREFILL").ok().and_then(|v| v.parse().ok()).unwrap_or(250);
+    let appends: usize = std::env::var("BENCH_APPENDS").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
+    let (_service, _groups, mut manifest) = prefilled_log(prefill);
+    let mut prior = StoredDigest::of(&manifest);
+    let step = |manifest: &mut ObjectManifest, prior: &mut StoredDigest| {
+        let expected = std::mem::take(manifest);
+        let new = ObjectManifest {
+            format_version: 2,
+            bucket: expected.bucket.clone(),
+            key: expected.key.clone(),
+            generation: expected.generation + 1,
+            length: 1,
+            extents: vec![ObjectExtent {
+                group: "group-0".into(),
+                volume_id: 7,
+                chunk_id: 1_000_000 + expected.generation,
+                object_offset: 0,
+                length: 1,
+                write_sequence: 1,
+                data_sha256: vec![7; 32],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        // the published manifest, as `write_object_inner` builds it for an append
+        let base = expected.length;
+        let mut combined = new.clone();
+        combined.length += base;
+        for extent in &mut combined.extents {
+            extent.object_offset += base;
+        }
+        let mut extents = expected.extents[..expected.extents.len()].to_vec();
+        extents.extend(combined.extents);
+        combined.extents = extents;
+        let published = combined;
+        let outcome = ManifestOutcome::decide_append(expected, published.clone()).unwrap();
+        // `decide_compact_append`
+        let before = outcome.before.as_ref().unwrap();
+        let after = outcome.after.as_ref().unwrap();
+        assert!(after.extents.starts_with(&before.extents));
+        let chain = prior.chain.extended(&after.extents[before.extents.len()..]);
+        let result = StoredDigest { digest: chain.digest(after), chain };
+        crate::manifest_append::ManifestAppend::decide_with_digests_checked(
+            &outcome,
+            prior.digest.clone(),
+            result.digest.clone(),
+            true,
+        )
+        .unwrap();
+        *prior = result;
+        *manifest = published;
+    };
+    step(&mut manifest, &mut prior);
+    let started = std::time::Instant::now();
+    for _ in 0..appends {
+        step(&mut manifest, &mut prior);
+    }
+    println!(
+        "extents {:>5}: {:>8.1} microseconds per append (client side)",
+        prefill,
+        started.elapsed().as_secs_f64() * 1e6 / appends as f64
+    );
+}
+
+/// The work of reading a range of an object with `BENCH_PREFILL` extents, without I/O, in the
+/// phases of a ranged read. `BENCH_PHASE` selects one: `server_read` (the metaserver reads the
+/// manifest and encodes its reply), `client_decode` (the client decodes the reply),
+/// `client_prepare` (the client validates the manifest, digests it for the read session, validates
+/// it again and picks the extents of a one-page range), `open_session` (the metaserver prepares
+/// the read session for the digest). `BENCH_APPENDS` repetitions.
+#[test]
+#[ignore = "profiling aid: run under callgrind"]
+fn read_cpu_cost_at_extents() {
+    use prost::Message;
+    let prefill: usize = std::env::var("BENCH_PREFILL").ok().and_then(|v| v.parse().ok()).unwrap_or(250);
+    let reps: usize = std::env::var("BENCH_APPENDS").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
+    let phase = std::env::var("BENCH_PHASE").unwrap_or_else(|_| "server_read".into());
+    let (service, _groups, manifest) = prefilled_log(prefill);
+    let id = crate::ObjectId::new("bucket", "append");
+    let bytes = manifest.encode_to_vec();
+    let digest = crate::read_session_outcome::manifest_sha256(&manifest).unwrap();
+    let range_start = manifest.length / 2;
+    let one = |phase: &str| match phase {
+        "server_read" => {
+            let value = service.object_manifests.get_manifest(&id).unwrap();
+            let reply = super::super::meta_message::encode_meta_reply(&super::super::meta_message::MetaReply::Manifest(value));
+            std::hint::black_box(reply.len());
+        }
+        "client_decode" => {
+            let decoded = crate::object_manifest::ObjectManifest::decode(bytes.as_slice()).unwrap();
+            std::hint::black_box(decoded.extents.len());
+        }
+        "client_prepare" => {
+            manifest.validate().unwrap();
+            let sha = crate::read_session_outcome::manifest_sha256(&manifest).unwrap();
+            manifest.validate().unwrap();
+            let picked = manifest
+                .extents
+                .iter()
+                .filter(|extent| extent.object_offset < range_start + 1 && extent.object_offset + extent.length > range_start)
+                .count();
+            std::hint::black_box((sha.len(), picked));
+        }
+        "open_session" => {
+            let request = crate::manifest_retention::ManifestRetentionRequest {
+                version: 3,
+                action: 8,
+                bucket: "bucket".into(),
+                key: "append".into(),
+                generation: manifest.generation,
+                ttl_ms: 60_000,
+                manifest_sha256: digest.clone(),
+                ..Default::default()
+            };
+            let prepared = super::super::read_session_commands::prepare_at(&service, &request, 1 << 20, 1000).unwrap();
+            std::hint::black_box(prepared.1);
+        }
+        other => panic!("unknown BENCH_PHASE {other}"),
+    };
+    one(&phase);
+    for _ in 0..reps {
+        one(&phase);
+    }
+}
+
 /// The leader collects the nodes a queued compact append touches from the object's placement
 /// record instead of walking every stored extent. That is only the same set while the record's
 /// nodes are exactly the groups of all the stored extents, whatever sequence of appends built it:

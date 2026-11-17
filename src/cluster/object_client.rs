@@ -1077,7 +1077,12 @@ impl RemoteMetaClient {
             combined.extents = extents;
             combined
         } else { manifest.clone() };
-        let outcome = ManifestOutcome::decide(expected, published.clone()).map_err(before)?;
+        let outcome = match (compact, expected) {
+            // a compact append is bound to the prior by digest: validate what it adds
+            (true, Some(prior)) => ManifestOutcome::decide_append(prior, published.clone()),
+            (_, expected) => ManifestOutcome::decide(expected, published.clone()),
+        }
+        .map_err(before)?;
         let staged_error = |error| ObjectWriteFailure::BeforePublication {
             error,
             staged: Some(Box::new(published.clone())),

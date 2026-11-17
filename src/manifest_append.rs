@@ -54,6 +54,17 @@ impl ManifestAppend {
         before_sha256: Vec<u8>,
         after_sha256: Vec<u8>,
     ) -> Result<Self, ObjectError> {
+        Self::decide_with_digests_checked(outcome, before_sha256, after_sha256, false)
+    }
+    /// `decide_with_digests` where the caller has just compared the two extent lists and found
+    /// the prior's extents to be the first extents of the result (`prefix_checked`): the
+    /// comparison is not made a second time.
+    pub(crate) fn decide_with_digests_checked(
+        outcome: &ManifestOutcome,
+        before_sha256: Vec<u8>,
+        after_sha256: Vec<u8>,
+        prefix_checked: bool,
+    ) -> Result<Self, ObjectError> {
         let before = outcome
             .before
             .as_ref()
@@ -63,7 +74,8 @@ impl ManifestAppend {
             || after.format_version != 2
             || before.deleted
             || after.deleted
-            || after.extents.get(..before.extents.len()) != Some(before.extents.as_slice())
+            || (!prefix_checked
+                && after.extents.get(..before.extents.len()) != Some(before.extents.as_slice()))
         {
             return Err(invalid("append changes immutable prefix"));
         }
