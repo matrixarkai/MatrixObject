@@ -28,6 +28,7 @@
 //! | `MATRIXOBJECT_REPLICA_MAINTENANCE` | `false` | standalone repair mode; refuse ordinary writes and report offline |
 //! | `MATRIXOBJECT_REPLICA_THREADS` | `4` | connections served at once |
 //! | `MATRIXOBJECT_REPLICA_LOCAL_RECOVERY` | `xor` | `peers` uses a durable journal and configured replica repair instead of a local XOR sidecar |
+//! | `MATRIXOBJECT_REPLICA_GROUP_COMMIT` | `true` | share sync across waiting standalone journal mutations; `false` keeps individual-request sync |
 //! | `MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
 //! | `MATRIXOBJECT_REPLICA_CAPACITY_BYTES` | `268435456` | total page payload bytes; positive |
 //! | `MATRIXOBJECT_REPLICA_MAX_PAGES` | `65536` | page identities, including empty pages; positive |
@@ -135,6 +136,17 @@ fn main() {
             std::process::exit(2);
         }
     };
+    let journal_group_commit = match std::env::var("MATRIXOBJECT_REPLICA_GROUP_COMMIT") {
+        Err(std::env::VarError::NotPresent) => true,
+        Ok(raw) => raw.trim().parse::<bool>().unwrap_or_else(|_| {
+            eprintln!("MATRIXOBJECT_REPLICA_GROUP_COMMIT must be true or false");
+            std::process::exit(2);
+        }),
+        Err(_) => {
+            eprintln!("MATRIXOBJECT_REPLICA_GROUP_COMMIT must be valid text");
+            std::process::exit(2);
+        }
+    };
     let maintenance = match std::env::var("MATRIXOBJECT_REPLICA_MAINTENANCE") {
         Err(std::env::VarError::NotPresent) => false,
         Ok(raw) => raw.trim().parse::<bool>().unwrap_or_else(|_| {
@@ -153,6 +165,7 @@ fn main() {
         }),
         maintenance,
         local_recovery_sidecar,
+        journal_group_commit,
         max_payload_bytes,
         worker_threads,
         capacity_bytes,
@@ -397,10 +410,11 @@ fn main() {
         }
     }
 
+    let group_commit = journal_group_commit && storage == "journal";
     println!(
         "chunkserver listening on {bound} pid={} protocol_stamp={PROTOCOL_STAMP} \
          threads={worker_threads} max_payload_bytes={max_payload_bytes} auth=none \
-         storage={storage} capacity_bytes={capacity_bytes} max_pages={max_pages} maintenance={maintenance} local_recovery={local_recovery}",
+         storage={storage} capacity_bytes={capacity_bytes} max_pages={max_pages} maintenance={maintenance} local_recovery={local_recovery} group_commit={group_commit}",
         std::process::id()
     );
     if !bound.ip().is_loopback() {

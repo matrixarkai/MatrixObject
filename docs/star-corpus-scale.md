@@ -74,6 +74,7 @@ when its fixture ends, including failure cleanup.
 ## Output and correctness checks
 
 Each `STAR_CORPUS` row reports operation, background pages and payload bytes,
+the `group_commit` setting,
 actual stored-page count before timing, clients, completed operations, replication
 thresholds, phase elapsed time, QPS, p50/p95/p99 operation latency, aggregate
 data-process CPU ticks and aggregate growth of the three data journals.
@@ -117,6 +118,26 @@ The earlier XOR-profile run had different recovery work and higher contention.
 These runs do not isolate the append optimization's contribution or establish
 flat tail latency. Growing read working sets and independent journal syncs still
 need separate profiling; checkpoints and repair interference remain unmeasured.
+
+## Paired journal synchronization sweep
+
+[Shared Star journal synchronization](star-journal-synchronization.md) adds an
+explicit on/off control. The paired release workload uses the same executable,
+peer-recovery profile, worker count and `N=3, W=3, R=1` for both modes:
+
+```sh
+cargo test --locked --release --all-features --test network_metadata_consensus \
+  measure_star_shared_sync_at_growing_corpora -j1 \
+  -- --ignored --test-threads=1 --nocapture
+```
+
+It rotates the three corpus sizes across three repetitions and reverses each
+corpus's first mode between repetitions. Each mode starts fresh metadata and data
+processes and runs 1/32 clients with 128 operations per client. The 18 fixtures
+produce 108 phases, 228,096 checked operations and 18 full-cluster restart checks.
+The ordinary correctness test also runs both modes. Compare matching modes and
+corpus sizes; inspect host load and variability before attributing a difference
+to journal synchronization. Reads and mutations remain separate timed phases.
 
 ## Interpretation and remaining measurements
 

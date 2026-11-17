@@ -32,6 +32,7 @@ struct Fixture {
     journals: Vec<PathBuf>,
     chunk_endpoints: Vec<String>,
     group_id: u64,
+    group_commit: bool,
     directory: Directory,
 }
 fn meta_options() -> MetaClientOptions {
@@ -46,6 +47,9 @@ fn start_chunk(endpoint: &str, path: &Path) -> NodeProcess {
     start_chunk_with_recovery(endpoint, path, "peers")
 }
 fn start_chunk_with_recovery(endpoint: &str, path: &Path, recovery: &str) -> NodeProcess {
+    start_chunk_with_policy(endpoint, path, recovery, true)
+}
+fn start_chunk_with_policy(endpoint: &str, path: &Path, recovery: &str, group_commit: bool) -> NodeProcess {
     processes::start(
         env!("CARGO_BIN_EXE_chunkserver"),
         &[
@@ -54,6 +58,7 @@ fn start_chunk_with_recovery(endpoint: &str, path: &Path, recovery: &str) -> Nod
             ("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", "268435456"),
             ("MATRIXOBJECT_REPLICA_MAX_PAGES", "65536"),
             ("MATRIXOBJECT_REPLICA_LOCAL_RECOVERY", recovery),
+            ("MATRIXOBJECT_REPLICA_GROUP_COMMIT", if group_commit { "true" } else { "false" }),
         ],
     )
 }
@@ -64,6 +69,9 @@ mod star_recovery_profiles;
 mod star_corpus_scale;
 impl Fixture {
     fn new() -> Self {
+        Self::with_group_commit(true)
+    }
+    fn with_group_commit(group_commit: bool) -> Self {
         let directory =
             Directory(std::env::temp_dir().join(node_regime::run_token("star-append-cost")));
         std::fs::create_dir(&directory.0).unwrap();
@@ -72,9 +80,10 @@ impl Fixture {
             .collect::<Vec<_>>();
         let chunks = journals
             .iter()
-            .map(|path| start_chunk("127.0.0.1:0", path))
+            .map(|path| start_chunk_with_policy("127.0.0.1:0", path, "peers", group_commit))
             .collect::<Vec<_>>();
         assert!(chunks.iter().all(|node| node.startup_line.contains("local_recovery=peers")));
+        assert!(chunks.iter().all(|node| node.startup_line.contains(&format!("group_commit={group_commit}"))));
         let chunk_endpoints = chunks
             .iter()
             .map(|node| node.endpoint.clone())
@@ -125,6 +134,7 @@ impl Fixture {
             journals,
             chunk_endpoints,
             group_id,
+            group_commit,
             directory,
         };
         let mut client = fixture.client();
@@ -229,7 +239,8 @@ impl Fixture {
         }
         for id in 0..3 {
             self.metadata.start(id);
-            self.chunks[id] = start_chunk(&self.chunk_endpoints[id], &self.journals[id]);
+            self.chunks[id] = start_chunk_with_policy(&self.chunk_endpoints[id], &self.journals[id], "peers", self.group_commit);
+            assert!(self.chunks[id].startup_line.contains(&format!("group_commit={}", self.group_commit)));
         }
         self.metadata.leader();
     }

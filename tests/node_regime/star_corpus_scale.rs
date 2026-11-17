@@ -191,18 +191,28 @@ fn phase(
             "unexpected journal amplification: {journal} for {logical} bytes"
         );
     }
-    println!("STAR_CORPUS operation={operation:?} background_pages={corpus} stored_pages_before={} background_payload_bytes={} clients={clients} operations={} payload_bytes={BYTES} n=3 w=3 r=1 elapsed_us={} qps={:.2} p50_us={} p95_us={} p99_us={} data_cpu_ticks={ticks} data_journal_bytes={journal} host_load1_before={load} host_load1_after={}",
+    println!("STAR_CORPUS operation={operation:?} group_commit={} background_pages={corpus} stored_pages_before={} background_payload_bytes={} clients={clients} operations={} payload_bytes={BYTES} n=3 w=3 r=1 elapsed_us={} qps={:.2} p50_us={} p95_us={} p99_us={} data_cpu_ticks={ticks} data_journal_bytes={journal} host_load1_before={load} host_load1_after={}",
+        fixture.group_commit,
         counts[0], corpus * BYTES, samples.len(), elapsed.as_micros(), samples.len() as f64 / elapsed.as_secs_f64(),
         percentile(&samples, 50), percentile(&samples, 95), percentile(&samples, 99), host_load());
     written
 }
 
 fn run(corpora: &[usize], concurrency: &[usize], operations: usize) {
+    run_with_group_commit(corpora, concurrency, operations, true);
+}
+
+fn run_with_group_commit(
+    corpora: &[usize],
+    concurrency: &[usize],
+    operations: usize,
+    group_commit: bool,
+) {
     for &corpus in corpora {
         assert!((1..=32768).contains(&corpus));
         // Matching phases have exactly the same prior benchmark traffic at
         // every background size. Earlier corpus cases cannot contaminate them.
-        let mut fixture = Fixture::new();
+        let mut fixture = Fixture::with_group_commit(group_commit);
         let mut seeded = 0;
         let mut id = 10;
         let mut verify = Vec::new();
@@ -272,7 +282,37 @@ fn run(corpora: &[usize], concurrency: &[usize], operations: usize) {
 
 #[test]
 fn star_corpus_workload_verifies_durable_reads_writes_and_appends() {
-    run(&[8, 256], &[1, 2], 4);
+    for enabled in [false, true] {
+        run_with_group_commit(&[8, 256], &[1, 2], 4, enabled);
+    }
+}
+
+#[test]
+#[ignore = "explicit local paired journal synchronization measurement"]
+fn measure_star_shared_sync_at_growing_corpora() {
+    for (round, corpora) in [
+        [1024, 8192, 32768],
+        [32768, 1024, 8192],
+        [8192, 32768, 1024],
+    ]
+    .iter()
+    .enumerate()
+    {
+        for &corpus in corpora {
+            let case = [1024, 8192, 32768]
+                .iter()
+                .position(|value| *value == corpus)
+                .unwrap();
+            let modes = if (round + case) % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            };
+            for enabled in modes {
+                run_with_group_commit(&[corpus], &[1, 32], 128, enabled);
+            }
+        }
+    }
 }
 
 #[test]

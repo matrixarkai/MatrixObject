@@ -566,6 +566,10 @@ impl ReplicaJournal {
         Ok(())
     }
 
+    pub(super) fn logical_length(&self) -> u64 {
+        self.length
+    }
+
     pub(super) fn sync_deferred(&mut self) -> io::Result<()> {
         // Growing the file requires its new length to survive a crash;
         // sync_data persists the bytes and metadata needed to retrieve them.
