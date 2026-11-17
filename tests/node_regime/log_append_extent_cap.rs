@@ -125,23 +125,40 @@ impl Fixture {
         .unwrap()
     }
     fn reserve(&self, client: &mut RemoteMetaClient, key: &str, generation: Option<u64>, pages: u32, append: bool) -> StagedAllocation {
+        reserve_in(&self.directory.0, client, key, generation, pages, append, "0")
+    }
+}
+/// Reserve pages for `key`; `tag` keeps the saved request files of concurrent callers apart.
+fn reserve_in(directory: &Path, client: &mut RemoteMetaClient, key: &str, generation: Option<u64>, pages: u32, append: bool, tag: &str) -> StagedAllocation {
+    match try_reserve_in(directory, client, key, generation, pages, append, tag) {
+        Ok(record) => record,
+        Err(error) => panic!("reservation failed: {error:?}"),
+    }
+}
+/// `reserve_in` that hands a refusal back: an allocation for a generation another writer has
+/// already moved past is refused ("object changed before staging"), which a racing appender
+/// answers by re-reading the object.
+fn try_reserve_in(directory: &Path, client: &mut RemoteMetaClient, key: &str, generation: Option<u64>, pages: u32, append: bool, tag: &str) -> Result<StagedAllocation, StagedAllocationFailure> {
+    {
         for attempt in 0..16 {
             let prepared = client
                 .prepare_staged_allocation("append", key, generation, pages, append, 3_600_000)
                 .unwrap();
-            let path = self.directory.0.join(format!("{key}-{attempt}.request"));
+            let path = directory.join(format!("{key}-{tag}-{attempt}.request"));
             let mut file = std::fs::File::create(&path).unwrap();
             std::io::Write::write_all(&mut file, &prepared.to_bytes()).unwrap();
             file.sync_all().unwrap();
             let prepared = PreparedStagedAllocation::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
             match client.try_allocate_prepared_staged_object(&prepared) {
-                Ok(record) => return record,
+                Ok(record) => return Ok(record),
                 Err(StagedAllocationFailure::PositionConsumed) => continue,
-                Err(error) => panic!("reservation failed: {error:?}"),
+                Err(error) => return Err(error),
             }
         }
         panic!("reservation position stayed busy");
     }
+}
+impl Fixture {
     fn wal(&self) -> u64 {
         (0..3)
             .map(|id| {
@@ -473,4 +490,76 @@ fn a_metadata_leader_killed_before_a_compaction_never_leaves_a_half_applied_log(
         expected.extend_from_slice(&data);
         assert_eq!(read_all(&mut reader, "crash-meta", expected.len()), (retried, expected));
     }
+}
+
+#[test]
+fn appenders_sharing_one_object_lose_races_cleanly_and_lose_nothing() {
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    let fixture = Fixture::with_fence(true);
+    let options = ObjectWriteOptions::default();
+    let mut first = fixture.client();
+    let created = {
+        let allocation = fixture.reserve(&mut first, "shared", None, 1, false);
+        first.write_staged_object(&allocation, None, &record(0, 300), &options).unwrap()
+    };
+    assert_eq!(created.generation, 1);
+    let writers = 4usize;
+    let per = 12usize;
+    let directory = fixture.directory.0.clone();
+    let mut clients: Vec<RemoteMetaClient> = (0..writers).map(|_| fixture.client()).collect();
+    let unconfirmed = AtomicUsize::new(0);
+    let lost = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for (writer, client) in clients.iter_mut().enumerate() {
+            let (directory, options, unconfirmed, lost) = (&directory, &options, &unconfirmed, &lost);
+            scope.spawn(move || {
+                let mut manifest = client.read_manifest("append", "shared").unwrap();
+                let mut landed = 0usize;
+                let mut tries = 0usize;
+                while landed < per {
+                    tries += 1;
+                    assert!(tries < 2000, "writer {writer} never finished");
+                    let data = record(1 + writer * per + landed, 300);
+                    let allocation = match try_reserve_in(directory, client, "shared", Some(manifest.generation), 1, true, &writer.to_string()) {
+                        Ok(allocation) => allocation,
+                        Err(StagedAllocationFailure::NotAdmitted(_)) => {
+                            // another writer published first: the reservation was refused
+                            lost.fetch_add(1, Relaxed);
+                            manifest = client.read_manifest("append", "shared").unwrap();
+                            continue;
+                        }
+                        Err(error) => panic!("reservation failed: {error:?}"),
+                    };
+                    match client.append_staged_object_compact(&allocation, manifest.clone(), &data, options) {
+                        Ok(next) => {
+                            manifest = next;
+                            landed += 1;
+                        }
+                        Err(matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication { .. }) => {
+                            lost.fetch_add(1, Relaxed);
+                            let _ = client.abort_staged_allocation(allocation.allocation_id);
+                            manifest = client.read_manifest("append", "shared").unwrap();
+                        }
+                        Err(matrixobjectstore_rs::cluster::ObjectWriteFailure::PublicationUnconfirmed { .. }) => {
+                            unconfirmed.fetch_add(1, Relaxed);
+                            manifest = client.read_manifest("append", "shared").unwrap();
+                        }
+                    }
+                }
+            });
+        }
+    });
+    // a lost generation race is a refusal before publication, never an unconfirmed one
+    assert_eq!(unconfirmed.load(Relaxed), 0, "lost races were reported as unconfirmed publications");
+    assert!(lost.load(Relaxed) > 0, "the writers never raced, so this proved nothing");
+    let mut reader = fixture.client();
+    let total = 1 + writers * per;
+    let (manifest, bytes) = read_all(&mut reader, "shared", total * 300);
+    assert_eq!(manifest.extents.len(), total);
+    assert_eq!(bytes.len(), total * 300);
+    let mut found: Vec<Vec<u8>> = bytes.chunks(300).map(|c| c.to_vec()).collect();
+    let mut expected: Vec<Vec<u8>> = (0..total).map(|i| record(i, 300)).collect();
+    found.sort();
+    expected.sort();
+    assert_eq!(found, expected, "an append was lost or duplicated");
 }

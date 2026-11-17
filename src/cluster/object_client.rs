@@ -1182,6 +1182,7 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::time::{Duration, Instant};
     include!("compact_append_client_tests.rs");
+    include!("refused_publication_tests.rs");
     fn accept(listener: &TcpListener) -> TcpStream {
         let end = Instant::now() + Duration::from_secs(5);
         loop {
