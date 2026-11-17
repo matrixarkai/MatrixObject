@@ -213,11 +213,20 @@ fn main() {
         let compact_append = env_usize("MATRIXOBJECT_CLUSTER_COMPACT_APPEND", 0) != 0;
         // On whenever compact append is: it saves a metadata commit per append (see the table
         // above). `MATRIXOBJECT_CLUSTER_RESERVE_NEXT=0` turns it off.
-        let reserve_next = env_usize("MATRIXOBJECT_CLUSTER_RESERVE_NEXT", usize::from(compact_append)) != 0;
-        if reserve_next && !compact_append {
-            eprintln!("MATRIXOBJECT_CLUSTER_RESERVE_NEXT needs MATRIXOBJECT_CLUSTER_COMPACT_APPEND=1");
-            std::process::exit(2);
-        }
+        let reserve_requested = std::env::var("MATRIXOBJECT_CLUSTER_RESERVE_NEXT")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(|_| env_usize("MATRIXOBJECT_CLUSTER_RESERVE_NEXT", 0));
+        let reserve_next = match matrixobjectstore_rs::net::cluster_gateway::resolve_reserve_next(
+            compact_append,
+            reserve_requested,
+        ) {
+            Ok(reserve) => reserve,
+            Err(message) => {
+                eprintln!("{message}");
+                std::process::exit(2);
+            }
+        };
         let compact_extents = match env_usize("MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS", 0) {
             0 => None,
             bound if (2..=4096).contains(&bound) => Some(bound),

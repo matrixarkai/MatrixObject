@@ -455,6 +455,20 @@ pub enum AppendRoute {
     Compacting(usize),
 }
 
+/// Whether the next append's staged allocation is reserved in the publishing commit.
+///
+/// `compact_append` is whether compact publication is on; `requested` is the value of
+/// `MATRIXOBJECT_CLUSTER_RESERVE_NEXT` when it is set. Reserving follows compact publication
+/// when nothing is asked for, `0` turns it off, and asking for it without compact publication
+/// is refused. Needs every metadata voter to support the version 13 outcome.
+pub fn resolve_reserve_next(compact_append: bool, requested: Option<usize>) -> Result<bool, &'static str> {
+    let reserve = requested.map_or(compact_append, |value| value != 0);
+    if reserve && !compact_append {
+        return Err("MATRIXOBJECT_CLUSTER_RESERVE_NEXT needs MATRIXOBJECT_CLUSTER_COMPACT_APPEND=1");
+    }
+    Ok(reserve)
+}
+
 /// Pick the route for one append. `compact_state` is [`CompactState`]'s value: 2 means the
 /// compact path was refused once and is off for the life of the process.
 pub fn choose_append_route(
@@ -1242,6 +1256,16 @@ fn error_response(error: ObjectError, resource: &str, missing_is_bucket: bool) -
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn reserve_next_follows_compact_append_unless_set() {
+        assert_eq!(resolve_reserve_next(true, None), Ok(true), "compact on, unset");
+        assert_eq!(resolve_reserve_next(true, Some(1)), Ok(true), "compact on, =1");
+        assert_eq!(resolve_reserve_next(true, Some(0)), Ok(false), "compact on, =0");
+        assert_eq!(resolve_reserve_next(false, None), Ok(false), "compact off, unset");
+        assert_eq!(resolve_reserve_next(false, Some(0)), Ok(false), "compact off, =0");
+        assert!(resolve_reserve_next(false, Some(1)).is_err(), "compact off, =1 is refused");
+    }
 
     fn reservation(generation: u64, pages: u32) -> crate::staged_allocation::StagedAllocation {
         crate::staged_allocation::StagedAllocation {
