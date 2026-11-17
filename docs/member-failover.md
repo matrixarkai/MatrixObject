@@ -61,7 +61,8 @@ publish. A page that exists on some members of a refused attempt belongs to no m
   all-members write rule it cannot be behind on acknowledged data (see above). This would
   change only for a Star group configured with a write quorum below its member count.
 * Repair order covers the pages inside one batch (short of copies first, complete pages next,
-  pages without a source quorum last). Groups are still swept in catalog order.
+  up to the first page no source quorum can vouch for). A batch still stops at that page and never
+  repairs past it, as an id-ordered batch does. Groups are still swept in catalog order.
 * The abandoned pages are recorded in a durable client-side log (`AppendFailoverPolicy::
   abandoned_log`), not in replicated metadata; a replicated record needs a new metadata
   command.
@@ -87,9 +88,10 @@ refused while it was stopped. They belong to no manifest, are never read, and ar
 (see the abandoned-pages log) so a later reclamation can find them.
 
 A member that returns with no journal at all is refused at startup unless its marker is gone
-too (`replica_journal.rs`); a replaced disk comes back empty. Measured: 60 of 60 object reads
-stayed exact with the empty member present, and the repair worker restored its pages. The
-mechanism that kept those reads exact was not isolated.
+too (`replica_journal.rs`); a replaced disk comes back empty. Measured over repeated runs: no read
+ever returned wrong bytes with the empty member present, and the repair worker restored its
+pages. In one run in five, one of 60 reads failed with an error while the member was empty;
+an immediate retry succeeded. The mechanism that kept returned bytes exact was not isolated.
 
 The one configurable path with a write quorum below the member count is a remote placement
 set built with explicit quorums (for example 2 of 3). Its read quorum must overlap every write

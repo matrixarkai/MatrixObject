@@ -2504,22 +2504,22 @@ impl RemoteReplicaSet {
             blocked: false,
         };
         let by_id: Vec<_> = selected.into_iter().collect();
-        // Repair order inside the batch: short of copies first, complete pages after, pages
-        // that no source quorum can vouch for last so they cannot stall the others. The
-        // cursor then moves only when the whole batch is resolved.
+        // Repair order inside the batch: among the pages before the first page that no source
+        // quorum can vouch for, those short of copies go first and complete pages after. The
+        // batch still STOPS at that unvouched page and never repairs past it, exactly as an
+        // id-ordered batch does, so the resume cursor and head-of-line safety are unchanged.
         let counts = if should_order_by_copies(by_id.len()) {
             self.page_copy_counts(&by_id)
         } else {
             None
         };
-        let pages = match counts {
+        let (members, quorum) = (self.replicas.len(), self.read_quorum);
+        let (pages, prefix_len): (Vec<PageId>, usize) = match counts {
             Some(copies) => {
-                let mut order: Vec<usize> = (0..by_id.len()).collect();
-                let (members, quorum) = (self.replicas.len(), self.read_quorum);
-                order.sort_by_key(|&i| (repair_priority(copies[i], members, quorum), i));
-                order.into_iter().map(|i| by_id[i].clone()).collect()
+                let (order, prefix_len) = repair_order(&copies, members, quorum);
+                (order.into_iter().map(|i| by_id[i].clone()).collect(), prefix_len)
             }
-            None => by_id.clone(),
+            None => (by_id.clone(), by_id.len()),
         };
         let reordered = pages != by_id;
         for group in pages.chunks(8) {
@@ -2558,6 +2558,17 @@ impl RemoteReplicaSet {
                 if !resolved {
                     batch.blocked = true;
                     batch.has_more = true;
+                    if reordered {
+                        // Every page before the unvouched one was processed, so the cursor is
+                        // where an id-ordered batch would have left it; any other block leaves
+                        // the cursor at the batch start.
+                        if prefix_len < by_id.len() && *page == by_id[prefix_len] {
+                            batch.resume_after = match prefix_len.checked_sub(1) {
+                                Some(last) => Some(by_id[last].clone()),
+                                None => after.cloned(),
+                            };
+                        }
+                    }
                     return Ok(batch);
                 }
                 if !reordered {
@@ -3737,9 +3748,25 @@ pub(crate) fn should_order_by_copies(pages: usize) -> bool {
     pages >= 2
 }
 
+/// Repair order for a batch given each page's agreeing-copy count (pages in id order). Returns
+/// the processing order as indexes, and the length of the prefix that was reordered. Pages
+/// before the first page with fewer copies than the source quorum are ordered short-of-copies
+/// first, then complete pages; that first unvouched page and everything after it keep id order
+/// so the batch stops at it exactly as an id-ordered batch would.
+pub(crate) fn repair_order(copies: &[usize], members: usize, source_quorum: usize) -> (Vec<usize>, usize) {
+    let prefix_len = copies
+        .iter()
+        .position(|&c| c < source_quorum)
+        .unwrap_or(copies.len());
+    let mut order: Vec<usize> = (0..prefix_len).collect();
+    order.sort_by_key(|&i| (repair_priority(copies[i], members, source_quorum), i));
+    order.extend(prefix_len..copies.len());
+    (order, prefix_len)
+}
+
 /// Sort key for repair order. Lower repairs first: a page a quorum can vouch for but that is
-/// short of copies, fewest copies first; then complete pages (nothing to copy); then pages no
-/// source quorum can vouch for, which a repair must not trust or let block the rest.
+/// short of copies, fewest copies first; then complete pages (nothing to copy). Pages no source
+/// quorum can vouch for sort last (used inside `repair_order` only for the prefix).
 pub(crate) fn repair_priority(copies: usize, members: usize, source_quorum: usize) -> (u8, usize) {
     if copies < source_quorum {
         (2, copies)
@@ -3752,7 +3779,19 @@ pub(crate) fn repair_priority(copies: usize, members: usize, source_quorum: usiz
 
 #[cfg(test)]
 mod repair_order_tests {
-    use super::{repair_priority, should_order_by_copies};
+    use super::{repair_order, repair_priority, should_order_by_copies};
+
+    #[test]
+    fn a_batch_stops_at_the_first_unvouched_page_and_reorders_only_before_it() {
+        // Pinned rule: with page 2 unvouched and page 3 repairable, page 2 is processed first
+        // (and blocks), exactly as in id order.
+        assert_eq!(repair_order(&[1, 2], 3, 2), (vec![0, 1], 0));
+        // Before the unvouched page, short pages go first.
+        assert_eq!(repair_order(&[3, 2, 1, 3, 2], 3, 2), (vec![1, 0, 2, 3, 4], 2));
+        // No unvouched page: the whole batch is ordered.
+        assert_eq!(repair_order(&[3, 2, 3, 2], 3, 2), (vec![1, 3, 0, 2], 4));
+        assert_eq!(repair_order(&[], 3, 2), (vec![], 0));
+    }
 
     #[test]
     fn a_batch_with_nothing_to_reorder_sends_no_ordering_probe() {
