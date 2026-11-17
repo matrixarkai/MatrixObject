@@ -113,6 +113,9 @@ impl ManifestAppend {
         }
         Ok(())
     }
+    /// Expand against a manifest the caller holds (validated here); the server uses
+    /// `expand_stored`. Used by tests.
+    #[cfg(test)]
     pub(crate) fn expand(&self, before: &ObjectManifest) -> Result<ManifestOutcome, ObjectError> {
         before.validate()?;
         self.expand_stored(before, &crate::object_manifest::StoredDigest::of(before))

@@ -120,11 +120,11 @@ thread_local! {
     static VALIDATE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 /// Full manifest validations on this thread since the last reset (tests only).
-#[cfg(test)]
+#[cfg(all(test, feature = "metadata-consensus"))]
 pub(crate) fn validate_calls() -> usize {
     VALIDATE_CALLS.with(|calls| calls.get())
 }
-#[cfg(test)]
+#[cfg(all(test, feature = "metadata-consensus"))]
 pub(crate) fn reset_validate_calls() {
     VALIDATE_CALLS.with(|calls| calls.set(0));
 }

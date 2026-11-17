@@ -37,7 +37,7 @@ pub(crate) fn uncounted<T>(work: impl FnOnce() -> T) -> T {
     FULL_CHAINS.with(|calls| calls.set(before));
     result
 }
-#[cfg(test)]
+#[cfg(all(test, feature = "metadata-consensus"))]
 pub(crate) fn reset_full_chains() {
     FULL_CHAINS.with(|calls| calls.set(0));
 }
@@ -70,6 +70,7 @@ impl ChainState {
         FULL_CHAINS.with(|calls| calls.set(calls.get() + 1));
         Self::empty().extended(extents)
     }
+    #[cfg(test)]
     pub(crate) fn count(&self) -> usize {
         self.count
     }
