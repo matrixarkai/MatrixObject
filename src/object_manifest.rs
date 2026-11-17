@@ -902,7 +902,9 @@ impl ManifestCatalog {
                     let chain = stored.chain.extended(&after.extents[kept..]);
                     let seeded = StoredDigest { digest: chain.digest(after), chain };
                     #[cfg(test)]
-                    assert_eq!(seeded, StoredDigest::of(after), "a carried-forward digest differs from a fresh one");
+                    crate::manifest_chain::uncounted(|| {
+                        assert_eq!(seeded, StoredDigest::of(after), "a carried-forward digest differs from a fresh one")
+                    });
                     let _ = digest.set(seeded);
                 }
             }

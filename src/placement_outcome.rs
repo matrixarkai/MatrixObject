@@ -434,8 +434,26 @@ impl PlacementOutcome {
         outcome.validate_manifest_binding_with(compact_append.is_some())?;
         outcome.validate_publication(service, true, compact_append.is_some())?;
         if let Some(append) = compact_append {
-            // `validate_publication` above validated the outcome in full.
-            if crate::manifest_append::ManifestAppend::decide_validated(outcome.manifest.as_ref().unwrap())? != append {
+            // The outcome came from `ManifestAppend::expand_stored`, which checked both
+            // digests of `append` against the stored manifest and the manifest it built, and
+            // `validate_publication` above validated it. What is left to compare is the
+            // decision's own fields, so the digests are taken from the decision instead of
+            // hashing both manifests again.
+            let decided = crate::manifest_append::ManifestAppend::decide_with_digests(
+                outcome.manifest.as_ref().unwrap(),
+                append.before_sha256.clone(),
+                append.after_sha256.clone(),
+            )?;
+            #[cfg(test)]
+            crate::manifest_chain::uncounted(|| -> Result<(), ObjectError> {
+                assert_eq!(
+                    decided,
+                    crate::manifest_append::ManifestAppend::decide_validated(outcome.manifest.as_ref().unwrap())?,
+                    "the decision's digests are not those of the manifests it was expanded to"
+                );
+                Ok(())
+            })?;
+            if decided != append {
                 return Err(invalid("compact append differs from validated publication"));
             }
             outcome.version = 12;

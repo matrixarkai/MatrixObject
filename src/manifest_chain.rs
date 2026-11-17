@@ -20,6 +20,28 @@ use prost::Message;
 /// A chain value is kept for every `CHECKPOINT_EVERY` extents.
 pub(crate) const CHECKPOINT_EVERY: usize = 64;
 
+#[cfg(test)]
+thread_local! {
+    static FULL_CHAINS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+/// Chains computed over a whole extent list on this thread since the last reset (tests only).
+#[cfg(test)]
+pub(crate) fn full_chains() -> usize {
+    FULL_CHAINS.with(|calls| calls.get())
+}
+/// Run `work` without its whole-manifest chains being counted (test-only soundness checks).
+#[cfg(test)]
+pub(crate) fn uncounted<T>(work: impl FnOnce() -> T) -> T {
+    let before = full_chains();
+    let result = work();
+    FULL_CHAINS.with(|calls| calls.set(before));
+    result
+}
+#[cfg(test)]
+pub(crate) fn reset_full_chains() {
+    FULL_CHAINS.with(|calls| calls.set(0));
+}
+
 fn hash(parts: &[&[u8]]) -> [u8; 32] {
     let mut context = ring::digest::Context::new(&ring::digest::SHA256);
     for part in parts {
@@ -44,6 +66,8 @@ impl ChainState {
         Self { head: hash(&[b"MOC0"]), count: 0, checkpoints: Vec::new() }
     }
     pub(crate) fn of(extents: &[ObjectExtent]) -> Self {
+        #[cfg(test)]
+        FULL_CHAINS.with(|calls| calls.set(calls.get() + 1));
         Self::empty().extended(extents)
     }
     pub(crate) fn count(&self) -> usize {

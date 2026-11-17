@@ -320,6 +320,7 @@ fn compact_append_mixed_journal_reopens_without_clocked_revalidation() {
 fn an_append_validates_whole_manifests_a_bounded_number_of_times() {
     let (mut service, groups, command) = compact_append_fixture(1000);
     crate::object_manifest::reset_validate_calls();
+    crate::manifest_chain::reset_full_chains();
     let (outcome, _) = super::super::staged_allocation_commands::prepare_at(
         &service, &groups, &command, 8192, 1500,
     )
@@ -331,4 +332,7 @@ fn an_append_validates_whole_manifests_a_bounded_number_of_times() {
     // and nothing else, so neither preparing nor applying walks a whole manifest.
     assert_eq!(after_prepare, 0, "prepare validated {after_prepare} whole manifests");
     assert_eq!(total, 0, "prepare and apply validated {total} whole manifests");
+    // Nor is any manifest hashed whole: the stored chain is computed once, the first time the
+    // object is appended to, and everything after that extends it.
+    assert_eq!(crate::manifest_chain::full_chains(), 1, "whole-manifest chains computed");
 }
