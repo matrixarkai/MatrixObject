@@ -49,20 +49,50 @@ fn start_chunk(endpoint: &str, path: &Path) -> NodeProcess {
 fn start_chunk_with_recovery(endpoint: &str, path: &Path, recovery: &str) -> NodeProcess {
     start_chunk_with_policy(endpoint, path, recovery, true)
 }
-fn start_chunk_with_policy(endpoint: &str, path: &Path, recovery: &str, group_commit: bool) -> NodeProcess {
-    processes::start(
+fn start_chunk_with_policy(
+    endpoint: &str,
+    path: &Path,
+    recovery: &str,
+    group_commit: bool,
+) -> NodeProcess {
+    start_chunk_with_checkpoint(endpoint, path, recovery, group_commit, None)
+}
+fn start_chunk_with_checkpoint(
+    endpoint: &str,
+    path: &Path,
+    recovery: &str,
+    group_commit: bool,
+    checkpoint: Option<u64>,
+) -> NodeProcess {
+    let interval = checkpoint.map(|value| value.to_string());
+    let mut settings = vec![
+        ("MATRIXOBJECT_REPLICA_ADDR", endpoint),
+        ("MATRIXOBJECT_REPLICA_JOURNAL", path.to_str().unwrap()),
+        ("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", "268435456"),
+        ("MATRIXOBJECT_REPLICA_MAX_PAGES", "65536"),
+        ("MATRIXOBJECT_REPLICA_THREADS", "4"),
+        ("MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES", "8388608"),
+        ("MATRIXOBJECT_REPLICA_LOCAL_RECOVERY", recovery),
+        (
+            "MATRIXOBJECT_REPLICA_GROUP_COMMIT",
+            if group_commit { "true" } else { "false" },
+        ),
+    ];
+    if let Some(interval) = &interval {
+        settings.push(("MATRIXOBJECT_REPLICA_CHECKPOINT_BYTES", interval));
+    }
+    processes::start_without_env(
         env!("CARGO_BIN_EXE_chunkserver"),
+        &settings,
         &[
-            ("MATRIXOBJECT_REPLICA_ADDR", endpoint),
-            ("MATRIXOBJECT_REPLICA_JOURNAL", path.to_str().unwrap()),
-            ("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", "268435456"),
-            ("MATRIXOBJECT_REPLICA_MAX_PAGES", "65536"),
-            ("MATRIXOBJECT_REPLICA_LOCAL_RECOVERY", recovery),
-            ("MATRIXOBJECT_REPLICA_GROUP_COMMIT", if group_commit { "true" } else { "false" }),
+            "MATRIXOBJECT_REPLICA_CHECKPOINT_BYTES",
+            "MATRIXOBJECT_WAL_ZERO_FILL_BYTES",
         ],
     )
 }
 
+#[path = "star_corpus_scale.rs"]
+mod star_corpus_scale;
 #[path = "star_recovery_profiles.rs"]
 mod star_recovery_profiles;
 #[path = "star_corpus_scale.rs"]

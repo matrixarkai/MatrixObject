@@ -1097,6 +1097,8 @@ On pushes to `main` and on every pull request, four jobs:
   test names, because `cargo test` exits 0 when a filter matches nothing. Star
   append guards cover restart and mixed-profile repair, binary decisions, invalid
   recovery settings and warm append allocation budgets through a 64-MiB prefix.
+  A [checkpoint interference case](docs/star-corpus-scale.md#foreground-checkpoint-interference)
+  verifies append copies and recovery while a foreground checkpoint runs.
   [Shared journal sync](docs/star-journal-synchronization.md) guards also cover
   conditional ordering, durable completion, failure fencing and group bounds.
   The guards over

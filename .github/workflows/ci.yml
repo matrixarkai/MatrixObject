@@ -605,6 +605,7 @@ jobs:
             compact_owned_append_keeps_publication_bounded_and_recovers_all_replicas \
             owned_append_keeps_data_writes_bounded_and_recovers_all_replicas \
             star_corpus_scale::star_corpus_workload_verifies_durable_reads_writes_and_appends \
+            star_corpus_scale::checkpoint_interference::checkpoint_interference_preserves_three_durable_append_copies \
             star_recovery_profiles::star_repair_and_append_work_across_local_recovery_profiles
           do
             grep -Fxq "test star_append_amplification::${test_name} ... ok" /tmp/star-append-cost.log
