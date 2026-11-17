@@ -38,7 +38,20 @@ unsafe impl GlobalAlloc for Allocator {
     }
 }
 
+static ALLOCATION_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 struct Directory(std::path::PathBuf);
+fn directory(label: &str, prefix: usize) -> Directory {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "payload-allocation-{label}-{}-{prefix}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&path).unwrap();
+    Directory(path)
+}
 impl Drop for Directory {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -65,14 +78,11 @@ fn measured<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
 }
 #[test]
 fn durable_payload_fixed_append_and_range_allocations_do_not_grow_with_file() {
+    let _test = ALLOCATION_TESTS.lock().unwrap();
     let mut append_sizes = Vec::new();
     let mut read_sizes = Vec::new();
     for prefix in [4 * 1024 * 1024, 32 * 1024 * 1024, 128 * 1024 * 1024] {
-        let directory = Directory(std::env::temp_dir().join(format!(
-            "payload-allocation-{}-{prefix}",
-            std::process::id()
-        )));
-        std::fs::create_dir(&directory.0).unwrap();
+        let directory = directory("raw", prefix);
         let store =
             PayloadExtentStore::open(directory.0.join("payload.data"), MAX_CAPACITY_BYTES).unwrap();
         let block = vec![0x31; MAX_EXTENT_BYTES];
@@ -101,4 +111,103 @@ fn durable_payload_fixed_append_and_range_allocations_do_not_grow_with_file() {
     }
     assert!(append_sizes.iter().max().unwrap() - append_sizes.iter().min().unwrap() <= 1024);
     assert!(read_sizes.iter().max().unwrap() - read_sizes.iter().min().unwrap() <= 1024);
+}
+
+#[test]
+fn stored_outcomes_append_and_metadata_allocations_do_not_grow_with_file() {
+    use matrixobjectstore_rs::{
+        durable_payload::outcome_log::{DecidedMutation, DurableOutcomeLog},
+        outcome::PageOutcome,
+        ChunkId, PageId, PageState,
+    };
+    let _test = ALLOCATION_TESTS.lock().unwrap();
+    fn source(bytes: usize) -> PageOutcome {
+        let data = vec![0x31; bytes];
+        let checksum = data.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
+        let state = PageState {
+            logical_length: bytes as u64,
+            write_sequence: 1,
+            checksum_fnv1a64: checksum,
+            data: std::sync::Arc::new(data),
+            ec_parity_fragment: None,
+            ec_fragment_digests: None,
+            discarded_ranges: Vec::new(),
+        };
+        PageOutcome::between(
+            &PageId {
+                chunk_id: ChunkId::new(1, 2).unwrap(),
+                page_index: 0,
+            },
+            None,
+            &state,
+        )
+        .unwrap()
+    }
+    let large = source(MAX_EXTENT_BYTES);
+    let small = source(4096);
+    let mut append_sizes = Vec::new();
+    let mut metadata_sizes = Vec::new();
+    for prefix in [4 * 1024 * 1024, 32 * 1024 * 1024, 128 * 1024 * 1024] {
+        let directory = directory("records", prefix);
+        let log =
+            DurableOutcomeLog::open(directory.0.join("records.data"), MAX_CAPACITY_BYTES).unwrap();
+        let mut index = 1000;
+        while log.length() < prefix as u64 + 4096 {
+            let count = ((prefix as u64 + 4096 - log.length()).div_ceil(MAX_EXTENT_BYTES as u64)
+                as usize)
+                .clamp(1, 7);
+            let outcomes = (0..count)
+                .map(|_| {
+                    let mut value = large.clone();
+                    value.page_index = index;
+                    index += 1;
+                    value
+                })
+                .collect::<Vec<_>>();
+            let mutations = outcomes
+                .iter()
+                .map(DecidedMutation::Page)
+                .collect::<Vec<_>>();
+            log.append_decided_batch(&mutations).unwrap();
+        }
+        let mut warm = small.clone();
+        warm.page_index = 1;
+        log.append_page(&warm).unwrap();
+        let mut value = small.clone();
+        value.page_index = 2;
+        let before = log.length();
+        let (committed, append_calls, append_bytes) = measured(|| log.append_page(&value));
+        let committed = committed.unwrap();
+        let (metadata, metadata_calls, metadata_bytes) =
+            measured(|| log.read_metadata(&committed.position));
+        let metadata = metadata.unwrap();
+        assert!(metadata.batch.decisions[0]
+            .page
+            .as_ref()
+            .unwrap()
+            .patches
+            .iter()
+            .all(|p| p.data.is_empty()));
+        assert_eq!(
+            log.read_outcomes(&committed.position).unwrap()[0]
+                .to_payload()
+                .unwrap(),
+            value.to_payload().unwrap()
+        );
+        assert!(
+            append_bytes < 128 * 1024,
+            "record append allocated {append_bytes} bytes"
+        );
+        assert!(
+            metadata_bytes < 64 * 1024,
+            "metadata read allocated {metadata_bytes} bytes"
+        );
+        append_sizes.push(append_bytes);
+        metadata_sizes.push(metadata_bytes);
+        println!("STORED_OUTCOME_ALLOCATION target_prefix_bytes={prefix} file_prefix_bytes={before} append_calls={append_calls} append_bytes={append_bytes} metadata_calls={metadata_calls} metadata_bytes={metadata_bytes}");
+    }
+    assert!(append_sizes.iter().max().unwrap() - append_sizes.iter().min().unwrap() <= 4096);
+    assert!(metadata_sizes.iter().max().unwrap() - metadata_sizes.iter().min().unwrap() <= 4096);
 }

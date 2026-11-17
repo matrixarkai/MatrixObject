@@ -70,7 +70,9 @@ original file. Allocation checks cover a 4-KiB append and a 4-KiB read through a
 
 ## Remaining server work
 
-Integrate extent descriptors with versioned mutation outcomes, preserve legacy
+[Stored outcome records](stored-outcome-records.md) combine extent descriptors
+with versioned mutation outcomes using one data sync. Connect that API to server
+journal routing, preserve legacy
 journal recovery, and maintain a metadata catalog whose frozen base and updates
 can be checkpointed independently of payloads. Repair, retained read generations,
 file rollover, bounded caching and safe reclamation must use the same ownership

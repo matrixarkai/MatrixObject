@@ -1103,6 +1103,9 @@ On pushes to `main` and on every pull request, four jobs:
   conditional ordering, durable completion, failure fencing and group bounds.
   [Durable payload extents](docs/durable-payload-extents.md) add binary-format,
   integrity, killed-writer recovery and bounded allocation guards.
+  [Stored outcome records](docs/stored-outcome-records.md) test one-sync binary
+  decisions, metadata-only reads and three killed storage writers; live server
+  routing and metadata-only checkpoints remain to be implemented.
   The guards over
   [replica processes](#replicas-in-their-own-processes) check their output for
   `running 1 test` as well: they name a test of an integration target rather than a
