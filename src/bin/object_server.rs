@@ -30,6 +30,7 @@
 //! | `MATRIXOBJECT_CLUSTER_RESERVE_NEXT` | `0` | `1` (with compact append) reserves the next append's staged allocation in the commit that publishes the current one, one metadata commit per append instead of two; every metadata voter must support the version 13 outcome |
 //! | `MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS` | *(unset)* | 2 to 4096: merge a log object's short tail once it holds this many extents, so it stays appendable past 4096 |
 //! | `MATRIXOBJECT_CLUSTER_TARGET_GROUPS` | `1` | data groups one object is spread over |
+//! | `MATRIXOBJECT_CLIENT_TLS_CA_CERT`, `MATRIXOBJECT_CLIENT_TLS_CERT`, `MATRIXOBJECT_CLIENT_TLS_KEY` | *(unset)* | mutual TLS from this door to the metadata and chunk servers (cluster mode only); the door itself still listens in plaintext |
 //!
 //! # CLUSTER MODE
 //!
@@ -313,7 +314,17 @@ fn run_cluster_gateway(
     write.page_bytes = page_bytes;
     write.target_groups = target_groups;
     write.max_object_bytes = max_body_bytes;
+    // MUTUAL TLS TO THE CLUSTER, from the same MATRIXOBJECT_CLIENT_TLS_* variables the chunk
+    // server uses for its heartbeats. Unset means plaintext, as before.
+    let tls = match matrixobjectstore_rs::cluster::ApiTlsConfig::from_env("MATRIXOBJECT_CLIENT") {
+        Ok(tls) => tls,
+        Err(err) => {
+            eprintln!("the cluster TLS configuration is invalid: {err}");
+            std::process::exit(2);
+        }
+    };
     let replica = ReplicaClientOptions {
+        tls: tls.clone(),
         connect_timeout: timeout,
         read_timeout: timeout,
         write_timeout: timeout,
@@ -330,7 +341,8 @@ fn run_cluster_gateway(
         reserve_next,
         ..GatewayOptions::default()
     };
-    let meta_options = ClusterGateway::meta_options(timeout);
+    let mut meta_options = ClusterGateway::meta_options(timeout);
+    meta_options.tls = tls;
     let open_endpoints = endpoints.clone();
     let open = move || {
         if let Some(group) = group.or(if open_endpoints.len() > 1 { Some(1) } else { None }) {
@@ -369,8 +381,11 @@ fn run_cluster_gateway(
         }
     };
     println!(
-        "object_server listening on {bound} bucket={bucket} backend=cluster meta={meta}          max_body_bytes={max_body_bytes} threads={worker_threads} auth=none"
+        "object_server listening on {bound} pid={} bucket={bucket} backend=cluster meta={meta} max_body_bytes={max_body_bytes} threads={worker_threads} auth=none",
+        std::process::id()
     );
+    // Flushed: a supervisor reading this line from a pipe must not wait for a full buffer.
+    let _ = std::io::Write::flush(&mut std::io::stdout());
     if !bound.ip().is_loopback() {
         println!(
             "WARNING: {bound} is not loopback and this server is unauthenticated, so anything              that can reach this port can read, overwrite and delete every object"

@@ -115,7 +115,7 @@ door is the same server with its journal.
   (16000 writes at 8000 operations per phase, sync p50 95 ms against 8 ms for the door), and
   that run wrote 3.45 GB of metadata because it is plain publication. The disk was 97 percent
   full during that run, so its absolute latencies are inflated.
-* Not measured: failure injection, and any metadata checkpoint setting (the Raft checkpoint
+* Not measured: data-node failure, and any metadata checkpoint setting (the Raft checkpoint
   size was left unset; 4000 writes ran without it).
 
 ### Which mode for a log workload
@@ -125,6 +125,24 @@ publication: it removes the metadata growth that dominates the plain path, at a 
 that the extra allocation commit explains. For a log that must grow one object past 4096
 appends, tail compaction, accepting plain publication's metadata cost, until a staged variant
 of the tail merge exists. The default remains the plain path.
+
+## Running it for real
+
+* **Tests.** `tests/node_regime/cluster_gateway_processes.rs` starts three metadata voters,
+  three chunk servers and the gateway as separate processes and drives every served verb over
+  HTTP, then kills the metadata leader and checks that writes, appends and reads continue.
+  Run it with
+  `cargo test --features metadata-consensus --test network_metadata_consensus cluster_gateway_processes`.
+* **Transport security.** The gateway reaches the metadata and chunk servers over mutual TLS
+  when `MATRIXOBJECT_CLIENT_TLS_CA_CERT`, `MATRIXOBJECT_CLIENT_TLS_CERT` and
+  `MATRIXOBJECT_CLIENT_TLS_KEY` are set (built with the `api-tls` feature). Its own listener is
+  plaintext and unauthenticated: bind it to loopback or put it behind something that protects
+  the network.
+* **Startup.** It refuses to bind until a metadata endpoint answers, and prints
+  `object_server listening on ADDR pid=PID ... backend=cluster` once it is serving.
+  `GET /healthz` makes one metadata call, so it reports the cluster and not just the listener.
+* **Not yet covered.** Data-node failure through the gateway, a metadata checkpoint setting,
+  request authentication, and streaming of large whole-object reads.
 
 ## Concurrency
 
