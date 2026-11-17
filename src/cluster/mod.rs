@@ -289,6 +289,8 @@ mod peer_receiver;
 #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
 mod peer_delivery;
 
+mod consensus_errors;
+pub use consensus_errors::{consensus_unavailable, outcome_may_be_committed};
 #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
 mod consensus_inbox;
 

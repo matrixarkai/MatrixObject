@@ -254,6 +254,33 @@ mod progress_tests {
     use super::*;
     use crate::ObjectError;
 
+    /// The predicates the gateway relies on recognise the error `wait_observed` REALLY produces,
+    /// so rewording that message breaks this test instead of silently turning a possibly
+    /// committed write back into a client error.
+    #[test]
+    fn a_timed_out_proposal_is_recognised_as_an_ambiguous_outcome() {
+        for service in ["metadata", "chunk"] {
+            let (_keep_open, receiver) = mpsc::sync_channel::<Result<(), ObjectError>>(1);
+            let write = RequestProgress::new(false)
+                .wait_observed(&receiver, Duration::from_millis(1), service, None)
+                .unwrap_err();
+            assert!(super::super::consensus_unavailable(&write), "{write}");
+            assert!(super::super::outcome_may_be_committed(&write), "{write}");
+            // A read that timed out submitted nothing: unavailable, but not ambiguous.
+            let read = RequestProgress::new(true)
+                .wait_observed(&receiver, Duration::from_millis(1), service, None)
+                .unwrap_err();
+            assert!(super::super::consensus_unavailable(&read), "{read}");
+            assert!(!super::super::outcome_may_be_committed(&read), "{read}");
+        }
+        let (sender, receiver) = mpsc::sync_channel::<Result<(), ObjectError>>(1);
+        drop(sender);
+        let gone = RequestProgress::new(false)
+            .wait_observed(&receiver, Duration::from_millis(1), "metadata", None)
+            .unwrap_err();
+        assert!(super::super::outcome_may_be_committed(&gone), "{gone}");
+    }
+
     #[test]
     fn completed_work_stalls_remain_visible_after_idle_and_shorter_phases() {
         use std::sync::atomic::{AtomicU64, Ordering};
