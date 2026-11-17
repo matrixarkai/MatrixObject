@@ -392,15 +392,25 @@ pub struct ManifestCatalog {
     revision: u128,
 }
 /// Immutable catalog value shared by snapshots and speculative undo.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct ManifestEntry {
     manifest: ObjectManifest,
     encoded_bytes: usize,
+    /// SHA-256 of the manifest's protobuf encoding, computed on first use. The entry is
+    /// immutable and every change to an object builds a new entry, so the digest cannot
+    /// outlive the value it describes. Not part of an entry's identity.
+    digest: std::sync::OnceLock<Vec<u8>>,
 }
+impl PartialEq for ManifestEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.manifest == other.manifest && self.encoded_bytes == other.encoded_bytes
+    }
+}
+impl Eq for ManifestEntry {}
 impl ManifestEntry {
     fn new(manifest: ObjectManifest) -> Self {
         let encoded_bytes = entry_size(&manifest);
-        Self { manifest, encoded_bytes }
+        Self { manifest, encoded_bytes, digest: std::sync::OnceLock::new() }
     }
 }
 impl std::ops::Deref for ManifestEntry {
@@ -781,6 +791,18 @@ impl ManifestCatalog {
     pub fn get(&self, id: &ObjectId) -> Option<&ObjectManifest> {
         self.objects.get(id).map(|entry| &entry.manifest)
     }
+    /// The stored manifest and its SHA-256 digest, computed once per stored value.
+    pub(crate) fn get_with_digest(&self, id: &ObjectId) -> Result<Option<(&ObjectManifest, &[u8])>, ObjectError> {
+        let Some(entry) = self.objects.get(id) else { return Ok(None) };
+        let digest = match entry.digest.get() {
+            Some(digest) => digest,
+            None => {
+                let computed = crate::read_session_outcome::manifest_sha256(&entry.manifest)?;
+                entry.digest.get_or_init(|| computed)
+            }
+        };
+        Ok(Some((&entry.manifest, digest.as_slice())))
+    }
     #[cfg(feature = "metadata-consensus")]
     pub(crate) fn entry_arc(&self, id: &ObjectId) -> Option<Arc<ManifestEntry>> {
         self.objects.get(id).cloned()
@@ -854,7 +876,11 @@ impl ManifestCatalog {
         let id = after.object_id();
         let old_bytes = self.objects.get(&id).map_or(0, |entry| entry.encoded_bytes);
         let encoded_bytes = body_bytes - (self.body_bytes - old_bytes);
-        self.objects.insert(id, Arc::new(ManifestEntry { manifest: after.clone(), encoded_bytes }));
+        self.objects.insert(id, Arc::new(ManifestEntry {
+            manifest: after.clone(),
+            encoded_bytes,
+            digest: std::sync::OnceLock::new(),
+        }));
         self.revision += 1;
         self.body_bytes = body_bytes;
     }
@@ -1012,6 +1038,47 @@ mod tests {
             1
         };
         after.generation == generation
+    }
+    #[test]
+    fn a_stored_manifest_digest_always_describes_the_stored_manifest() {
+        let digest = |m: &ObjectManifest| crate::read_session_outcome::manifest_sha256(m).unwrap();
+        let mut catalog = ManifestCatalog::default();
+        let first = sized_manifest(3);
+        catalog.apply(&ManifestOutcome::decide(None, first.clone()).unwrap()).unwrap();
+        let id = first.object_id();
+        let check = |catalog: &ManifestCatalog, expected: &ObjectManifest| {
+            for _ in 0..2 {
+                let (stored, cached) = catalog.get_with_digest(&id).unwrap().unwrap();
+                assert_eq!(stored, expected);
+                assert_eq!(cached, digest(expected).as_slice());
+            }
+        };
+        check(&catalog, &first);
+        // an append, a replacement with the same extent count, a tombstone, a recreation
+        let mut appended = sized_manifest(4);
+        appended.generation = 2;
+        catalog.apply(&ManifestOutcome::decide(Some(first.clone()), appended.clone()).unwrap()).unwrap();
+        check(&catalog, &appended);
+        assert_ne!(digest(&first), digest(&appended));
+        let mut replaced = sized_manifest(4);
+        replaced.generation = 3;
+        replaced.extents[3].data_sha256 = vec![77; 32];
+        catalog.apply(&ManifestOutcome::decide(Some(appended.clone()), replaced.clone()).unwrap()).unwrap();
+        check(&catalog, &replaced);
+        assert_ne!(digest(&appended), digest(&replaced));
+        let tombstone = ObjectManifest { generation: 4, deleted: true, ..sized_manifest(0) };
+        catalog.apply(&ManifestOutcome::decide(Some(replaced), tombstone.clone()).unwrap()).unwrap();
+        check(&catalog, &tombstone);
+        let mut recreated = sized_manifest(2);
+        recreated.generation = 5;
+        catalog.apply(&ManifestOutcome::decide(Some(tombstone), recreated.clone()).unwrap()).unwrap();
+        check(&catalog, &recreated);
+        // a restored catalog computes its own
+        let restored = ManifestCatalog::from_bytes(&catalog.to_bytes().unwrap()).unwrap();
+        let (_, cached) = restored.get_with_digest(&id).unwrap().unwrap();
+        assert_eq!(cached, digest(&recreated).as_slice());
+        // a missing object has none
+        assert!(catalog.get_with_digest(&ObjectManifest { key: "absent".into(), ..sized_manifest(0) }.object_id()).unwrap().is_none());
     }
     #[test]
     fn outcome_validation_agrees_with_validating_both_manifests_in_full() {

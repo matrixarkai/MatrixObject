@@ -103,9 +103,9 @@ pub(super) fn prepare_at(service: &MatrixMetaService, groups: &ChunkGroupCatalog
                     ObjectError::PreconditionFailed("staged allocation is no longer active".into())
                 })?;
             let manifest = if let Some(append) = &command.manifest_append {
-                let current = service.object_manifests.get(&crate::ObjectId::new(append.bucket.clone(), append.key.clone()))
+                let (current, digest) = service.object_manifests.get_with_digest(&crate::ObjectId::new(append.bucket.clone(), append.key.clone()))?
                     .ok_or_else(|| ObjectError::PreconditionFailed("compact append prior manifest missing".into()))?;
-                append.expand(current)?
+                append.expand_with_digest(current, digest)?
             } else { command.outcome.clone().unwrap() };
             if allocation.expires_at_ms != 0 && (now == 0 || now >= allocation.expires_at_ms) {
                 return Err(ObjectError::PreconditionFailed("staged allocation lease expired".into()));

@@ -1107,10 +1107,10 @@ pub(super) fn apply_with_groups(
     }
     if let MetaRequest::PlanAppendRoutes(command) = &request {
         command.validate()?;
-        let current = service.object_manifests.get(&super::meta_message::object_id(&command.bucket, &command.key))
+        let (current, current_sha256) = service.object_manifests.get_with_digest(&super::meta_message::object_id(&command.bucket, &command.key))?
             .ok_or_else(|| ObjectError::PreconditionFailed("append plan prior manifest missing".into()))?;
         if current.deleted || current.format_version != 2 || current.generation != command.generation
-            || crate::read_session_outcome::manifest_sha256(current)? != command.manifest_sha256 {
+            || current_sha256 != command.manifest_sha256.as_slice() {
             return Err(ObjectError::PreconditionFailed("append plan prior manifest changed".into()));
         }
         let MetaReply::Plan(plan) = apply_to_meta(service, MetaRequest::PlanObjectPlacement {

@@ -622,11 +622,11 @@ impl PlacementOutcome {
     pub fn apply(&self, service: &mut MatrixMetaService) -> Result<(), ObjectError> {
         self.validate_manifest_binding()?;
         if let Some(append) = &self.manifest_append {
-            let before = service.object_manifests.get(&ObjectId::new(append.bucket.clone(), append.key.clone()))
+            let (before, digest) = service.object_manifests.get_with_digest(&ObjectId::new(append.bucket.clone(), append.key.clone()))?
                 .ok_or_else(|| invalid("compact append prior manifest missing"))?;
             let mut expanded = self.clone();
             expanded.version = 4;
-            expanded.manifest = Some(append.expand(before)?);
+            expanded.manifest = Some(append.expand_with_digest(before, digest)?);
             expanded.manifest_append = None;
             return expanded.apply(service);
         }

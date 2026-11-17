@@ -39,6 +39,19 @@ impl ManifestAppend {
     }
     /// `decide` for an outcome the caller has just validated in full.
     pub(crate) fn decide_validated(outcome: &ManifestOutcome) -> Result<Self, ObjectError> {
+        let before_sha256 = crate::read_session_outcome::manifest_sha256(
+            outcome.before.as_ref().ok_or_else(|| invalid("append requires a prior manifest"))?,
+        )?;
+        let after_sha256 = crate::read_session_outcome::manifest_sha256(outcome.after.as_ref().unwrap())?;
+        Self::decide_with_digests(outcome, before_sha256, after_sha256)
+    }
+    /// `decide_validated` where the caller holds the SHA-256 digests of the two manifests'
+    /// encodings (it must have computed them from these manifests).
+    pub(crate) fn decide_with_digests(
+        outcome: &ManifestOutcome,
+        before_sha256: Vec<u8>,
+        after_sha256: Vec<u8>,
+    ) -> Result<Self, ObjectError> {
         let before = outcome
             .before
             .as_ref()
@@ -58,10 +71,10 @@ impl ManifestAppend {
             before_generation: before.generation,
             before_length: before.length,
             before_extents: before.extents.len() as u32,
-            before_sha256: crate::read_session_outcome::manifest_sha256(before)?,
+            before_sha256,
             suffix: after.extents[before.extents.len()..].to_vec(),
             after_length: after.length,
-            after_sha256: crate::read_session_outcome::manifest_sha256(after)?,
+            after_sha256,
         };
         value.validate()?;
         Ok(value)
@@ -101,6 +114,12 @@ impl ManifestAppend {
         Ok(())
     }
     pub(crate) fn expand(&self, before: &ObjectManifest) -> Result<ManifestOutcome, ObjectError> {
+        let before_sha256 = crate::read_session_outcome::manifest_sha256(before)?;
+        self.expand_with_digest(before, &before_sha256)
+    }
+    /// `expand` where the caller already holds the SHA-256 digest of `before`'s encoding
+    /// (the catalog keeps one per stored manifest).
+    pub(crate) fn expand_with_digest(&self, before: &ObjectManifest, before_sha256: &[u8]) -> Result<ManifestOutcome, ObjectError> {
         self.validate()?;
         before.validate()?;
         if before.deleted
@@ -110,7 +129,7 @@ impl ManifestAppend {
             || before.generation != self.before_generation
             || before.length != self.before_length
             || before.extents.len() != self.before_extents as usize
-            || crate::read_session_outcome::manifest_sha256(before)? != self.before_sha256
+            || before_sha256 != self.before_sha256.as_slice()
         {
             return Err(ObjectError::PreconditionFailed(
                 "compact append prior manifest changed".into(),
