@@ -91,6 +91,7 @@ network replication or metadata-quorum validation.
 
 Allocation tests measure a 4-KiB append and metadata read through 4-, 32- and
 128-MiB prefixes. They bound allocation growth rather than proving distributed
-throughput. File rollover, retained read generations, bounded caching, safe
-reclamation and metadata-only catalog/checkpoint integration remain required
+throughput. [Managed outcome segments](outcome-segment-rollover.md) add file rollover and
+bounded reader caching. Retained read generations, safe reclamation and
+metadata-only catalog/checkpoint integration remain required
 before this API changes the running server's performance.

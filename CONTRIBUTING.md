@@ -9,8 +9,7 @@ A single crate, `matrixobjectstore-rs`, holding the store: an S3-shaped object s
 over a chunk/page/fragment storage tier, with erasure-coded striping, write receipts, a
 metaserver control plane, and an optional MatrixRaft backend behind the `matrix-raft`
 feature. The S3 HTTP front door (`http-server`, also spelled `s3`) is on by default and
-adds no dependencies. The library is `src/lib.rs` plus a tree of included modules; the
-whole test suite lives in `src/object_store_regression_tests.rs`.
+adds no dependencies. The library is `src/lib.rs` plus a tree of included modules; library tests include module-specific files, and integration targets live under `tests/`.
 
 ## Build and test
 
@@ -18,6 +17,21 @@ whole test suite lives in `src/object_store_regression_tests.rs`.
 cargo build --all-targets --locked
 cargo test --lib
 ```
+
+
+The compiled-test discovery guard and killed-writer lifecycle cases spawn child
+processes. Run them in separate invocations so children cannot briefly inherit
+file locks held by unrelated parallel library tests:
+
+```bash
+cargo test --locked --lib tests::every_guard_the_workflow_pins_by_name_exists -- --exact --ignored
+cargo test --locked --all-features --lib stored_outcomes_ -- --ignored --test-threads=1
+cargo test --locked --all-features --lib outcome_segments_ -- --ignored --test-threads=1
+```
+
+The latter two commands require Unix. CI and tools/suite_gate.sh run these
+isolated arms and check that their named cases actually passed. The scenarios
+still keep multiple writer processes alive together.
 
 Both are what CI builds, except that CI also sets `RUSTFLAGS=-D warnings`, so run that
 way before you push:
@@ -28,7 +42,8 @@ RUSTFLAGS="-D warnings" cargo build --all-targets --locked --all-features
 ```
 
 **There are no recorded library failures.** Both the default-feature and all-feature
-library configurations pass their enabled tests; ignored tests remain separate work.
+library configurations pass their enabled tests. Process checks run in the isolated
+arms above; resource-heavy ignored benchmarks remain separate work.
 The gate compares failures against [`tools/known_failures.txt`](tools/known_failures.txt)
 in both directions, rejecting new failures and stale recorded failures:
 

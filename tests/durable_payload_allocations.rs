@@ -115,38 +115,10 @@ fn durable_payload_fixed_append_and_range_allocations_do_not_grow_with_file() {
 
 #[test]
 fn stored_outcomes_append_and_metadata_allocations_do_not_grow_with_file() {
-    use matrixobjectstore_rs::{
-        durable_payload::outcome_log::{DecidedMutation, DurableOutcomeLog},
-        outcome::PageOutcome,
-        ChunkId, PageId, PageState,
-    };
+    use matrixobjectstore_rs::durable_payload::outcome_log::{DecidedMutation, DurableOutcomeLog};
     let _test = ALLOCATION_TESTS.lock().unwrap();
-    fn source(bytes: usize) -> PageOutcome {
-        let data = vec![0x31; bytes];
-        let checksum = data.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-        });
-        let state = PageState {
-            logical_length: bytes as u64,
-            write_sequence: 1,
-            checksum_fnv1a64: checksum,
-            data: std::sync::Arc::new(data),
-            ec_parity_fragment: None,
-            ec_fragment_digests: None,
-            discarded_ranges: Vec::new(),
-        };
-        PageOutcome::between(
-            &PageId {
-                chunk_id: ChunkId::new(1, 2).unwrap(),
-                page_index: 0,
-            },
-            None,
-            &state,
-        )
-        .unwrap()
-    }
-    let large = source(MAX_EXTENT_BYTES);
-    let small = source(4096);
+    let large = source_outcome(MAX_EXTENT_BYTES);
+    let small = source_outcome(4096);
     let mut append_sizes = Vec::new();
     let mut metadata_sizes = Vec::new();
     for prefix in [4 * 1024 * 1024, 32 * 1024 * 1024, 128 * 1024 * 1024] {
@@ -210,4 +182,104 @@ fn stored_outcomes_append_and_metadata_allocations_do_not_grow_with_file() {
     }
     assert!(append_sizes.iter().max().unwrap() - append_sizes.iter().min().unwrap() <= 4096);
     assert!(metadata_sizes.iter().max().unwrap() - metadata_sizes.iter().min().unwrap() <= 4096);
+}
+
+fn source_outcome(bytes: usize) -> matrixobjectstore_rs::outcome::PageOutcome {
+    use matrixobjectstore_rs::{outcome::PageOutcome, ChunkId, PageId, PageState};
+    let data = vec![0x31; bytes];
+    let checksum = data.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    });
+    let state = PageState {
+        logical_length: bytes as u64,
+        write_sequence: 1,
+        checksum_fnv1a64: checksum,
+        data: std::sync::Arc::new(data),
+        ec_parity_fragment: None,
+        ec_fragment_digests: None,
+        discarded_ranges: Vec::new(),
+    };
+    PageOutcome::between(
+        &PageId {
+            chunk_id: ChunkId::new(1, 2).unwrap(),
+            page_index: 0,
+        },
+        None,
+        &state,
+    )
+    .unwrap()
+}
+
+#[test]
+fn outcome_segments_append_and_cached_reads_stay_bounded_across_rollovers() {
+    use matrixobjectstore_rs::durable_payload::{
+        outcome_log::DecidedMutation,
+        outcome_segments::{SegmentedOutcomeLog, MIN_SEGMENT_BYTES},
+    };
+    let _test = ALLOCATION_TESTS.lock().unwrap();
+    let large = source_outcome(MAX_EXTENT_BYTES);
+    let small = source_outcome(4096);
+    let mut appends = Vec::new();
+    let mut metadata = Vec::new();
+    let mut reads = Vec::new();
+    for prefix in [4 * 1024 * 1024, 32 * 1024 * 1024, 128 * 1024 * 1024] {
+        let directory = directory("segments", prefix);
+        let log =
+            SegmentedOutcomeLog::open(directory.0.join("outcomes"), MIN_SEGMENT_BYTES).unwrap();
+        let mut index = 1000;
+        let mut first = None;
+        while log.logical_length().unwrap() < prefix as u64 {
+            let count = ((prefix as u64 - log.logical_length().unwrap())
+                .div_ceil(MAX_EXTENT_BYTES as u64) as usize)
+                .clamp(1, 7);
+            let outcomes = (0..count)
+                .map(|_| {
+                    let mut value = large.clone();
+                    value.page_index = index;
+                    index += 1;
+                    value
+                })
+                .collect::<Vec<_>>();
+            let batch = outcomes
+                .iter()
+                .map(DecidedMutation::Page)
+                .collect::<Vec<_>>();
+            let record = log.append_decided_batch(&batch).unwrap();
+            if first.is_none() {
+                first = Some(record.position);
+            }
+        }
+        let extent = log
+            .read_metadata(first.as_ref().unwrap())
+            .unwrap()
+            .batch
+            .payloads
+            .remove(0);
+        let mut warm = small.clone();
+        warm.page_index = 1;
+        log.append_page(&warm).unwrap();
+        log.read_payload_range(&extent, 0, 4096).unwrap();
+        let mut value = small.clone();
+        value.page_index = 2;
+        let before = log.segment_count().unwrap();
+        let bytes = log.logical_length().unwrap();
+        let (record, append_calls, append_bytes) = measured(|| log.append_page(&value));
+        let record = record.unwrap();
+        let (header, metadata_calls, metadata_bytes) =
+            measured(|| log.read_metadata(&record.position));
+        header.unwrap();
+        let (read, read_calls, read_bytes) = measured(|| log.read_payload_range(&extent, 0, 4096));
+        assert_eq!(read.unwrap(), vec![0x31; 4096]);
+        assert_eq!(log.segment_count().unwrap(), before);
+        assert!(append_bytes < 128 * 1024);
+        assert!(metadata_bytes < 64 * 1024);
+        assert!(read_bytes < 16 * 1024);
+        appends.push(append_bytes);
+        metadata.push(metadata_bytes);
+        reads.push(read_bytes);
+        println!("SEGMENTED_OUTCOME_ALLOCATION prefix_bytes={bytes} segments={before} append_calls={append_calls} append_bytes={append_bytes} metadata_calls={metadata_calls} metadata_bytes={metadata_bytes} read_calls={read_calls} read_bytes={read_bytes}");
+    }
+    for sizes in [appends, metadata, reads] {
+        assert!(sizes.iter().max().unwrap() - sizes.iter().min().unwrap() <= 4096);
+    }
 }
