@@ -27,6 +27,7 @@
 //! | `MATRIXOBJECT_CLUSTER_TIMEOUT_MS` | `10000` | bound on one cluster operation |
 //! | `MATRIXOBJECT_CLUSTER_PAGE_BYTES` | `1048576` | page size for written data, 1 to 1048576 |
 //! | `MATRIXOBJECT_CLUSTER_COMPACT_APPEND` | `0` | `1` publishes appends as compact staged decisions; every metadata voter must support the version 11 outcome |
+//! | `MATRIXOBJECT_CLUSTER_RESERVE_NEXT` | `0` | `1` (with compact append) reserves the next append's staged allocation in the commit that publishes the current one, one metadata commit per append instead of two; every metadata voter must support the version 13 outcome |
 //! | `MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS` | *(unset)* | 2 to 4096: merge a log object's short tail once it holds this many extents, so it stays appendable past 4096 |
 //! | `MATRIXOBJECT_CLUSTER_TARGET_GROUPS` | `1` | data groups one object is spread over |
 //!
@@ -131,6 +132,11 @@ fn main() {
         let page_bytes = env_usize("MATRIXOBJECT_CLUSTER_PAGE_BYTES", 1024 * 1024);
         let target_groups = env_usize("MATRIXOBJECT_CLUSTER_TARGET_GROUPS", 1);
         let compact_append = env_usize("MATRIXOBJECT_CLUSTER_COMPACT_APPEND", 0) != 0;
+        let reserve_next = env_usize("MATRIXOBJECT_CLUSTER_RESERVE_NEXT", 0) != 0;
+        if reserve_next && !compact_append {
+            eprintln!("MATRIXOBJECT_CLUSTER_RESERVE_NEXT needs MATRIXOBJECT_CLUSTER_COMPACT_APPEND=1");
+            std::process::exit(2);
+        }
         let compact_extents = match env_usize("MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS", 0) {
             0 => None,
             bound if (2..=4096).contains(&bound) => Some(bound),
@@ -155,6 +161,7 @@ fn main() {
             target_groups as u32,
             compact_append,
             compact_extents,
+            reserve_next,
         );
     }
 
@@ -283,6 +290,7 @@ fn run_cluster_gateway(
     target_groups: u32,
     compact_append: bool,
     compact_extents: Option<usize>,
+    reserve_next: bool,
 ) -> ! {
     use std::sync::Arc;
 
@@ -319,6 +327,7 @@ fn run_cluster_gateway(
         pool_max: worker_threads.max(1),
         compact_append,
         compact_extents,
+        reserve_next,
         ..GatewayOptions::default()
     };
     let meta_options = ClusterGateway::meta_options(timeout);

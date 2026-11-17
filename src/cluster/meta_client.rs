@@ -169,6 +169,11 @@ pub struct RemoteMetaClient {
     wide_manifest_route_reads: Option<bool>,
     read_protection_fence: u64,
     manifest_digests: ManifestDigestMemo,
+    /// Set for the next compact append: reserve the allocation for the one after it, with this
+    /// many pages and lease.
+    pub(super) reserve_next: Option<(u32, u64)>,
+    /// The reservation made by the last compact append that asked for one.
+    pub(super) reservation: Option<crate::staged_allocation::StagedAllocation>,
     #[cfg(feature = "replica-server")]
     pub(super) object_connections: Vec<super::object_client::CachedGroupConnection>,
     #[cfg(feature = "replica-server")]
@@ -246,6 +251,8 @@ impl RemoteMetaClient {
             wide_manifest_route_reads: None,
             read_protection_fence: 0,
             manifest_digests: ManifestDigestMemo::default(),
+            reserve_next: None,
+            reservation: None,
             #[cfg(feature = "replica-server")]
             object_connections: Vec::new(),
             #[cfg(feature = "replica-server")]
@@ -1856,6 +1863,38 @@ impl RemoteMetaClient {
         let stored = crate::object_manifest::StoredDigest::of(manifest);
         self.manifest_digests.remember(manifest, stored.clone());
         stored
+    }
+
+    /// Publish a compact append and reserve the allocation for the next one in the same
+    /// durable commit. Needs every metadata voter and journal reader to support the version
+    /// 13 outcome.
+    pub(super) fn publish_compact_append_reserving(&mut self,
+        outcome: crate::object_manifest::ManifestOutcome, allocation_id: u64, update_time_ms: u64,
+        next_pages: u32, next_ttl_ms: u64)
+        -> (Result<(crate::object_manifest::ObjectManifest, crate::staged_allocation::StagedAllocation), ObjectError>, bool,
+            crate::object_manifest::ManifestOutcome) {
+        let append = match self.decide_compact_append(&outcome) {
+            Ok(value) => value, Err(error) => return (Err(error), true, outcome),
+        };
+        let digest = append.after_sha256.clone();
+        let command = crate::staged_allocation::StagedAllocationRequest {
+            version: 5, action: 12, allocation_id, manifest_append: Some(append), update_time_ms,
+            page_count: next_pages, ttl_ms: next_ttl_ms,
+            ..Default::default()
+        };
+        if let Err(error) = command.validate() { return (Err(error), true, outcome); }
+        let (reply, unadmitted) = self.try_call_admission(&MetaRequest::StagedAllocation(command));
+        let result = reply.into_result().and_then(|reply| match reply {
+            MetaReply::StagedAllocation(value) if value.version == 5
+                && value.committed_allocation_id == allocation_id && value.manifest_sha256 == digest => {
+                match value.allocation {
+                    Some(reserved) => Ok((outcome.after.as_ref().unwrap().clone(), reserved)),
+                    None => Err(ObjectError::Corruption("compact append acknowledgement lacks its reservation".into())),
+                }
+            }
+            _ => Err(ObjectError::Corruption("unexpected compact append acknowledgement".into())),
+        });
+        (result, unadmitted, outcome)
     }
 
     pub(super) fn publish_compact_append_preserving_outcome(&mut self,

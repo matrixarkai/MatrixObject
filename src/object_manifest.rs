@@ -613,6 +613,36 @@ impl ManifestCatalog {
         }
         Ok(())
     }
+    /// Check a reservation made by the same commit that publishes `after` and removes
+    /// `consumed`: the reserved allocation is for the next append to the object just published.
+    /// `body_bytes` is the catalog's size once `after` is stored.
+    pub(crate) fn check_reservation(
+        &self,
+        reserved: &crate::staged_allocation::StagedAllocation,
+        after: &ObjectManifest,
+        body_bytes: usize,
+        consumed: &crate::staged_allocation::StagedAllocation,
+    ) -> Result<(), ObjectError> {
+        reserved.validate()?;
+        if reserved.version != 2 || !reserved.append || reserved.bucket != after.bucket
+            || reserved.key != after.key || reserved.expected_generation != after.generation
+            || after.deleted || after.format_version != 2 {
+            return Err(invalid("invalid reservation for the published manifest"));
+        }
+        if self.publication_fence == 0 {
+            return Err(ObjectError::PreconditionFailed("leased staging requires publication fencing".into()));
+        }
+        if self.staged.get(&consumed.allocation_id) != Some(consumed) || self.staged.contains_key(&reserved.allocation_id) {
+            return Err(ObjectError::PreconditionFailed("reservation prior state mismatch".into()));
+        }
+        // One allocation is removed and one created, so the count is unchanged; the byte
+        // budget is checked with the new manifest stored and the consumed record released.
+        if body_bytes + self.retention_bytes + self.staged_bytes - entry_size(consumed) + entry_size(reserved)
+            > MAX_SNAPSHOT - self.header_size() {
+            return Err(ObjectError::PreconditionFailed("staged allocation capacity exceeded".into()));
+        }
+        Ok(())
+    }
     pub(crate) fn apply_staging(&mut self, change: &crate::staged_allocation::StagedAllocationChange) -> Result<(), ObjectError> {
         self.check_staging(change)?;
         let id = change.before.as_ref().or(change.after.as_ref()).unwrap().allocation_id;

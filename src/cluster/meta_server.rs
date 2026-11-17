@@ -998,6 +998,7 @@ pub(super) fn decide_allocation(
         read_session_open: None,
         read_session_removal: None,
             manifest_append: None,
+            reserved: None,
     };
     outcome.to_payload()?;
     Ok((outcome, reply))

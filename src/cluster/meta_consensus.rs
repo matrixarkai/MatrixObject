@@ -981,7 +981,7 @@ fn propose_batch(
                     }
                 }
             }
-            MetaRequest::StagedAllocation(command) if command.action == 11 => {
+            MetaRequest::StagedAllocation(command) if matches!(command.action, 11 | 12) => {
                 if let Some(append) = &command.manifest_append {
                     let id = crate::ObjectId::new(append.bucket.clone(), append.key.clone());
                     if let Some(current) = service.object_manifests.get(&id) {
@@ -1048,8 +1048,8 @@ fn propose_batch(
     let mut staged_ids = BTreeSet::new();
     for request in queued.iter().take(PROPOSALS_PER_BATCH) {
         if let MetaRequest::StagedAllocation(command) = &request.request {
-            if matches!(command.action, 3 | 4 | 8 | 9 | 11) { staged_ids.insert(command.allocation_id); }
-            if command.action == 1 {
+            if matches!(command.action, 3 | 4 | 8 | 9 | 11 | 12) { staged_ids.insert(command.allocation_id); }
+            if matches!(command.action, 1 | 12) {
                 for distance in 1..=PROPOSALS_PER_BATCH as u64 {
                     if let Some(id) = draft.index.checked_add(distance) { staged_ids.insert(id); }
                 }
@@ -2471,6 +2471,7 @@ mod tests {
 
     include!("compact_generation_batch_tests.rs");
     include!("compact_append_command_tests.rs");
+    include!("reservation_tests.rs");
     include!("append_plan_command_tests.rs");
 
     #[test]
