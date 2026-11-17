@@ -1105,6 +1105,7 @@ fn sequential_object_reads_reuse_one_verified_group_connection() {
                 data_sha256: ring::digest::digest(&ring::digest::SHA256, &data[..4])
                     .as_ref()
                     .to_vec(),
+                ..Default::default()
             },
             ObjectExtent {
                 group: group.placement_id.clone(),
@@ -1119,6 +1120,7 @@ fn sequential_object_reads_reuse_one_verified_group_connection() {
                 data_sha256: ring::digest::digest(&ring::digest::SHA256, &data[4..])
                     .as_ref()
                     .to_vec(),
+                ..Default::default()
             },
         ],
         deleted: false,

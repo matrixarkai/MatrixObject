@@ -1059,7 +1059,7 @@ impl RemoteMetaClient {
                     data_checksum: crate::fnv1a64(bytes),
                     data_sha256: ring::digest::digest(&ring::digest::SHA256, bytes)
                         .as_ref()
-                        .to_vec(),
+                        .to_vec(), ..Default::default()
                 });
             }
         }
@@ -1334,7 +1334,7 @@ mod tests {
                 length: 4,
                 write_sequence: 1,
                 data_checksum: 0,
-                data_sha256: Vec::new(),
+                data_sha256: Vec::new(), ..Default::default()
             }],
             deleted: false,
         };

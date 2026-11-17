@@ -94,6 +94,88 @@ pub struct ObjectExtent {
     /// Empty on manifests written before authenticated extent reads.
     #[prost(bytes = "vec", tag = "10")]
     pub data_sha256: Vec<u8>,
+    /// `EXTENT_KIND_PAGE` (0, absent on the wire) or `EXTENT_KIND_LOG_CHUNK`. Only a format 3
+    /// manifest may hold a log-chunk extent; earlier readers reject the field as unknown.
+    #[prost(uint32, tag = "11")]
+    pub kind: u32,
+    /// `EXTENT_FLAG_SEALED` / `EXTENT_FLAG_TAIL`; zero for a page extent.
+    #[prost(uint32, tag = "12")]
+    pub flags: u32,
+    /// CRC-32C over the sealed chunk bytes; zero unless the extent is sealed.
+    #[prost(fixed32, tag = "13")]
+    pub footer_crc: u32,
+    /// SHA-256 over the sealed chunk bytes, computed once at seal. Present exactly when
+    /// `EXTENT_FLAG_FOOTER_SHA256` is set (it can be switched off by configuration).
+    #[prost(bytes = "vec", tag = "14")]
+    pub footer_sha256: Vec<u8>,
+}
+/// A manifest whose extents may name log chunks (a byte range of one chunk) as well as pages.
+pub const MANIFEST_FORMAT_CHUNKED: u32 = 3;
+pub const EXTENT_KIND_PAGE: u32 = 0;
+/// One entry covers the object bytes held by a whole log chunk: `page_index` and `page_offset`
+/// are zero and `length` is the chunk's length when it was last recorded.
+pub const EXTENT_KIND_LOG_CHUNK: u32 = 1;
+/// The chunk's length is final.
+pub const EXTENT_FLAG_SEALED: u32 = 1;
+/// The chunk is still being written: `length` is a lower bound. Only the last entry may carry it.
+pub const EXTENT_FLAG_TAIL: u32 = 2;
+/// `footer_sha256` is recorded (requires `EXTENT_FLAG_SEALED`).
+pub const EXTENT_FLAG_FOOTER_SHA256: u32 = 4;
+const MAX_PAGE_EXTENT_END: u64 = 256 * 1024 * 1024;
+const MAX_LOG_CHUNK_LENGTH: u64 = 512 * 1024 * 1024;
+/// Whether `format_version` is one this build reads.
+fn known_format(version: u32) -> bool {
+    (1..=MANIFEST_FORMAT_CHUNKED).contains(&version)
+}
+/// The per-extent shape rules that depend only on the extent and the manifest version.
+fn extent_shape_ok(version: u32, extent: &ObjectExtent) -> bool {
+    match (version, extent.kind) {
+        (1 | 2 | 3, EXTENT_KIND_PAGE) => {
+            extent.flags == 0
+                && extent.footer_crc == 0
+                && extent.footer_sha256.is_empty()
+                && match version {
+                    1 => extent.data_sha256.is_empty(),
+                    _ => extent.data_sha256.len() == 32,
+                }
+                && extent
+                    .page_offset
+                    .checked_add(extent.length)
+                    .is_some_and(|n| n <= MAX_PAGE_EXTENT_END)
+        }
+        (MANIFEST_FORMAT_CHUNKED, EXTENT_KIND_LOG_CHUNK) => {
+            extent.page_index == 0
+                && extent.page_offset == 0
+                && extent.data_checksum == 0
+                && extent.data_sha256.is_empty()
+                && extent.length <= MAX_LOG_CHUNK_LENGTH
+                && extent.flags & !(EXTENT_FLAG_SEALED | EXTENT_FLAG_TAIL | EXTENT_FLAG_FOOTER_SHA256) == 0
+                && extent.flags & (EXTENT_FLAG_SEALED | EXTENT_FLAG_TAIL) != EXTENT_FLAG_SEALED | EXTENT_FLAG_TAIL
+                && (extent.footer_crc == 0 || extent.flags & EXTENT_FLAG_SEALED != 0)
+                && (extent.flags & EXTENT_FLAG_FOOTER_SHA256 != 0) == (extent.footer_sha256.len() == 32)
+                && (extent.footer_sha256.is_empty() || extent.flags & EXTENT_FLAG_SEALED != 0)
+        }
+        _ => false,
+    }
+}
+/// Whether this build may PUBLISH a format 3 manifest. Readers accept it first; the writers are
+/// enabled in a later change, once every node reads it.
+const EMIT_CHUNKED_MANIFESTS: bool = false;
+fn refuse_unemitted_format(manifest: &ObjectManifest) -> Result<(), ObjectError> {
+    if manifest.format_version == MANIFEST_FORMAT_CHUNKED && !EMIT_CHUNKED_MANIFESTS {
+        return Err(ObjectError::InvalidArgument(
+            "chunk-granular manifests are not published by this build".into(),
+        ));
+    }
+    Ok(())
+}
+/// The ordering rules between extents: page extents come first, then log chunks, and only the
+/// last extent may be unsealed. `after_chunk` is whether a log chunk precedes this extent.
+fn extent_order_ok(extent: &ObjectExtent, after_chunk: bool, is_last: bool) -> bool {
+    match extent.kind {
+        EXTENT_KIND_PAGE => !after_chunk,
+        _ => is_last || extent.flags & EXTENT_FLAG_SEALED != 0,
+    }
 }
 #[derive(Clone, PartialEq, Eq, Message)]
 pub struct ObjectManifest {
@@ -137,7 +219,7 @@ impl ObjectManifest {
         VALIDATE_CALLS.with(|calls| calls.set(calls.get() + 1));
         crate::validate_bucket(&self.bucket)?;
         crate::validate_key(&self.key)?;
-        if !(1..=2).contains(&self.format_version)
+        if !known_format(self.format_version)
             || self.generation == 0
             || self.extents.len() > 4096
             || self.encoded_len() > MAX_MANIFEST
@@ -151,7 +233,12 @@ impl ObjectManifest {
         }
         let mut offset = 0u64;
         let mut pages = PageSet::with_capacity_and_hasher(self.extents.len(), Default::default());
-        for extent in &self.extents {
+        let mut after_chunk = false;
+        for (position, extent) in self.extents.iter().enumerate() {
+            if !extent_order_ok(extent, after_chunk, position + 1 == self.extents.len()) {
+                return Err(invalid("invalid object extent ordering, identity or bounds"));
+            }
+            after_chunk |= extent.kind == EXTENT_KIND_LOG_CHUNK;
             ChunkId::new(extent.volume_id, extent.chunk_id)?;
             if extent.group.is_empty()
                 || extent.group.len() > 128
@@ -161,13 +248,8 @@ impl ObjectManifest {
                     .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
                 || extent.length == 0
                 || extent.write_sequence == 0
-                || (self.format_version == 1 && !extent.data_sha256.is_empty())
-                || (self.format_version == 2 && extent.data_sha256.len() != 32)
+                || !extent_shape_ok(self.format_version, extent)
                 || extent.object_offset != offset
-                || extent
-                    .page_offset
-                    .checked_add(extent.length)
-                    .map_or(true, |n| n > 256 * 1024 * 1024)
                 || !pages.insert((
                     &extent.group,
                     extent.volume_id,
@@ -196,7 +278,7 @@ impl ObjectManifest {
         crate::validate_bucket(&self.bucket)?;
         crate::validate_key(&self.key)?;
         let kept = prefix.extents.len();
-        if !(1..=2).contains(&self.format_version)
+        if !known_format(self.format_version)
             || self.format_version != prefix.format_version
             || self.generation == 0
             || self.extents.len() > 4096
@@ -212,7 +294,17 @@ impl ObjectManifest {
         }
         let suffix = &self.extents[kept..];
         let mut offset = prefix.length;
-        for extent in suffix {
+        // The prefix's last log chunk becomes a middle entry when anything follows it, so it
+        // must already be sealed; and a page extent may not follow a log chunk.
+        let mut after_chunk = prefix.extents.last().is_some_and(|last| last.kind == EXTENT_KIND_LOG_CHUNK);
+        if after_chunk && !suffix.is_empty() && prefix.extents.last().is_some_and(|last| last.flags & EXTENT_FLAG_SEALED == 0) {
+            return Err(invalid("invalid object extent ordering, identity or bounds"));
+        }
+        for (position, extent) in suffix.iter().enumerate() {
+            if !extent_order_ok(extent, after_chunk, position + 1 == suffix.len()) {
+                return Err(invalid("invalid object extent ordering, identity or bounds"));
+            }
+            after_chunk |= extent.kind == EXTENT_KIND_LOG_CHUNK;
             ChunkId::new(extent.volume_id, extent.chunk_id)?;
             if extent.group.is_empty()
                 || extent.group.len() > 128
@@ -222,13 +314,8 @@ impl ObjectManifest {
                     .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
                 || extent.length == 0
                 || extent.write_sequence == 0
-                || (self.format_version == 1 && !extent.data_sha256.is_empty())
-                || (self.format_version == 2 && extent.data_sha256.len() != 32)
+                || !extent_shape_ok(self.format_version, extent)
                 || extent.object_offset != offset
-                || extent
-                    .page_offset
-                    .checked_add(extent.length)
-                    .map_or(true, |n| n > 256 * 1024 * 1024)
             {
                 return Err(invalid(
                     "invalid object extent ordering, identity or bounds",
@@ -283,7 +370,7 @@ impl ObjectManifest {
         crate::validate_bucket(&self.bucket)?;
         crate::validate_key(&self.key)?;
         let kept = self.extents.len();
-        if !(1..=2).contains(&self.format_version)
+        if !known_format(self.format_version)
             || self.generation == 0
             || kept > 4096
             || kept > after.extents.len()
@@ -335,6 +422,7 @@ impl ManifestOutcome {
         before: Option<ObjectManifest>,
         after: ObjectManifest,
     ) -> Result<Self, ObjectError> {
+        refuse_unemitted_format(&after)?;
         let value = Self {
             format_version: 1,
             before,
@@ -349,6 +437,7 @@ impl ManifestOutcome {
     /// prior that was not valid is refused there. Cost: the new extents, plus the cheap
     /// comparisons of the prefix, instead of a pass of hashing over every extent.
     pub(crate) fn decide_append(before: ObjectManifest, after: ObjectManifest) -> Result<Self, ObjectError> {
+        refuse_unemitted_format(&after)?;
         let value = Self {
             format_version: 1,
             before: Some(before),
@@ -506,13 +595,8 @@ impl crate::extent_list::StoredManifest {
                     .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
                 || extent.length == 0
                 || extent.write_sequence == 0
-                || (self.format_version == 1 && !extent.data_sha256.is_empty())
-                || (self.format_version == 2 && extent.data_sha256.len() != 32)
+                || !extent_shape_ok(self.format_version, extent)
                 || extent.object_offset != offset
-                || extent
-                    .page_offset
-                    .checked_add(extent.length)
-                    .map_or(true, |n| n > 256 * 1024 * 1024)
             {
                 return Err(invalid(
                     "invalid object extent ordering, identity or bounds",
@@ -1800,7 +1884,7 @@ mod tests {
                 length: 4,
                 write_sequence: 1,
                 data_checksum: 42,
-                data_sha256: Vec::new(),
+                data_sha256: Vec::new(), ..Default::default()
             }],
         }
     }

@@ -3,6 +3,8 @@
 pub mod object_manifest;
 pub mod manifest_append;
 pub(crate) mod manifest_chain;
+#[cfg(test)]
+mod chunked_manifest_tests;
 pub(crate) mod extent_list;
 pub mod manifest_retention;
 pub mod read_session_outcome;

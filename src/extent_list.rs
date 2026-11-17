@@ -306,7 +306,7 @@ mod tests {
             length: 1 + pick(state) % 70_000,
             write_sequence: pick(state),
             data_checksum: next(state),
-            data_sha256: vec![(index % 251) as u8; if index % 5 == 0 { 0 } else { 32 }],
+            data_sha256: vec![(index % 251) as u8; if index % 5 == 0 { 0 } else { 32 }], ..Default::default()
         }
     }
 
