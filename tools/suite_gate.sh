@@ -13,8 +13,8 @@ set -u
 
 cd "$(dirname "$0")/.." || exit 2
 BASELINE=tools/known_failures.txt
-LOG=$(mktemp)
-trap 'rm -f "$LOG" "$LOG.now" "$LOG.base"' EXIT
+LOG=$(mktemp) || exit 2
+trap 'rm -f "$LOG" "$LOG.now" "$LOG.base" "$LOG.isolated"' EXIT
 
 cargo test --locked --lib -- --test-threads=1 > "$LOG" 2>&1
 
@@ -30,6 +30,32 @@ PASSED=$(sed -n 's/^test result:.* \([0-9]*\) passed.*/\1/p' "$LOG" | head -1)
 if [ "${PASSED:-0}" -lt 200 ]; then
   echo "only ${PASSED:-0} tests passed; expected 200 or more. The suite did not run properly."
   exit 2
+fi
+
+
+# Subprocess tests get fresh harnesses so fork cannot temporarily retain file
+# locks owned by unrelated tests in the ordinary library run.
+run_isolated() {
+  local expected="$1" filter="$2"
+  shift 2
+  cargo test --locked --lib "$filter" -- --ignored --test-threads=1 "$@" > "$LOG.isolated" 2>&1
+  local result=$?
+  cat "$LOG.isolated" >> "$LOG"
+  if [ "$result" -ne 0 ] || ! grep -q "^test result: ok. $expected passed; 0 failed;" "$LOG.isolated"; then
+    echo "isolated check $filter did not pass its $expected required cases"
+    cat "$LOG.isolated"
+    exit 1
+  fi
+}
+run_isolated 1 tests::every_guard_the_workflow_pins_by_name_exists --exact
+RUST_TARGET_ARGS=()
+if [ -n "${CARGO_BUILD_TARGET:-}" ]; then
+  RUST_TARGET_ARGS=(--target "$CARGO_BUILD_TARGET")
+fi
+RUST_TARGET_CFG=$(rustc "${RUST_TARGET_ARGS[@]}" --print cfg) || exit 2
+if grep -qx unix <<< "$RUST_TARGET_CFG"; then
+  run_isolated 3 stored_outcomes_
+  run_isolated 2 outcome_segments_
 fi
 
 grep -E '^test .* FAILED$' "$LOG" | sed 's/^test //; s/ \.\.\. FAILED$//' | sort -u > "$LOG.now"

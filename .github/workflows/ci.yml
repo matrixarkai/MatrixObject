@@ -628,9 +628,21 @@ jobs:
           set -euo pipefail
           cargo test --locked --all-features --lib durable_payload -- --test-threads=1 | tee /tmp/payload-unit.log
           grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/payload-unit.log
-          for test_name in durable_payload_binary_header_and_descriptor_bytes_are_stable durable_payload_sync_and_write_failures_return_no_descriptors_and_fence durable_payload_verified_read_does_not_wait_for_writer_sync stored_outcomes_share_one_sync_and_recover_identical_binary_decisions stored_outcomes_preserve_namespace_fences_in_order stored_outcomes_binary_metadata_and_envelope_bytes_are_stable stored_outcomes_control_records_bind_file_identity_and_absolute_position stored_outcomes_three_process_copies_replay_after_kill
+          for test_name in durable_payload_binary_header_and_descriptor_bytes_are_stable durable_payload_sync_and_write_failures_return_no_descriptors_and_fence durable_payload_verified_read_does_not_wait_for_writer_sync stored_outcomes_share_one_sync_and_recover_identical_binary_decisions stored_outcomes_preserve_namespace_fences_in_order stored_outcomes_binary_metadata_and_envelope_bytes_are_stable stored_outcomes_control_records_bind_file_identity_and_absolute_position outcome_segments_rollover_replays_in_order_and_retains_old_ranges outcome_segments_cache_is_bounded_and_evicted_readers_keep_shared_locks outcome_segments_disk_full_is_not_a_configured_capacity_refusal
           do
             grep -Fq "${test_name} ... ok" /tmp/payload-unit.log
+          done
+          cargo test --locked --all-features --lib stored_outcomes_ -- --ignored --test-threads=1 | tee /tmp/stored-outcome-process.log
+          grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/stored-outcome-process.log
+          for test_name in stored_outcomes_three_process_copies_replay_after_kill stored_outcomes_process_partial_tail_preserves_acknowledged_prefix stored_outcomes_process_before_sync_can_recover_an_unconfirmed_decision
+          do
+            grep -Fq "${test_name} ... ok" /tmp/stored-outcome-process.log
+          done
+          cargo test --locked --all-features --lib outcome_segments_ -- --ignored --test-threads=1 | tee /tmp/outcome-segment-process.log
+          grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/outcome-segment-process.log
+          for test_name in outcome_segments_three_live_writer_processes_recover_after_kill outcome_segments_process_kills_cover_manifest_and_record_publication
+          do
+            grep -Fq "${test_name} ... ok" /tmp/outcome-segment-process.log
           done
           cargo test --locked --all-features --test durable_payload_recovery -- --test-threads=1 | tee /tmp/payload-process.log
           grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/payload-process.log
@@ -640,7 +652,7 @@ jobs:
           done
           cargo test --locked --all-features --test durable_payload_allocations -- --test-threads=1 --show-output | tee /tmp/payload-allocations.log
           grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/payload-allocations.log
-          for test_name in durable_payload_fixed_append_and_range_allocations_do_not_grow_with_file stored_outcomes_append_and_metadata_allocations_do_not_grow_with_file
+          for test_name in durable_payload_fixed_append_and_range_allocations_do_not_grow_with_file stored_outcomes_append_and_metadata_allocations_do_not_grow_with_file outcome_segments_append_and_cached_reads_stay_bounded_across_rollovers
           do
             grep -Fq "${test_name} ... ok" /tmp/payload-allocations.log
           done
@@ -2643,10 +2655,10 @@ jobs:
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail
-          cargo test --locked --lib tests::every_guard_the_workflow_pins_by_name_exists -- --exact | tee /tmp/library-guard.log
+          cargo test --locked --lib tests::every_guard_the_workflow_pins_by_name_exists -- --exact --ignored | tee /tmp/library-guard.log
           grep -q '^running 1 test$' /tmp/library-guard.log
           grep -q '^test result: ok. 1 passed' /tmp/library-guard.log
-          cargo test --locked --all-features --lib tests::every_guard_the_workflow_pins_by_name_exists -- --exact | tee /tmp/library-guard.log
+          cargo test --locked --all-features --lib tests::every_guard_the_workflow_pins_by_name_exists -- --exact --ignored | tee /tmp/library-guard.log
           grep -q '^running 1 test$' /tmp/library-guard.log
           grep -q '^test result: ok. 1 passed' /tmp/library-guard.log
       - name: rust distributed readiness fences checksums

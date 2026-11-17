@@ -23,6 +23,14 @@ const RECORD_MAGIC: &[u8; 8] = b"MOEXREC1";
 const ENVELOPE: usize = 128;
 const COMMIT_OFFSET: u64 = 127;
 const MAX_HEADER: usize = 16 * 1024 * 1024;
+#[derive(Debug)]
+pub(super) struct CapacityExhausted;
+impl std::fmt::Display for CapacityExhausted {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output.write_str("stored outcome file capacity exhausted")
+    }
+}
+impl std::error::Error for CapacityExhausted {}
 
 /// An already decided mutation. Persistence does not re-execute a client request.
 #[derive(Clone, Copy)]
@@ -259,6 +267,40 @@ impl DurableOutcomeLog {
         log.recover_tail()?;
         Ok(log)
     }
+
+    pub(super) fn open_existing(
+        path: &Path,
+        capacity: u64,
+        id: &[u8],
+        sealed: Option<u64>,
+    ) -> io::Result<Self> {
+        let log = Self {
+            store: PayloadExtentStore::open_existing_bound(
+                path,
+                capacity,
+                id,
+                2,
+                sealed.is_some(),
+                sealed.is_none(),
+            )?,
+        };
+        if let Some(length) = sealed {
+            if log.length() != length {
+                return Err(invalid("sealed outcome segment length changed"));
+            }
+        } else {
+            log.recover_tail()?;
+        }
+        Ok(log)
+    }
+    pub(super) fn seal(&self) -> io::Result<()> {
+        self.store.healthy()?;
+        fs2::FileExt::try_lock_shared(&self.store.file)?;
+        fs2::FileExt::try_lock_shared(&self.store._lock)
+    }
+    pub(super) fn healthy(&self) -> io::Result<()> {
+        self.store.healthy()
+    }
     pub fn length(&self) -> u64 {
         self.store.length()
     }
@@ -279,7 +321,7 @@ impl DurableOutcomeLog {
     ) -> io::Result<StoredRecordMetadata> {
         self.append_with_sync(mutations, File::sync_data)
     }
-    fn append_with_sync(
+    pub(super) fn append_with_sync(
         &self,
         mutations: &[DecidedMutation<'_>],
         sync: impl FnOnce(&File) -> io::Result<()>,
@@ -382,7 +424,7 @@ impl DurableOutcomeLog {
             .checked_add(span)
             .ok_or_else(|| argument("stored outcome position overflow"))?;
         if end > SECTOR_BYTES as u64 + self.store.capacity {
-            return Err(io::Error::other("stored outcome file capacity exhausted"));
+            return Err(io::Error::other(CapacityExhausted));
         }
         let header = envelope(&encoded, header, span, start, self.store_id());
         let result = (|| {

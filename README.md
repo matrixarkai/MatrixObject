@@ -1106,6 +1106,10 @@ On pushes to `main` and on every pull request, four jobs:
   [Stored outcome records](docs/stored-outcome-records.md) test one-sync binary
   decisions, metadata-only reads and three killed storage writers; live server
   routing and metadata-only checkpoints remain to be implemented.
+  [Managed outcome segments](docs/outcome-segment-rollover.md) add rollover,
+  bounded readers, committed scan cuts and killed-writer publication guards.
+  Process lifecycle and compiled-test discovery checks run in isolated invocations
+  so forked children cannot retain unrelated library-test file locks.
   The guards over
   [replica processes](#replicas-in-their-own-processes) check their output for
   `running 1 test` as well: they name a test of an integration target rather than a

@@ -48410,6 +48410,7 @@ fn a_storage_class_is_one_byte_and_its_wire_is_still_a_name() {
 }
 
 #[test]
+#[ignore = "compiled-harness discovery spawns a process; run separately with --ignored"]
 fn every_guard_the_workflow_pins_by_name_exists() {
     // CI runs named guards as separate steps, each selecting one test with `--exact`.
     // `cargo test <filter>` EXITS 0 WHEN THE FILTER MATCHES NOTHING, so every step greps its

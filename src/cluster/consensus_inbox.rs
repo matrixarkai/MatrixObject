@@ -230,12 +230,14 @@ mod tests {
         let began = Instant::now();
         assert!(!inbox.wait(&stop, Duration::from_millis(5)));
         assert!(began.elapsed() >= Duration::from_millis(5));
+        // Delayed workers need scheduling room in the parallel suite. Timer expiry
+        // is checked separately above; these assertions check notification and stop.
         let worker = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(10));
             sender.try_send(99).unwrap();
             notify.notify();
         });
-        assert!(inbox.wait(&stop, Duration::from_millis(50)));
+        assert!(inbox.wait(&stop, Duration::from_secs(2)));
         worker.join().unwrap();
         assert_eq!(inbox.try_recv().unwrap(), 99);
         let shutdown = Arc::clone(&stop);
@@ -243,7 +245,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
             shutdown.stop();
         });
-        assert!(inbox.wait(&stop, Duration::from_millis(50)));
+        assert!(inbox.wait(&stop, Duration::from_secs(2)));
         worker.join().unwrap();
         assert!(stop.is_stopped());
     }

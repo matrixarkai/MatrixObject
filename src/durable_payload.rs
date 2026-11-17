@@ -135,7 +135,7 @@ fn verify_header(file: &mut File, id: &[u8], capacity: u64, profile: u32) -> io:
         return Err(invalid("unknown payload file format"));
     }
     let length = u32::from_be_bytes(bytes[8..12].try_into().unwrap()) as usize;
-    let padding_end = SECTOR_BYTES - usize::from(profile == 2);
+    let padding_end = SECTOR_BYTES - usize::from(profile != 1);
     if length == 0 || length > padding_end - ENVELOPE_BYTES {
         return Err(invalid("invalid payload header length"));
     }
@@ -144,7 +144,7 @@ fn verify_header(file: &mut File, id: &[u8], capacity: u64, profile: u32) -> io:
         || bytes[ENVELOPE_BYTES + length..padding_end]
             .iter()
             .any(|n| *n != 0)
-        || (profile == 2 && ![0, READY].contains(&bytes[SECTOR_BYTES - 1]))
+        || (profile != 1 && ![0, READY].contains(&bytes[SECTOR_BYTES - 1]))
     {
         return Err(invalid("payload header checksum or padding damaged"));
     }
@@ -538,9 +538,69 @@ fn read_at(file: &File, mut bytes: &mut [u8], mut offset: u64) -> io::Result<()>
     Ok(())
 }
 
+impl PayloadExtentStore {
+    // Published segment identities must never create or repair an absent file.
+    fn open_existing_bound(
+        path: &Path,
+        capacity: u64,
+        expected: &[u8],
+        profile: u32,
+        readonly: bool,
+        allow_partial_tail: bool,
+    ) -> io::Result<Self> {
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(!readonly)
+            .open(sibling(path))?;
+        if readonly {
+            fs2::FileExt::try_lock_shared(&lock)?;
+        } else {
+            fs2::FileExt::try_lock_exclusive(&lock)?;
+        }
+        if lock.metadata()?.len() != MARKER_BYTES as u64 + 1 {
+            return Err(invalid("published segment identity is incomplete"));
+        }
+        let mut bytes = [0; MARKER_BYTES + 1];
+        read_at(&lock, &mut bytes, 0)?;
+        if &bytes[..8] != LOCK_MAGIC
+            || &bytes[8..24] != expected
+            || digest::digest(&digest::SHA256, &bytes[..24]).as_ref() != &bytes[24..56]
+            || bytes[MARKER_BYTES] != READY
+        {
+            return Err(invalid("published segment identity mismatch"));
+        }
+        let mut file = OpenOptions::new().read(true).write(!readonly).open(path)?;
+        if readonly {
+            fs2::FileExt::try_lock_shared(&file)?;
+        } else {
+            fs2::FileExt::try_lock_exclusive(&file)?;
+        }
+        verify_header(&mut file, expected, capacity, profile)?;
+        let end = file.metadata()?.len();
+        if end < SECTOR_BYTES as u64
+            || end > SECTOR_BYTES as u64 + capacity
+            || (!allow_partial_tail && end % SECTOR_BYTES as u64 != 0)
+        {
+            return Err(invalid("published segment length is invalid"));
+        }
+        Ok(Self {
+            file,
+            _lock: lock,
+            id: expected.to_vec(),
+            capacity,
+            end: AtomicU64::new(end),
+            writer: Mutex::new(()),
+            failed: AtomicBool::new(false),
+        })
+    }
+}
+
 #[cfg(all(test, unix))]
 #[path = "durable_payload_tests.rs"]
 mod tests;
 
 #[path = "stored_outcome_records.rs"]
 pub mod outcome_log;
+
+#[path = "stored_outcome_segments.rs"]
+pub mod outcome_segments;

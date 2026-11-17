@@ -474,6 +474,7 @@ fn killed_writer(mode: &str) -> Directory {
 }
 
 #[test]
+#[ignore = "process lifecycle check; run separately with --ignored --test-threads=1"]
 fn stored_outcomes_three_process_copies_replay_after_kill() {
     let mut writers = (0..3)
         .map(|_| running_writer("committed"))
@@ -505,6 +506,7 @@ fn stored_outcomes_three_process_copies_replay_after_kill() {
     }
 }
 #[test]
+#[ignore = "process lifecycle check; run separately with --ignored --test-threads=1"]
 fn stored_outcomes_process_partial_tail_preserves_acknowledged_prefix() {
     let dir = killed_writer("partial");
     let log = DurableOutcomeLog::open(dir.path(), 64 * 1024 * 1024).unwrap();
@@ -513,6 +515,7 @@ fn stored_outcomes_process_partial_tail_preserves_acknowledged_prefix() {
     assert_eq!(&replay.read_chunk_state(&page()).unwrap().data[..], b"base");
 }
 #[test]
+#[ignore = "process lifecycle check; run separately with --ignored --test-threads=1"]
 fn stored_outcomes_process_before_sync_can_recover_an_unconfirmed_decision() {
     let dir = killed_writer("before_sync");
     let log = DurableOutcomeLog::open(dir.path(), 64 * 1024 * 1024).unwrap();
