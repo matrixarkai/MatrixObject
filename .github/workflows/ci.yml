@@ -598,8 +598,29 @@ jobs:
       - name: owned Star appends keep suffix writes bounded through full restart
         run: |
           set -o pipefail
-          cargo test --locked --all-features --test network_metadata_consensus star_append_amplification -- --test-threads=1 --nocapture | tee /tmp/star-append-cost.log
-          grep -q '^test result: ok. 3 passed' /tmp/star-append-cost.log
+          cargo test --locked --all-features --test network_metadata_consensus star_append_amplification -- --test-threads=1 | tee /tmp/star-append-cost.log
+          grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/star-append-cost.log
+          for test_name in \
+            compact_append_publishes_after_metadata_leader_loss_and_recovers \
+            compact_owned_append_keeps_publication_bounded_and_recovers_all_replicas \
+            owned_append_keeps_data_writes_bounded_and_recovers_all_replicas \
+            star_corpus_scale::star_corpus_workload_verifies_durable_reads_writes_and_appends \
+            star_recovery_profiles::star_repair_and_append_work_across_local_recovery_profiles
+          do
+            grep -Fxq "test star_append_amplification::${test_name} ... ok" /tmp/star-append-cost.log
+          done
+
+      - name: journaled append decisions preserve binary outcomes and recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib journal_append -- --test-threads=1 | tee /tmp/journal-append.log
+          grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/journal-append.log
+          grep -Fq 'journal_append_outcomes_match_general_binary_decisions_and_recover ... ok' /tmp/journal-append.log
+          grep -Fq 'journal_append_persistence_failure_refuses_ack_and_recovers_only_prior_data ... ok' /tmp/journal-append.log
+          cargo test --locked --all-features --test journal_append_allocations -- --test-threads=1 --nocapture | tee /tmp/journal-append-allocations.log
+          grep -q '^test result: ok. 1 passed; 0 failed;' /tmp/journal-append-allocations.log
+          cargo test --locked --all-features --test replica_recovery_policy -- --test-threads=1 | tee /tmp/replica-recovery-policy.log
+          grep -q '^test result: ok. 1 passed; 0 failed;' /tmp/replica-recovery-policy.log
 
       - name: compact append decisions enforce ownership and committed identity
         run: |
