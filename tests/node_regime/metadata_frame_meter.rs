@@ -20,10 +20,13 @@ pub(super) struct Counts {
     pub replies: u64,
     pub publication_bytes: u64,
     pub publications: u64,
+    /// Request frames, whatever their size.
+    pub frames: u64,
 }
 impl Counts {
     pub fn since(self, before: Self) -> Self {
         Self {
+            frames: self.frames.checked_sub(before.frames).unwrap(),
             requests: self.requests.checked_sub(before.requests).unwrap(),
             replies: self.replies.checked_sub(before.replies).unwrap(),
             publication_bytes: self
@@ -40,6 +43,7 @@ struct Counters {
     replies: AtomicU64,
     publication_bytes: AtomicU64,
     publications: AtomicU64,
+    frames: AtomicU64,
     failed: AtomicBool,
 }
 pub(super) struct FrameMeter {
@@ -144,6 +148,7 @@ impl FrameMeter {
                                 sockets.push(upstream.try_clone()?);
                             }
                             while let Some(request) = frame(&mut incoming, &stop)? {
+                                counters.frames.fetch_add(1, Ordering::SeqCst);
                                 counters
                                     .requests
                                     .fetch_add(request.len() as u64, Ordering::SeqCst);
@@ -199,6 +204,7 @@ impl FrameMeter {
             replies: self.counters.replies.load(Ordering::SeqCst),
             publication_bytes: self.counters.publication_bytes.load(Ordering::SeqCst),
             publications: self.counters.publications.load(Ordering::SeqCst),
+            frames: self.counters.frames.load(Ordering::SeqCst),
         }
     }
 }

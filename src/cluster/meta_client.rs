@@ -174,6 +174,9 @@ pub struct RemoteMetaClient {
     pub(super) reserve_next: Option<(u32, u64)>,
     /// The reservation made by the last compact append that asked for one.
     pub(super) reservation: Option<crate::staged_allocation::StagedAllocation>,
+    /// An allocation the caller vouches for: the metadata plane returned it for the next write
+    /// moments ago, so that write does not read it back first. Used once.
+    pub(super) confirmed_allocation: Option<u64>,
     #[cfg(feature = "replica-server")]
     pub(super) object_connections: Vec<super::object_client::CachedGroupConnection>,
     #[cfg(feature = "replica-server")]
@@ -253,6 +256,7 @@ impl RemoteMetaClient {
             manifest_digests: ManifestDigestMemo::default(),
             reserve_next: None,
             reservation: None,
+            confirmed_allocation: None,
             #[cfg(feature = "replica-server")]
             object_connections: Vec::new(),
             #[cfg(feature = "replica-server")]
@@ -1300,6 +1304,15 @@ impl RemoteMetaClient {
             return Err(ObjectError::Corruption("unexpected staged expiry reply".into()));
         }
         Ok(())
+    }
+
+    /// Vouch for `allocation_id` for the next write that names it: the metadata plane returned
+    /// the allocation (from an allocation, or in the reply that published the append before)
+    /// within its lease, so the write does not spend a round trip reading it back before it
+    /// writes pages. Publication still checks the allocation on the metadata plane, so a stale
+    /// one is refused there, after its pages were written, instead of before. Used once.
+    pub fn confirm_staged_allocation(&mut self, allocation_id: u64) {
+        self.confirmed_allocation = Some(allocation_id);
     }
 
     pub fn read_staged_allocation(&mut self, allocation_id: u64)

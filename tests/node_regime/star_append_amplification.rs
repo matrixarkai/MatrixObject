@@ -195,6 +195,7 @@ impl Fixture {
                 total.replies += value.replies;
                 total.publications += value.publications;
                 total.publication_bytes += value.publication_bytes;
+                total.frames += value.frames;
                 total
             })
     }
@@ -449,6 +450,66 @@ fn compact_owned_append_keeps_publication_bounded_and_recovers_all_replicas() {
 #[ignore = "explicit local compact append measurement"]
 fn measure_compact_star_append_as_prefix_grows() {
     run(&[1, 128, 4095], 4096, true);
+}
+
+/// An append under an allocation the metadata plane returned a moment ago does not read the
+/// allocation back first: one metadata request fewer, the same result. The allocation is still
+/// checked at publication, so one that is not the live one is refused there.
+#[test]
+fn a_confirmed_allocation_is_not_read_back_before_the_append() {
+    let fixture = Fixture::new();
+    let mut client = fixture.client();
+    let options = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        replica: ReplicaClientOptions::default(),
+        ..Default::default()
+    };
+    let key = "confirmed";
+    let first = fixture.reserve(&mut client, key, None, 1, false);
+    let mut manifest = client
+        .write_staged_object(&first, None, &vec![1u8; 4096], &options)
+        .unwrap();
+    let mut frames = Vec::new();
+    for confirmed in [false, true, false, true] {
+        fixture.settle();
+        let allocation = fixture.reserve(&mut client, key, Some(manifest.generation), 1, true);
+        fixture.settle();
+        let before = fixture.wire().frames;
+        if confirmed {
+            client.confirm_staged_allocation(allocation.allocation_id);
+        }
+        let after = client
+            .append_staged_object_compact(&allocation, manifest.clone(), &vec![2u8; 4096], &options)
+            .unwrap();
+        fixture.settle();
+        frames.push(fixture.wire().frames - before);
+        assert_eq!(after.generation, manifest.generation + 1);
+        assert_eq!(after.length, manifest.length + 4096);
+        manifest = after;
+    }
+    assert_eq!(frames[0], frames[2], "unconfirmed appends differ: {frames:?}");
+    assert_eq!(frames[1], frames[3], "confirmed appends differ: {frames:?}");
+    assert_eq!(
+        frames[0],
+        frames[1] + 1,
+        "a confirmed allocation must save exactly the read-back: {frames:?}"
+    );
+    // a confirmation names one allocation and is used once: the next append reads back again
+    fixture.settle();
+    let allocation = fixture.reserve(&mut client, key, Some(manifest.generation), 1, true);
+    client.confirm_staged_allocation(allocation.allocation_id + 1);
+    fixture.settle();
+    let before = fixture.wire().frames;
+    client
+        .append_staged_object_compact(&allocation, manifest.clone(), &vec![3u8; 4096], &options)
+        .unwrap();
+    fixture.settle();
+    assert_eq!(
+        fixture.wire().frames - before,
+        frames[0],
+        "a confirmation for another allocation skipped the read-back"
+    );
 }
 
 #[test]
