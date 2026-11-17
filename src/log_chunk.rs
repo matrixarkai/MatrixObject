@@ -1,0 +1,557 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+//! A log chunk: bytes appended to one chunk by one writer at a time, with no length stored
+//! anywhere. Every record is self-describing (its offset, length and checksums), so the length of
+//! the chunk is DERIVED when the file is replayed, and a write costs one append and one sync.
+//!
+//! The file is a sequence of records, each a 40-byte header followed by its data:
+//!
+//! ```text
+//! 0   magic "MOL1"
+//! 4   kind      1 append, 2 seal, 3 truncate
+//! 5   flags     seal only: bit 0 = the data is a 32-byte SHA-256 of the sealed bytes
+//! 6   reserved  zero
+//! 8   generation u32   the chunk generation; the same in every record of one file
+//! 12  epoch     u64    the writer epoch; never decreases along the file
+//! 20  offset    u64    append: where the data starts (= the length before it);
+//!                      seal: the final length; truncate: the new length
+//! 28  length    u32    bytes of data after the header
+//! 32  data_crc  u32    CRC-32C of the data (append); the whole-chunk footer CRC (seal)
+//! 36  header_crc u32   CRC-32C of bytes 0..36
+//! ```
+//!
+//! Torn-tail rule: a final record that is cut short, or whose data checksum fails and that ends
+//! at the end of the file, is a write that never finished: it is cut off. A header that fails its
+//! checksum is a torn tail only when everything after it is zero; a record that fails and has more
+//! bytes after it was damaged after it was written, and the open is refused.
+use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+
+pub const LOG_HEADER_LEN: usize = 40;
+const MAGIC: &[u8; 4] = b"MOL1";
+const KIND_APPEND: u8 = 1;
+const KIND_SEAL: u8 = 2;
+const KIND_TRUNCATE: u8 = 3;
+const FLAG_SEAL_SHA256: u8 = 1;
+/// One record never carries more than this (a single write is atomic up to here).
+pub const MAX_RECORD_DATA: usize = 4 * 1024 * 1024;
+/// Records that may wait for an earlier one, and the bytes they may hold.
+pub const DEFAULT_REORDER_RECORDS: usize = 16;
+pub const DEFAULT_REORDER_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug)]
+pub enum LogError {
+    /// The writer's epoch is older than one this chunk has seen.
+    Fenced { current: u64 },
+    /// The chunk is sealed: nothing more may be appended or truncated.
+    Sealed,
+    /// The bytes named overlap bytes already held, and differ.
+    Overlap,
+    /// A record, offset or length outside what one chunk or one record may hold.
+    Bounds(&'static str),
+    /// The reorder window (records or bytes) is full: the missing earlier record must arrive.
+    Window,
+    /// A seal whose length or checksum does not match what this chunk holds.
+    SealMismatch,
+    /// The file is damaged in a way that is not a torn tail.
+    Corrupt(String),
+    Io(io::Error),
+}
+impl std::fmt::Display for LogError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+impl std::error::Error for LogError {}
+impl From<io::Error> for LogError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+fn corrupt(message: impl ToString) -> LogError {
+    LogError::Corrupt(message.to_string())
+}
+
+const fn crc32c_table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    let mut n = 0;
+    while n < 256 {
+        let mut crc = n as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0x82F6_3B78 } else { crc >> 1 };
+            bit += 1;
+        }
+        table[n] = crc;
+        n += 1;
+    }
+    table
+}
+static CRC32C: [u32; 256] = crc32c_table();
+/// CRC-32C (Castagnoli) of `data`, continuing from `crc` (start from 0).
+pub fn crc32c_update(crc: u32, data: &[u8]) -> u32 {
+    let mut state = !crc;
+    for byte in data {
+        state = CRC32C[((state ^ u32::from(*byte)) & 0xff) as usize] ^ (state >> 8);
+    }
+    !state
+}
+pub fn crc32c(data: &[u8]) -> u32 {
+    crc32c_update(0, data)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Header {
+    kind: u8,
+    flags: u8,
+    generation: u32,
+    epoch: u64,
+    offset: u64,
+    length: u32,
+    data_crc: u32,
+}
+impl Header {
+    fn encode(&self) -> [u8; LOG_HEADER_LEN] {
+        let mut out = [0u8; LOG_HEADER_LEN];
+        out[..4].copy_from_slice(MAGIC);
+        out[4] = self.kind;
+        out[5] = self.flags;
+        out[8..12].copy_from_slice(&self.generation.to_le_bytes());
+        out[12..20].copy_from_slice(&self.epoch.to_le_bytes());
+        out[20..28].copy_from_slice(&self.offset.to_le_bytes());
+        out[28..32].copy_from_slice(&self.length.to_le_bytes());
+        out[32..36].copy_from_slice(&self.data_crc.to_le_bytes());
+        let crc = crc32c(&out[..36]);
+        out[36..40].copy_from_slice(&crc.to_le_bytes());
+        out
+    }
+    /// `None` when the bytes are not a well-formed header (bad magic, checksum or shape).
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < LOG_HEADER_LEN || &bytes[..4] != MAGIC {
+            return None;
+        }
+        if crc32c(&bytes[..36]) != u32::from_le_bytes(bytes[36..40].try_into().ok()?) {
+            return None;
+        }
+        let header = Self {
+            kind: bytes[4],
+            flags: bytes[5],
+            generation: u32::from_le_bytes(bytes[8..12].try_into().ok()?),
+            epoch: u64::from_le_bytes(bytes[12..20].try_into().ok()?),
+            offset: u64::from_le_bytes(bytes[20..28].try_into().ok()?),
+            length: u32::from_le_bytes(bytes[28..32].try_into().ok()?),
+            data_crc: u32::from_le_bytes(bytes[32..36].try_into().ok()?),
+        };
+        let shaped = bytes[6..8] == [0, 0]
+            && match header.kind {
+                KIND_APPEND => header.flags == 0 && header.length as usize <= MAX_RECORD_DATA,
+                KIND_SEAL => {
+                    header.flags & !FLAG_SEAL_SHA256 == 0
+                        && header.length == if header.flags & FLAG_SEAL_SHA256 != 0 { 32 } else { 0 }
+                }
+                KIND_TRUNCATE => header.flags == 0 && header.length == 0 && header.data_crc == 0,
+                _ => false,
+            };
+        shaped.then_some(header)
+    }
+}
+
+/// What a seal recorded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sealed {
+    pub length: u64,
+    pub footer_crc: u32,
+    pub sha256: Option<[u8; 32]>,
+}
+
+pub struct LogChunk {
+    file: File,
+    path: PathBuf,
+    generation: u32,
+    max_length: u64,
+    data: Vec<u8>,
+    /// CRC-32C of `data`, kept running.
+    crc: u32,
+    epoch: u64,
+    sealed: Option<Sealed>,
+    /// Bytes of the file that hold whole, valid records.
+    file_len: u64,
+    /// The length that has been synced.
+    durable_length: u64,
+    pending: BTreeMap<u64, Vec<u8>>,
+    pending_bytes: usize,
+    max_pending_records: usize,
+    max_pending_bytes: usize,
+}
+
+fn sha256(data: &[u8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, data).as_ref());
+    out
+}
+fn zero_after(file: &mut File, from: u64, to: u64) -> io::Result<bool> {
+    file.seek(SeekFrom::Start(from))?;
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut at = from;
+    while at < to {
+        let want = ((to - at) as usize).min(buffer.len());
+        file.read_exact(&mut buffer[..want])?;
+        if buffer[..want].iter().any(|byte| *byte != 0) {
+            return Ok(false);
+        }
+        at += want as u64;
+    }
+    Ok(true)
+}
+
+impl LogChunk {
+    /// Open or create the chunk file and replay it. The length, the epoch and whether the chunk is
+    /// sealed come from the records alone. A torn final record is cut off (and the cut is made
+    /// durable) before this returns.
+    pub fn open(path: &Path, generation: u32, max_length: u64) -> Result<Self, LogError> {
+        if max_length == 0 || max_length > 512 * 1024 * 1024 {
+            return Err(LogError::Bounds("chunk limit"));
+        }
+        let mut file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
+        let file_len = file.metadata()?.len();
+        let mut chunk = Self {
+            file: file.try_clone()?,
+            path: path.to_path_buf(),
+            generation,
+            max_length,
+            data: Vec::new(),
+            crc: 0,
+            epoch: 0,
+            sealed: None,
+            file_len: 0,
+            durable_length: 0,
+            pending: BTreeMap::new(),
+            pending_bytes: 0,
+            max_pending_records: DEFAULT_REORDER_RECORDS,
+            max_pending_bytes: DEFAULT_REORDER_BYTES,
+        };
+        let mut offset = 0u64;
+        file.seek(SeekFrom::Start(0))?;
+        while offset < file_len {
+            let remaining = file_len - offset;
+            let mut header_bytes = [0u8; LOG_HEADER_LEN];
+            if remaining < LOG_HEADER_LEN as u64 {
+                // A header cut short: only the beginning of one may be left.
+                file.seek(SeekFrom::Start(offset))?;
+                let mut tail = vec![0u8; remaining as usize];
+                file.read_exact(&mut tail)?;
+                let prefix = tail.len().min(MAGIC.len());
+                if tail[..prefix] != MAGIC[..prefix] && tail.iter().any(|byte| *byte != 0) {
+                    return Err(corrupt("a log chunk ends in bytes that are not a record"));
+                }
+                break;
+            }
+            file.seek(SeekFrom::Start(offset))?;
+            file.read_exact(&mut header_bytes)?;
+            let Some(header) = Header::decode(&header_bytes) else {
+                // A header torn mid-write is some prefix of its 40 bytes with nothing written
+                // after it: the bytes beyond the header position are all zero. (A damaged header
+                // whose record held only zero bytes, and that ended the file, cannot be told from
+                // that, and is cut as well; a damaged header with anything after it is not.)
+                if zero_after(&mut file, offset + LOG_HEADER_LEN as u64, file_len)? {
+                    break;
+                }
+                return Err(corrupt(format!("log chunk record at {offset} has a damaged header")));
+            };
+            let end = offset + LOG_HEADER_LEN as u64 + u64::from(header.length);
+            if end > file_len {
+                break; // the data was not fully written
+            }
+            let mut data = vec![0u8; header.length as usize];
+            file.read_exact(&mut data)?;
+            let ok = match header.kind {
+                KIND_APPEND => crc32c(&data) == header.data_crc,
+                _ => true,
+            };
+            if !ok {
+                if end == file_len {
+                    break; // the last write's data is damaged: it never completed
+                }
+                return Err(corrupt(format!("log chunk record at {offset} has damaged data")));
+            }
+            if header.generation != generation {
+                return Err(corrupt("log chunk record names another generation"));
+            }
+            chunk.replay_record(&header, &data)?;
+            offset = end;
+        }
+        if offset != file_len {
+            file.set_len(offset)?;
+            file.sync_all()?;
+        }
+        file.seek(SeekFrom::Start(offset))?;
+        chunk.file = file;
+        chunk.file_len = offset;
+        chunk.durable_length = chunk.data.len() as u64;
+        Ok(chunk)
+    }
+
+    fn replay_record(&mut self, header: &Header, data: &[u8]) -> Result<(), LogError> {
+        if header.epoch < self.epoch {
+            return Err(corrupt("log chunk epoch goes backwards"));
+        }
+        if self.sealed.is_some() {
+            return Err(corrupt("log chunk has a record after its seal"));
+        }
+        let length = self.data.len() as u64;
+        match header.kind {
+            KIND_APPEND => {
+                if header.offset != length
+                    || length + u64::from(header.length) > self.max_length
+                    || header.length == 0
+                {
+                    return Err(corrupt("log chunk append does not continue the chunk"));
+                }
+                self.data.extend_from_slice(data);
+                self.crc = crc32c_update(self.crc, data);
+            }
+            KIND_TRUNCATE => {
+                if header.offset > length {
+                    return Err(corrupt("log chunk truncates past its length"));
+                }
+                self.data.truncate(header.offset as usize);
+                self.crc = crc32c(&self.data);
+            }
+            _ => {
+                if header.offset != length || header.data_crc != self.crc {
+                    return Err(corrupt("log chunk seal does not match its bytes"));
+                }
+                let sha256 = if header.flags & FLAG_SEAL_SHA256 != 0 {
+                    let recorded: [u8; 32] = data.try_into().map_err(|_| corrupt("seal digest size"))?;
+                    if recorded != sha256(&self.data) {
+                        return Err(corrupt("log chunk seal digest does not match its bytes"));
+                    }
+                    Some(recorded)
+                } else {
+                    None
+                };
+                self.sealed = Some(Sealed { length, footer_crc: self.crc, sha256 });
+            }
+        }
+        self.epoch = header.epoch;
+        Ok(())
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+    /// The bytes applied so far (durable only after `commit`).
+    pub fn length(&self) -> u64 {
+        self.data.len() as u64
+    }
+    /// The length that has been made durable.
+    pub fn durable_length(&self) -> u64 {
+        self.durable_length
+    }
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+    pub fn sealed(&self) -> Option<&Sealed> {
+        self.sealed.as_ref()
+    }
+    /// Bytes `[offset, offset+length)` of the chunk, or fewer if the chunk ends first.
+    pub fn read(&self, offset: u64, length: usize) -> &[u8] {
+        let start = (offset as usize).min(self.data.len());
+        let end = start.saturating_add(length).min(self.data.len());
+        &self.data[start..end]
+    }
+    /// Running CRC-32C over the whole chunk.
+    pub fn footer_crc(&self) -> u32 {
+        self.crc
+    }
+    pub fn set_reorder_window(&mut self, records: usize, bytes: usize) {
+        self.max_pending_records = records;
+        self.max_pending_bytes = bytes;
+    }
+    pub fn pending_records(&self) -> usize {
+        self.pending.len()
+    }
+
+    fn check_epoch(&self, epoch: u64) -> Result<(), LogError> {
+        if epoch < self.epoch {
+            return Err(LogError::Fenced { current: self.epoch });
+        }
+        Ok(())
+    }
+    fn write_record(&mut self, header: Header, data: &[u8]) -> Result<(), LogError> {
+        let mut frame = Vec::with_capacity(LOG_HEADER_LEN + data.len());
+        frame.extend_from_slice(&header.encode());
+        frame.extend_from_slice(data);
+        // one write call per record: a crash leaves a prefix of it, never a hole inside it
+        self.file.seek(SeekFrom::Start(self.file_len))?;
+        self.file.write_all(&frame)?;
+        self.file_len += frame.len() as u64;
+        Ok(())
+    }
+
+    /// Accept `data` for `[offset, offset+data.len())` at `epoch`. Records that arrive ahead of
+    /// the end wait (bounded) until the bytes before them are applied; bytes already held are
+    /// acknowledged again if identical and refused if not. Returns the applied length, which is
+    /// the acknowledgement: everything below it is held, and it is durable after `commit`.
+    pub fn append(&mut self, epoch: u64, offset: u64, data: &[u8]) -> Result<u64, LogError> {
+        self.check_epoch(epoch)?;
+        if self.sealed.is_some() {
+            return Err(LogError::Sealed);
+        }
+        if data.is_empty() || data.len() > MAX_RECORD_DATA {
+            return Err(LogError::Bounds("record size"));
+        }
+        let end = offset.checked_add(data.len() as u64).ok_or(LogError::Bounds("offset"))?;
+        if end > self.max_length {
+            return Err(LogError::Bounds("chunk full"));
+        }
+        let length = self.length();
+        if end <= length {
+            let held = &self.data[offset as usize..end as usize];
+            return if held == data { Ok(length) } else { Err(LogError::Overlap) };
+        }
+        if offset > length {
+            return self.hold(epoch, offset, data);
+        }
+        // offset <= length < end: the part below `length` must match, the rest is new
+        let overlap = (length - offset) as usize;
+        if self.data[offset as usize..].get(..overlap) != Some(&data[..overlap]) {
+            return Err(LogError::Overlap);
+        }
+        self.apply_new(epoch, &data[overlap..])?;
+        self.drain_pending(epoch)?;
+        Ok(self.length())
+    }
+
+    fn hold(&mut self, epoch: u64, offset: u64, data: &[u8]) -> Result<u64, LogError> {
+        let end = offset + data.len() as u64;
+        // overlap with a waiting record of another shape is refused; the same record again is not
+        if let Some(existing) = self.pending.get(&offset) {
+            return if existing == data { Ok(self.length()) } else { Err(LogError::Overlap) };
+        }
+        if let Some((before, held)) = self.pending.range(..offset).next_back() {
+            if before + held.len() as u64 > offset {
+                return Err(LogError::Overlap);
+            }
+        }
+        if let Some((after, _)) = self.pending.range(offset..).next() {
+            if *after < end {
+                return Err(LogError::Overlap);
+            }
+        }
+        if self.pending.len() >= self.max_pending_records
+            || self.pending_bytes + data.len() > self.max_pending_bytes
+        {
+            return Err(LogError::Window);
+        }
+        let _ = epoch;
+        self.pending_bytes += data.len();
+        self.pending.insert(offset, data.to_vec());
+        Ok(self.length())
+    }
+
+    fn drain_pending(&mut self, epoch: u64) -> Result<(), LogError> {
+        loop {
+            let length = self.length();
+            let Some((&next, _)) = self.pending.iter().next() else { return Ok(()) };
+            if next > length {
+                return Ok(());
+            }
+            let data = self.pending.remove(&next).unwrap();
+            self.pending_bytes -= data.len();
+            let overlap = (length - next) as usize;
+            if overlap > data.len() || self.data[next as usize..].get(..overlap) != Some(&data[..overlap]) {
+                return Err(LogError::Overlap);
+            }
+            if overlap < data.len() {
+                self.apply_new(epoch, &data[overlap..])?;
+            }
+        }
+    }
+
+    fn apply_new(&mut self, epoch: u64, data: &[u8]) -> Result<(), LogError> {
+        let offset = self.length();
+        let header = Header {
+            kind: KIND_APPEND,
+            flags: 0,
+            generation: self.generation,
+            epoch,
+            offset,
+            length: data.len() as u32,
+            data_crc: crc32c(data),
+        };
+        self.write_record(header, data)?;
+        self.data.extend_from_slice(data);
+        self.crc = crc32c_update(self.crc, data);
+        self.epoch = epoch;
+        Ok(())
+    }
+
+    /// Make everything applied so far durable (one sync, however many records) and return the
+    /// durable length: the length a writer may treat as acknowledged.
+    pub fn commit(&mut self) -> Result<u64, LogError> {
+        self.file.sync_data()?;
+        self.durable_length = self.length();
+        Ok(self.durable_length)
+    }
+
+    /// Cut the chunk back to `length` (a new writer drops bytes only some replicas hold), at an
+    /// epoch at least the current one. Waiting records are dropped. Durable after `commit`.
+    pub fn truncate(&mut self, epoch: u64, length: u64) -> Result<(), LogError> {
+        self.check_epoch(epoch)?;
+        if self.sealed.is_some() {
+            return Err(LogError::Sealed);
+        }
+        if length > self.length() {
+            return Err(LogError::Bounds("truncate past the end"));
+        }
+        let header = Header {
+            kind: KIND_TRUNCATE,
+            flags: 0,
+            generation: self.generation,
+            epoch,
+            offset: length,
+            length: 0,
+            data_crc: 0,
+        };
+        self.write_record(header, &[])?;
+        self.data.truncate(length as usize);
+        self.crc = crc32c(&self.data);
+        self.epoch = epoch;
+        self.pending.clear();
+        self.pending_bytes = 0;
+        self.durable_length = self.durable_length.min(length);
+        Ok(())
+    }
+
+    /// Close the chunk at its present length. The footer CRC is the running checksum; the SHA-256
+    /// is computed here, once, when asked for. Waiting records must have been applied first.
+    pub fn seal(&mut self, epoch: u64, with_sha256: bool) -> Result<Sealed, LogError> {
+        self.check_epoch(epoch)?;
+        if self.sealed.is_some() {
+            return Err(LogError::Sealed);
+        }
+        if !self.pending.is_empty() {
+            return Err(LogError::SealMismatch);
+        }
+        let digest = with_sha256.then(|| sha256(&self.data));
+        let header = Header {
+            kind: KIND_SEAL,
+            flags: if with_sha256 { FLAG_SEAL_SHA256 } else { 0 },
+            generation: self.generation,
+            epoch,
+            offset: self.length(),
+            length: if with_sha256 { 32 } else { 0 },
+            data_crc: self.crc,
+        };
+        self.write_record(header, digest.as_ref().map(|d| d.as_slice()).unwrap_or(&[]))?;
+        self.file.sync_data()?;
+        self.durable_length = self.length();
+        self.epoch = epoch;
+        let sealed = Sealed { length: self.length(), footer_crc: self.crc, sha256: digest };
+        self.sealed = Some(sealed.clone());
+        Ok(sealed)
+    }
+}

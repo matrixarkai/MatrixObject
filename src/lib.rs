@@ -5,6 +5,9 @@ pub mod manifest_append;
 pub(crate) mod manifest_chain;
 #[cfg(test)]
 mod chunked_manifest_tests;
+pub mod log_chunk;
+#[cfg(test)]
+mod log_chunk_tests;
 pub(crate) mod extent_list;
 pub mod manifest_retention;
 pub mod read_session_outcome;
