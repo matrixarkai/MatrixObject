@@ -93,6 +93,31 @@ on every append. After restart, the workload checks first/last background pages
 and sampled acknowledged write/append pages directly on every replica, including
 the original prefix and every appended byte in each selected page.
 
+## Peer recovery release results
+
+Source `81f2045`, built in release mode with all features, passed 81 phases,
+141,696 checked operations and nine complete six-process restart checks. All
+three data nodes used peer recovery with `N=3, W=3, R=1`. At 32 clients, medians
+across the three repetitions were:
+
+| Background pages | Read QPS | Fresh-write QPS | Page-append QPS | Median phase append p99 (ms) |
+|---|---:|---:|---:|---:|
+| 1,024 | 55,102 | 219.82 | 189.39 | 751.833 |
+| 8,192 | 37,607 | 193.79 | 176.93 | 624.867 |
+| 32,768 | 25,562 | 172.81 | 256.36 | 220.852 |
+
+The percentile column is a median of phase percentiles, not a pooled-request p99.
+Aggregate data-process CPU for these append phases was 1.92–2.47 ms per operation.
+Reads added no data-journal bytes. Each 32-client write phase added 51,523,194
+bytes to the three journals; each append phase added 51,903,264 bytes, independent
+of background size and repetition, for 4,096 operations of 4 KiB each.
+
+The 16-CPU WSL host had other workloads active, with load averages of 5.71–11.62.
+The earlier XOR-profile run had different recovery work and higher contention.
+These runs do not isolate the append optimization's contribution or establish
+flat tail latency. Growing read working sets and independent journal syncs still
+need separate profiling; checkpoints and repair interference remain unmeasured.
+
 ## Interpretation and remaining measurements
 
 Source inspection identified two different costs to profile. The general standalone

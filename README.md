@@ -1065,7 +1065,7 @@ review you cannot obtain. [CODEOWNERS](.github/CODEOWNERS) requests a reviewer; 
 gates nothing.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) is the guide -- what CI runs and what it does not,
-the 17 recorded test failures and how to tell yours from them, and the shape a change
+how to validate changes and investigate failures, and the shape a change
 is expected to take. [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) applies. There is a
 pull-request template and two issue templates; a security or durability report goes
 privately through [SECURITY.md](SECURITY.md) instead of an issue.
@@ -1093,8 +1093,11 @@ On pushes to `main` and on every pull request, four jobs:
   default features and for `--all-features`, with warnings denied.
 - **format and rollback guards** -- selected library guards use `--exact`;
   explicit integration and binary targets run their selected harnesses. Each
-  command checks its expected passed-test count because `cargo test` exits 0
-  when a filter matches nothing. The guards over
+  command checks a nonempty successful result, with expected counts or required
+  test names, because `cargo test` exits 0 when a filter matches nothing. Star
+  append guards cover restart and mixed-profile repair, binary decisions, invalid
+  recovery settings and warm append allocation budgets through a 64-MiB prefix.
+  The guards over
   [replica processes](#replicas-in-their-own-processes) check their output for
   `running 1 test` as well: they name a test of an integration target rather than a
   `tests::` filter, so a rename would leave the filter matching nothing and the
