@@ -1769,6 +1769,10 @@ mod tests {
         assert_eq!(response.status, 200, "{}", String::from_utf8_lossy(&response.body));
         assert_eq!(header(&response, "x-amz-object-size"), Some("5"));
         assert_eq!(gateway.handle(&request("GET", "/b/wal", &[], b"")).body, b"abcde", "landed exactly once");
+        // A client that retried the same append anyway is told the offset is taken, and the
+        // record is not written a second time.
+        assert_eq!(append(&gateway, "wal", 3, b"de").status, 412);
+        assert_eq!(gateway.handle(&request("GET", "/b/wal", &[], b"")).body, b"abcde");
     }
 
     #[test]
