@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 impl MetaSnapshot {
     pub fn validate(&self) -> Result<(), ObjectError> {
+        self.cluster_features.validate()?;
         if self.next_commit_index == 0 {
             return Err(ObjectError::Corruption(
                 "metadata snapshot next commit index is invalid".to_string(),

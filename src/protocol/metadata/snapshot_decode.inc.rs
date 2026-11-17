@@ -29,7 +29,7 @@ impl MetaSnapshot {
         let version = magic
             .strip_prefix("MOSRSMETA")
             .and_then(|suffix| suffix.parse::<u64>().ok())
-            .filter(|version| (1..=20).contains(version))
+            .filter(|version| (1..=21).contains(version))
             .ok_or_else(|| {
                 ObjectError::Corruption("metadata snapshot byte magic mismatch".to_string())
             })?;
@@ -38,8 +38,8 @@ impl MetaSnapshot {
                 "metadata snapshot byte magic mismatch".to_string(),
             ));
         }
-        if cursor.stream.is_some() && !(18..=20).contains(&version) {
-            return Err(ObjectError::Corruption("streamed metadata snapshot needs version 18 through 20".into()));
+        if cursor.stream.is_some() && !(18..=21).contains(&version) {
+            return Err(ObjectError::Corruption("streamed metadata snapshot needs version 18 through 21".into()));
         }
         let has_transaction_read_versions = version >= 2;
         let has_tombstone_compaction_counters = version >= 3;
@@ -337,7 +337,9 @@ impl MetaSnapshot {
                 },
             )
         };
-        let object_manifests = if version >= 19 {
+        // Version 21 states whether a manifest catalog follows; 19 and 20 always carry one.
+        let has_manifest_catalog = if version >= 21 { cursor.read_u64()? != 0 } else { version >= 19 };
+        let object_manifests = if has_manifest_catalog {
             let bytes = cursor.read_owned_blob(64 * 1024 * 1024 + 12)?;
             let catalog = crate::object_manifest::ManifestCatalog::from_bytes(&bytes)?;
             if catalog.max_retention_id().max(catalog.max_staged_id()).max(catalog.publication_fence()) > placement_commit_index {
@@ -348,6 +350,24 @@ impl MetaSnapshot {
             }
             catalog
         } else { Default::default() };
+        let cluster_features = if version >= 21 {
+            let raised = cursor.read_u64()?;
+            let count = cursor.read_u64()?;
+            if count as usize > crate::cluster_features::MAX_DECLARED_VOTERS {
+                return Err(ObjectError::Corruption("cluster feature table exceeds its bound".into()));
+            }
+            let mut declared = BTreeMap::new();
+            for _ in 0..count {
+                let voter = cursor.read_u64()?;
+                let bits = cursor.read_u64()?;
+                if declared.insert(voter, bits).is_some() {
+                    return Err(ObjectError::Corruption("cluster feature table repeats a voter".into()));
+                }
+            }
+            crate::cluster_features::ClusterFeatures { raised, declared }
+        } else {
+            Default::default()
+        };
         let checksum = cursor.read_string()?;
         let envelope_digest = cursor.prefix_digest();
         let envelope_checksum = cursor.read_string()?;
@@ -395,6 +415,7 @@ impl MetaSnapshot {
             placement_leader_lease_receipts: placement_roster.leader_lease_receipts,
             placement_coordinator_config: placement_roster.coordinator_config,
             placement_commit_index,
+            cluster_features,
             checksum,
         };
         if !has_batch_request_receipts
