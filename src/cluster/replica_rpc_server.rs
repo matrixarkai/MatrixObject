@@ -83,6 +83,10 @@ pub struct ReplicaNodeOptions {
     /// Standalone only: refuse ordinary writes/discards, retain reads and repair,
     /// and report offline for metadata placement. Fixed for this server lifetime.
     pub maintenance: bool,
+    /// Keep local XOR recovery data. Defaults to true for standalone/single-copy
+    /// callers. Configured replicated Star deployments can use peer repair instead;
+    /// changing this does not change journal sync, checksums or client write quorum.
+    pub local_recovery_sidecar: bool,
     /// Largest payload this node will read from a frame.
     ///
     /// A length field arrives before the bytes it describes, so this is the bound on what
@@ -110,6 +114,7 @@ impl Default for ReplicaNodeOptions {
         Self {
             tls: None,
             maintenance: false,
+            local_recovery_sidecar: true,
             max_payload_bytes: MAX_PAYLOAD_BYTES,
             capacity_bytes: 256 * 1024 * 1024,
             max_pages: 65_536,
@@ -196,7 +201,12 @@ impl ReplicaNodeServer {
                 "replica capacity_bytes and max_pages must be positive",
             ));
         }
+        if !options.local_recovery_sidecar && path.is_none() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+                "peer recovery requires a durable standalone replica journal"));
+        }
         let mut service = MatrixReplicaService::new();
+        service.set_keep_ec_sidecar(options.local_recovery_sidecar);
         service
             .set_capacity_bytes(options.capacity_bytes)
             .map_err(|err| {
@@ -212,6 +222,10 @@ impl ReplicaNodeServer {
                 )
             })
             .transpose()?;
+        // A restored checkpoint also restores its old runtime recovery policy.
+        // Apply this deployment's explicit policy before exposing the listener.
+        service.configure_journal_recovery(options.local_recovery_sidecar).map_err(|error|
+            std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
         if let Some(path) = path {
             super::api_tls::pin_file(&super::api_tls::journal_pin(path), options.tls.is_some())?;
         }
@@ -667,6 +681,37 @@ fn apply(
     apply_locked(&mut guard, request, max_payload_bytes, true)
 }
 
+#[cfg(all(test, unix))]
+#[path = "replica_append_tests.rs"]
+mod append_outcome_tests;
+
+fn prepare_rpc_append(
+    service: &MatrixReplicaService,
+    request: &ReplicaRequest,
+) -> Result<Option<crate::outcome::PreparedPageAppend>, ObjectError> {
+    let (page, offset, data, sequence, state_checksum) = match request {
+        ReplicaRequest::WriteChunk { page_id, offset, data } =>
+            (page_id, *offset, data, None, None),
+        ReplicaRequest::WriteChunkIfSequence { page_id, offset, data, expected_sequence } =>
+            (page_id, *offset, data, Some(*expected_sequence), None),
+        ReplicaRequest::WriteChunkIfSequenceDigest { page_id, offset, data, expected_sequence }
+            if data.len() <= 1024 * 1024 =>
+            (page_id, *offset, data, Some(*expected_sequence), None),
+        ReplicaRequest::WriteChunkIfState { page_id, offset, data, expected_sequence, expected_state_checksum } =>
+            (page_id, *offset, data, Some(*expected_sequence), Some(expected_state_checksum)),
+        _ => return Ok(None),
+    };
+    if let Some(sequence) = sequence {
+        if sequence == 0 || sequence == u64::MAX || service.page_write_sequence(page) != Some(sequence) {
+            return Ok(None);
+        }
+    }
+    if let Some(expected) = state_checksum {
+        if service.head_chunk(page)?.state_checksum != *expected { return Ok(None); }
+    }
+    service.prepare_journal_append(page, offset, data)
+}
+
 fn apply_locked(
     guard: &mut NodeReplica,
     request: ReplicaRequest,
@@ -756,7 +801,10 @@ fn apply_locked(
     } else {
         None
     };
-    let before = if let Some(page) = &page {
+    let append = if guard.journal.is_some() {
+        prepare_rpc_append(&guard.service, &request)?
+    } else { None };
+    let before = if let Some(page) = page.as_ref().filter(|_| append.is_none()) {
         match guard.service.read_chunk_state(page) {
             Ok(state) => Some(state),
             Err(ObjectError::NotFound(_)) => None,
@@ -799,6 +847,10 @@ fn apply_locked(
     let reply = result?;
     if let Some(page) = page {
         let persist = (|| -> Result<(), ObjectError> {
+            let outcome = if let Some(append) = append {
+                guard.service.verify_journal_append(&append)?;
+                append.outcome
+            } else {
             let after = match guard.service.read_chunk_state(&page) {
                 Ok(state) => state,
                 Err(ObjectError::NotFound(_)) if before.is_none() => return Ok(()),
@@ -809,8 +861,9 @@ fn apply_locked(
             {
                 return Ok(());
             }
-            let outcome = crate::outcome::PageOutcome::between(&page, before.as_ref(), &after)?
-                .with_counters(
+            crate::outcome::PageOutcome::between(&page, before.as_ref(), &after)?
+            };
+            let outcome = outcome.with_counters(
                     counters,
                     crate::outcome::PageOutcome::counters(&guard.service),
                 );

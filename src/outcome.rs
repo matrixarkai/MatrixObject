@@ -57,6 +57,15 @@ pub struct PageOutcome {
     #[prost(uint64, repeated, packed = "true", tag = "13")]
     pub physical_deltas: Vec<u64>,
 }
+
+/// Runtime-only decision for an exact append to a previously validated prefix.
+/// It owns no handle to that prefix, so it cannot cause payload copy-on-write.
+#[cfg(feature = "replica-server")]
+pub(crate) struct PreparedPageAppend {
+    pub(crate) outcome: PageOutcome,
+    pub(crate) offset: usize,
+    pub(crate) suffix_sha256: [u8; 32],
+}
 fn invalid(message: &str) -> ObjectError {
     ObjectError::Corruption(message.to_string())
 }
@@ -75,33 +84,10 @@ impl PageOutcome {
             .transpose()?;
         let before_checksum = before
             .zip(before_data_etag.as_deref())
-            .map(|(state, data_etag)| {
-                chunk_local_state_checksum_with_data_etag(state, data_etag)
-            })
+            .map(|(state, data_etag)| chunk_local_state_checksum_with_data_etag(state, data_etag))
             .unwrap_or_default();
         let old = before.map(|s| s.data.as_slice()).unwrap_or(&[]);
-        let mut patches = Vec::new();
-        let mut at = 0;
-        while at < after.data.len() {
-            if old.get(at).copied().unwrap_or(0) == after.data[at] {
-                at += 1;
-                continue;
-            }
-            let start = at;
-            // Include short unchanged runs to bound protobuf overhead for alternating bytes.
-            let mut end = at + 1;
-            at += 1;
-            while at < after.data.len() && at - end < 16 {
-                if old.get(at).copied().unwrap_or(0) != after.data[at] {
-                    end = at + 1;
-                }
-                at += 1;
-            }
-            patches.push(BytePatch {
-                offset: start as u64,
-                data: after.data[start..end].to_vec(),
-            });
-        }
+        let patches = Self::byte_patches(old, &after.data, 0);
         let result = Self {
             version: 1,
             volume_id: page.chunk_id.volume_id(),
@@ -126,6 +112,81 @@ impl PageOutcome {
         };
         result.checked_encoded_len()?;
         Ok(result)
+    }
+
+    fn byte_patches(old: &[u8], after: &[u8], offset: u64) -> Vec<BytePatch> {
+        let mut patches = Vec::new();
+        let mut at = 0;
+        while at < after.len() {
+            if old.get(at).copied().unwrap_or(0) == after[at] {
+                at += 1;
+                continue;
+            }
+            let start = at;
+            // Include short unchanged runs to bound protobuf overhead for alternating bytes.
+            let mut end = at + 1;
+            at += 1;
+            while at < after.len() && at - end < 16 {
+                if old.get(at).copied().unwrap_or(0) != after[at] {
+                    end = at + 1;
+                }
+                at += 1;
+            }
+            patches.push(BytePatch {
+                offset: offset + start as u64,
+                data: after[start..end].to_vec(),
+            });
+        }
+        patches
+    }
+
+    /// The service must validate prefix identity before calling this constructor.
+    /// Suffix patches and the fingerprints match `between` on the same valid states.
+    #[cfg(feature = "replica-server")]
+    pub(crate) fn after_validated_append(
+        page: &PageId,
+        before: &PageState,
+        suffix: &[u8],
+    ) -> Result<PreparedPageAppend, ObjectError> {
+        let offset = before.data.len();
+        let length = offset
+            .checked_add(suffix.len())
+            .filter(|length| *length <= 256 * 1024 * 1024)
+            .ok_or_else(|| invalid("page append exceeds page size limit"))?;
+        let checksum = crate::fnv1a64_resumed(before.checksum_fnv1a64, suffix);
+        let before_etag = before.checksum();
+        let mut after_etag = String::with_capacity(24);
+        crate::append_etag_of_digest(&mut after_etag, checksum);
+        let sequence = before.write_sequence.saturating_add(1);
+        let result = Self {
+            version: 1,
+            volume_id: page.chunk_id.volume_id(),
+            chunk_id: page.chunk_id.id(),
+            page_index: page.page_index,
+            before_checksum: chunk_local_state_checksum_with_data_etag(before, &before_etag),
+            logical_length: length as u64,
+            write_sequence: sequence,
+            data_checksum: checksum,
+            patches: Self::byte_patches(&[], suffix, offset as u64),
+            discarded_ranges: Vec::new(),
+            after_checksum: crate::chunk_local_state_checksum_from_parts(
+                length as u64,
+                sequence,
+                &after_etag,
+                &after_etag,
+                &[],
+            ),
+            data_length: length as u64,
+            physical_deltas: vec![0; 4],
+        };
+        result.checked_encoded_len()?;
+        let mut suffix_sha256 = [0; 32];
+        suffix_sha256.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, suffix).as_ref());
+        Ok(PreparedPageAppend {
+            outcome: result,
+            offset,
+            suffix_sha256,
+        })
     }
     pub fn counters(service: &MatrixReplicaService) -> [u64; 4] {
         [

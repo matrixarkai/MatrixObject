@@ -140,23 +140,28 @@ measure performance at the same replication thresholds before tuning them.
 | Write topology and durability | Star is the default, `N=3, W=3, R=1`; Raft is optional. `append_object_with_failover` keeps an append stream acknowledged through one stopped member by re-planning on another group (`member-failover.md`); refused and uncertain publication stay separate return values | Measured on one metadata server only: repeat with a metadata quorum; record abandoned pages durably in metadata instead of returning them to the caller |
 | Chunk sizing and append boundaries | Page and extent limits exist; a page is not a storage chunk | Add an explicit configurable chunk policy with 64 MiB default and up to 512 MiB, without splitting an atomic append across chunks; test rollover and restart |
 | Bounded asynchronous I/O | Connection reuse and bounded batches exist | Audit client admission independently: configurable 16 in-flight requests and 100 queued requests; refuse overload before allocating or mutating |
+| Writer sessions and ordered completion | Staging ownership, generation CAS and reader retention have distinct contracts | Audit process-owned writer renewal and expiry, forced takeover fencing, and a contiguous append acknowledgement frontier under reordered requests and replies; test delayed old-owner packets after takeover |
 | Writer ownership | Durable staging, expiry and persistable prepared request identity exist | Adopt prepared handles in durable application workflows and measure concurrent preparation conflicts; legacy creation remains uncertain on lost replies |
 | Reader sessions | Fenced whole/range/batch SDK reads acquire exact-generation leases; compact journal decisions exist | Drain legacy readers; profile fragmentation and checkpoint/repair interference; reduce per-object grant mutations |
 | Sealing and final length | Explicit namespace fences and exact repair pins exist | Have metadata durably drive closure to every participating data node before release; isolate stale nodes until their fence state catches up |
 | Garbage collection | Inventory and ownership records exist; deletion remains disabled | Reconcile live objects, cross-bucket copies, retained generations and staging; persist retryable deletion decisions and recover every interrupted phase |
 | Registration and expansion | Routing and membership checks exist; repair discovery is startup-only. Heartbeat expiry is on by default (15 s, `0` disables); a node expired by silence returns on its next report | Refresh group discovery while workers run; add generation-bound node registration and reject stale identities after restart |
+| Metadata horizontal scaling | Replicated metadata leadership exists | Audit cluster/pool identity, pool-to-group discovery, cached routing and independent metadata groups; validate continued access to established groups while discovery is unavailable |
 | Placement and draining | Remote placement admission exists. A fixed Star group is placement-eligible only while all members report online and not draining; publication requires writability only of groups it adds to | Enforce host/rack/disk separation and capacity budgets during movement; interrupt transfers and verify no ownership loss |
 | Integrity and recovery | Digest probes, EC sidecars, repair and checkpoints exist | Keep immutable repair identities through all repair paths; distinguish local EC sidecars from distributed erasure-coded placement |
 | Object API and access policy | Remote manifests, append, copy and listing exist | Inventory conditional delete, multipart, retained versions, ownership and access policy; add each through public clients with conflict and recovery tests |
 | Operations | Health, TLS, bounded workers and recovery checks exist | Exercise per-tenant quotas, repair bandwidth, draining and observability under concurrent foreground load |
+| Management-plane recovery | Individual service health and membership mechanisms exist | Audit versioned cluster configuration, management failover, disk health, node lifecycle and deployment controls separately from metadata quorum leadership |
 | Storage format and tiering | Durable journals and binary protobuf outcomes exist | Design aligned block storage, compaction, compression, distributed EC and tier movement separately; do not claim raw-device support from in-memory pages |
 | Cost and scale | Publication allocation measurements and a replicated leased-read CPU/WAL sweep exist | Profile fragmentation costs; measure allocations, network and physical bytes with checkpoint/repair interference |
 | TemporalStore integration | Binary outcome and suffix-write paths exist | Run one-append workloads at increasing prefix sizes; report encoded outcome, transferred suffix and durable bytes for local and replicated modes |
 
-The immediate sequence is prepared-handle adoption and reader rollout, fragmentation
-profiling, metadata-driven namespace closure, stale-node readmission, and
-only then physical reclamation. Placement expansion and the workload harness can
-progress without granting deletion authority. Each implementation should ship with bounded wire
+The immediate foreground sequence is growing-corpus measurement, profiling of
+remaining allocation, hash and lock costs, and end-to-end owned-append validation.
+Lifecycle delivery still requires prepared-handle adoption and reader rollout,
+metadata-driven namespace closure and stale-node readmission before physical
+reclamation. Placement expansion and the workload harness can progress without
+granting deletion authority. Each implementation should ship with bounded wire
 contracts, restart tests and an update to this ledger.
 
 ## Star append cost
@@ -178,6 +183,13 @@ The complete local release API window now receives 544 metadata reply bytes at
 each tested prefix size and sends 353–360 bytes for the fixed suffix and group.
 
 ## Next implementation milestones
+
+The immediate performance workload is the [Star corpus sweep](star-corpus-scale.md).
+It varies stored data-node pages independently of manifest width and keeps
+`N=3, W=3, R=1`. Its small normal test validates journal bounds and restart
+recovery; the explicit release sweep measures QPS and latency with fresh processes
+per background-size case. It does not yet time owned object publication,
+checkpoint/repair interference or TemporalStore integration.
 
 | Order | Deliverable | Completion evidence |
 |---|---|---|
@@ -229,7 +241,7 @@ target, digest failover tests, revision-checked enumeration and journal-backed
 Star recovery. Run larger group-count and TemporalStore integration workloads
 after lifecycle changes, recording the exact commits and configuration of both
 stores. Keep reclamation disabled until protection and interrupted-deletion
-acceptance tests pass. The five public repositories remain Apache-2.0 and open
+acceptance tests pass. The six public repositories remain Apache-2.0 and open
 to worldwide contributions throughout delivery.
 
 ## Concurrent reader evidence
