@@ -1821,28 +1821,33 @@ impl RemoteMetaClient {
     pub fn publish_staged_append_compact(&mut self, allocation_id: u64,
         outcome: crate::object_manifest::ManifestOutcome, update_time_ms: u64)
         -> Result<crate::object_manifest::ObjectManifest, ObjectError> {
+        outcome.validate()?;
         self.publish_compact_append_preserving_outcome(outcome, allocation_id, update_time_ms).0
     }
 
     /// `ManifestAppend::decide` using the remembered digest of the prior manifest, and
     /// remembering the digest of the new one: the next append's prior manifest.
+    ///
+    /// The outcome has been validated by whoever made it (`decide`, `decide_append`, or
+    /// `publish_staged_append_compact` for one handed in from outside): validating it again here
+    /// would be a second pass of hashing over every extent.
     fn decide_compact_append(&mut self, outcome: &crate::object_manifest::ManifestOutcome)
         -> Result<crate::manifest_append::ManifestAppend, ObjectError> {
-        outcome.validate()?;
         let before = outcome.before.as_ref()
             .ok_or_else(|| ObjectError::Corruption("append requires a prior manifest".into()))?;
         let after = outcome.after.as_ref().unwrap();
         let prior = self.manifest_stored_digest(before);
         // The chain of the result is the prior chain extended by the new extents when the
         // result keeps every prior extent; otherwise `decide_with_digests` refuses it.
-        let chain = if after.extents.starts_with(&before.extents) {
+        let kept = after.extents.starts_with(&before.extents);
+        let chain = if kept {
             prior.chain.extended(&after.extents[before.extents.len()..])
         } else {
             crate::manifest_chain::ChainState::of(&after.extents)
         };
         let result = crate::object_manifest::StoredDigest { digest: chain.digest(after), chain };
-        let append = crate::manifest_append::ManifestAppend::decide_with_digests(
-            outcome, prior.digest, result.digest.clone())?;
+        let append = crate::manifest_append::ManifestAppend::decide_with_digests_checked(
+            outcome, prior.digest, result.digest.clone(), kept)?;
         self.manifest_digests.remember(after, result);
         Ok(append)
     }
