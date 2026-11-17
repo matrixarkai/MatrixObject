@@ -15,7 +15,7 @@ pub(super) fn prepare(
     request.validate()?;
     let source = service
         .object_manifests
-        .get(&ObjectId::new(
+        .get_manifest(&ObjectId::new(
             request.source_bucket.clone(),
             request.source_key.clone(),
         ))
@@ -137,9 +137,9 @@ mod tests {
             .unwrap();
         let copied = service
             .object_manifests
-            .get(&ObjectId::new("copy", "snapshot"))
+            .get_manifest(&ObjectId::new("copy", "snapshot"))
             .unwrap();
-        assert_eq!(copied.extents, source.extents);
+        assert!(copied.extents.iter().eq(source.extents.iter()));
         assert!(prepare(&service, &groups(), &request, 8192).is_err());
         let mut too_small = request.clone();
         too_small.key = "too-small".into();
@@ -273,7 +273,7 @@ mod tests {
         assert_eq!(service.object_manifests.publication_fence(), id);
         assert!(service
             .object_manifests
-            .get(&ObjectId::new("target", "key"))
+            .get_manifest(&ObjectId::new("target", "key"))
             .is_some());
         drop(storage);
     }

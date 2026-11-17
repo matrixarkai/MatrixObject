@@ -984,7 +984,14 @@ fn propose_batch(
             MetaRequest::StagedAllocation(command) if matches!(command.action, 11 | 12) => {
                 if let Some(append) = &command.manifest_append {
                     let id = crate::ObjectId::new(append.bucket.clone(), append.key.clone());
-                    if let Some(current) = service.object_manifests.get(&id) {
+                    if let Some(placement) = service.placements.get(&id) {
+                        // The record's nodes are the groups of every stored extent: the publication
+                        // that wrote it was bound to its manifest, and an append extends it by the
+                        // suffix's groups. Reading them is O(nodes), where walking the stored
+                        // extents is O(extents) string copies per append.
+                        nodes.extend(placement.node_ids.iter().cloned());
+                    } else if let Some(current) = service.object_manifests.get(&id) {
+                        // A manifest with no placement record: walk it.
                         nodes.extend(current.extents.iter().map(|extent| extent.group.clone()));
                     }
                     nodes.extend(append.suffix.iter().map(|extent| extent.group.clone()));
@@ -2428,8 +2435,8 @@ mod tests {
         );
         assert!(receivers[2].try_recv().unwrap().is_err());
         assert_eq!(
-            service.object_manifests.get(&second.object_id()),
-            Some(&second)
+            service.object_manifests.get_manifest(&second.object_id()),
+            Some(second.clone())
         );
         assert_eq!(service.nodes["group-0"].committed_bytes, 4);
     }
@@ -2616,7 +2623,7 @@ mod tests {
         assert!(receivers.iter().all(|rx| rx.try_recv().unwrap().is_ok()));
         assert!(service.object_manifests.staged_allocation(first_id).is_none());
         assert!(service.object_manifests.staged_allocation(first_id + 2).is_none());
-        assert_eq!(service.object_manifests.get(&live.object_id()), Some(&live));
+        assert_eq!(service.object_manifests.get_manifest(&live.object_id()), Some(live.clone()));
     }
 
     #[test]

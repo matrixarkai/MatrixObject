@@ -80,12 +80,22 @@ impl ChainState {
         FULL_CHAINS.with(|calls| calls.set(calls.get() + 1));
         Self::empty().extended(extents)
     }
+    /// `of` for the extents of a stored manifest.
+    pub(crate) fn of_stored(extents: &crate::extent_list::ExtentList) -> Self {
+        #[cfg(test)]
+        FULL_CHAINS.with(|calls| calls.set(calls.get() + 1));
+        Self::empty().extended_by(extents.iter())
+    }
     #[cfg(test)]
     pub(crate) fn count(&self) -> usize {
         self.count
     }
     /// The chain after `suffix` is appended; `self` is unchanged.
     pub(crate) fn extended(&self, suffix: &[ObjectExtent]) -> Self {
+        self.extended_by(suffix.iter())
+    }
+    /// `extended` over any sequence of extents.
+    pub(crate) fn extended_by<'a>(&self, suffix: impl Iterator<Item = &'a ObjectExtent>) -> Self {
         let mut next = self.clone();
         let mut scratch = Vec::with_capacity(160);
         for extent in suffix {
@@ -113,6 +123,19 @@ impl ChainState {
     /// The digest of `manifest`, whose extents this chain should cover exactly. The extent
     /// count is part of the digest, so a chain of a different length gives a digest that no
     /// decision for this manifest carries.
+    pub(crate) fn digest_stored(&self, manifest: &crate::extent_list::StoredManifest) -> Vec<u8> {
+        let header = ObjectManifest {
+            format_version: manifest.format_version,
+            bucket: manifest.bucket.clone(),
+            key: manifest.key.clone(),
+            generation: manifest.generation,
+            length: manifest.length,
+            extents: Vec::new(),
+            deleted: manifest.deleted,
+        };
+        let count = (self.count as u64).to_le_bytes();
+        hash(&[b"MOC2", &header.encode_to_vec(), &self.head, &count]).to_vec()
+    }
     pub(crate) fn digest(&self, manifest: &ObjectManifest) -> Vec<u8> {
         let header = ObjectManifest {
             format_version: manifest.format_version,

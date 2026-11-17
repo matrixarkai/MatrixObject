@@ -123,7 +123,7 @@ fn one_record_publishes_an_append_consumes_its_allocation_and_reserves_the_next(
     // both changes landed together
     assert!(service.object_manifests.staged_allocation(consumed).is_none());
     assert_eq!(service.object_manifests.staged_allocation(reserved.allocation_id), Some(&reserved));
-    let published = service.object_manifests.get(&crate::ObjectId::new("bucket", "append")).unwrap();
+    let published = service.object_manifests.get_manifest(&crate::ObjectId::new("bucket", "append")).unwrap();
     assert_eq!(published.generation, 2);
     assert_eq!(reserved.expected_generation, published.generation);
 }
@@ -193,7 +193,7 @@ fn a_publication_cannot_reserve_without_consuming_or_reserve_for_the_wrong_objec
     }
     // The allocation reserved for the next append is for the generation just published: it
     // cannot publish over the manifest it was reserved after.
-    let old = service.object_manifests.get(&crate::ObjectId::new("bucket", "append")).unwrap().clone();
+    let old = service.object_manifests.get_manifest(&crate::ObjectId::new("bucket", "append")).unwrap();
     let mut newer = old.clone();
     newer.generation += 1;
     let reserved = good.reserved.clone().unwrap();
@@ -205,7 +205,7 @@ fn a_publication_cannot_reserve_without_consuming_or_reserve_for_the_wrong_objec
 fn reserved_allocations_chain_through_many_appends_and_survive_a_snapshot() {
     let (mut service, groups, command) = compact_append_fixture(1000);
     let object_id = crate::ObjectId::new("bucket", "append");
-    let mut manifest = service.object_manifests.get(&object_id).unwrap().clone();
+    let mut manifest = service.object_manifests.get_manifest(&object_id).unwrap();
     // the fixture's allocation is already staged for generation 1
     let mut allocation = service.object_manifests.staged_allocation(command.allocation_id).unwrap().clone();
     for step in 0..40usize {
@@ -314,7 +314,7 @@ fn a_publication_reserves_only_while_the_table_has_room_for_other_objects() {
     );
     outcome.apply(&mut service).unwrap();
     assert_eq!(service.object_manifests.staged_count(), held - 1);
-    let published = service.object_manifests.get(&crate::ObjectId::new("bucket", "append")).unwrap();
+    let published = service.object_manifests.get_manifest(&crate::ObjectId::new("bucket", "append")).unwrap();
     assert_eq!(published.generation, 2);
     // A table filled by reservations leaves room: even a full-size table is never what a
     // reservation fills, so another object's allocation is not refused for want of a slot.
@@ -328,7 +328,7 @@ fn a_publication_reserves_only_while_the_table_has_room_for_other_objects() {
 fn appends_after_the_first_make_no_whole_extent_list_pass_for_the_placement_record() {
     let (mut service, groups, command) = reserving_fixture();
     let object_id = crate::ObjectId::new("bucket", "append");
-    let mut manifest = service.object_manifests.get(&object_id).unwrap().clone();
+    let mut manifest = service.object_manifests.get_manifest(&object_id).unwrap();
     let mut allocation = service.object_manifests.staged_allocation(command.allocation_id).unwrap().clone();
     // the first append gives the record its per-group bytes from the whole manifest
     for _ in 0..3 {
@@ -358,7 +358,7 @@ fn appends_after_the_first_make_no_whole_extent_list_pass_for_the_placement_reco
 fn an_append_whose_placement_differs_from_the_prior_record_plus_its_suffix_is_refused() {
     let (mut service, groups, command) = reserving_fixture();
     let object_id = crate::ObjectId::new("bucket", "append");
-    let mut manifest = service.object_manifests.get(&object_id).unwrap().clone();
+    let mut manifest = service.object_manifests.get_manifest(&object_id).unwrap();
     let mut allocation = service.object_manifests.staged_allocation(command.allocation_id).unwrap().clone();
     for _ in 0..3 {
         allocation = publish_on(&mut service, &groups, &mut manifest, &allocation, true).unwrap();

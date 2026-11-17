@@ -8,13 +8,13 @@ fn compact_selected_grants_bound_wire_size_without_changing_durable_decisions() 
         let service = fixture(count);
         let manifest = service
             .object_manifests
-            .get(&crate::ObjectId::new("bucket", "object"))
+            .get_manifest(&crate::ObjectId::new("bucket", "object"))
             .unwrap();
         let command = ManifestRetentionRequest {
             version: 3,
             action: 8,
             generation: manifest.generation,
-            manifest_sha256: crate::read_session_outcome::manifest_sha256(manifest).unwrap(),
+            manifest_sha256: crate::read_session_outcome::manifest_sha256(&manifest).unwrap(),
             ..open()
         };
         let (legacy, legacy_reply) = prepare_at(&service, &open(), usize::MAX, 1000).unwrap();
@@ -51,7 +51,7 @@ fn compact_selected_grants_bound_wire_size_without_changing_durable_decisions() 
                 .unwrap()
                 .manifest
                 .as_ref(),
-            Some(manifest)
+            Some(&manifest)
         );
     }
     assert_eq!(measured[0].2, measured[1].2);
@@ -65,13 +65,13 @@ fn compact_selected_grants_refuse_changed_digest_generation_and_capacity_before_
     let mut service = fixture(1);
     let manifest = service
         .object_manifests
-        .get(&crate::ObjectId::new("bucket", "object"))
+        .get_manifest(&crate::ObjectId::new("bucket", "object"))
         .unwrap();
     let command = ManifestRetentionRequest {
         version: 3,
         action: 8,
         generation: manifest.generation,
-        manifest_sha256: crate::read_session_outcome::manifest_sha256(manifest).unwrap(),
+        manifest_sha256: crate::read_session_outcome::manifest_sha256(&manifest).unwrap(),
         ..open()
     };
     let before = service.export_snapshot().to_bytes().unwrap();

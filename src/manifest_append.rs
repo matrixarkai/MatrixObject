@@ -2,9 +2,11 @@
 // Copyright 2026 MatrixArkAI
 //! An exact prior manifest and a bounded immutable suffix publication.
 use crate::{
-    object_manifest::{ManifestOutcome, ObjectExtent, ObjectManifest},
+    object_manifest::{ManifestOutcome, ObjectExtent},
     ObjectError,
 };
+#[cfg(test)]
+use crate::object_manifest::ObjectManifest;
 use prost::Message;
 
 #[derive(Clone, PartialEq, Eq, Message)]
@@ -118,39 +120,14 @@ impl ManifestAppend {
     #[cfg(test)]
     pub(crate) fn expand(&self, before: &ObjectManifest) -> Result<ManifestOutcome, ObjectError> {
         before.validate()?;
-        self.expand_stored(before, &crate::object_manifest::StoredDigest::of(before))
+        self.expand_stored(
+            &crate::extent_list::StoredManifest::from_ref(before),
+            &crate::object_manifest::StoredDigest::of(before),
+        )
     }
-    /// `expand` for a manifest read from the catalog, which was validated when it was stored,
-    /// together with the chain and digest the catalog keeps for it. Nothing here walks the
-    /// extents already present: the new extents are validated against them (an integer
-    /// comparison per prior page), and the digest of the result is the stored chain extended
-    /// by the suffix.
-    pub(crate) fn expand_stored(&self, before: &ObjectManifest, stored: &crate::object_manifest::StoredDigest) -> Result<ManifestOutcome, ObjectError> {
-        self.validate()?;
-        self.check_prior(before, stored)?;
-        let mut after = before.clone();
-        after.generation += 1;
-        after.length = self.after_length;
-        after.extents.extend(self.suffix.iter().cloned());
-        // `before` was validated above and `after` is `before` plus the suffix, so only the
-        // suffix needs a full check; `decide` would validate both whole manifests again.
-        after.validate_extension(before)?;
-        let after_digest = stored.chain.extended(&self.suffix).digest(&after);
-        let outcome = ManifestOutcome {
-            format_version: 1,
-            before: Some(before.clone()),
-            after: Some(after),
-        };
-        if after_digest != self.after_sha256 {
-            return Err(invalid("compact append resulting digest mismatch"));
-        }
-        Ok(outcome)
-    }
-
     /// Whether `before`, the manifest the catalog holds, is the one this decision was made
-    /// against. A matching stored digest binds the content, so an expansion computed earlier
-    /// from a manifest with this digest is the expansion of this one too.
-    pub(crate) fn check_prior(&self, before: &ObjectManifest, stored: &crate::object_manifest::StoredDigest) -> Result<(), ObjectError> {
+    /// against; a matching stored digest binds the content.
+    pub(crate) fn check_prior(&self, before: &crate::extent_list::StoredManifest, stored: &crate::object_manifest::StoredDigest) -> Result<(), ObjectError> {
         if before.deleted
             || before.format_version != 2
             || before.bucket != self.bucket
@@ -165,6 +142,48 @@ impl ManifestAppend {
             ));
         }
         Ok(())
+    }
+    /// The manifest this decision produces from the stored `before`, which shares the stored
+    /// chunks: the cost is that of the suffix and of the tail chunk, not of the extents already
+    /// stored. Checked as `expand_stored` checks: the prior against the decision, the new
+    /// extents against the stored ones, and the resulting digest against the decision's.
+    pub(crate) fn expand_shared(
+        &self,
+        before: &crate::extent_list::StoredManifest,
+        stored: &crate::object_manifest::StoredDigest,
+    ) -> Result<crate::extent_list::StoredManifest, ObjectError> {
+        self.validate()?;
+        self.check_prior(before, stored)?;
+        let after = before.extended(&self.suffix, before.generation + 1, self.after_length);
+        after.validate_extension_of(before)?;
+        let after_digest = stored.chain.extended(&self.suffix).digest_stored(&after);
+        if after_digest != self.after_sha256 {
+            return Err(invalid("compact append resulting digest mismatch"));
+        }
+        Ok(after)
+    }
+    #[cfg(test)]
+    pub(crate) fn expand_stored(&self, before: &crate::extent_list::StoredManifest, stored: &crate::object_manifest::StoredDigest) -> Result<ManifestOutcome, ObjectError> {
+        self.validate()?;
+        self.check_prior(before, stored)?;
+        let before = before.to_manifest();
+        let mut after = before.clone();
+        after.generation += 1;
+        after.length = self.after_length;
+        after.extents.extend(self.suffix.iter().cloned());
+        // `before` was validated above and `after` is `before` plus the suffix, so only the
+        // suffix needs a full check; `decide` would validate both whole manifests again.
+        after.validate_extension(&before)?;
+        let after_digest = stored.chain.extended(&self.suffix).digest(&after);
+        let outcome = ManifestOutcome {
+            format_version: 1,
+            before: Some(before),
+            after: Some(after),
+        };
+        if after_digest != self.after_sha256 {
+            return Err(invalid("compact append resulting digest mismatch"));
+        }
+        Ok(outcome)
     }
 }
 
@@ -221,14 +240,14 @@ mod tests {
         let full = ManifestOutcome::decide(Some(before.clone()), after).unwrap();
         let delta = ManifestAppend::decide(&full).unwrap();
         let good = StoredDigest::of(&before);
-        assert_eq!(delta.expand_stored(&before, &good).unwrap(), full);
+        assert_eq!(delta.expand_stored(&crate::extent_list::StoredManifest::from_ref(&before), &good).unwrap(), full);
         // stale: the chain and digest of an earlier generation of the same object
         let stale = StoredDigest::of(&chained(129, 3));
-        assert!(delta.expand_stored(&before, &stale).is_err());
+        assert!(delta.expand_stored(&crate::extent_list::StoredManifest::from_ref(&before), &stale).is_err());
         // a digest that is not the stored manifest's
         let mut wrong_digest = good.clone();
         wrong_digest.digest[0] ^= 1;
-        assert!(delta.expand_stored(&before, &wrong_digest).is_err());
+        assert!(delta.expand_stored(&crate::extent_list::StoredManifest::from_ref(&before), &wrong_digest).is_err());
         // the right digest beside a chain whose head or checkpoints were altered: the digest
         // of the result is built from the chain, so it no longer matches the decision
         let mut wrong_chain = good.clone();
@@ -239,7 +258,7 @@ mod tests {
         forged_head.chain = crate::manifest_chain::ChainState::of(&before.extents[..129]);
         for corrupt in [wrong_chain, forged_head] {
             assert_eq!(corrupt.digest, good.digest);
-            assert!(delta.expand_stored(&before, &corrupt).is_err());
+            assert!(delta.expand_stored(&crate::extent_list::StoredManifest::from_ref(&before), &corrupt).is_err());
         }
     }
 
@@ -273,7 +292,7 @@ mod tests {
                 after_sha256: chain.digest(&after),
             };
             delta.validate().unwrap();
-            assert!(delta.expand_stored(&before, &stored).is_err(), "{count}");
+            assert!(delta.expand_stored(&crate::extent_list::StoredManifest::from_ref(&before), &stored).is_err(), "{count}");
         }
     }
 

@@ -471,9 +471,8 @@ mod tests {
             let snapshot = service.export_snapshot();
             let before = service
                 .object_manifests
-                .get(&crate::ObjectId::new("capacity", "object-000000"))
-                .unwrap()
-                .clone();
+                .get_manifest(&crate::ObjectId::new("capacity", "object-000000"))
+                .unwrap();
             let mut after = before.clone();
             after.generation = 2;
             after.deleted = true;
@@ -499,7 +498,7 @@ mod tests {
             if manifest_count > 0 {
                 state
                     .object_manifests
-                    .get(&crate::ObjectId::new("capacity", "object-000000"))
+                    .get_manifest(&crate::ObjectId::new("capacity", "object-000000"))
                     .is_some_and(|m| m.generation == 2 && m.deleted)
             } else {
                 state.records.contains_key("after-checkpoint")

@@ -143,34 +143,25 @@ fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
 }
 
-thread_local! {
-    /// The expansion of the compact append this thread prepared last. Preparing expands the
-    /// decision against the stored manifest to validate it, and applying the same decision
-    /// would expand it again, copying the whole extent list twice more. A single slot: an
-    /// apply that is not for this decision (a replay, another append) finds it does not match
-    /// and expands for itself.
-    static PREPARED_EXPANSION: std::cell::RefCell<Option<(crate::manifest_append::ManifestAppend, ManifestOutcome)>> =
-        const { std::cell::RefCell::new(None) };
+/// The manifest side of an outcome being applied.
+enum Published<'a> {
+    /// The outcome publishes nothing.
+    None,
+    /// It carries the manifests (before and after) of a full publication.
+    Outcome(&'a ManifestOutcome),
+    /// It is a compact append whose resulting manifest has been built from the stored one and
+    /// checked; `bytes` is the catalog size once it is stored.
+    Append { after: crate::extent_list::StoredManifest, bytes: usize },
 }
 
-fn stash_expansion(append: crate::manifest_append::ManifestAppend, expanded: ManifestOutcome) {
-    PREPARED_EXPANSION.with(|slot| *slot.borrow_mut() = Some((append, expanded)));
-}
-
-/// Forget a stashed expansion, so the next apply expands for itself (tests of the slow path).
-#[cfg(all(test, feature = "metadata-consensus"))]
-pub(crate) fn forget_prepared_expansion() {
-    PREPARED_EXPANSION.with(|slot| *slot.borrow_mut() = None);
-}
-
-fn take_expansion(append: &crate::manifest_append::ManifestAppend) -> Option<ManifestOutcome> {
-    PREPARED_EXPANSION.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        match slot.as_ref() {
-            Some((prepared, _)) if prepared == append => slot.take().map(|(_, expanded)| expanded),
-            _ => None,
-        }
-    })
+/// Whether `placement` describes exactly the stored manifest.
+fn matches_stored(placement: &PlacementValue, manifest: &crate::extent_list::StoredManifest) -> bool {
+    placement.id() == manifest.object_id()
+        && placement.version == manifest.generation
+        && placement.length == manifest.length
+        && placement.node_ids == groups_of(manifest.extents.iter())
+        && (placement.group_bytes.is_empty()
+            || placement.group_bytes == group_bytes_of(manifest.extents.iter(), &placement.node_ids))
 }
 
 #[cfg(test)]
@@ -184,21 +175,25 @@ pub(crate) fn full_derivations() -> usize {
 }
 
 fn manifest_groups(manifest: &ObjectManifest) -> Vec<String> {
+    groups_of(manifest.extents.iter())
+}
+fn groups_of<'a>(extents: impl Iterator<Item = &'a crate::object_manifest::ObjectExtent>) -> Vec<String> {
     #[cfg(test)]
     FULL_DERIVATIONS.with(|count| count.set(count.get() + 1));
-    manifest
-        .extents
-        .iter()
+    extents
         .map(|e| e.group.clone())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
 }
 fn manifest_group_bytes(manifest: &ObjectManifest, groups: &[String]) -> Vec<u64> {
+    group_bytes_of(manifest.extents.iter(), groups)
+}
+fn group_bytes_of<'a>(extents: impl Iterator<Item = &'a crate::object_manifest::ObjectExtent>, groups: &[String]) -> Vec<u64> {
     #[cfg(test)]
     FULL_DERIVATIONS.with(|count| count.set(count.get() + 1));
     let mut totals = std::collections::BTreeMap::<&str, u64>::new();
-    for extent in &manifest.extents {
+    for extent in extents {
         *totals.entry(extent.group.as_str()).or_default() += extent.length;
     }
     groups
@@ -378,11 +373,7 @@ impl PlacementOutcome {
                     after.validate()?;
                 }
                 (Some(record), None, Some(manifest)) if record.allocation_id <= self.before_index => {
-                    if manifest_validated {
-                        record.check_publication_validated(manifest)?
-                    } else {
-                        record.check_publication(manifest)?
-                    }
+                    record.check_publication(manifest)?
                 }
                 _ => return Err(invalid("invalid staged outcome transition")),
             }
@@ -450,7 +441,7 @@ impl PlacementOutcome {
         manifest: ManifestOutcome,
         update_time_ms: u64,
     ) -> Result<Self, ObjectError> {
-        Self::publish_manifest_with_staging(service, manifest, update_time_ms, None, None, None)
+        Self::publish_manifest_with_staging(service, manifest, update_time_ms, None, None)
     }
     pub(crate) fn publish_staged_manifest(
         service: &MatrixMetaService,
@@ -459,59 +450,81 @@ impl PlacementOutcome {
         allocation: crate::staged_allocation::StagedAllocation,
     ) -> Result<Self, ObjectError> {
         Self::publish_manifest_with_staging(service, manifest, update_time_ms,
-            Some(crate::staged_allocation::StagedAllocationChange { before: Some(allocation), after: None }), None, None)
+            Some(crate::staged_allocation::StagedAllocationChange { before: Some(allocation), after: None }), None)
     }
     pub(crate) fn publish_copied_manifest(service: &MatrixMetaService, manifest: ManifestOutcome,
         update_time_ms: u64, source: crate::manifest_copy::LiveCopySource) -> Result<Self, ObjectError> {
-        Self::publish_manifest_with_staging(service, manifest, update_time_ms, None, Some(source), None)
+        Self::publish_manifest_with_staging(service, manifest, update_time_ms, None, Some(source))
     }
+    /// The outcome that publishes a compact append: `after` is `before`, the stored manifest,
+    /// plus the new extents of `append` (see `ManifestAppend::expand_shared`). The outcome
+    /// carries the decision, not the manifests; everything it must be bound to is read from
+    /// `before` and `after` here, and again when it is applied.
     pub(crate) fn publish_staged_append(
-        service: &MatrixMetaService, manifest: ManifestOutcome, update_time_ms: u64,
+        service: &MatrixMetaService,
+        before_manifest: &crate::extent_list::StoredManifest,
+        after_manifest: &crate::extent_list::StoredManifest,
+        update_time_ms: u64,
         allocation: crate::staged_allocation::StagedAllocation,
         append: crate::manifest_append::ManifestAppend,
     ) -> Result<Self, ObjectError> {
-        Self::publish_manifest_with_staging(service, manifest, update_time_ms,
-            Some(crate::staged_allocation::StagedAllocationChange { before: Some(allocation), after: None }),
-            None, Some(append))
-    }
-    fn publish_manifest_with_staging(
-        service: &MatrixMetaService,
-        manifest: ManifestOutcome,
-        update_time_ms: u64,
-        staging: Option<crate::staged_allocation::StagedAllocationChange>,
-        copy_source: Option<crate::manifest_copy::LiveCopySource>,
-        compact_append: Option<crate::manifest_append::ManifestAppend>,
-    ) -> Result<Self, ObjectError> {
-        // A compact append's outcome comes from `ManifestAppend::expand`, which validated it,
-        // and `validate_publication` below validates every outcome in full again.
-        if compact_append.is_none() {
-            manifest.validate()?;
-        }
-        let after = manifest.after.as_ref().unwrap();
         let before = service
             .placements
-            .get(&after.object_id())
+            .get(&after_manifest.object_id())
             .map(PlacementValue::from_value);
-        // A compact append adds a suffix to the stored manifest: its placement is the prior one
-        // extended by that suffix, not a pass over every extent.
-        let extended = compact_append
+        // The placement is the prior record extended by the suffix, not a pass over every extent.
+        let extended = before
             .as_ref()
-            .zip(before.as_ref())
-            .and_then(|(append, prior)| extended_placement(prior, &append.suffix));
+            .and_then(|prior| extended_placement(prior, &append.suffix));
         let (node_ids, group_bytes) = extended.unwrap_or_else(|| {
-            let node_ids = manifest_groups(after);
-            let group_bytes = manifest_group_bytes(after, &node_ids);
+            let node_ids = groups_of(after_manifest.extents.iter());
+            let group_bytes = group_bytes_of(after_manifest.extents.iter(), &node_ids);
             (node_ids, group_bytes)
         });
         let placement = PlacementValue {
-            bucket: after.bucket.clone(),
-            key: after.key.clone(),
-            version: after.generation,
-            length: after.length,
+            bucket: after_manifest.bucket.clone(),
+            key: after_manifest.key.clone(),
+            version: after_manifest.generation,
+            length: after_manifest.length,
             group_bytes,
             node_ids,
             update_time_ms,
         };
+        let nodes = Self::capacity_changes(service, &before, &placement)?;
+        let outcome = Self {
+            version: 12,
+            before_index: service.placement_commit_index,
+            after_index: service
+                .placement_commit_index
+                .checked_add(1)
+                .ok_or_else(|| invalid("placement index exhausted"))?,
+            nodes,
+            placements: vec![PlacementChange {
+                before,
+                after: Some(placement),
+            }],
+            manifest: None,
+            retention: None,
+            staging: Some(crate::staged_allocation::StagedAllocationChange { before: Some(allocation), after: None }),
+            publication_fence: None,
+            copy_source: None,
+            retention_deadline: None,
+            read_session_open: None,
+            read_session_removal: None,
+            manifest_append: Some(append),
+            reserved: None,
+        };
+        outcome.validate_manifest_binding()?;
+        outcome.validate_append_publication(service, true, before_manifest, after_manifest)?;
+        outcome.to_payload()?;
+        Ok(outcome)
+    }
+    /// The capacity changes the move from `before` to `placement` makes on the groups it names.
+    fn capacity_changes(
+        service: &MatrixMetaService,
+        before: &Option<PlacementValue>,
+        placement: &PlacementValue,
+    ) -> Result<Vec<NodeChange>, ObjectError> {
         let ids: BTreeSet<_> = before
             .iter()
             .flat_map(|p| p.node_ids.iter())
@@ -542,7 +555,34 @@ impl PlacementOutcome {
                 });
             }
         }
-        let mut outcome = Self {
+        Ok(nodes)
+    }
+    fn publish_manifest_with_staging(
+        service: &MatrixMetaService,
+        manifest: ManifestOutcome,
+        update_time_ms: u64,
+        staging: Option<crate::staged_allocation::StagedAllocationChange>,
+        copy_source: Option<crate::manifest_copy::LiveCopySource>,
+    ) -> Result<Self, ObjectError> {
+        manifest.validate()?;
+        let after = manifest.after.as_ref().unwrap();
+        let before = service
+            .placements
+            .get(&after.object_id())
+            .map(PlacementValue::from_value);
+        let node_ids = manifest_groups(after);
+        let group_bytes = manifest_group_bytes(after, &node_ids);
+        let placement = PlacementValue {
+            bucket: after.bucket.clone(),
+            key: after.key.clone(),
+            version: after.generation,
+            length: after.length,
+            group_bytes,
+            node_ids,
+            update_time_ms,
+        };
+        let nodes = Self::capacity_changes(service, &before, &placement)?;
+        let outcome = Self {
             version: if copy_source.is_some() { 6 } else if staging.is_some() { 4 } else { 2 },
             before_index: service.placement_commit_index,
             after_index: service
@@ -565,69 +605,78 @@ impl PlacementOutcome {
             manifest_append: None,
             reserved: None,
         };
-        outcome.validate_manifest_binding_with(compact_append.is_some())?;
-        outcome.validate_publication(service, true, compact_append.is_some())?;
-        if let Some(append) = compact_append {
-            // The outcome came from `ManifestAppend::expand_stored`, which checked both
-            // digests of `append` against the stored manifest and the manifest it built, and
-            // `validate_publication` above validated it. What is left to compare is the
-            // decision's own fields, so the digests are taken from the decision instead of
-            // hashing both manifests again.
-            let decided = crate::manifest_append::ManifestAppend::decide_with_digests(
-                outcome.manifest.as_ref().unwrap(),
-                append.before_sha256.clone(),
-                append.after_sha256.clone(),
-            )?;
-            #[cfg(test)]
-            crate::manifest_chain::uncounted(|| {
-                assert_eq!(
-                    decided,
-                    crate::manifest_append::ManifestAppend::decide_validated(outcome.manifest.as_ref().unwrap())
-                        .expect("the outcome was just validated"),
-                    "the decision's digests are not those of the manifests it was expanded to"
-                );
-            });
-            if decided != append {
-                return Err(invalid("compact append differs from validated publication"));
-            }
-            outcome.version = 12;
-            // The expansion is kept for the apply that follows on this thread, instead of
-            // being dropped here and rebuilt there.
-            let expanded = outcome.manifest.take();
-            outcome.manifest_append = Some(append.clone());
-            if let Some(expanded) = expanded {
-                stash_expansion(append, expanded);
-            }
-            outcome.validate_manifest_binding()?;
-        }
+        outcome.validate_manifest_binding()?;
+        outcome.validate_publication(service, true)?;
         outcome.to_payload()?;
         Ok(outcome)
+    }
+
+    /// The checks `validate_publication` makes for a compact append, against `before`, the
+    /// stored manifest, and `after`, which extends it by the decision's suffix. Returns the
+    /// catalog size once `after` is stored.
+    fn validate_append_publication(
+        &self,
+        service: &MatrixMetaService,
+        admit: bool,
+        before: &crate::extent_list::StoredManifest,
+        after: &crate::extent_list::StoredManifest,
+    ) -> Result<usize, ObjectError> {
+        let allocation_id = self.staging.as_ref().and_then(|change| change.before.as_ref()).map(|record| record.allocation_id);
+        let body_bytes = service.object_manifests.check_append_publication(before, after, allocation_id)?;
+        let change = &self.placements[0];
+        let (Some(before_placement), Some(after_placement)) = (&change.before, &change.after) else {
+            return Err(invalid("manifest publication placement binding mismatch"));
+        };
+        let suffix = after.extents.tail_from(before.extents.len());
+        let bound = match extended_placement(before_placement, &suffix) {
+            Some((groups, bytes)) => {
+                before_placement.id() == before.object_id()
+                    && before_placement.version == before.generation
+                    && before_placement.length == before.length
+                    && after_placement.id() == after.object_id()
+                    && after_placement.version == after.generation
+                    && after_placement.length == after.length
+                    && after_placement.node_ids == groups
+                    && (after_placement.group_bytes.is_empty() || after_placement.group_bytes == bytes)
+            }
+            None => matches_stored(after_placement, after) && matches_stored(before_placement, before),
+        };
+        if !bound {
+            return Err(invalid("manifest publication placement binding mismatch"));
+        }
+        self.check_placement_and_capacity(service, &after.object_id(), admit)?;
+        Ok(body_bytes)
     }
 
     fn validate_publication(
         &self,
         service: &MatrixMetaService,
         admit: bool,
-        manifest_validated: bool,
     ) -> Result<Option<usize>, ObjectError> {
         let manifest = self.manifest.as_ref().unwrap();
         let after = manifest.after.as_ref().unwrap();
-        // An expanded compact append's `before` is the stored manifest itself; the stored
-        // extents are not compared with their own copy (`check_validated_outcome_with_admission`
-        // compares the header, and the digest was matched when the append was expanded).
-        if !manifest_validated && service.object_manifests.get(&after.object_id()) != manifest.before.as_ref() {
+        if !service.object_manifests.matches_expected(&after.object_id(), manifest.before.as_ref()) {
             return Err(invalid("manifest publication prior state mismatch"));
         }
         let allocation_id = self.staging.as_ref().and_then(|change| change.before.as_ref()).map(|record| record.allocation_id);
-        let body_bytes = if manifest_validated {
-            service.object_manifests.check_validated_outcome_with_admission(manifest, allocation_id, self.copy_source.as_ref(), true)?
-        } else {
-            service.object_manifests.check_outcome_with_admission(manifest, allocation_id, self.copy_source.as_ref())?
-        };
+        let body_bytes = service.object_manifests.check_outcome_with_admission(manifest, allocation_id, self.copy_source.as_ref())?;
+        self.check_placement_and_capacity(service, &after.object_id(), admit)?;
+        Ok(body_bytes)
+    }
+
+    /// The placement change must start from the placement the state holds, and the capacity
+    /// changes must be exactly those the move makes; with `admit`, the groups it adds bytes to
+    /// must be writable.
+    fn check_placement_and_capacity(
+        &self,
+        service: &MatrixMetaService,
+        object: &ObjectId,
+        admit: bool,
+    ) -> Result<(), ObjectError> {
         let change = &self.placements[0];
         if service
             .placements
-            .get(&after.object_id())
+            .get(object)
             .map(PlacementValue::from_value)
             != change.before
         {
@@ -682,7 +731,7 @@ impl PlacementOutcome {
         if self.nodes != expected {
             return Err(invalid("manifest publication capacity changes mismatch"));
         }
-        Ok(body_bytes)
+        Ok(())
     }
 }
 impl PlacementOutcome {
@@ -807,22 +856,25 @@ impl PlacementOutcome {
         if let Some(append) = &self.manifest_append {
             let (before, stored) = service.object_manifests.get_with_digest(&ObjectId::new(append.bucket.clone(), append.key.clone()))?
                 .ok_or_else(|| invalid("compact append prior manifest missing"))?;
-            let mut expanded = self.clone();
-            expanded.version = 4;
-            expanded.manifest = Some(match take_expansion(append) {
-                // Prepared on this thread against a manifest with the same digest: the
-                // expansion is the same, and only the prior must be confirmed.
-                Some(prepared) => {
-                    append.validate()?;
-                    append.check_prior(before, stored)?;
-                    prepared
-                }
-                None => append.expand_stored(before, stored)?,
-            });
-            expanded.manifest_append = None;
-            // `reserved` stays: the expanded publication carries the reservation it creates.
-            return expanded.apply_with(service, true);
+            let after = append.expand_shared(before, stored)?;
+            let record = self.staging.as_ref().and_then(|change| change.before.as_ref())
+                .ok_or_else(|| invalid("compact append must consume staged ownership"))?;
+            record.check_append_publication(before, &after)?;
+            let bytes = self.validate_append_publication(service, false, before, &after)?;
+            return self.apply_checked(service, Published::Append { after, bytes });
         }
+        let published = match &self.manifest {
+            Some(manifest) => Published::Outcome(manifest),
+            None => Published::None,
+        };
+        self.apply_checked(service, published)
+    }
+    /// Apply the outcome once `published`, its manifest side, has been decided and checked.
+    fn apply_checked(
+        &self,
+        service: &mut MatrixMetaService,
+        published: Published<'_>,
+    ) -> Result<(), ObjectError> {
         if self.before_index != service.placement_commit_index
             || !(self.before_index.checked_add(1) == Some(self.after_index)
                 || (self.after_index == self.before_index
@@ -868,7 +920,7 @@ impl PlacementOutcome {
                 .as_ref()
                 .ok_or_else(|| invalid("placement outcome lacks resulting placement"))?;
             let id = after.id();
-            if (service.object_manifests.get(&id).is_some() && self.manifest.is_none())
+            if (service.object_manifests.get(&id).is_some() && matches!(published, Published::None))
                 || !objects.insert(id.clone())
                 || service.placements.get(&id).map(PlacementValue::from_value) != change.before
                 || change.before.as_ref().is_some_and(|v| v.id() != id)
@@ -897,12 +949,26 @@ impl PlacementOutcome {
         let read_session_removal = if let Some(removal) = &self.read_session_removal {
             Some((removal.retention_id, service.object_manifests.check_read_session_removal(removal)?))
         } else { None };
-        let publication_bytes = if self.manifest.is_some() { self.validate_publication(service, false, manifest_validated)? } else { None };
+        let publication_bytes = match &published {
+            Published::Outcome(_) => self.validate_publication(service, false)?,
+            Published::Append { bytes, .. } => Some(*bytes),
+            Published::None => None,
+        };
         if let (Some(reserved), Some(bytes)) = (&self.reserved, publication_bytes) {
-            let manifest = self.manifest.as_ref().ok_or_else(|| invalid("reservation without a publication"))?;
             let consumed = self.staging.as_ref().and_then(|change| change.before.as_ref())
                 .ok_or_else(|| invalid("reservation without the consumed allocation"))?;
-            service.object_manifests.check_reservation(reserved, manifest.after.as_ref().unwrap(), bytes, consumed)?;
+            match &published {
+                Published::Outcome(manifest) => {
+                    service.object_manifests.check_reservation(reserved, manifest.after.as_ref().unwrap(), bytes, consumed)?;
+                }
+                Published::Append { after, .. } => {
+                    service.object_manifests.check_reservation_for(
+                        reserved, &after.bucket, &after.key, after.generation, after.deleted, after.format_version,
+                        bytes, consumed,
+                    )?;
+                }
+                Published::None => return Err(invalid("reservation without a publication")),
+            }
         }
         if let Some(staging) = &self.staging {
             service.object_manifests.apply_staging(staging)?;
@@ -918,9 +984,13 @@ impl PlacementOutcome {
         if let Some(fence) = &self.publication_fence {
             service.object_manifests.restore_publication_fence(fence.after);
         }
-        if let Some(manifest) = &self.manifest {
-            // Catalog capacity and expected-state checks happen before any other writes.
-            if let Some(bytes) = publication_bytes { service.object_manifests.commit_checked_manifest(manifest, bytes, manifest_validated); }
+        // Catalog capacity and expected-state checks happen before any other writes.
+        match published {
+            Published::Outcome(manifest) => {
+                if let Some(bytes) = publication_bytes { service.object_manifests.commit_checked_manifest(manifest, bytes); }
+            }
+            Published::Append { after, bytes } => service.object_manifests.commit_append(after, bytes),
+            Published::None => {}
         }
         if let (Some(reserved), Some(_)) = (&self.reserved, publication_bytes) {
             service.object_manifests.restore_staging(reserved.allocation_id, Some(reserved.clone()));
