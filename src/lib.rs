@@ -6,6 +6,9 @@ pub(crate) mod manifest_chain;
 #[cfg(test)]
 mod chunked_manifest_tests;
 pub mod log_chunk;
+pub mod log_tail;
+#[cfg(test)]
+mod log_tail_tests;
 #[cfg(test)]
 mod log_chunk_tests;
 pub(crate) mod extent_list;
