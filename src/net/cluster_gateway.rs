@@ -256,6 +256,9 @@ impl SdkPlane {
                 Err(error) => return Err(self.compact_refused("allocating a staged append", error)),
             },
         };
+        // The allocation came from the metadata plane a moment ago (an allocation, or the reply
+        // that published the previous append, used within half its lease): no read-back.
+        self.client.confirm_staged_allocation(allocation.allocation_id);
         let options = self.write_options();
         let result = if self.options.reserve_next {
             self.client

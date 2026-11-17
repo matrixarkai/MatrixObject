@@ -907,6 +907,7 @@ impl RemoteMetaClient {
         tail_from: Option<usize>,
     ) -> Result<ObjectManifest, ObjectWriteFailure> {
         self.check_operation_deadline().map_err(before)?;
+        let confirmed = self.confirmed_allocation.take();
         let (pages, generation) =
             preflight(bucket, key, expected.as_ref(), data.len(), options).map_err(before)?;
         if let Some(allocation) = owned {
@@ -914,7 +915,8 @@ impl RemoteMetaClient {
             if allocation.bucket != bucket || allocation.key != key || allocation.append != append
                 || allocation.page_count < pages
                 || allocation.expected_generation != expected.as_ref().map_or(0, |manifest| manifest.generation)
-                || self.read_staged_allocation(allocation.allocation_id).map_err(before)? != *allocation {
+                || (confirmed != Some(allocation.allocation_id)
+                    && self.read_staged_allocation(allocation.allocation_id).map_err(before)? != *allocation) {
                 return Err(before(invalid("staged allocation does not match object write")));
             }
         }
