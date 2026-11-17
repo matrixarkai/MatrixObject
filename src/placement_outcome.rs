@@ -143,7 +143,19 @@ fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
 }
 
+#[cfg(test)]
+thread_local! {
+    static FULL_DERIVATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+/// Placement bookkeeping passes over a whole extent list on this thread (tests only).
+#[cfg(test)]
+pub(crate) fn full_derivations() -> usize {
+    FULL_DERIVATIONS.with(|count| count.get())
+}
+
 fn manifest_groups(manifest: &ObjectManifest) -> Vec<String> {
+    #[cfg(test)]
+    FULL_DERIVATIONS.with(|count| count.set(count.get() + 1));
     manifest
         .extents
         .iter()
@@ -153,6 +165,8 @@ fn manifest_groups(manifest: &ObjectManifest) -> Vec<String> {
         .collect()
 }
 fn manifest_group_bytes(manifest: &ObjectManifest, groups: &[String]) -> Vec<u64> {
+    #[cfg(test)]
+    FULL_DERIVATIONS.with(|count| count.set(count.get() + 1));
     let mut totals = std::collections::BTreeMap::<&str, u64>::new();
     for extent in &manifest.extents {
         *totals.entry(extent.group.as_str()).or_default() += extent.length;
@@ -161,6 +175,60 @@ fn manifest_group_bytes(manifest: &ObjectManifest, groups: &[String]) -> Vec<u64
         .iter()
         .map(|group| totals.get(group.as_str()).copied().unwrap_or(0))
         .collect()
+}
+/// The groups and per-group bytes of a manifest that extends the one `before` describes by
+/// `suffix`: the prior record's totals plus the new extents, groups sorted without duplicates, as
+/// `manifest_groups` and `manifest_group_bytes` give for the whole manifest. O(groups + suffix)
+/// instead of O(extents). `None` when the prior record carries no per-group bytes (an older
+/// record, or an object without extents yet): the caller then derives from the whole manifest.
+fn extended_placement(before: &PlacementValue, suffix: &[crate::object_manifest::ObjectExtent]) -> Option<(Vec<String>, Vec<u64>)> {
+    if before.group_bytes.is_empty() || before.group_bytes.len() != before.node_ids.len() {
+        return None;
+    }
+    let mut totals: std::collections::BTreeMap<&str, u64> = before
+        .node_ids
+        .iter()
+        .map(String::as_str)
+        .zip(before.group_bytes.iter().copied())
+        .collect();
+    for extent in suffix {
+        *totals.entry(extent.group.as_str()).or_default() += extent.length;
+    }
+    Some((totals.keys().map(|group| group.to_string()).collect(), totals.values().copied().collect()))
+}
+
+/// Whether the placement change binds the publication's manifests. When the publication extends
+/// the stored manifest by a validated suffix, the resulting record is checked against the prior
+/// record extended by that suffix, and the prior record by identity, generation and length: it must
+/// equal the record the state already holds, which the publication that wrote it bound to its
+/// manifest in full. Otherwise both records are derived from their manifests.
+fn placement_binds_manifest(change: &PlacementChange, manifest: &ManifestOutcome, extends_prior: bool) -> bool {
+    let (Some(after_manifest), Some(after_placement)) = (manifest.after.as_ref(), change.after.as_ref()) else {
+        return false;
+    };
+    if extends_prior {
+        if let (Some(before_placement), Some(before_manifest)) = (&change.before, &manifest.before) {
+            let prefix = before_manifest.extents.len();
+            if after_manifest.extents.len() >= prefix {
+                if let Some((groups, bytes)) = extended_placement(before_placement, &after_manifest.extents[prefix..]) {
+                    return before_placement.id() == before_manifest.object_id()
+                        && before_placement.version == before_manifest.generation
+                        && before_placement.length == before_manifest.length
+                        && after_placement.id() == after_manifest.object_id()
+                        && after_placement.version == after_manifest.generation
+                        && after_placement.length == after_manifest.length
+                        && after_placement.node_ids == groups
+                        && (after_placement.group_bytes.is_empty() || after_placement.group_bytes == bytes);
+                }
+            }
+        }
+    }
+    matches_manifest(after_placement, after_manifest)
+        && match (&change.before, &manifest.before) {
+            (None, None) => true,
+            (Some(placement), Some(prior)) => matches_manifest(placement, prior),
+            _ => false,
+        }
 }
 fn matches_manifest(placement: &PlacementValue, manifest: &ObjectManifest) -> bool {
     placement.id() == manifest.object_id()
@@ -323,18 +391,7 @@ impl PlacementOutcome {
                 if self.placements.len() != 1 {
                     return Err(invalid("manifest publication needs one placement change"));
                 }
-                let change = &self.placements[0];
-                let after = manifest.after.as_ref().unwrap();
-                if !change
-                    .after
-                    .as_ref()
-                    .is_some_and(|p| matches_manifest(p, after))
-                    || match (&change.before, &manifest.before) {
-                        (None, None) => false,
-                        (Some(p), Some(m)) => !matches_manifest(p, m),
-                        _ => true,
-                    }
-                {
+                if !placement_binds_manifest(&self.placements[0], manifest, manifest_validated) {
                     return Err(invalid("manifest publication placement binding mismatch"));
                 }
                 Ok(())
@@ -405,13 +462,23 @@ impl PlacementOutcome {
             .placements
             .get(&after.object_id())
             .map(PlacementValue::from_value);
-        let node_ids = manifest_groups(after);
+        // A compact append adds a suffix to the stored manifest: its placement is the prior one
+        // extended by that suffix, not a pass over every extent.
+        let extended = compact_append
+            .as_ref()
+            .zip(before.as_ref())
+            .and_then(|(append, prior)| extended_placement(prior, &append.suffix));
+        let (node_ids, group_bytes) = extended.unwrap_or_else(|| {
+            let node_ids = manifest_groups(after);
+            let group_bytes = manifest_group_bytes(after, &node_ids);
+            (node_ids, group_bytes)
+        });
         let placement = PlacementValue {
             bucket: after.bucket.clone(),
             key: after.key.clone(),
             version: after.generation,
             length: after.length,
-            group_bytes: manifest_group_bytes(after, &node_ids),
+            group_bytes,
             node_ids,
             update_time_ms,
         };
@@ -829,5 +896,70 @@ impl PlacementOutcome {
         service.placement_commit_index = self.after_index;
         service.invalidate_snapshot_export_cache();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod incremental_placement_tests {
+    use super::*;
+    use crate::object_manifest::ObjectExtent;
+
+    fn next(state: &mut u64) -> u64 {
+        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *state >> 33
+    }
+
+    fn extent(group: &str, length: u64) -> ObjectExtent {
+        ObjectExtent { group: group.into(), length, ..Default::default() }
+    }
+
+    /// For random sequences of appends of 0..4 extents over five groups, each given a random length
+    /// (zero included), the record extended from the previous one equals the record derived from the
+    /// whole manifest: the same groups in the same order and the same bytes, so the encoded record
+    /// (and the snapshot that carries it) is unchanged.
+    #[test]
+    fn the_extended_record_equals_the_record_derived_from_the_whole_manifest() {
+        for seed in 1..=20u64 {
+            let mut state = seed;
+            let mut manifest = ObjectManifest { format_version: 2, bucket: "b".into(), key: "k".into(), generation: 1, ..Default::default() };
+            let mut record: Option<PlacementValue> = None;
+            let mut extended_steps = 0;
+            for step in 0..300 {
+                let count = (next(&mut state) % 5) as usize;
+                let suffix: Vec<ObjectExtent> = (0..count)
+                    .map(|_| extent(&format!("group-{}", next(&mut state) % 5), next(&mut state) % 10))
+                    .collect();
+                manifest.extents.extend(suffix.iter().cloned());
+                manifest.generation += 1;
+                let whole_groups = manifest_groups(&manifest);
+                let whole_bytes = manifest_group_bytes(&manifest, &whole_groups);
+                let derived = record.as_ref().and_then(|prior| extended_placement(prior, &suffix));
+                if let Some((groups, bytes)) = &derived {
+                    assert_eq!(groups, &whole_groups, "seed {seed} step {step}: groups");
+                    assert_eq!(bytes, &whole_bytes, "seed {seed} step {step}: bytes");
+                    extended_steps += 1;
+                }
+                record = Some(PlacementValue {
+                    bucket: "b".into(),
+                    key: "k".into(),
+                    version: manifest.generation,
+                    length: manifest.length,
+                    node_ids: whole_groups,
+                    update_time_ms: 0,
+                    group_bytes: whole_bytes,
+                });
+            }
+            assert!(extended_steps > 250, "seed {seed}: the extension ran on {extended_steps} of 300 steps");
+        }
+    }
+
+    /// A prior record without per-group bytes (an object without extents, or an older record) is not
+    /// extended: the caller derives it from the whole manifest.
+    #[test]
+    fn a_prior_record_without_group_bytes_is_not_extended() {
+        let prior = PlacementValue { bucket: "b".into(), key: "k".into(), node_ids: vec!["g".into()], group_bytes: vec![], ..Default::default() };
+        assert!(extended_placement(&prior, &[extent("g", 1)]).is_none());
+        let shaped_wrong = PlacementValue { node_ids: vec!["g".into()], group_bytes: vec![1, 2], ..prior };
+        assert!(extended_placement(&shaped_wrong, &[extent("g", 1)]).is_none());
     }
 }
