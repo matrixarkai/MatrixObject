@@ -2063,7 +2063,10 @@ impl RemoteMetaClient {
                         refusals += 1;
                     }
                     Ok(Ok(reply)) => return (MetaCallOutcome::Answered(reply), false),
-                    Ok(Err(error)) => return (MetaCallOutcome::Refused(error), false),
+                    Ok(Err(error)) => {
+                        let proven = refusal_proves_not_admitted(&error);
+                        return (MetaCallOutcome::Refused(error), proven);
+                    }
                     Err(error) => {
                         unadmitted = false;
                         last = MetaCallOutcome::Unreachable(error);
@@ -2114,7 +2117,10 @@ impl RemoteMetaClient {
         match self.exchange(request, request.code()) {
             Ok(Ok(MetaReply::NotLeader)) => (not_leader(), true),
             Ok(Ok(reply)) => (MetaCallOutcome::Answered(reply), false),
-            Ok(Err(error)) => (MetaCallOutcome::Refused(error), false),
+            Ok(Err(error)) => {
+                let proven = refusal_proves_not_admitted(&error);
+                (MetaCallOutcome::Refused(error), proven)
+            }
             Err(error) => (MetaCallOutcome::Unreachable(error), false),
         }
     }
@@ -2249,6 +2255,34 @@ fn resolve(endpoint: &str) -> Result<SocketAddr, ObjectError> {
             "the metaserver endpoint {endpoint:?} resolved to no address at all"
         ))
     })
+}
+
+/// Whether a refusal from the metaserver proves that the refused request was not admitted.
+///
+/// A refusal is an answer, not a lost connection, but it does not always prove the request
+/// never committed: "write outcome may be committed" after a leadership change is a refusal
+/// too. The refusals listed here are the ones decided before a request is proposed, because
+/// the manifest or the allocation it names is no longer what the request was built on. That
+/// is what a lost race between two appenders to one object looks like, and it is safe for the
+/// caller to re-read and rebuild its request: nothing was published. The caller never sends
+/// the same publication twice, so such a refusal cannot be an earlier copy's effect.
+fn refusal_proves_not_admitted(error: &ObjectError) -> bool {
+    match error {
+        ObjectError::PreconditionFailed(message) => [
+            "object manifest changed before publication",
+            "compact append prior manifest changed",
+            "append plan prior manifest changed",
+            "object changed before staging",
+        ]
+        .iter()
+        .any(|known| message.contains(known)),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn refusal_proves_not_admitted_for_tests(error: &ObjectError) -> bool {
+    refusal_proves_not_admitted(error)
 }
 
 /// A failure of the connection rather than of the control plane.
