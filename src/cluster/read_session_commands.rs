@@ -42,13 +42,15 @@ pub(super) fn prepare_at(
     };
     match command.action {
         5 | 8 => {
-            let manifest = service
+            // The stored manifest and the digest computed once for it: the manifest is copied
+            // out only when the reply carries it, and its digest is not derived again.
+            let (manifest, cached) = service
                 .object_manifests
-                .get_manifest(&super::meta_message::object_id(
+                .get_with_digest(&super::meta_message::object_id(
                     &command.bucket,
                     &command.key,
-                ))
-                .filter(|manifest| {
+                ))?
+                .filter(|(manifest, _)| {
                     !manifest.deleted
                         && (command.generation == 0 || command.generation == manifest.generation)
                 })
@@ -67,7 +69,7 @@ pub(super) fn prepare_at(
                 manifest_sha256: if command.action == 8 {
                     command.manifest_sha256.clone()
                 } else {
-                    crate::read_session_outcome::manifest_sha256(&manifest)?
+                    cached.digest.clone()
                 },
             };
             service.object_manifests.check_read_session_open(&open)?;
@@ -79,7 +81,7 @@ pub(super) fn prepare_at(
             } else {
                 reply.retained = Some(RetainedManifest {
                     retention_id: open.retention_id,
-                    manifest: Some(manifest.clone()),
+                    manifest: Some(manifest.to_manifest()),
                     expires_at_ms: open.expires_at_ms,
                 });
                 reply.version = 3;

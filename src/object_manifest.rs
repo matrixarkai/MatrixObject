@@ -894,15 +894,16 @@ impl ManifestCatalog {
     pub(crate) fn check_read_session_open(&self, open: &crate::read_session_outcome::ReadSessionOpen)
         -> Result<(ObjectManifest, usize), ObjectError> {
         open.validate()?;
-        let manifest = self.get(&ObjectId::new(open.bucket.clone(), open.key.clone()))
-            .filter(|manifest| !manifest.deleted && manifest.generation == open.generation)
-            .map(|manifest| manifest.to_manifest())
+        // The stored manifest was validated when it was stored, and its digest is the one
+        // computed once for the stored value: neither is derived again from every extent here.
+        let (stored, cached) = self.get_with_digest(&ObjectId::new(open.bucket.clone(), open.key.clone()))?
+            .filter(|(manifest, _)| !manifest.deleted && manifest.generation == open.generation)
             .ok_or_else(|| ObjectError::PreconditionFailed("read session generation changed".into()))?;
-        manifest.validate()?;
-        if crate::read_session_outcome::manifest_sha256(&manifest)? != open.manifest_sha256 {
+        if cached.digest != open.manifest_sha256 {
             return Err(ObjectError::PreconditionFailed("read session manifest digest changed".into()));
         }
-        let manifest_len = manifest.encoded_len();
+        let manifest_len = stored.encoded_len();
+        let manifest = stored.to_manifest();
         let record_len = 1 + prost::encoding::encoded_len_varint(open.retention_id)
             + 1 + prost::encoding::encoded_len_varint(manifest_len as u64) + manifest_len
             + 1 + prost::encoding::encoded_len_varint(open.expires_at_ms);
@@ -1373,6 +1374,65 @@ mod tests {
         // a missing object has none
         assert!(catalog.get_with_digest(&ObjectManifest { key: "absent".into(), ..sized_manifest(0) }.object_id()).unwrap().is_none());
     }
+    /// The session open trusts the digest the catalog caches for the stored manifest, so the
+    /// cache must follow every change of the stored value: after an append (the cache is
+    /// carried forward), after a rewrite or a truncation (it must not be), and on a restored
+    /// catalog (no cache: it is computed from the extents, to the same value). At each step
+    /// the open succeeds with the current digest and is refused with the previous one, and the
+    /// cached digest equals one recomputed from the extents.
+    #[test]
+    fn a_session_opens_only_against_the_current_digest_at_every_size() {
+        let digest = |m: &ObjectManifest| crate::read_session_outcome::manifest_sha256(m).unwrap();
+        for count in [0usize, 1, 63, 64, 65, 1000] {
+            let first = sized_manifest(count);
+            let id = first.object_id();
+            let mut catalog = ManifestCatalog::default();
+            catalog.apply(&ManifestOutcome::decide(None, first.clone()).unwrap()).unwrap();
+            let open_with = |catalog: &ManifestCatalog, manifest: &ObjectManifest, sha: Vec<u8>| {
+                catalog.check_read_session_open(&crate::read_session_outcome::ReadSessionOpen {
+                    retention_id: 9,
+                    bucket: manifest.bucket.clone(),
+                    key: manifest.key.clone(),
+                    generation: manifest.generation,
+                    expires_at_ms: 1000,
+                    manifest_sha256: sha,
+                })
+            };
+            let check = |catalog: &ManifestCatalog, current: &ObjectManifest, previous: &ObjectManifest, step: &str| {
+                let (_, cached) = catalog.get_with_digest(&id).unwrap().unwrap();
+                assert_eq!(cached.digest, digest(current), "{step} at {count}: cache differs from the extents");
+                assert_eq!(open_with(catalog, current, digest(current)).unwrap().0, *current, "{step} at {count}");
+                assert_ne!(digest(previous), digest(current), "{step} at {count}: the step changed nothing");
+                assert!(open_with(catalog, current, digest(previous)).is_err(), "{step} at {count}: the previous digest opened");
+                assert!(open_with(catalog, previous, digest(current)).is_err(), "{step} at {count}: the previous generation opened");
+            };
+            // the cache is populated by the first open, then an append must replace it
+            let _ = open_with(&catalog, &first, digest(&first)).unwrap();
+            let mut appended = sized_manifest(count + 1);
+            appended.generation = 2;
+            appended.extents[count].chunk_id += 10_000;
+            catalog.apply(&ManifestOutcome::decide(Some(first.clone()), appended.clone()).unwrap()).unwrap();
+            check(&catalog, &appended, &first, "append");
+            // a rewrite that keeps the count, then one that truncates and changes the head
+            let mut rewritten = appended.clone();
+            rewritten.generation = 3;
+            rewritten.extents[count].data_sha256 = vec![42; 32];
+            catalog.apply(&ManifestOutcome::decide(Some(appended.clone()), rewritten.clone()).unwrap()).unwrap();
+            check(&catalog, &rewritten, &appended, "rewrite");
+            let mut truncated = sized_manifest(count / 2);
+            truncated.generation = 4;
+            if let Some(extent) = truncated.extents.first_mut() {
+                extent.data_sha256 = vec![43; 32];
+            }
+            catalog.apply(&ManifestOutcome::decide(Some(rewritten.clone()), truncated.clone()).unwrap()).unwrap();
+            check(&catalog, &truncated, &rewritten, "truncate");
+            // a restored catalog has no cache and computes the same digest
+            let restored = ManifestCatalog::from_bytes(&catalog.to_bytes().unwrap()).unwrap();
+            let (_, cached) = restored.get_with_digest(&id).unwrap().unwrap();
+            assert_eq!(*cached, StoredDigest::of(&truncated), "restore at {count}");
+            check(&restored, &truncated, &rewritten, "restore");
+        }
+    }
     #[test]
     fn replaying_appends_reproduces_the_chain_the_running_catalog_carried_forward() {
         let id = sized_manifest(1).object_id();
@@ -1531,6 +1591,72 @@ mod tests {
                     assert_eq!(full, incremental, "{name} ({count}+{added})");
                 }
             }
+        }
+    }
+    /// An append trusted against its prefix is still refused when its new extents overlap the
+    /// bytes the prefix covers or leave a hole after them, whatever length the result claims.
+    #[test]
+    fn an_append_that_overlaps_or_leaves_a_hole_is_refused() {
+        for count in [1usize, 20, 300] {
+            let before = sized_manifest(count);
+            for (name, shift) in [("hole", 1i64), ("overlap", -1), ("far hole", 50), ("deep overlap", -(count as i64))] {
+                let mut after = sized_manifest(count + 1);
+                after.generation = 2;
+                after.extents[count].chunk_id += 10_000;
+                after.extents[count].object_offset = (count as i64 + shift) as u64;
+                // the result's length is made to agree with the shifted extent, so only the
+                // continuity with the prefix is wrong
+                after.length = after.extents[count].object_offset + after.extents[count].length;
+                assert!(
+                    ManifestOutcome::decide_append(before.clone(), after.clone()).is_err(),
+                    "{name} at {count} was accepted"
+                );
+                assert!(ManifestOutcome::decide(Some(before.clone()), after).is_err(), "{name} at {count}");
+            }
+            // and the honest append is accepted by both
+            let mut after = sized_manifest(count + 1);
+            after.generation = 2;
+            after.extents[count].chunk_id += 10_000;
+            assert!(ManifestOutcome::decide_append(before.clone(), after.clone()).is_ok());
+            assert!(ManifestOutcome::decide(Some(before), after).is_ok());
+        }
+    }
+    /// A read session opens against the digest the catalog holds for the stored manifest, which
+    /// is the digest of the stored manifest's encoding: the same one a client derives from
+    /// the manifest it read, so the two agree at every size, after appends too.
+    #[test]
+    fn a_read_session_opens_against_the_digest_the_catalog_holds() {
+        for count in [0usize, 1, 63, 64, 65, 300] {
+            let stored = sized_manifest(count);
+            let mut catalog = ManifestCatalog::default();
+            catalog.apply(&ManifestOutcome::decide(None, stored.clone()).unwrap()).unwrap();
+            let mut latest = stored;
+            // one more generation by append, so the digest is the carried-forward one
+            let mut next = sized_manifest(count + 1);
+            next.generation = 2;
+            next.extents[count].chunk_id += 10_000;
+            catalog.apply(&ManifestOutcome::decide(Some(latest.clone()), next.clone()).unwrap()).unwrap();
+            latest = next;
+            let digest = crate::read_session_outcome::manifest_sha256(&latest).unwrap();
+            let (_, cached) = catalog.get_with_digest(&latest.object_id()).unwrap().unwrap();
+            assert_eq!(cached.digest, digest, "{count}");
+            let open = crate::read_session_outcome::ReadSessionOpen {
+                retention_id: 7,
+                bucket: latest.bucket.clone(),
+                key: latest.key.clone(),
+                generation: latest.generation,
+                expires_at_ms: 1000,
+                manifest_sha256: digest,
+            };
+            let (manifest, bytes) = catalog.check_read_session_open(&open).unwrap();
+            assert_eq!(manifest, latest, "{count}");
+            assert!(bytes > latest.encoded_len(), "{count}");
+            let mut wrong = open.clone();
+            wrong.manifest_sha256[0] ^= 1;
+            assert!(catalog.check_read_session_open(&wrong).is_err(), "{count}");
+            let mut stale = open;
+            stale.generation = 1;
+            assert!(catalog.check_read_session_open(&stale).is_err(), "{count}");
         }
     }
     /// `decide_append` decides what `decide` decides for an append onto a valid manifest, and
