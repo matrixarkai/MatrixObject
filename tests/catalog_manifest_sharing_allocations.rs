@@ -112,7 +112,7 @@ fn shared_catalog_clones_keep_current_and_prior_generations_independent() {
     let mut catalog = catalog(4095, 1);
     let prior = catalog.clone();
     let id = matrixobjectstore_rs::ObjectId::new("bucket", "object-00");
-    let before = catalog.get(&id).unwrap().clone();
+    let before = catalog.get_manifest(&id).unwrap();
     let mut after = before.clone();
     after.generation += 1;
     after.length += 1;
@@ -124,8 +124,8 @@ fn shared_catalog_clones_keep_current_and_prior_generations_independent() {
     catalog
         .apply(&ManifestOutcome::decide(Some(before.clone()), after.clone()).unwrap())
         .unwrap();
-    assert_eq!(prior.get(&id), Some(&before));
-    assert_eq!(catalog.get(&id), Some(&after));
+    assert_eq!(prior.get_manifest(&id), Some(before.clone()));
+    assert_eq!(catalog.get_manifest(&id), Some(after.clone()));
     assert_eq!(
         ManifestCatalog::from_bytes(&prior.to_bytes().unwrap()).unwrap(),
         prior

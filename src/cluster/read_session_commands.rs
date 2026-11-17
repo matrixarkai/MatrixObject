@@ -44,7 +44,7 @@ pub(super) fn prepare_at(
         5 | 8 => {
             let manifest = service
                 .object_manifests
-                .get(&super::meta_message::object_id(
+                .get_manifest(&super::meta_message::object_id(
                     &command.bucket,
                     &command.key,
                 ))
@@ -67,7 +67,7 @@ pub(super) fn prepare_at(
                 manifest_sha256: if command.action == 8 {
                     command.manifest_sha256.clone()
                 } else {
-                    crate::read_session_outcome::manifest_sha256(manifest)?
+                    crate::read_session_outcome::manifest_sha256(&manifest)?
                 },
             };
             service.object_manifests.check_read_session_open(&open)?;
@@ -276,8 +276,7 @@ mod tests {
                 retention_id: service.placement_commit_index + 1,
                 manifest: service
                     .object_manifests
-                    .get(&crate::ObjectId::new("bucket", "object"))
-                    .cloned(),
+                    .get_manifest(&crate::ObjectId::new("bucket", "object")),
                 expires_at_ms: 2000,
             };
             let mut legacy = PlacementOutcome::capture(&service, Vec::new(), None).unwrap();

@@ -58,7 +58,7 @@ fn shared_catalog_entries_isolate_generations_and_keep_canonical_images() {
     });
     let outcome = ManifestOutcome::decide(Some(before.clone()), after.clone()).unwrap();
     assert!(catalog.apply(&outcome).unwrap());
-    assert_eq!(saved.get(&id), Some(&before));
+    assert_eq!(saved.get_manifest(&id), Some(before.clone()));
     assert_eq!(saved.to_bytes().unwrap(), original_bytes);
     let expected = frame(
         b"MOMC",
@@ -84,7 +84,7 @@ fn shared_catalog_entries_isolate_generations_and_keep_canonical_images() {
         .unwrap());
     assert!(catalog.get(&id).unwrap().deleted);
     assert_eq!(catalog.encoded_size(), catalog.to_bytes().unwrap().len());
-    assert_eq!(saved.get(&id), Some(&before));
+    assert_eq!(saved.get_manifest(&id), Some(before.clone()));
     let recreated = ObjectManifest {
         generation: 130,
         deleted: false,
@@ -93,8 +93,8 @@ fn shared_catalog_entries_isolate_generations_and_keep_canonical_images() {
     assert!(catalog
         .apply(&ManifestOutcome::decide(Some(deleted), recreated.clone()).unwrap())
         .unwrap());
-    assert_eq!(catalog.get(&id), Some(&recreated));
-    assert_eq!(saved.get(&id), Some(&before));
+    assert_eq!(catalog.get_manifest(&id), Some(recreated.clone()));
+    assert_eq!(saved.get_manifest(&id), Some(before.clone()));
     let recreated_bytes = catalog.to_bytes().unwrap();
     assert!(catalog.apply(&outcome).is_err());
     assert_eq!(catalog.to_bytes().unwrap(), recreated_bytes);
@@ -109,7 +109,7 @@ fn shared_catalog_entries_isolate_generations_and_keep_canonical_images() {
         catalog.restore_entry_arc(id, None);
         assert_eq!(catalog.revision, 1);
         assert_eq!(catalog.len(), 1);
-        assert_eq!(catalog.get(&untouched.object_id()), Some(&untouched));
+        assert_eq!(catalog.get_manifest(&untouched.object_id()), Some(untouched.clone()));
         assert_eq!(catalog.encoded_size(), catalog.to_bytes().unwrap().len());
     }
 }

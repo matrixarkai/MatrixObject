@@ -99,18 +99,47 @@ impl StagedAllocation {
     pub(crate) fn check_publication(&self, outcome: &ManifestOutcome) -> Result<(), ObjectError> {
         self.validate()?;
         outcome.validate()?;
-        self.check_publication_with(outcome, false)
+        self.check_publication_with(outcome)
     }
-    /// `check_publication` for the expansion of a compact append against the stored manifest
-    /// (`ManifestAppend::expand_stored`): validated there, and extending the stored manifest by
-    /// construction. Do not call it with an outcome from any other source.
-    pub(crate) fn check_publication_validated(&self, outcome: &ManifestOutcome) -> Result<(), ObjectError> {
-        self.check_publication_with(outcome, true)
+    /// `check_publication` for a compact append: `after` is the stored manifest `before` plus
+    /// the new extents, which must be the pages this allocation owns.
+    pub(crate) fn check_append_publication(
+        &self,
+        before: &crate::extent_list::StoredManifest,
+        after: &crate::extent_list::StoredManifest,
+    ) -> Result<(), ObjectError> {
+        self.validate()?;
+        if !self.append
+            || after.deleted
+            || after.format_version != 2
+            || after.bucket != self.bucket
+            || after.key != self.key
+            || before.generation != self.expected_generation
+        {
+            return Err(invalid("publication differs from staged target"));
+        }
+        if before.deleted || before.format_version != 2 || after.extents.len() < before.extents.len() {
+            return Err(invalid("staged append does not retain prior extents"));
+        }
+        let allocation = self.allocation()?;
+        let prefix = before.extents.len();
+        if after.extents.len() - prefix > self.page_count as usize {
+            return Err(invalid("staged publication exceeds allocation"));
+        }
+        for (index, extent) in after.extents.iter_from(prefix).enumerate() {
+            let page = allocation.page(index as u32)?;
+            if extent.volume_id != page.chunk_id.volume_id()
+                || extent.chunk_id != page.chunk_id.id()
+                || extent.page_index != page.page_index
+                || extent.page_offset != 0
+                || extent.write_sequence != 1
+            {
+                return Err(invalid("staged publication uses an unowned page"));
+            }
+        }
+        Ok(())
     }
-    /// `prefix_known`: the outcome is the expansion of a compact append against the stored
-    /// manifest, so `after` is `before` plus a suffix by construction and the prefix is not
-    /// compared extent by extent. Any other outcome has it compared.
-    fn check_publication_with(&self, outcome: &ManifestOutcome, prefix_known: bool) -> Result<(), ObjectError> {
+    fn check_publication_with(&self, outcome: &ManifestOutcome) -> Result<(), ObjectError> {
         self.validate()?;
         let after = outcome.after.as_ref().unwrap();
         if after.deleted
@@ -132,11 +161,7 @@ impl StagedAllocation {
                 .ok_or_else(|| invalid("staged append lacks prior manifest"))?;
             if before.deleted
                 || before.format_version != 2
-                || if prefix_known {
-                    after.extents.len() < before.extents.len()
-                } else {
-                    after.extents.get(..before.extents.len()) != Some(before.extents.as_slice())
-                }
+                || after.extents.get(..before.extents.len()) != Some(before.extents.as_slice())
             {
                 return Err(invalid("staged append does not retain prior extents"));
             }

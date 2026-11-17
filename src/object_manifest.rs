@@ -192,6 +192,7 @@ impl ObjectManifest {
     /// `prefix`, which the caller has already validated. Only what the append added is checked
     /// in full: the header, the new extents, their continuity with the prefix, and that none
     /// of their pages is already named by the prefix. Equivalent to `validate` for such a pair.
+    #[cfg(test)]
     pub(crate) fn validate_extension(&self, prefix: &ObjectManifest) -> Result<(), ObjectError> {
         crate::validate_bucket(&self.bucket)?;
         crate::validate_key(&self.key)?;
@@ -394,7 +395,7 @@ pub struct ManifestCatalog {
 /// Immutable catalog value shared by snapshots and speculative undo.
 #[derive(Debug)]
 pub(crate) struct ManifestEntry {
-    manifest: ObjectManifest,
+    manifest: crate::extent_list::StoredManifest,
     encoded_bytes: usize,
     /// The hash chain over the manifest's extents and the manifest digest built from it,
     /// computed on first use or carried forward from the previous entry by an append. The
@@ -414,6 +415,11 @@ impl StoredDigest {
         let digest = chain.digest(manifest);
         Self { chain, digest }
     }
+    pub(crate) fn of_stored(manifest: &crate::extent_list::StoredManifest) -> Self {
+        let chain = crate::manifest_chain::ChainState::of_stored(&manifest.extents);
+        let digest = chain.digest_stored(manifest);
+        Self { chain, digest }
+    }
 }
 impl PartialEq for ManifestEntry {
     fn eq(&self, other: &Self) -> bool {
@@ -423,16 +429,103 @@ impl PartialEq for ManifestEntry {
 impl Eq for ManifestEntry {}
 impl ManifestEntry {
     fn new(manifest: ObjectManifest) -> Self {
-        let encoded_bytes = entry_size(&manifest);
+        let manifest = crate::extent_list::StoredManifest::from_manifest(manifest);
+        let encoded_bytes = framed_size(manifest.encoded_len());
         Self { manifest, encoded_bytes, digest: std::sync::OnceLock::new() }
     }
 }
 impl std::ops::Deref for ManifestEntry {
-    type Target = ObjectManifest;
-    fn deref(&self) -> &ObjectManifest { &self.manifest }
+    type Target = crate::extent_list::StoredManifest;
+    fn deref(&self) -> &crate::extent_list::StoredManifest { &self.manifest }
+}
+impl crate::extent_list::StoredManifest {
+    /// `ObjectManifest::validate_extension` for a stored manifest: `self` is `prefix` plus new
+    /// extents, and only the header and the new extents are checked (against each other and
+    /// against the stored ones).
+    pub(crate) fn validate_extension_of(&self, prefix: &crate::extent_list::StoredManifest) -> Result<(), ObjectError> {
+        crate::validate_bucket(&self.bucket)?;
+        crate::validate_key(&self.key)?;
+        let kept = prefix.extents.len();
+        if !(1..=2).contains(&self.format_version)
+            || self.format_version != prefix.format_version
+            || self.generation == 0
+            || self.extents.len() > 4096
+            || self.extents.len() < kept
+            || self.encoded_len() > MAX_MANIFEST
+        {
+            return Err(invalid(
+                "invalid object manifest version, generation or size",
+            ));
+        }
+        if self.deleted && (self.length != 0 || !self.extents.is_empty()) {
+            return Err(invalid("deleted object manifest contains data"));
+        }
+        let suffix: Vec<&ObjectExtent> = self.extents.iter_from(kept).collect();
+        let mut offset = prefix.length;
+        for extent in &suffix {
+            ChunkId::new(extent.volume_id, extent.chunk_id)?;
+            if extent.group.is_empty()
+                || extent.group.len() > 128
+                || !extent
+                    .group
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+                || extent.length == 0
+                || extent.write_sequence == 0
+                || (self.format_version == 1 && !extent.data_sha256.is_empty())
+                || (self.format_version == 2 && extent.data_sha256.len() != 32)
+                || extent.object_offset != offset
+                || extent
+                    .page_offset
+                    .checked_add(extent.length)
+                    .map_or(true, |n| n > 256 * 1024 * 1024)
+            {
+                return Err(invalid(
+                    "invalid object extent ordering, identity or bounds",
+                ));
+            }
+            offset = offset
+                .checked_add(extent.length)
+                .ok_or_else(|| invalid("object length overflow"))?;
+        }
+        if offset != self.length {
+            return Err(invalid("object extents do not cover its length"));
+        }
+        // A page may be named once: among the new extents, and against the stored ones.
+        let same_page = |a: &ObjectExtent, b: &ObjectExtent| {
+            a.chunk_id == b.chunk_id
+                && a.page_index == b.page_index
+                && a.volume_id == b.volume_id
+                && a.group == b.group
+        };
+        if suffix.len() <= 16 {
+            for (index, extent) in suffix.iter().enumerate() {
+                if suffix[..index].iter().any(|other| same_page(extent, other))
+                    || prefix.extents.iter().any(|other| same_page(extent, other))
+                {
+                    return Err(invalid(
+                        "invalid object extent ordering, identity or bounds",
+                    ));
+                }
+            }
+        } else {
+            let mut pages = PageSet::with_capacity_and_hasher(self.extents.len(), Default::default());
+            for extent in self.extents.iter() {
+                if !pages.insert((&extent.group, extent.volume_id, extent.chunk_id, extent.page_index)) {
+                    return Err(invalid(
+                        "invalid object extent ordering, identity or bounds",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 fn entry_size(value: &impl Message) -> usize {
-    let size = value.encoded_len();
+    framed_size(value.encoded_len())
+}
+/// The bytes a message of `size` takes as one length-prefixed record of the catalog image.
+fn framed_size(size: usize) -> usize {
     let mut remaining = size;
     let mut delimiter = 1;
     while remaining >= 128 {
@@ -624,10 +717,27 @@ impl ManifestCatalog {
         body_bytes: usize,
         consumed: &crate::staged_allocation::StagedAllocation,
     ) -> Result<(), ObjectError> {
+        self.check_reservation_for(
+            reserved, &after.bucket, &after.key, after.generation, after.deleted, after.format_version,
+            body_bytes, consumed,
+        )
+    }
+    /// `check_reservation` against the header of the published manifest.
+    pub(crate) fn check_reservation_for(
+        &self,
+        reserved: &crate::staged_allocation::StagedAllocation,
+        bucket: &str,
+        key: &str,
+        generation: u64,
+        deleted: bool,
+        format_version: u32,
+        body_bytes: usize,
+        consumed: &crate::staged_allocation::StagedAllocation,
+    ) -> Result<(), ObjectError> {
         reserved.validate()?;
-        if reserved.version != 2 || !reserved.append || reserved.bucket != after.bucket
-            || reserved.key != after.key || reserved.expected_generation != after.generation
-            || after.deleted || after.format_version != 2 {
+        if reserved.version != 2 || !reserved.append || reserved.bucket != bucket
+            || reserved.key != key || reserved.expected_generation != generation
+            || deleted || format_version != 2 {
             return Err(invalid("invalid reservation for the published manifest"));
         }
         if self.publication_fence == 0 {
@@ -684,7 +794,7 @@ impl ManifestCatalog {
                 return Err(ObjectError::PreconditionFailed("retention catalog capacity exceeded".into()));
             }
             let manifest = record.manifest.as_ref().unwrap();
-            if self.get(&manifest.object_id()) != Some(manifest) {
+            if !self.matches_expected(&manifest.object_id(), Some(manifest)) {
                 return Err(ObjectError::PreconditionFailed("manifest changed before retention".into()));
             }
         }
@@ -748,13 +858,14 @@ impl ManifestCatalog {
         Ok(())
     }
     pub(crate) fn check_read_session_open(&self, open: &crate::read_session_outcome::ReadSessionOpen)
-        -> Result<(&ObjectManifest, usize), ObjectError> {
+        -> Result<(ObjectManifest, usize), ObjectError> {
         open.validate()?;
         let manifest = self.get(&ObjectId::new(open.bucket.clone(), open.key.clone()))
             .filter(|manifest| !manifest.deleted && manifest.generation == open.generation)
+            .map(|manifest| manifest.to_manifest())
             .ok_or_else(|| ObjectError::PreconditionFailed("read session generation changed".into()))?;
         manifest.validate()?;
-        if crate::read_session_outcome::manifest_sha256(manifest)? != open.manifest_sha256 {
+        if crate::read_session_outcome::manifest_sha256(&manifest)? != open.manifest_sha256 {
             return Err(ObjectError::PreconditionFailed("read session manifest digest changed".into()));
         }
         let manifest_len = manifest.encoded_len();
@@ -833,15 +944,27 @@ impl ManifestCatalog {
     }
 
     /// Includes tombstones so a recreation must name the deleted generation.
-    pub fn get(&self, id: &ObjectId) -> Option<&ObjectManifest> {
+    pub(crate) fn get(&self, id: &ObjectId) -> Option<&crate::extent_list::StoredManifest> {
         self.objects.get(id).map(|entry| &entry.manifest)
+    }
+    /// Whether the catalog holds exactly `expected` (or nothing, when `expected` is `None`).
+    pub(crate) fn matches_expected(&self, id: &ObjectId, expected: Option<&ObjectManifest>) -> bool {
+        match (self.get(id), expected) {
+            (Some(stored), Some(expected)) => stored.matches(expected),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+    /// A copy of the stored manifest as the protobuf message: O(extents).
+    pub fn get_manifest(&self, id: &ObjectId) -> Option<ObjectManifest> {
+        self.objects.get(id).map(|entry| entry.manifest.to_manifest())
     }
     /// The stored manifest, which was validated when it was stored, and its chain and digest,
     /// computed once per stored value (an append carries them forward from the entry it
     /// replaces).
-    pub(crate) fn get_with_digest(&self, id: &ObjectId) -> Result<Option<(&ObjectManifest, &StoredDigest)>, ObjectError> {
+    pub(crate) fn get_with_digest(&self, id: &ObjectId) -> Result<Option<(&crate::extent_list::StoredManifest, &StoredDigest)>, ObjectError> {
         let Some(entry) = self.objects.get(id) else { return Ok(None) };
-        let digest = entry.digest.get_or_init(|| StoredDigest::of(&entry.manifest));
+        let digest = entry.digest.get_or_init(|| StoredDigest::of_stored(&entry.manifest));
         Ok(Some((&entry.manifest, digest)))
     }
     #[cfg(feature = "metadata-consensus")]
@@ -859,42 +982,19 @@ impl ManifestCatalog {
         &self, outcome: &ManifestOutcome, allocation_id: Option<u64>, source: Option<&crate::manifest_copy::LiveCopySource>,
     ) -> Result<Option<usize>, ObjectError> {
         outcome.validate()?;
-        self.check_validated_outcome_with_admission(outcome, allocation_id, source, false)
+        self.check_validated_outcome_with_admission(outcome, allocation_id, source)
     }
     /// `check_outcome_with_admission` for an outcome the caller has validated in full.
-    ///
-    /// `prefix_known`: the outcome is the expansion of a compact append against the stored
-    /// manifest (its `before` is that manifest and its `after` is `before` plus a suffix), so
-    /// the extents already stored are known to be unchanged and are neither compared nor
-    /// checked again; only the header of `before` is compared and only the suffix is checked.
     pub(crate) fn check_validated_outcome_with_admission(
         &self, outcome: &ManifestOutcome, allocation_id: Option<u64>, source: Option<&crate::manifest_copy::LiveCopySource>,
-        prefix_known: bool,
     ) -> Result<Option<usize>, ObjectError> {
         let after = outcome.after.as_ref().unwrap();
         let id = after.object_id();
         let current = self.get(&id);
-        if current == Some(after) {
+        if current.is_some_and(|stored| stored.matches(after)) {
             return Ok(None);
         }
-        let prior_unchanged = if prefix_known {
-            match (current, outcome.before.as_ref()) {
-                (Some(stored), Some(before)) => {
-                    stored.bucket == before.bucket
-                        && stored.key == before.key
-                        && stored.generation == before.generation
-                        && stored.length == before.length
-                        && stored.deleted == before.deleted
-                        && stored.format_version == before.format_version
-                        && stored.extents.len() == before.extents.len()
-                }
-                (None, None) => true,
-                _ => false,
-            }
-        } else {
-            current == outcome.before.as_ref()
-        };
-        if !prior_unchanged {
+        if !self.matches_expected(&id, outcome.before.as_ref()) {
             return Err(ObjectError::PreconditionFailed(
                 "object manifest changed before publication".into(),
             ));
@@ -904,7 +1004,8 @@ impl ManifestCatalog {
             let value = self.get(&ObjectId::new(source.bucket.clone(), source.key.clone()))
                 .ok_or_else(|| ObjectError::PreconditionFailed("copy source is missing".into()))?;
             if value.deleted || value.generation != source.generation
-                || after.format_version != value.format_version || after.extents != value.extents || after.length != value.length {
+                || after.format_version != value.format_version || after.extents.len() != value.extents.len()
+                || !after.extents.iter().eq(value.extents.iter()) || after.length != value.length {
                 return Err(ObjectError::PreconditionFailed("copy source changed before publication".into()));
             }
         }
@@ -918,8 +1019,7 @@ impl ManifestCatalog {
         }
         let body_bytes = self.body_bytes - self.objects.get(&id).map_or(0, |entry| entry.encoded_bytes) + entry_size(after);
         if !self.staged.is_empty() {
-            let unchecked = if prefix_known { outcome.before.as_ref().map_or(0, |before| before.extents.len()) } else { 0 };
-            for extent in &after.extents[unchecked.min(after.extents.len())..] {
+            for extent in after.extents.iter() {
                 let id = extent.volume_id.checked_shl(32).filter(|_| extent.volume_id <= u32::MAX as u64)
                     .and_then(|volume| if extent.chunk_id <= u32::MAX as u64 { Some(volume | extent.chunk_id) } else { None });
                 if id.is_some_and(|id| self.staged.contains_key(&id) && Some(id) != allocation_id) {
@@ -939,57 +1039,90 @@ impl ManifestCatalog {
         let Some(body_bytes) = self.check_outcome(outcome)? else {
             return Ok(false);
         };
-        self.commit_checked_manifest(outcome, body_bytes, false);
+        self.commit_checked_manifest(outcome, body_bytes);
         Ok(true)
     }
-    /// `prefix_known`: `outcome.after` extends the stored manifest, as in
-    /// `check_validated_outcome_with_admission`, so the stored extents are not compared again.
-    pub(crate) fn commit_checked_manifest(&mut self, outcome: &ManifestOutcome, body_bytes: usize, prefix_known: bool) {
+    /// The checks of `check_validated_outcome_with_admission` for the publication of a compact
+    /// append: `after` is `before`, the stored manifest, plus new extents (see
+    /// `ManifestAppend::expand_shared`), so only the header of the stored manifest is compared
+    /// and only the new extents are checked against the staged pages. Returns the catalog size
+    /// once `after` is stored.
+    pub(crate) fn check_append_publication(
+        &self,
+        before: &crate::extent_list::StoredManifest,
+        after: &crate::extent_list::StoredManifest,
+        allocation_id: Option<u64>,
+    ) -> Result<usize, ObjectError> {
+        let id = after.object_id();
+        let unchanged = self.get(&id).is_some_and(|stored| {
+            stored.bucket == before.bucket
+                && stored.key == before.key
+                && stored.generation == before.generation
+                && stored.length == before.length
+                && stored.deleted == before.deleted
+                && stored.format_version == before.format_version
+                && stored.extents.len() == before.extents.len()
+        });
+        if !unchanged {
+            return Err(ObjectError::PreconditionFailed(
+                "object manifest changed before publication".into(),
+            ));
+        }
+        let body_bytes = self.body_bytes - self.objects.get(&id).map_or(0, |entry| entry.encoded_bytes)
+            + framed_size(after.encoded_len());
+        if !self.staged.is_empty() {
+            for extent in after.extents.iter_from(before.extents.len()) {
+                let id = extent.volume_id.checked_shl(32).filter(|_| extent.volume_id <= u32::MAX as u64)
+                    .and_then(|volume| if extent.chunk_id <= u32::MAX as u64 { Some(volume | extent.chunk_id) } else { None });
+                if id.is_some_and(|id| self.staged.contains_key(&id) && Some(id) != allocation_id) {
+                    return Err(ObjectError::PreconditionFailed("owned pages require staged publication".into()));
+                }
+            }
+        }
+        let released = allocation_id.and_then(|id| self.staged.get(&id)).map_or(0, entry_size);
+        if body_bytes + self.retention_bytes + self.staged_bytes - released > MAX_SNAPSHOT - self.header_size() {
+            return Err(invalid(
+                "manifest publication exceeds checkpoint size bound",
+            ));
+        }
+        Ok(body_bytes)
+    }
+    /// Store `after`, which extends the stored manifest (`check_append_publication` approved it).
+    /// The stored chunks are shared with the entry it replaces, and its digest is that entry's
+    /// chain extended by the new extents.
+    pub(crate) fn commit_append(&mut self, after: crate::extent_list::StoredManifest, body_bytes: usize) {
+        let id = after.object_id();
+        let old_bytes = self.objects.get(&id).map_or(0, |entry| entry.encoded_bytes);
+        let encoded_bytes = body_bytes - (self.body_bytes - old_bytes);
+        let digest = std::sync::OnceLock::new();
+        if let Some(previous) = self.objects.get(&id) {
+            if let Some(stored) = previous.digest.get() {
+                let kept = previous.manifest.extents.len();
+                let chain = stored.chain.extended_by(after.extents.iter_from(kept));
+                let seeded = StoredDigest { digest: chain.digest_stored(&after), chain };
+                #[cfg(test)]
+                crate::manifest_chain::uncounted(|| {
+                    assert_eq!(seeded, StoredDigest::of_stored(&after), "a carried-forward digest differs from a fresh one")
+                });
+                let _ = digest.set(seeded);
+            }
+        }
+        self.objects.insert(id, Arc::new(ManifestEntry { manifest: after, encoded_bytes, digest }));
+        self.revision += 1;
+        self.body_bytes = body_bytes;
+    }
+    pub(crate) fn commit_checked_manifest(&mut self, outcome: &ManifestOutcome, body_bytes: usize) {
         let after = outcome.after.as_ref().unwrap();
         let id = after.object_id();
         let old_bytes = self.objects.get(&id).map_or(0, |entry| entry.encoded_bytes);
         let encoded_bytes = body_bytes - (self.body_bytes - old_bytes);
-        // An append to an entry nothing else holds extends it in place: the stored extents are
-        // not copied into a new entry and the old one is not freed. When a snapshot or an undo
-        // still shares the entry it must stay as it is, and the general path below builds a new
-        // one.
-        if prefix_known {
-            if let Some(entry) = self.objects.get_mut(&id).and_then(Arc::get_mut) {
-                let kept = entry.manifest.extents.len();
-                if after.extents.len() >= kept {
-                    let seeded = entry.digest.get().map(|stored| {
-                        let chain = stored.chain.extended(&after.extents[kept..]);
-                        StoredDigest { digest: chain.digest(after), chain }
-                    });
-                    entry.manifest.extents.extend(after.extents[kept..].iter().cloned());
-                    entry.manifest.generation = after.generation;
-                    entry.manifest.length = after.length;
-                    entry.encoded_bytes = encoded_bytes;
-                    entry.digest = std::sync::OnceLock::new();
-                    if let Some(seeded) = seeded {
-                        #[cfg(test)]
-                        crate::manifest_chain::uncounted(|| {
-                            assert_eq!(seeded, StoredDigest::of(after), "a carried-forward digest differs from a fresh one")
-                        });
-                        let _ = entry.digest.set(seeded);
-                    }
-                    #[cfg(test)]
-                    crate::manifest_chain::uncounted(|| {
-                        assert_eq!(entry.manifest, *after, "an in-place append differs from the outcome's manifest")
-                    });
-                    self.revision += 1;
-                    self.body_bytes = body_bytes;
-                    return;
-                }
-            }
-        }
         // An append keeps every extent of the entry it replaces: its chain and digest are
         // the old chain extended by the new extents, not a pass over all of them.
         let digest = std::sync::OnceLock::new();
         if let Some(previous) = self.objects.get(&id) {
             let kept = previous.manifest.extents.len();
             if let Some(stored) = previous.digest.get() {
-                if after.extents.len() >= kept && (prefix_known || after.extents[..kept] == previous.manifest.extents[..]) {
+                if after.extents.len() >= kept && previous.manifest.extents.iter().eq(after.extents[..kept].iter()) {
                     let chain = stored.chain.extended(&after.extents[kept..]);
                     let seeded = StoredDigest { digest: chain.digest(after), chain };
                     #[cfg(test)]
@@ -1001,7 +1134,7 @@ impl ManifestCatalog {
             }
         }
         self.objects.insert(id, Arc::new(ManifestEntry {
-            manifest: after.clone(),
+            manifest: crate::extent_list::StoredManifest::from_ref(after),
             encoded_bytes,
             digest,
         }));
@@ -1011,7 +1144,7 @@ impl ManifestCatalog {
     pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
         let image = CatalogImage {
             format_version: if self.publication_fence != 0 { 4 } else if !self.staged.is_empty() { 3 } else if self.retained.is_empty() { 1 } else { 2 },
-            objects: self.objects.values().map(|entry| entry.manifest.clone()).collect(),
+            objects: self.objects.values().map(|entry| entry.manifest.to_manifest()).collect(),
             retained: self.retained.values().map(|record| record.as_ref().clone()).collect(),
             staged: self.staged.values().cloned().collect(),
             publication_fence: self.publication_fence,
@@ -1053,7 +1186,7 @@ impl ManifestCatalog {
             let current = result.get(&manifest.object_id())
                 .ok_or_else(|| invalid("retained object is missing from catalog"))?;
             if manifest.generation > current.generation
-                || (manifest.generation == current.generation && manifest != current) {
+                || (manifest.generation == current.generation && !current.matches(manifest)) {
                 return Err(invalid("retained generation exceeds or conflicts with current state"));
             }
             previous = retained.retention_id;
@@ -1173,7 +1306,7 @@ mod tests {
         let check = |catalog: &ManifestCatalog, expected: &ObjectManifest| {
             for _ in 0..2 {
                 let (stored, cached) = catalog.get_with_digest(&id).unwrap().unwrap();
-                assert_eq!(stored, expected);
+                assert!(stored.matches(expected));
                 assert_eq!(cached.digest, digest(expected));
                 assert_eq!(cached.chain, crate::manifest_chain::ChainState::of(&expected.extents));
             }
@@ -1244,7 +1377,7 @@ mod tests {
         let (final_replayed, recomputed) = replayed.get_with_digest(&id).unwrap().unwrap();
         assert_eq!(final_live, final_replayed);
         assert_eq!(carried, recomputed);
-        assert_eq!(*carried, StoredDigest::of(final_live));
+        assert_eq!(*carried, StoredDigest::of_stored(final_live));
         // and a catalog restored from a snapshot computes the same
         let restored = ManifestCatalog::from_bytes(&live.to_bytes().unwrap()).unwrap();
         assert_eq!(restored.get_with_digest(&id).unwrap().unwrap().1, carried);
@@ -1549,7 +1682,7 @@ mod tests {
         catalog
             .apply(&ManifestOutcome::decide(Some(deleted), recreated.clone()).unwrap())
             .unwrap();
-        assert_eq!(catalog.get(&one.object_id()), Some(&recreated));
+        assert_eq!(catalog.get_manifest(&one.object_id()), Some(recreated.clone()));
         assert!(ManifestOutcome::decide(None, two).is_err());
         let mut wrong = manifest(5);
         wrong.key = "other".into();
@@ -1831,8 +1964,8 @@ mod tests {
             .apply(&ManifestOutcome::decide(Some(deleted), manifest(3)).unwrap())
             .unwrap();
         assert_eq!(
-            restored.object_manifests.get(&manifest(3).object_id()),
-            Some(&manifest(3))
+            restored.object_manifests.get_manifest(&manifest(3).object_id()),
+            Some(manifest(3).clone())
         );
     }
 }

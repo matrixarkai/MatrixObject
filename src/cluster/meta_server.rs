@@ -1037,7 +1037,7 @@ pub(super) fn decide_retention(
         1 => {
             let manifest = service.object_manifests.get(&super::meta_message::object_id(&command.bucket, &command.key))
                 .filter(|manifest| !manifest.deleted && manifest.generation == command.generation)
-                .cloned().ok_or_else(|| ObjectError::PreconditionFailed("current manifest generation cannot be retained".into()))?;
+                .map(|manifest| manifest.to_manifest()).ok_or_else(|| ObjectError::PreconditionFailed("current manifest generation cannot be retained".into()))?;
             let record = RetainedManifest {
                 retention_id: service.placement_commit_index.checked_add(1)
                     .ok_or_else(|| ObjectError::PreconditionFailed("retention identity exhausted".into()))?,
@@ -1149,7 +1149,7 @@ pub(super) fn apply_with_groups(
             MetaRequest::PlanObjectWriteRoutes { .. }
             | MetaRequest::PlanObjectWriteRoutesWide { .. });
         let current = write_plan.then(|| service.object_manifests
-            .get(&super::meta_message::object_id(bucket, key)).cloned()).flatten();
+            .get_manifest(&super::meta_message::object_id(bucket, key))).flatten();
         let plan = match apply_to_meta(service, MetaRequest::PlanObjectPlacement {
             bucket: bucket.clone(), key: key.clone(), length: *length,
             replica_count: *replica_count,
@@ -1348,8 +1348,7 @@ pub(super) fn apply_to_meta(
             crate::validate_key(&key)?;
             let value = guard
                 .object_manifests
-                .get(&super::meta_message::object_id(&bucket, &key))
-                .cloned()
+                .get_manifest(&super::meta_message::object_id(&bucket, &key))
                 .ok_or_else(|| ObjectError::NotFound("object manifest missing".into()))?;
             let reply = MetaReply::Manifest(value);
             crate::cluster::message::check_reply_size(reply.payload_len(), max_payload_bytes)?;

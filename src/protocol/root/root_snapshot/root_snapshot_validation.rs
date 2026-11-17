@@ -153,7 +153,7 @@ pub(crate) fn validate_placement_roster_with_manifests(
                     ObjectError::Corruption("root snapshot placement charges lack a manifest".into())
                 })?;
                 let mut totals = BTreeMap::<&str, u128>::new();
-                for extent in &manifest.extents {
+                for extent in manifest.extents.iter() {
                     let entry = totals.entry(extent.group.as_str()).or_default();
                     *entry += u128::from(extent.length);
                 }

@@ -55598,7 +55598,7 @@ fn manifest_publication_moves_capacity_and_preserves_deleted_generations_atomica
     ).unwrap();
     deletion.apply(&mut service).unwrap();
     assert_eq!(service.nodes["group-b"].committed_bytes, 0);
-    assert_eq!(service.object_manifests.get(&deleted.object_id()), Some(&deleted));
+    assert_eq!(service.object_manifests.get_manifest(&deleted.object_id()), Some(deleted.clone()));
     let snapshot = service.export_snapshot();
     let bytes = snapshot.to_bytes().unwrap();
     assert_eq!(MetaSnapshot::from_bytes(&bytes).unwrap(), snapshot);
@@ -55616,7 +55616,7 @@ fn manifest_publication_moves_capacity_and_preserves_deleted_generations_atomica
     PlacementOutcome::publish_manifest(
         &service, ManifestOutcome::decide(Some(deleted), recreated.clone()).unwrap(), 40
     ).unwrap().apply(&mut service).unwrap();
-    assert_eq!(service.object_manifests.get(&recreated.object_id()), Some(&recreated));
+    assert_eq!(service.object_manifests.get_manifest(&recreated.object_id()), Some(recreated.clone()));
     assert_eq!(service.nodes["group-b"].committed_bytes, 8);
     assert_eq!(service.placements[&recreated.object_id()].version, 4);
 }

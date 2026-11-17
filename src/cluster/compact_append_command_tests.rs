@@ -122,9 +122,9 @@ fn compact_append_rejects_forgery_and_preserves_atomic_state() {
                 wrong.outcome = Some(
                     delta
                         .expand(
-                            service
+                            &service
                                 .object_manifests
-                                .get(&crate::ObjectId::new("bucket", "append"))
+                                .get_manifest(&crate::ObjectId::new("bucket", "append"))
                                 .unwrap(),
                         )
                         .unwrap(),
@@ -135,9 +135,8 @@ fn compact_append_rejects_forgery_and_preserves_atomic_state() {
             let delta = wrong.manifest_append.as_mut().unwrap();
             let mut candidate = service
                 .object_manifests
-                .get(&crate::ObjectId::new("bucket", "append"))
-                .unwrap()
-                .clone();
+                .get_manifest(&crate::ObjectId::new("bucket", "append"))
+                .unwrap();
             candidate.generation += 1;
             candidate.length = delta.after_length;
             candidate.extents.extend(delta.suffix.clone());
@@ -188,9 +187,9 @@ fn compact_append_rejects_forgery_and_preserves_atomic_state() {
         .as_ref()
         .unwrap()
         .expand(
-            service
+            &service
                 .object_manifests
-                .get(&crate::ObjectId::new("bucket", "append"))
+                .get_manifest(&crate::ObjectId::new("bucket", "append"))
                 .unwrap(),
         )
         .unwrap();
@@ -291,9 +290,8 @@ fn compact_append_mixed_journal_reopens_without_clocked_revalidation() {
     compact.apply(&mut service).unwrap();
     let mut next = service
         .object_manifests
-        .get(&crate::ObjectId::new("bucket", "append"))
-        .unwrap()
-        .clone();
+        .get_manifest(&crate::ObjectId::new("bucket", "append"))
+        .unwrap();
     let prior = next.clone();
     next.generation += 1;
     next.deleted = true;
@@ -412,10 +410,41 @@ fn append_once_with(
     manifest: &mut crate::object_manifest::ObjectManifest,
     slow: bool,
 ) -> Vec<Vec<u8>> {
+    let pending = begin_append(service, groups, manifest, |_| {});
+    let durable = pending.durable.clone();
+    finish_append(service, pending, manifest, slow).unwrap();
+    durable
+}
+
+/// An append that has been reserved and prepared but not applied.
+struct PendingAppend {
+    publish: PlacementOutcome,
+    after: crate::object_manifest::ObjectManifest,
+    durable: Vec<Vec<u8>>,
+}
+
+/// Reserve the page and prepare the publication of one more extent; the allocation is applied,
+/// the publication is not. `tweak` may alter the new extent before it is published.
+/// Panics if the reservation or the preparation is refused.
+fn begin_append(
+    service: &mut MatrixMetaService,
+    groups: &ChunkGroupCatalog,
+    manifest: &crate::object_manifest::ObjectManifest,
+    tweak: impl FnOnce(&mut crate::object_manifest::ObjectExtent),
+) -> PendingAppend {
+    try_begin_append(service, groups, manifest, tweak).unwrap()
+}
+
+fn try_begin_append(
+    service: &mut MatrixMetaService,
+    groups: &ChunkGroupCatalog,
+    manifest: &crate::object_manifest::ObjectManifest,
+    tweak: impl FnOnce(&mut crate::object_manifest::ObjectExtent),
+) -> Result<PendingAppend, crate::ObjectError> {
     use crate::{object_manifest::ObjectExtent, staged_allocation::StagedAllocationRequest};
     let mut durable = Vec::new();
     let prepare = |service: &MatrixMetaService, command: &StagedAllocationRequest| {
-        super::super::staged_allocation_commands::prepare_at(service, groups, command, 8192, 1500).unwrap().0
+        super::super::staged_allocation_commands::prepare_at(service, groups, command, 8192, 1500).map(|prepared| prepared.0)
     };
     let reserve = prepare(
         service,
@@ -430,12 +459,12 @@ fn append_once_with(
             ttl_ms: 600_000,
             ..Default::default()
         },
-    );
+    )?;
     durable.push(reserve.to_payload().unwrap());
     reserve.apply(service).unwrap();
     let id = service.placement_commit_index;
     let page = service.object_manifests.staged_allocation(id).unwrap().allocation().unwrap().page(0).unwrap();
-    let extent = ObjectExtent {
+    let mut extent = ObjectExtent {
         group: "group-0".into(),
         volume_id: page.chunk_id.volume_id(),
         chunk_id: page.chunk_id.id(),
@@ -446,6 +475,7 @@ fn append_once_with(
         data_sha256: vec![7; 32],
         ..Default::default()
     };
+    tweak(&mut extent);
     let object_id = crate::ObjectId::new("bucket", "append");
     let (_, stored) = service.object_manifests.get_with_digest(&object_id).unwrap().unwrap();
     let before_sha256 = stored.digest.clone();
@@ -474,17 +504,28 @@ fn append_once_with(
             manifest_append: Some(append),
             ..Default::default()
         },
-    );
+    )?;
     durable.push(publish.to_payload().unwrap());
+    Ok(PendingAppend { publish, after, durable })
+}
+
+/// Apply a prepared append. With `slow` the expansion made while preparing it is forgotten and
+/// another holder keeps the catalog entry shared, so the apply builds everything itself.
+fn finish_append(
+    service: &mut MatrixMetaService,
+    pending: PendingAppend,
+    manifest: &mut crate::object_manifest::ObjectManifest,
+    slow: bool,
+) -> Result<(), crate::ObjectError> {
+    let object_id = crate::ObjectId::new("bucket", "append");
     let _shared = if slow {
-        crate::placement_outcome::forget_prepared_expansion();
         service.object_manifests.entry_arc(&object_id)
     } else {
         None
     };
-    publish.apply(service).unwrap();
-    *manifest = after;
-    durable
+    pending.publish.apply(service)?;
+    *manifest = pending.after;
+    Ok(())
 }
 
 /// A catalog holding an object of `prefill` one-byte extents, with the publication fence on, and
@@ -560,7 +601,6 @@ fn growing_an_entry_in_place_is_byte_identical_to_rebuilding_it() {
     // A restart or a follower knows only the durable outcomes: replaying them must rebuild the
     // same catalog, whatever was or was not prepared on this thread.
     for payload in &quick_durable {
-        crate::placement_outcome::forget_prepared_expansion();
         PlacementOutcome::from_payload(payload).unwrap().apply(&mut replayed).unwrap();
     }
     assert_eq!(
@@ -569,8 +609,234 @@ fn growing_an_entry_in_place_is_byte_identical_to_rebuilding_it() {
         "a replay of the durable outcomes rebuilds a different catalog"
     );
     let id = crate::ObjectId::new("bucket", "append");
-    assert_eq!(replayed.object_manifests.get(&id), Some(&quick_manifest));
-    assert_eq!(quick.object_manifests.get(&id), Some(&quick_manifest));
+    assert_eq!(replayed.object_manifests.get_manifest(&id), Some(quick_manifest.clone()));
+    assert_eq!(quick.object_manifests.get_manifest(&id), Some(quick_manifest.clone()));
+}
+
+/// The expansion kept from preparing an append may only be used against the manifest it was made
+/// from. Here the object moves on between preparing and applying (by a publication that does not
+/// go through the compact path, so the kept expansion is still waiting): the apply must be
+/// refused and leave the catalog as it was.
+#[test]
+fn a_waiting_expansion_is_not_used_after_the_stored_manifest_changed() {
+    use crate::object_manifest::ManifestOutcome;
+    let (mut service, groups, mut manifest) = prefilled_log(100);
+    let stale = begin_append(&mut service, &groups, &manifest, |_| {});
+    // Same extents, next generation: a publication the fence allows without owned pages.
+    let mut moved = manifest.clone();
+    moved.generation += 1;
+    PlacementOutcome::publish_manifest(&service, ManifestOutcome::decide(Some(manifest.clone()), moved.clone()).unwrap(), 0)
+        .unwrap()
+        .apply(&mut service)
+        .unwrap();
+    let image = service.object_manifests.to_bytes().unwrap();
+    let error = finish_append(&mut service, stale, &mut manifest, false).unwrap_err();
+    assert!(error.to_string().contains("prior manifest changed"), "{error}");
+    assert_eq!(service.object_manifests.to_bytes().unwrap(), image, "a refused append changed the catalog");
+    assert_eq!(service.object_manifests.get_manifest(&crate::ObjectId::new("bucket", "append")), Some(moved.clone()));
+}
+
+/// An append interleaved with another one to the same object: the second prepare replaces the
+/// kept expansion, so the first apply expands for itself and is refused because the stored
+/// manifest it was decided against is gone once the second is applied.
+#[test]
+fn an_interleaved_append_to_the_same_object_refuses_the_older_one() {
+    let (mut service, groups, mut manifest) = prefilled_log(100);
+    let older = begin_append(&mut service, &groups, &manifest, |_| {});
+    let mut newer_base = manifest.clone();
+    let newer = begin_append(&mut service, &groups, &newer_base, |_| {});
+    finish_append(&mut service, newer, &mut newer_base, false).unwrap();
+    let image = service.object_manifests.to_bytes().unwrap();
+    assert!(finish_append(&mut service, older, &mut manifest, false).is_err());
+    assert_eq!(service.object_manifests.to_bytes().unwrap(), image);
+    assert_eq!(service.object_manifests.get_manifest(&crate::ObjectId::new("bucket", "append")), Some(newer_base.clone()));
+}
+
+/// Two catalogs on one thread, appends prepared for both before either is applied: each apply
+/// finds the kept expansion belongs to the other (or is gone) and still ends in the state the
+/// long way round reaches.
+#[test]
+fn two_catalogs_alternating_on_one_thread_never_borrow_each_others_expansion() {
+    const ROUNDS: usize = 15;
+    let (mut a, groups, mut a_manifest) = prefilled_log(300);
+    let (mut b, _, mut b_manifest) = prefilled_log(301);
+    let (mut slow_a, _, mut slow_a_manifest) = prefilled_log(300);
+    let (mut slow_b, _, mut slow_b_manifest) = prefilled_log(301);
+    for _ in 0..ROUNDS {
+        let pending_a = begin_append(&mut a, &groups, &a_manifest, |_| {});
+        let pending_b = begin_append(&mut b, &groups, &b_manifest, |_| {});
+        finish_append(&mut a, pending_a, &mut a_manifest, false).unwrap();
+        finish_append(&mut b, pending_b, &mut b_manifest, false).unwrap();
+        append_once_with(&mut slow_a, &groups, &mut slow_a_manifest, true);
+        append_once_with(&mut slow_b, &groups, &mut slow_b_manifest, true);
+    }
+    assert_eq!(a.object_manifests.to_bytes().unwrap(), slow_a.object_manifests.to_bytes().unwrap());
+    assert_eq!(b.object_manifests.to_bytes().unwrap(), slow_b.object_manifests.to_bytes().unwrap());
+    assert_eq!(a_manifest.extents.len(), 300 + ROUNDS);
+    assert_eq!(b_manifest.extents.len(), 301 + ROUNDS);
+}
+
+/// The same measurement as `append_cpu_cost_at_extents` along the path a leader takes: prepare,
+/// apply the decoded record on the undo draft (which holds a second Arc handle on the catalog
+/// entry) and restore it, then apply the committed record to the live catalog. Meant for a
+/// profiler: `BENCH_PREFILL` extents (default 250), `BENCH_APPENDS` appends (default 20).
+#[test]
+#[ignore = "local measurement for a profiler"]
+fn append_cpu_cost_through_the_leaders_draft() {
+    let prefill: usize = std::env::var("BENCH_PREFILL").ok().and_then(|v| v.parse().ok()).unwrap_or(250);
+    let appends: usize = std::env::var("BENCH_APPENDS").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
+    let (mut service, groups, mut manifest) = prefilled_log(prefill);
+    let object_id = crate::ObjectId::new("bucket", "append");
+    let leader_append = |service: &mut MatrixMetaService, manifest: &mut crate::object_manifest::ObjectManifest| {
+        let pending = begin_append(service, &groups, manifest, |_| {});
+        let record = pending.durable.last().unwrap().clone();
+        {
+            let nodes: Vec<String> = service.nodes.keys().cloned().collect();
+            let mut draft = PlacementDraft::with_records(service, nodes, vec![object_id.clone()]);
+            let allocation = pending.publish.staging.as_ref().unwrap().before.as_ref().unwrap().allocation_id;
+            draft.staging_allocations =
+                vec![(allocation, draft.service.object_manifests.staged_allocation(allocation).cloned())];
+            PlacementOutcome::from_payload(&record).unwrap().apply(draft.service).unwrap();
+        }
+        PlacementOutcome::from_payload(&record).unwrap().apply(service).unwrap();
+        *manifest = pending.after;
+    };
+    // the first append computes the stored chain; keep it out of the timing
+    leader_append(&mut service, &mut manifest);
+    let started = std::time::Instant::now();
+    for _ in 0..appends {
+        leader_append(&mut service, &mut manifest);
+    }
+    println!(
+        "extents {:>5}: {:>8.1} microseconds per append (leader path)",
+        prefill,
+        started.elapsed().as_secs_f64() * 1e6 / appends as f64
+    );
+}
+
+/// The leader collects the nodes a queued compact append touches from the object's placement
+/// record instead of walking every stored extent. That is only the same set while the record's
+/// nodes are exactly the groups of all the stored extents, whatever sequence of appends built it:
+/// checked here over random sequences across three groups.
+#[test]
+fn the_placement_nodes_of_an_appended_object_are_the_groups_of_its_extents() {
+    use crate::object_manifest::{ManifestOutcome, ObjectExtent, ObjectManifest};
+    let mut state = 0x2545f4914f6cdd1du64;
+    let mut next = |bound: u64| {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (state >> 33) % bound
+    };
+    for round in 0..6u64 {
+        let (mut service, groups) = fixture(3, 0);
+        let prefill = (round as usize) * 3;
+        let mut manifest = ObjectManifest {
+            format_version: 2,
+            bucket: "bucket".into(),
+            key: "append".into(),
+            generation: 1,
+            length: prefill as u64,
+            extents: (0..prefill)
+                .map(|index| ObjectExtent {
+                    group: format!("group-{}", next(3)),
+                    volume_id: 7,
+                    chunk_id: index as u64 + 1,
+                    object_offset: index as u64,
+                    length: 1,
+                    write_sequence: 1,
+                    data_sha256: vec![(index % 251) as u8; 32],
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        PlacementOutcome::publish_manifest(&service, ManifestOutcome::decide(None, manifest.clone()).unwrap(), 0)
+            .unwrap()
+            .apply(&mut service)
+            .unwrap();
+        super::super::staged_allocation_commands::prepare_at(
+            &service,
+            &groups,
+            &crate::staged_allocation::StagedAllocationRequest { version: 1, action: 6, ..Default::default() },
+            8192,
+            1,
+        )
+        .unwrap()
+        .0
+        .apply(&mut service)
+        .unwrap();
+        let id = crate::ObjectId::new("bucket", "append");
+        for _ in 0..25 {
+            let group = format!("group-{}", next(3));
+            let pending = begin_append(&mut service, &groups, &manifest, |extent| extent.group = group.clone());
+            finish_append(&mut service, pending, &mut manifest, false).unwrap();
+            let from_extents: std::collections::BTreeSet<String> =
+                manifest.extents.iter().map(|extent| extent.group.clone()).collect();
+            let recorded: std::collections::BTreeSet<String> =
+                service.placements.get(&id).unwrap().node_ids.iter().cloned().collect();
+            assert_eq!(recorded, from_extents, "round {round}, {} extents", manifest.extents.len());
+            let stored: std::collections::BTreeSet<String> = service
+                .object_manifests
+                .get(&id)
+                .unwrap()
+                .extents
+                .iter()
+                .map(|extent| extent.group.clone())
+                .collect();
+            assert_eq!(stored, from_extents);
+        }
+    }
+}
+
+/// The durable outcomes and the catalog image of a fixed sequence of appends are pinned, so a
+/// change of representation cannot change a byte of either: the digests below were taken from the
+/// implementation that copies the manifest (before the shared extent list).
+#[test]
+fn a_fixed_sequence_of_appends_makes_the_same_bytes_as_before() {
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let sha = |parts: &[&[u8]]| {
+        let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+        for part in parts {
+            context.update(part);
+        }
+        hex(context.finish().as_ref())
+    };
+    let (mut service, groups, mut manifest) = prefilled_log(100);
+    let mut durable = Vec::new();
+    for _ in 0..40 {
+        let pending = begin_append(&mut service, &groups, &manifest, |_| {});
+        durable.extend(pending.durable.clone());
+        finish_append(&mut service, pending, &mut manifest, false).unwrap();
+    }
+    let durable_digest = sha(&durable.iter().map(Vec::as_slice).collect::<Vec<_>>());
+    let image_digest = sha(&[&service.object_manifests.to_bytes().unwrap()]);
+    assert_eq!(durable_digest, "3547898c44502f48dfc78140af761e271ac183fb9afdca448816df958616ffd6", "the outcomes made durable changed");
+    assert_eq!(image_digest, "582f02ab0853f46a4de2905aa2a1e581adea70bf82fc21ee54159e464c8f40ac", "the catalog image changed");
+}
+
+/// An append that names a page the object already holds is refused when it is prepared, by the
+/// check of the new extents against the stored ones, and nothing is stored.
+#[test]
+fn an_append_naming_a_stored_page_again_is_refused_before_anything_is_published() {
+    let (mut service, groups, manifest) = prefilled_log(50);
+    let image = service.object_manifests.to_bytes().unwrap();
+    let stored = manifest.extents[7].clone();
+    let refused = try_begin_append(&mut service, &groups, &manifest, |extent| {
+        extent.volume_id = stored.volume_id;
+        extent.chunk_id = stored.chunk_id;
+        extent.page_index = stored.page_index;
+    });
+    let error = match refused {
+        Err(error) => error,
+        Ok(_) => panic!("an append that repeats a stored page was prepared"),
+    };
+    assert!(error.to_string().contains("extent ordering, identity or bounds"), "{error}");
+    // The reservation was applied before the refusal; the object itself is untouched.
+    let after = service.object_manifests.to_bytes().unwrap();
+    assert_eq!(
+        service.object_manifests.get_manifest(&crate::ObjectId::new("bucket", "append")),
+        Some(manifest.clone())
+    );
+    let _ = (image, after);
 }
 
 /// One metadata state machine, an object published with `BENCH_PREFILL` extents (default 250),

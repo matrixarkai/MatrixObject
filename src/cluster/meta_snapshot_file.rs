@@ -208,8 +208,8 @@ mod tests {
         assert_eq!(reopened.object_manifests, service.object_manifests);
         assert!(reopened.object_manifests.apply(&create).is_err());
         assert_eq!(
-            reopened.object_manifests.get(&deleted.object_id()),
-            Some(&deleted)
+            reopened.object_manifests.get_manifest(&deleted.object_id()),
+            Some(deleted.clone())
         );
         drop(storage);
     }

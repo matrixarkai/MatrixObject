@@ -102,24 +102,31 @@ pub(super) fn prepare_at(service: &MatrixMetaService, groups: &ChunkGroupCatalog
                 .ok_or_else(|| {
                     ObjectError::PreconditionFailed("staged allocation is no longer active".into())
                 })?;
-            let manifest = if let Some(append) = &command.manifest_append {
-                let (current, stored) = service.object_manifests.get_with_digest(&crate::ObjectId::new(append.bucket.clone(), append.key.clone()))?
-                    .ok_or_else(|| ObjectError::PreconditionFailed("compact append prior manifest missing".into()))?;
-                append.expand_stored(current, stored)?
-            } else { command.outcome.clone().unwrap() };
+            // A compact append is expanded against the stored manifest once, sharing its chunks;
+            // any other publication carries its manifests.
+            let compact = match &command.manifest_append {
+                Some(append) => {
+                    let (current, stored) = service.object_manifests.get_with_digest(&crate::ObjectId::new(append.bucket.clone(), append.key.clone()))?
+                        .ok_or_else(|| ObjectError::PreconditionFailed("compact append prior manifest missing".into()))?;
+                    Some((current, append.expand_shared(current, stored)?))
+                }
+                None => None,
+            };
+            let manifest = if compact.is_none() { Some(command.outcome.clone().unwrap()) } else { None };
             if allocation.expires_at_ms != 0 && (now == 0 || now >= allocation.expires_at_ms) {
                 return Err(ObjectError::PreconditionFailed("staged allocation lease expired".into()));
             }
-            if let Some(append) = &command.manifest_append {
-                // `expand_stored` validated what the append adds against the stored manifest.
-                allocation.check_publication_validated(&manifest)?;
+            if let (Some(append), Some((current, after))) = (&command.manifest_append, &compact) {
+                // `expand_shared` validated what the append adds against the stored manifest.
+                allocation.check_append_publication(current, after)?;
                 groups.check_extents(&append.suffix)?;
             } else {
-                allocation.check_publication(&manifest)?;
-                groups.check_manifest(&manifest)?;
+                let manifest = manifest.as_ref().unwrap();
+                allocation.check_publication(manifest)?;
+                groups.check_manifest(manifest)?;
             }
-            if let Some(append) = &command.manifest_append {
-                outcome = PlacementOutcome::publish_staged_append(service, manifest,
+            if let (Some(append), Some((current, after))) = (&command.manifest_append, &compact) {
+                outcome = PlacementOutcome::publish_staged_append(service, current, after,
                     command.update_time_ms, allocation, append.clone())?;
                 reply.version = 3;
                 reply.committed_allocation_id = command.allocation_id;
@@ -151,7 +158,7 @@ pub(super) fn prepare_at(service: &MatrixMetaService, groups: &ChunkGroupCatalog
                     reply.allocation = Some(reserved);
                 }
             } else {
-                outcome = PlacementOutcome::publish_staged_manifest(service, manifest,
+                outcome = PlacementOutcome::publish_staged_manifest(service, manifest.unwrap(),
                     command.update_time_ms, allocation)?;
                 reply.manifest = outcome.manifest.as_ref().unwrap().after.clone();
             }
@@ -631,8 +638,8 @@ mod tests {
         committed.apply(&mut service).unwrap();
         assert!(service.object_manifests.staged_allocation(id).is_none());
         assert_eq!(
-            service.object_manifests.get(&empty().object_id()),
-            Some(&empty())
+            service.object_manifests.get_manifest(&empty().object_id()),
+            Some(empty().clone())
         );
         assert!(prepare(&service, &groups, &publish, 8192).is_err());
         let restored =
@@ -727,8 +734,8 @@ mod tests {
         assert!(recovered);
         assert!(service.object_manifests.staged_allocation(id).is_none());
         assert_eq!(
-            service.object_manifests.get(&empty().object_id()),
-            Some(&empty())
+            service.object_manifests.get_manifest(&empty().object_id()),
+            Some(empty().clone())
         );
         drop(storage);
     }
