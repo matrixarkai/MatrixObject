@@ -1258,7 +1258,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn reserve_next_follows_compact_append_unless_set() {
+    fn reserve_next_default_follows_the_gateway_mode() {
         assert_eq!(resolve_reserve_next(true, None), Ok(true), "compact on, unset");
         assert_eq!(resolve_reserve_next(true, Some(1)), Ok(true), "compact on, =1");
         assert_eq!(resolve_reserve_next(true, Some(0)), Ok(false), "compact on, =0");
