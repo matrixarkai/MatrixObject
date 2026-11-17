@@ -240,6 +240,39 @@ every appended byte, the exact stored head, and sampled background pages. This
 workload measures checkpoint interference; adding it does not move checkpoint
 work off the foreground lock or establish flat append latency.
 
+### Checkpoint interference results
+
+Source `3771fb3` passed all 18 release phases, 2,304 acknowledged appends and
+18 full-cluster restart checks in 241.71 seconds. The 16-CPU WSL host had load
+averages 1.97–3.75. All nine enabled phases observed exactly one checkpoint
+image per data node; their slowest RPC coincided with a checkpoint transition.
+Medians across three phase repetitions were:
+
+| Background pages | Control maximum RPC (ms) | Checkpoint-triggering RPC (ms) | Syscall write ratio | Kernel storage write ratio |
+|---|---:|---:|---:|---:|
+| 1,024 | 19.016 | 110.580 | 28.04 | 31.05 |
+| 8,192 | 8.028 | 587.916 | 197.39 | 200.41 |
+| 32,768 | 4.293 | 2,189.538 | 778.13 | 781.15 |
+
+The ratios divide the three data processes' write-byte deltas by the timed
+512 KiB of logical append payload. They charge a complete checkpoint rewrite to
+that short window, not to all writes since the preceding checkpoint, so they are
+not steady-state amplification. Controls measured 3.09 syscall write bytes and
+6.09 kernel storage write bytes per payload byte at every corpus size.
+
+At 32,768 pages, median phase p99 was 10.737 ms while the median checkpoint RPC
+was 2,189.538 ms; the largest observed pause was 2,341.001 ms. Aggregate data CPU
+per timed append rose from 1.33 ms in the control to 43.75 ms with its checkpoint
+charged to the phase. These measurements contradict flat append latency when
+foreground checkpoints run. They do not quantify concurrent read interference.
+
+Moving serialization alone off the lock is insufficient: a captured page map
+retains shared payload handles and can force a growing foreground page to copy.
+A replacement needs a consistent durable journal cut, bounded foreground capture
+and installation, and crash recovery that preserves outcomes written after the
+cut. Validate large-prefix appends during an active checkpoint, persistence
+failures, interruption and repair overlap before claiming the pause is removed.
+
 ## Interpretation and remaining measurements
 
 Source inspection identified two different costs to profile. The general standalone
