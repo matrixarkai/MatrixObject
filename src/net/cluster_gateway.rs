@@ -25,6 +25,7 @@ use crate::cluster::{
     MetaClientOptions, ObjectWriteFailure, ObjectWriteOptions, RemoteMetaClient,
     ReplicaClientOptions,
 };
+use crate::cluster::{consensus_unavailable, outcome_may_be_committed};
 use crate::object_manifest::{ManifestListPage, ObjectManifest};
 use crate::ObjectError;
 
@@ -279,7 +280,7 @@ impl SdkPlane {
             Ok(manifest) => Ok(manifest),
             Err(failure) => {
                 let failure: PlaneFailure = failure.into();
-                if !failure.unconfirmed {
+                if !failure.unconfirmed && !outcome_may_be_committed(&failure.error) {
                     // Nothing was published; give the namespace back.
                     let _ = self.client.abort_staged_allocation(allocation.allocation_id);
                 }
@@ -352,7 +353,7 @@ impl ObjectPlane for SdkPlane {
                 Ok(manifest) => Ok(manifest),
                 Err(failure) => {
                     let failure: PlaneFailure = failure.into();
-                    if !failure.unconfirmed {
+                    if !failure.unconfirmed && !outcome_may_be_committed(&failure.error) {
                         let _ = self.client.abort_staged_allocation(allocation.allocation_id);
                     }
                     Err(failure)
@@ -745,6 +746,12 @@ impl ClusterGateway {
                 }
                 Ok(Err(failure)) => {
                     self.forget(bucket, key);
+                    if failure.unconfirmed || outcome_may_be_committed(&failure.error) {
+                        if let Some(manifest) = self.resolve_landed_replace(bucket, key, body) {
+                            self.remember(&manifest);
+                            return object_written(&manifest);
+                        }
+                    }
                     if failure.unconfirmed {
                         return unconfirmed(&failure.error, &resource);
                     }
@@ -768,6 +775,7 @@ impl ClusterGateway {
     fn append_object(&self, bucket: &str, key: &str, offset: u64, body: &[u8]) -> Response {
         let resource = format!("/{bucket}/{key}");
         const ATTEMPTS: usize = 4;
+        let mut last_staged_mismatch: Option<ObjectError> = None;
         for attempt in 0..ATTEMPTS {
             // A retry exists because the end moved, so it never trusts the cache.
             let cached = if attempt == 0 {
@@ -824,12 +832,24 @@ impl ClusterGateway {
                 }
                 Ok(Err((failure, decided))) => {
                     self.forget(bucket, key);
+                    // A write whose outcome is not known is resolved by reading, never by
+                    // reporting an error for bytes that may be in the object: the client would
+                    // retry, and its retry would append them a second time.
+                    if failure.unconfirmed || outcome_may_be_committed(&failure.error) {
+                        if let Some(manifest) = self.resolve_landed_append(bucket, key, offset, body) {
+                            self.remember(&manifest);
+                            return object_written(&manifest);
+                        }
+                    }
                     if failure.unconfirmed {
                         return unconfirmed(&failure.error, &resource);
                     }
                     // A refusal decided from the manifest this call read answers the client as
                     // it stands; only a lost publish race is worth another look.
                     if !decided && lost_race(&failure.error) {
+                        if staged_state_mismatch(&failure.error) {
+                            last_staged_mismatch = Some(failure.error);
+                        }
                         continue;
                     }
                     // A refusal decided from a REMEMBERED manifest may only mean the memory is
@@ -841,11 +861,35 @@ impl ClusterGateway {
                 }
             }
         }
+        // A staged mismatch that survived every fresh allocation is the cluster's state and not
+        // a competing writer: say so, as a retryable 503 with the reason.
+        if let Some(error) = last_staged_mismatch {
+            return error_response(error, &resource, false);
+        }
         s3::error_response(
             s3::S3ErrorCode::PreconditionFailed,
             "the object kept changing under this append; gave up after several attempts",
             &resource,
         )
+    }
+
+    /// After an append whose outcome is unknown: did these exact bytes land at `offset`?
+    /// The object must now end at `offset + body.len()` with the body at that range.
+    fn resolve_landed_append(&self, bucket: &str, key: &str, offset: u64, body: &[u8]) -> Option<ObjectManifest> {
+        if body.is_empty() {
+            return None;
+        }
+        let (manifest, bytes) = self
+            .with_plane(|plane| plane.read_range(bucket, key, offset, body.len() as u64))
+            .ok()?;
+        (!manifest.deleted && manifest.length == offset + body.len() as u64 && bytes == body)
+            .then_some(manifest)
+    }
+
+    /// After a whole-object write whose outcome is unknown: is the object now exactly `body`?
+    fn resolve_landed_replace(&self, bucket: &str, key: &str, body: &[u8]) -> Option<ObjectManifest> {
+        let (manifest, bytes) = self.with_plane(|plane| plane.read(bucket, key)).ok()?;
+        (!manifest.deleted && bytes == body).then_some(manifest)
     }
 
     fn get_object(&self, request: &Request, bucket: &str, key: &str, head: bool) -> Response {
@@ -1035,7 +1079,13 @@ impl ClusterGateway {
 
 impl RequestHandler for ClusterGateway {
     fn handle(&self, request: &Request) -> Response {
-        self.route(request)
+        let response = self.route(request);
+        // The whole reason goes to stderr: a client log may cut the body, and a failed request
+        // is rare enough that one line each costs nothing.
+        if let Some(line) = failure_log_line(request, &response) {
+            eprintln!("{line}");
+        }
+        response
     }
 }
 
@@ -1054,7 +1104,16 @@ fn closed_range(header: &str) -> Option<(u64, u64)> {
 /// Whether a refusal says another writer published first, as opposed to a refusal of the
 /// request itself.
 fn lost_race(error: &ObjectError) -> bool {
-    matches!(error, ObjectError::PreconditionFailed(_)) && !plane_unreachable(error)
+    (matches!(error, ObjectError::PreconditionFailed(_)) && !plane_unreachable(error))
+        || staged_state_mismatch(error)
+}
+
+/// The SDK refuses a staged write as an invalid argument when the allocation it holds no longer
+/// matches the metadata record (a reservation that went stale, a generation that moved, a lease
+/// that was renewed or swept). Nothing is wrong with the client's request, and a fresh
+/// allocation succeeds, so it is a race to retry and never a 400.
+fn staged_state_mismatch(error: &ObjectError) -> bool {
+    matches!(error, ObjectError::InvalidArgument(message) if message.starts_with("staged "))
 }
 
 /// A failure of the connection to a metadata or chunk node, as opposed to a refusal by the
@@ -1136,6 +1195,30 @@ fn method_not_allowed(allowed: &str, resource: &str) -> Response {
     .with_header("allow", allowed.to_string())
 }
 
+/// One stderr line for a failed request, or `None` for the answers a client is expected to act
+/// on quietly (not found, and the offset conflict of an append).
+fn failure_log_line(request: &Request, response: &Response) -> Option<String> {
+    if response.status < 400 || matches!(response.status, 404 | 412 | 416) {
+        return None;
+    }
+    let body = String::from_utf8_lossy(&response.body);
+    let between = |tag: &str| {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        body.split_once(&open)
+            .and_then(|(_, rest)| rest.split_once(&close))
+            .map(|(value, _)| value.to_string())
+    };
+    Some(format!(
+        "cluster gateway: {} {} -> {} {}: {}",
+        request.method,
+        request.path,
+        response.status,
+        between("Code").unwrap_or_default(),
+        between("Message").unwrap_or_else(|| body.trim().to_string()),
+    ))
+}
+
 /// An SDK error as the S3 document a client branches on.
 fn error_response(error: ObjectError, resource: &str, missing_is_bucket: bool) -> Response {
     // The SDK's refusal of an append past its extent limit and its refusal of a write that is
@@ -1144,7 +1227,12 @@ fn error_response(error: ObjectError, resource: &str, missing_is_bucket: bool) -
         ObjectError::InvalidArgument(message) if message.starts_with("append refused") => {
             s3::S3ErrorCode::InvalidRequest
         }
-        _ if plane_unreachable(&error) => s3::S3ErrorCode::ServiceUnavailable,
+        _ if plane_unreachable(&error)
+            || staged_state_mismatch(&error)
+            || consensus_unavailable(&error) =>
+        {
+            s3::S3ErrorCode::ServiceUnavailable
+        }
         _ => s3::code_for(&error, missing_is_bucket),
     };
     s3::error_response(code, &error.to_string(), resource)
@@ -1547,6 +1635,214 @@ mod tests {
         assert_eq!(choose_append_route(&options, 0, 3500, 1, false), AppendRoute::Compacting(3500));
         let only = GatewayOptions { compact_extents: Some(3500), ..GatewayOptions::default() };
         assert_eq!(choose_append_route(&only, 0, 3499, 1, false), AppendRoute::Plain);
+    }
+
+    /// A plane whose `append_best` refuses the first `fail_times` appends the way the SDK does
+    /// when a reserved staged allocation no longer matches the metadata record.
+    struct StaleAllocationPlane {
+        inner: MemoryPlane,
+        fail_times: usize,
+        seen: usize,
+    }
+
+    impl ObjectPlane for StaleAllocationPlane {
+        fn read_manifest(&mut self, b: &str, k: &str) -> Result<ObjectManifest, ObjectError> { self.inner.read_manifest(b, k) }
+        fn write(&mut self, b: &str, k: &str, e: Option<ObjectManifest>, d: &[u8]) -> Result<ObjectManifest, PlaneFailure> { self.inner.write(b, k, e, d) }
+        fn append(&mut self, e: ObjectManifest, d: &[u8]) -> Result<ObjectManifest, PlaneFailure> { self.inner.append(e, d) }
+        fn append_best(&mut self, e: ObjectManifest, d: &[u8]) -> Result<ObjectManifest, PlaneFailure> {
+            self.seen += 1;
+            if self.seen <= self.fail_times {
+                return Err(ObjectError::InvalidArgument("staged allocation does not match object write".into()).into());
+            }
+            self.inner.append(e, d)
+        }
+        fn read(&mut self, b: &str, k: &str) -> Result<(ObjectManifest, Vec<u8>), ObjectError> { self.inner.read(b, k) }
+        fn read_range(&mut self, b: &str, k: &str, o: u64, l: u64) -> Result<(ObjectManifest, Vec<u8>), ObjectError> { self.inner.read_range(b, k, o, l) }
+        fn delete(&mut self, b: &str, k: &str) -> Result<ObjectManifest, ObjectError> { self.inner.delete(b, k) }
+        fn list(&mut self, b: &str, a: Option<&str>, l: u32) -> Result<ManifestListPage, ObjectError> { self.inner.list(b, a, l) }
+    }
+
+    fn stale_gateway(fail_times: usize) -> ClusterGateway {
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        // One plane for the whole test, so its failure counter survives the pool.
+        let plane = Arc::new(Mutex::new(Some(StaleAllocationPlane {
+            inner: MemoryPlane(shared),
+            fail_times,
+            seen: 0,
+        })));
+        struct Shim(Arc<Mutex<Option<StaleAllocationPlane>>>);
+        impl ObjectPlane for Shim {
+            fn read_manifest(&mut self, b: &str, k: &str) -> Result<ObjectManifest, ObjectError> { self.0.lock().unwrap().as_mut().unwrap().read_manifest(b, k) }
+            fn write(&mut self, b: &str, k: &str, e: Option<ObjectManifest>, d: &[u8]) -> Result<ObjectManifest, PlaneFailure> { self.0.lock().unwrap().as_mut().unwrap().write(b, k, e, d) }
+            fn append(&mut self, e: ObjectManifest, d: &[u8]) -> Result<ObjectManifest, PlaneFailure> { self.0.lock().unwrap().as_mut().unwrap().append(e, d) }
+            fn append_best(&mut self, e: ObjectManifest, d: &[u8]) -> Result<ObjectManifest, PlaneFailure> { self.0.lock().unwrap().as_mut().unwrap().append_best(e, d) }
+            fn read(&mut self, b: &str, k: &str) -> Result<(ObjectManifest, Vec<u8>), ObjectError> { self.0.lock().unwrap().as_mut().unwrap().read(b, k) }
+            fn read_range(&mut self, b: &str, k: &str, o: u64, l: u64) -> Result<(ObjectManifest, Vec<u8>), ObjectError> { self.0.lock().unwrap().as_mut().unwrap().read_range(b, k, o, l) }
+            fn delete(&mut self, b: &str, k: &str) -> Result<ObjectManifest, ObjectError> { self.0.lock().unwrap().as_mut().unwrap().delete(b, k) }
+            fn list(&mut self, b: &str, a: Option<&str>, l: u32) -> Result<ManifestListPage, ObjectError> { self.0.lock().unwrap().as_mut().unwrap().list(b, a, l) }
+        }
+        ClusterGateway::new(
+            move || Ok(Box::new(Shim(Arc::clone(&plane))) as Box<dyn ObjectPlane>),
+            GatewayOptions::default(),
+            "b",
+        )
+    }
+
+    /// A plane that fails ONE write the way a metadata Raft group does when its proposal does
+    /// not complete in time, optionally after the write really committed.
+    struct TimeoutPlane {
+        inner: Arc<Mutex<MemoryPlane>>,
+        error: ObjectError,
+        commit_first: bool,
+        armed: Arc<Mutex<bool>>,
+    }
+
+    impl TimeoutPlane {
+        fn fire(&self) -> bool {
+            std::mem::replace(&mut *self.armed.lock().unwrap(), false)
+        }
+    }
+
+    impl ObjectPlane for TimeoutPlane {
+        fn read_manifest(&mut self, b: &str, k: &str) -> Result<ObjectManifest, ObjectError> { self.inner.lock().unwrap().read_manifest(b, k) }
+        fn write(&mut self, b: &str, k: &str, e: Option<ObjectManifest>, d: &[u8]) -> Result<ObjectManifest, PlaneFailure> {
+            self.inner.lock().unwrap().write(b, k, e, d)
+        }
+        fn append(&mut self, e: ObjectManifest, d: &[u8]) -> Result<ObjectManifest, PlaneFailure> { self.inner.lock().unwrap().append(e, d) }
+        fn append_best(&mut self, e: ObjectManifest, d: &[u8]) -> Result<ObjectManifest, PlaneFailure> {
+            if !self.fire() {
+                return self.inner.lock().unwrap().append(e, d);
+            }
+            if self.commit_first {
+                self.inner.lock().unwrap().append(e, d)?;
+            }
+            Err(self.error.clone_error().into())
+        }
+        fn read(&mut self, b: &str, k: &str) -> Result<(ObjectManifest, Vec<u8>), ObjectError> { self.inner.lock().unwrap().read(b, k) }
+        fn read_range(&mut self, b: &str, k: &str, o: u64, l: u64) -> Result<(ObjectManifest, Vec<u8>), ObjectError> { self.inner.lock().unwrap().read_range(b, k, o, l) }
+        fn delete(&mut self, b: &str, k: &str) -> Result<ObjectManifest, ObjectError> { self.inner.lock().unwrap().delete(b, k) }
+        fn list(&mut self, b: &str, a: Option<&str>, l: u32) -> Result<ManifestListPage, ObjectError> { self.inner.lock().unwrap().list(b, a, l) }
+    }
+
+    trait CloneError {
+        fn clone_error(&self) -> ObjectError;
+    }
+    impl CloneError for ObjectError {
+        fn clone_error(&self) -> ObjectError {
+            match self {
+                ObjectError::InvalidArgument(m) => ObjectError::InvalidArgument(m.clone()),
+                ObjectError::PreconditionFailed(m) => ObjectError::PreconditionFailed(m.clone()),
+                ObjectError::Corruption(m) => ObjectError::Corruption(m.clone()),
+                ObjectError::NotFound(m) => ObjectError::NotFound(m.clone()),
+            }
+        }
+    }
+    const RAFT_DEADLINE: &str = "metadata consensus deadline; last observed phase=proposal completion; write outcome may be committed; do not replay";
+
+    /// The first append (or whole-object write) after `arm` fails with `error`; when
+    /// `commit_first` the bytes really were written before the failure.
+    fn timeout_gateway(error: ObjectError, commit_first: bool) -> (ClusterGateway, Arc<Mutex<bool>>) {
+        let inner = Arc::new(Mutex::new(MemoryPlane(Arc::new(Mutex::new(Shared::default())))));
+        let armed = Arc::new(Mutex::new(false));
+        let handle_armed = Arc::clone(&armed);
+        let gateway = ClusterGateway::new(
+            move || {
+                Ok(Box::new(TimeoutPlane {
+                    inner: Arc::clone(&inner),
+                    error: error.clone_error(),
+                    commit_first,
+                    armed: Arc::clone(&handle_armed),
+                }) as Box<dyn ObjectPlane>)
+            },
+            GatewayOptions::default(),
+            "b",
+        );
+        (gateway, armed)
+    }
+
+    #[test]
+    fn a_consensus_timeout_after_the_append_landed_is_answered_as_landed() {
+        let (gateway, armed) = timeout_gateway(ObjectError::InvalidArgument(RAFT_DEADLINE.into()), true);
+        assert_eq!(append(&gateway, "wal", 0, b"abc").status, 200);
+        *armed.lock().unwrap() = true;
+        let response = append(&gateway, "wal", 3, b"de");
+        assert_eq!(response.status, 200, "{}", String::from_utf8_lossy(&response.body));
+        assert_eq!(header(&response, "x-amz-object-size"), Some("5"));
+        assert_eq!(gateway.handle(&request("GET", "/b/wal", &[], b"")).body, b"abcde", "landed exactly once");
+    }
+
+    #[test]
+    fn a_consensus_timeout_before_the_append_landed_is_a_503_and_nothing_is_written() {
+        let (gateway, armed) = timeout_gateway(ObjectError::InvalidArgument(RAFT_DEADLINE.into()), false);
+        assert_eq!(append(&gateway, "wal", 0, b"abc").status, 200);
+        *armed.lock().unwrap() = true;
+        let response = append(&gateway, "wal", 3, b"de");
+        assert_eq!(response.status, 503, "{}", String::from_utf8_lossy(&response.body));
+        assert!(String::from_utf8_lossy(&response.body).contains("metadata consensus deadline"));
+        assert_eq!(gateway.handle(&request("GET", "/b/wal", &[], b"")).body, b"abc");
+        // The client's retry at the same offset then lands.
+        assert_eq!(append(&gateway, "wal", 3, b"de").status, 200);
+    }
+
+    #[test]
+    fn a_full_consensus_queue_is_a_503_and_never_a_400() {
+        let (gateway, armed) = timeout_gateway(
+            ObjectError::InvalidArgument("metadata consensus unavailable or request queue full".into()),
+            false,
+        );
+        assert_eq!(append(&gateway, "wal", 0, b"abc").status, 200);
+        *armed.lock().unwrap() = true;
+        assert_eq!(append(&gateway, "wal", 3, b"de").status, 503);
+    }
+
+    #[test]
+    fn a_request_the_gateway_itself_rejects_is_still_a_400() {
+        let (gateway, _) = timeout_gateway(ObjectError::InvalidArgument("unused".into()), false);
+        assert_eq!(gateway.handle(&request("PUT", "/b/k", &[(WRITE_OFFSET_HEADER, "soon")], b"x")).status, 400);
+    }
+
+    #[test]
+    fn a_stale_staged_allocation_is_retried_and_never_answers_400() {
+        let gateway = stale_gateway(1);
+        assert_eq!(append(&gateway, "wal", 0, b"abc").status, 200);
+        // The first staged append is refused as a mismatch; the gateway drops the reservation,
+        // looks again and lands the bytes.
+        let second = append(&gateway, "wal", 3, b"de");
+        assert_eq!(second.status, 200, "{}", String::from_utf8_lossy(&second.body));
+        assert_eq!(gateway.handle(&request("GET", "/b/wal", &[], b"")).body, b"abcde");
+    }
+
+    #[test]
+    fn a_staged_mismatch_that_does_not_clear_is_a_retryable_503_not_a_400() {
+        let gateway = stale_gateway(usize::MAX);
+        assert_eq!(append(&gateway, "wal", 0, b"abc").status, 200);
+        let refused = append(&gateway, "wal", 3, b"de");
+        assert_eq!(refused.status, 503, "{}", String::from_utf8_lossy(&refused.body));
+        let body = String::from_utf8_lossy(&refused.body).to_string();
+        assert!(body.contains("ServiceUnavailable") && body.contains("staged allocation"), "{body}");
+    }
+
+    #[test]
+    fn only_failures_a_client_must_act_on_are_logged() {
+        let get = request("GET", "/b/k", &[], b"");
+        let body = |code: &str, message: &str| {
+            s3::error_response(
+                match code {
+                    "503" => s3::S3ErrorCode::ServiceUnavailable,
+                    "400" => s3::S3ErrorCode::InvalidRequest,
+                    "412" => s3::S3ErrorCode::PreconditionFailed,
+                    _ => s3::S3ErrorCode::NoSuchKey,
+                },
+                message,
+                "/b/k",
+            )
+        };
+        let line = failure_log_line(&get, &body("503", "the cluster said no")).expect("a 503 is logged");
+        assert!(line.contains("GET /b/k") && line.contains("503") && line.contains("the cluster said no"), "{line}");
+        assert!(failure_log_line(&get, &body("400", "bad")).is_some());
+        assert!(failure_log_line(&get, &body("412", "offset")).is_none(), "412 is the normal append conflict");
+        assert!(failure_log_line(&get, &body("404", "gone")).is_none());
+        assert!(failure_log_line(&get, &Response::status(200)).is_none());
     }
 
     /// A plane whose `append_best` keeps the extent count bounded the way tail compaction does.
