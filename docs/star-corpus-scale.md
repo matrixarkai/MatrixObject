@@ -198,6 +198,81 @@ Keep the per-repetition results rather than dividing separately computed medians
 Neither measurement establishes flat latency under checkpoints, repair, larger
 corpora or end-to-end owned-object operations.
 
+## Foreground checkpoint interference
+
+Measure one foreground checkpoint during a fixed-suffix append phase:
+
+```sh
+cargo test --locked --release --all-features --test network_metadata_consensus \
+  measure_star_append_checkpoint_interference_as_corpus_grows -j1 \
+  -- --ignored --test-threads=1 --nocapture
+```
+
+Each fresh fixture seeds its background with checkpoints disabled, restarts the
+three data nodes, and enables checkpointing at their restored journal length plus
+128 KiB. Setup is below this additional allowance; the timed 128 appends cross
+it. The interval exceeds all timed append bytes, so at most one checkpoint can
+run on each data node. Controls restart the same way with checkpoints disabled.
+The workload asserts an initial outcome journal and records each replica's first
+transition to a checkpoint image immediately after the corresponding RPC. The
+checkpoint header must change only once, detecting an unexpected second image.
+
+Three corpus sizes, three rotated repetitions and alternating mode order produce
+18 phases, 2,304 checked appends and 18 full-cluster restart checks. Replication
+is N=3/W=3/R=1 with peer recovery, shared journal synchronization and four data
+workers. The fixture explicitly removes inherited checkpoint and WAL zero-fill
+settings; the latter would invalidate physical file length as an outcome-byte
+position. The ordinary CI case uses 256 background pages and 64 appends per mode.
+
+`STAR_CHECKPOINT` reports RPC p50/p95/p99, maximum latency, the slowest operation,
+and maximum RPC latency at an observed checkpoint transition. A single pause can
+be absent from p99 in a 128-operation phase. Per-operation journal probes follow
+the RPC sample but are included in phase elapsed time and QPS. Data-process CPU
+excludes the client and probes. `/proc/<pid>/io` provides aggregate `wchar`
+(system-call write bytes, including socket replies) and `write_bytes` (kernel
+storage write accounting); neither measures device-internal NAND writes.
+Journal size before/after is reported separately because compaction can shrink
+the file while causing substantial write traffic.
+
+Every append requires all three acknowledgements. After the timed phase, all six
+processes restart. Each data node must recover the complete foreground prefix,
+every appended byte, the exact stored head, and sampled background pages. This
+workload measures checkpoint interference; adding it does not move checkpoint
+work off the foreground lock or establish flat append latency.
+
+### Checkpoint interference results
+
+Source `3771fb3` passed all 18 release phases, 2,304 acknowledged appends and
+18 full-cluster restart checks in 241.71 seconds. The 16-CPU WSL host had load
+averages 1.97–3.75. All nine enabled phases observed exactly one checkpoint
+image per data node; their slowest RPC coincided with a checkpoint transition.
+Medians across three phase repetitions were:
+
+| Background pages | Control maximum RPC (ms) | Checkpoint-triggering RPC (ms) | Syscall write ratio | Kernel storage write ratio |
+|---|---:|---:|---:|---:|
+| 1,024 | 19.016 | 110.580 | 28.04 | 31.05 |
+| 8,192 | 8.028 | 587.916 | 197.39 | 200.41 |
+| 32,768 | 4.293 | 2,189.538 | 778.13 | 781.15 |
+
+The ratios divide the three data processes' write-byte deltas by the timed
+512 KiB of logical append payload. They charge a complete checkpoint rewrite to
+that short window, not to all writes since the preceding checkpoint, so they are
+not steady-state amplification. Controls measured 3.09 syscall write bytes and
+6.09 kernel storage write bytes per payload byte at every corpus size.
+
+At 32,768 pages, median phase p99 was 10.737 ms while the median checkpoint RPC
+was 2,189.538 ms; the largest observed pause was 2,341.001 ms. Aggregate data CPU
+per timed append rose from 1.33 ms in the control to 43.75 ms with its checkpoint
+charged to the phase. These measurements contradict flat append latency when
+foreground checkpoints run. They do not quantify concurrent read interference.
+
+Moving serialization alone off the lock is insufficient: a captured page map
+retains shared payload handles and can force a growing foreground page to copy.
+A replacement needs a consistent durable journal cut, bounded foreground capture
+and installation, and crash recovery that preserves outcomes written after the
+cut. Validate large-prefix appends during an active checkpoint, persistence
+failures, interruption and repair overlap before claiming the pause is removed.
+
 ## Interpretation and remaining measurements
 
 Source inspection identified two different costs to profile. The general standalone

@@ -382,3 +382,6 @@ fn measure_star_sustained_reads_with_shared_sync() {
         }
     }
 }
+
+#[path = "star_checkpoint_interference.rs"]
+mod checkpoint_interference;

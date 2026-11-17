@@ -154,7 +154,15 @@ pub mod processes {
     /// serve and flush it, because a test standing several of them up on port `0` has no
     /// other way to learn which ports the kernel chose.
     pub fn start(binary: &str, env: &[(&str, &str)]) -> NodeProcess {
+        start_without_env(binary, env, &[])
+    }
+
+    /// Remove inherited settings before applying the explicit child environment.
+    pub fn start_without_env(binary: &str, env: &[(&str, &str)], removed: &[&str]) -> NodeProcess {
         let mut command = Command::new(binary);
+        for name in removed {
+            command.env_remove(name);
+        }
         for (name, value) in env {
             command.env(name, value);
         }
