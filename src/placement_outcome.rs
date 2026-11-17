@@ -445,14 +445,14 @@ impl PlacementOutcome {
                 append.after_sha256.clone(),
             )?;
             #[cfg(test)]
-            crate::manifest_chain::uncounted(|| -> Result<(), ObjectError> {
+            crate::manifest_chain::uncounted(|| {
                 assert_eq!(
                     decided,
-                    crate::manifest_append::ManifestAppend::decide_validated(outcome.manifest.as_ref().unwrap())?,
+                    crate::manifest_append::ManifestAppend::decide_validated(outcome.manifest.as_ref().unwrap())
+                        .expect("the outcome was just validated"),
                     "the decision's digests are not those of the manifests it was expanded to"
                 );
-                Ok(())
-            })?;
+            });
             if decided != append {
                 return Err(invalid("compact append differs from validated publication"));
             }

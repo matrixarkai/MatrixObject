@@ -23,6 +23,7 @@ pub(crate) const CHECKPOINT_EVERY: usize = 64;
 #[cfg(test)]
 thread_local! {
     static FULL_CHAINS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SOUNDNESS_CHECKS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 /// Chains computed over a whole extent list on this thread since the last reset (tests only).
 #[cfg(test)]
@@ -30,12 +31,21 @@ pub(crate) fn full_chains() -> usize {
     FULL_CHAINS.with(|calls| calls.get())
 }
 /// Run `work` without its whole-manifest chains being counted (test-only soundness checks).
+/// `work` is skipped when a measurement has turned the checks off on this thread.
 #[cfg(test)]
-pub(crate) fn uncounted<T>(work: impl FnOnce() -> T) -> T {
+pub(crate) fn uncounted<T: Default>(work: impl FnOnce() -> T) -> T {
+    if !SOUNDNESS_CHECKS.with(|on| on.get()) {
+        return T::default();
+    }
     let before = full_chains();
     let result = work();
     FULL_CHAINS.with(|calls| calls.set(before));
     result
+}
+/// Measurements turn the test-only soundness checks (which recompute what they check) off.
+#[cfg(all(test, feature = "metadata-consensus"))]
+pub(crate) fn set_soundness_checks(on: bool) {
+    SOUNDNESS_CHECKS.with(|flag| flag.set(on));
 }
 #[cfg(all(test, feature = "metadata-consensus"))]
 pub(crate) fn reset_full_chains() {

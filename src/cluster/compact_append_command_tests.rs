@@ -336,3 +336,194 @@ fn an_append_validates_whole_manifests_a_bounded_number_of_times() {
     // object is appended to, and everything after that extends it.
     assert_eq!(crate::manifest_chain::full_chains(), 1, "whole-manifest chains computed");
 }
+
+/// Time the metadata state machine's work for one append (reserving the pages, then
+/// publishing the digest-bound suffix) against an object that already holds N extents. No
+/// network and no fsync: the CPU cost the metaserver adds per append as the object grows.
+/// Run with `cargo test --release --lib append_cpu_cost -- --ignored --nocapture`.
+#[test]
+#[ignore = "local measurement: metadata state machine cost per append by extent count"]
+fn append_cpu_cost_by_extent_count() {
+    use crate::{
+        object_manifest::{ManifestOutcome, ObjectManifest},
+        staged_allocation::StagedAllocationRequest,
+    };
+    crate::manifest_chain::set_soundness_checks(false);
+    let (mut service, groups) = fixture(1, 0);
+    let mut stored_manifest = ObjectManifest {
+        format_version: 2,
+        bucket: "bucket".into(),
+        key: "append".into(),
+        generation: 1,
+        ..Default::default()
+    };
+    PlacementOutcome::publish_manifest(
+        &service,
+        ManifestOutcome::decide(None, stored_manifest.clone()).unwrap(),
+        0,
+    )
+    .unwrap()
+    .apply(&mut service)
+    .unwrap();
+    super::super::staged_allocation_commands::prepare_at(
+        &service,
+        &groups,
+        &StagedAllocationRequest { version: 1, action: 6, ..Default::default() },
+        8192,
+        1,
+    )
+    .unwrap()
+    .0
+    .apply(&mut service)
+    .unwrap();
+    let windows = [250usize, 1000, 2000, 3000, 4000];
+    let per_window = 100usize;
+    let mut appended = 0usize;
+    for target in windows {
+        while appended < target.min(4095 - per_window) {
+            append_once(&mut service, &groups, &mut stored_manifest);
+            appended += 1;
+        }
+        let started = std::time::Instant::now();
+        for _ in 0..per_window {
+            append_once(&mut service, &groups, &mut stored_manifest);
+            appended += 1;
+        }
+        let micros = started.elapsed().as_secs_f64() * 1e6 / per_window as f64;
+        println!("extents {:>5}: {:>8.1} microseconds per append", appended - per_window, micros);
+    }
+}
+
+fn append_once(
+    service: &mut MatrixMetaService,
+    groups: &ChunkGroupCatalog,
+    manifest: &mut crate::object_manifest::ObjectManifest,
+) {
+    use crate::{object_manifest::ObjectExtent, staged_allocation::StagedAllocationRequest};
+    let prepare = |service: &MatrixMetaService, command: &StagedAllocationRequest| {
+        super::super::staged_allocation_commands::prepare_at(service, groups, command, 8192, 1500).unwrap().0
+    };
+    prepare(
+        service,
+        &StagedAllocationRequest {
+            version: 2,
+            action: 1,
+            bucket: "bucket".into(),
+            key: "append".into(),
+            expected_generation: manifest.generation,
+            append: true,
+            page_count: 1,
+            ttl_ms: 600_000,
+            ..Default::default()
+        },
+    )
+    .apply(service)
+    .unwrap();
+    let id = service.placement_commit_index;
+    let page = service.object_manifests.staged_allocation(id).unwrap().allocation().unwrap().page(0).unwrap();
+    let extent = ObjectExtent {
+        group: "group-0".into(),
+        volume_id: page.chunk_id.volume_id(),
+        chunk_id: page.chunk_id.id(),
+        page_index: page.page_index,
+        object_offset: manifest.length,
+        length: 1,
+        write_sequence: 1,
+        data_sha256: vec![7; 32],
+        ..Default::default()
+    };
+    let object_id = crate::ObjectId::new("bucket", "append");
+    let (_, stored) = service.object_manifests.get_with_digest(&object_id).unwrap().unwrap();
+    let before_sha256 = stored.digest.clone();
+    let chain = stored.chain.extended(std::slice::from_ref(&extent));
+    let mut after = manifest.clone();
+    after.generation += 1;
+    after.length += 1;
+    after.extents.push(extent.clone());
+    let append = crate::manifest_append::ManifestAppend {
+        bucket: "bucket".into(),
+        key: "append".into(),
+        before_generation: manifest.generation,
+        before_length: manifest.length,
+        before_extents: manifest.extents.len() as u32,
+        before_sha256,
+        suffix: vec![extent],
+        after_length: after.length,
+        after_sha256: chain.digest(&after),
+    };
+    prepare(
+        service,
+        &StagedAllocationRequest {
+            version: 4,
+            action: 11,
+            allocation_id: id,
+            manifest_append: Some(append),
+            ..Default::default()
+        },
+    )
+    .apply(service)
+    .unwrap();
+    *manifest = after;
+}
+
+/// One metadata state machine, an object published with `BENCH_PREFILL` extents (default 250),
+/// then `BENCH_APPENDS` (default 20) appends timed and printed. Meant for a profiler.
+#[test]
+#[ignore = "local measurement for a profiler"]
+fn append_cpu_cost_at_extents() {
+    use crate::{
+        object_manifest::{ManifestOutcome, ObjectExtent, ObjectManifest},
+        staged_allocation::StagedAllocationRequest,
+    };
+    let prefill: usize = std::env::var("BENCH_PREFILL").ok().and_then(|v| v.parse().ok()).unwrap_or(250);
+    let appends: usize = std::env::var("BENCH_APPENDS").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
+    crate::manifest_chain::set_soundness_checks(false);
+    let (mut service, groups) = fixture(1, 0);
+    let mut manifest = ObjectManifest {
+        format_version: 2,
+        bucket: "bucket".into(),
+        key: "append".into(),
+        generation: 1,
+        length: prefill as u64,
+        extents: (0..prefill)
+            .map(|index| ObjectExtent {
+                group: "group-0".into(),
+                volume_id: 7,
+                chunk_id: index as u64 + 1,
+                page_index: 0,
+                object_offset: index as u64,
+                length: 1,
+                write_sequence: 1,
+                data_sha256: vec![(index % 251) as u8; 32],
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    PlacementOutcome::publish_manifest(&service, ManifestOutcome::decide(None, manifest.clone()).unwrap(), 0)
+        .unwrap()
+        .apply(&mut service)
+        .unwrap();
+    super::super::staged_allocation_commands::prepare_at(
+        &service,
+        &groups,
+        &StagedAllocationRequest { version: 1, action: 6, ..Default::default() },
+        8192,
+        1,
+    )
+    .unwrap()
+    .0
+    .apply(&mut service)
+    .unwrap();
+    // the first append computes the stored chain; keep it out of the timing
+    append_once(&mut service, &groups, &mut manifest);
+    let started = std::time::Instant::now();
+    for _ in 0..appends {
+        append_once(&mut service, &groups, &mut manifest);
+    }
+    println!(
+        "extents {:>5}: {:>8.1} microseconds per append",
+        prefill,
+        started.elapsed().as_secs_f64() * 1e6 / appends as f64
+    );
+}
