@@ -148,7 +148,7 @@ thread_local! {
     static FULL_DERIVATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 /// Placement bookkeeping passes over a whole extent list on this thread (tests only).
-#[cfg(test)]
+#[cfg(all(test, feature = "metadata-consensus"))]
 pub(crate) fn full_derivations() -> usize {
     FULL_DERIVATIONS.with(|count| count.get())
 }
