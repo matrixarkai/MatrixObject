@@ -52,44 +52,39 @@ struct NodeMeta {
 const SNAPSHOT_LIMIT: usize = 64 * 1024 * 1024;
 /// How far below the limit a tracked size must stay before the exact check is skipped.
 const SNAPSHOT_MARGIN: usize = 1024 * 1024;
-/// Writes admitted from the tracked size before the exact size is measured again.
-const SNAPSHOT_RECHECK_WRITES: u32 = 256;
 
 /// Tracks an upper bound on the encoded metadata snapshot so that a write does not have to
 /// clone and encode all metadata state just to learn that it is nowhere near the limit.
 ///
 /// `estimate` is the exact encoded size at the last exact measurement plus a bound on every
-/// growth admitted since. Whenever the bound plus a margin could reach the limit, or after a
-/// fixed number of writes, the exact size is measured again, so the accept-or-refuse decision
-/// near the limit is made on the exact size, as before.
+/// growth admitted since. Whenever the bound plus a margin could reach the limit the exact size
+/// is measured again, so the accept-or-refuse decision near the limit is made on the exact size.
+/// There is no measurement on a schedule: an exact measurement clones and encodes the whole
+/// metadata state under the node's lock, so one every few hundred writes was a latency spike
+/// that grew with the number of objects held.
 struct SnapshotBound {
     limit: usize,
     estimate: Option<usize>,
-    writes_since_exact: u32,
     exact_checks: u64,
 }
 
 impl SnapshotBound {
     fn new() -> Self {
-        Self { limit: SNAPSHOT_LIMIT, estimate: None, writes_since_exact: 0, exact_checks: 0 }
+        Self { limit: SNAPSHOT_LIMIT, estimate: None, exact_checks: 0 }
     }
     /// True when `growth` more bytes are known to leave the snapshot within the limit.
     fn admits_without_measuring(&self, growth: usize) -> bool {
         let margin = SNAPSHOT_MARGIN.min(self.limit / 4);
-        self.writes_since_exact < SNAPSHOT_RECHECK_WRITES
-            && self
-                .estimate
-                .and_then(|estimate| estimate.checked_add(growth))
-                .and_then(|bound| bound.checked_add(margin))
-                .is_some_and(|bound| bound <= self.limit)
+        self.estimate
+            .and_then(|estimate| estimate.checked_add(growth))
+            .and_then(|bound| bound.checked_add(margin))
+            .is_some_and(|bound| bound <= self.limit)
     }
     fn admitted(&mut self, growth: usize) {
         self.estimate = self.estimate.map(|estimate| estimate.saturating_add(growth));
-        self.writes_since_exact += 1;
     }
     fn measured(&mut self, exact: usize) {
         self.estimate = Some(exact);
-        self.writes_since_exact = 0;
         self.exact_checks += 1;
     }
 }
@@ -1963,7 +1958,7 @@ mod manifest_retention_tests;
 
 #[cfg(test)]
 mod snapshot_bound_tests {
-    use super::{SnapshotBound, SNAPSHOT_MARGIN, SNAPSHOT_RECHECK_WRITES};
+    use super::{SnapshotBound, SNAPSHOT_MARGIN};
 
     /// Deterministic pseudo-random sequence (no external dependency).
     fn next(state: &mut u64) -> u64 {
@@ -2017,17 +2012,41 @@ mod snapshot_bound_tests {
     }
 
     #[test]
-    fn tracked_snapshot_bound_measures_when_unknown_near_the_limit_and_periodically() {
+    fn tracked_snapshot_bound_measures_when_unknown_or_near_the_limit_and_not_on_a_schedule() {
         let mut bound = SnapshotBound::new();
         assert!(!bound.admits_without_measuring(0), "no measurement yet");
         bound.measured(1_000);
         assert!(bound.admits_without_measuring(10));
         assert!(!bound.admits_without_measuring(bound.limit - SNAPSHOT_MARGIN), "close to the limit");
-        for _ in 0..SNAPSHOT_RECHECK_WRITES {
+        // Writes that stay far below the limit never ask for an exact measurement, however many
+        // there are: measuring clones and encodes the whole metadata state under the node's lock,
+        // so a measurement every few hundred writes is a latency spike that grows with the state.
+        for write in 0..10_000 {
+            assert!(bound.admits_without_measuring(1), "write {write} is far below the limit");
             bound.admitted(1);
         }
-        assert!(!bound.admits_without_measuring(1), "periodic exact measurement is due");
+        assert_eq!(bound.exact_checks, 1, "the one measurement was the one taken at the start");
+        // Once the tracked bound reaches the margin an exact measurement is due again.
+        bound.admitted(bound.limit);
+        assert!(!bound.admits_without_measuring(1));
         bound.measured(1_000);
         assert!(bound.admits_without_measuring(1));
+        assert_eq!(bound.exact_checks, 2);
+    }
+
+    /// 1000 writes of ordinary size against the real limit take exactly one exact measurement.
+    #[test]
+    fn a_thousand_ordinary_writes_take_one_exact_measurement() {
+        let mut bound = SnapshotBound::new();
+        let mut measurements = 0u32;
+        for _ in 0..1_000 {
+            if bound.admits_without_measuring(2_048) {
+                bound.admitted(2_048);
+            } else {
+                measurements += 1;
+                bound.measured(5_000_000);
+            }
+        }
+        assert_eq!(measurements, 1, "only the first write, which has no measurement yet, measures");
     }
 }
