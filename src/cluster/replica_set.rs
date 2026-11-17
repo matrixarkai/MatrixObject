@@ -3227,6 +3227,29 @@ mod send_progress_tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    /// A node closes a connection that has been idle for its read timeout (30 s by default),
+    /// and the client cannot see the close until it reads. A cached connection that has sat
+    /// idle for as long as the client's own read timeout must therefore not be reused: the
+    /// next read would find the peer gone and fail with "incomplete frame".
+    #[test]
+    fn a_cached_replica_connection_idle_past_the_read_timeout_is_not_reused() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let options = ReplicaClientOptions {
+            read_timeout: Duration::from_millis(300),
+            write_timeout: Duration::from_millis(300),
+            ..Default::default()
+        };
+        let mut client = RemoteReplicaClient::connect(&endpoint, &options).unwrap();
+        let (_peer, _) = listener.accept().unwrap();
+        assert!(client.prepare_direct_for_reuse(&options, &options), "a fresh connection is reusable");
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            !client.prepare_direct_for_reuse(&options, &options),
+            "a connection idle for longer than the read timeout may already be closed by the node"
+        );
+    }
+
     #[test]
     fn star_fanout_wait_wakes_for_a_replica_reply() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

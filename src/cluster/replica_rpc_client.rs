@@ -259,11 +259,20 @@ impl RemoteReplicaClient {
             || current.read_timeout != next.read_timeout
             || current.write_timeout != next.write_timeout
             || current.max_payload_bytes != next.max_payload_bytes
+            || self.idle_too_long(current)
         {
             return false;
         }
         self.deadline = next.deadline;
         true
+    }
+
+    /// A node closes a connection that has been idle for its read timeout, and this end
+    /// cannot see the close until it reads. A connection idle for as long as that timeout
+    /// (at most 5 s) is not reused: the caller opens a new one instead of failing a read
+    /// with "incomplete frame".
+    fn idle_too_long(&self, options: &ReplicaClientOptions) -> bool {
+        self.last_exchange.elapsed() >= options.read_timeout.min(Duration::from_secs(5))
     }
 
     pub(super) fn prepare_for_reuse(&mut self, options: &ReplicaClientOptions) -> bool {
@@ -281,6 +290,7 @@ impl RemoteReplicaClient {
             || current.read_timeout != options.read_timeout
             || current.write_timeout != options.write_timeout
             || current.max_payload_bytes != options.max_payload_bytes
+            || self.last_exchange.elapsed() >= current.read_timeout.min(Duration::from_secs(5))
         {
             return false;
         }
