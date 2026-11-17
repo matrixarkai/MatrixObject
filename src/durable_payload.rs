@@ -110,8 +110,11 @@ fn directory_sync(path: &Path) -> io::Result<()> {
 }
 
 fn encode_header(id: &[u8], capacity: u64) -> [u8; SECTOR_BYTES] {
+    encode_profile_header(id, capacity, 1)
+}
+fn encode_profile_header(id: &[u8], capacity: u64, profile: u32) -> [u8; SECTOR_BYTES] {
     let body = FileHeader {
-        version: 1,
+        version: profile,
         store_id: id.to_vec(),
         sector_bytes: SECTOR_BYTES as u32,
         capacity_bytes: capacity,
@@ -124,7 +127,7 @@ fn encode_header(id: &[u8], capacity: u64) -> [u8; SECTOR_BYTES] {
     header[44..44 + body.len()].copy_from_slice(&body);
     header
 }
-fn verify_header(file: &mut File, id: &[u8], capacity: u64) -> io::Result<()> {
+fn verify_header(file: &mut File, id: &[u8], capacity: u64, profile: u32) -> io::Result<()> {
     file.seek(SeekFrom::Start(0))?;
     let mut bytes = [0; SECTOR_BYTES];
     file.read_exact(&mut bytes)?;
@@ -132,18 +135,25 @@ fn verify_header(file: &mut File, id: &[u8], capacity: u64) -> io::Result<()> {
         return Err(invalid("unknown payload file format"));
     }
     let length = u32::from_be_bytes(bytes[8..12].try_into().unwrap()) as usize;
-    if length == 0 || length > SECTOR_BYTES - ENVELOPE_BYTES {
+    let padding_end = SECTOR_BYTES - usize::from(profile == 2);
+    if length == 0 || length > padding_end - ENVELOPE_BYTES {
         return Err(invalid("invalid payload header length"));
     }
     let body = &bytes[ENVELOPE_BYTES..ENVELOPE_BYTES + length];
     if digest::digest(&digest::SHA256, body).as_ref() != &bytes[12..44]
-        || bytes[ENVELOPE_BYTES + length..].iter().any(|n| *n != 0)
+        || bytes[ENVELOPE_BYTES + length..padding_end]
+            .iter()
+            .any(|n| *n != 0)
+        || (profile == 2 && ![0, READY].contains(&bytes[SECTOR_BYTES - 1]))
     {
         return Err(invalid("payload header checksum or padding damaged"));
     }
     let header =
         FileHeader::decode(body).map_err(|_| invalid("invalid payload header protobuf"))?;
-    if header.version != 1
+    if header.encode_to_vec() != body {
+        return Err(invalid("noncanonical payload file header"));
+    }
+    if header.version != profile
         || header.store_id != id
         || header.sector_bytes != SECTOR_BYTES as u32
         || header.capacity_bytes != capacity
@@ -199,13 +209,14 @@ impl PayloadExtentStore {
     /// Unaligned interrupted tails are refused; use complete published roots with
     /// open_recovered to reclaim unpublished bytes explicitly.
     pub fn open(path: impl AsRef<Path>, capacity: u64) -> io::Result<Self> {
-        Self::open_inner(path.as_ref(), capacity, false, true)
+        Self::open_inner(path.as_ref(), capacity, false, true, 1)
     }
     fn open_inner(
         path: &Path,
         capacity: u64,
         allow_partial_tail: bool,
         allow_create: bool,
+        profile: u32,
     ) -> io::Result<Self> {
         if capacity < SECTOR_BYTES as u64
             || capacity > MAX_CAPACITY_BYTES
@@ -246,14 +257,18 @@ impl PayloadExtentStore {
             }
             file.set_len(SECTOR_BYTES as u64)?;
             file.seek(SeekFrom::Start(0))?;
-            file.write_all(&encode_header(&id, capacity))?;
+            file.write_all(&if profile == 1 {
+                encode_header(&id, capacity)
+            } else {
+                encode_profile_header(&id, capacity, profile)
+            })?;
             file.sync_all()?;
             directory_sync(&path)?;
             lock.seek(SeekFrom::End(0))?;
             lock.write_all(&[READY])?;
             lock.sync_all()?;
         }
-        verify_header(&mut file, &id, capacity)?;
+        verify_header(&mut file, &id, capacity, profile)?;
         let end = file.metadata()?.len();
         if end < SECTOR_BYTES as u64
             || end > SECTOR_BYTES as u64 + capacity
@@ -283,7 +298,7 @@ impl PayloadExtentStore {
         capacity: u64,
         roots: &[PayloadExtent],
     ) -> io::Result<Self> {
-        let store = Self::open_inner(path.as_ref(), capacity, true, false)?;
+        let store = Self::open_inner(path.as_ref(), capacity, true, false, 1)?;
         let mut unique = std::collections::BTreeMap::new();
         for extent in roots {
             store.validate_extent(extent)?;
@@ -526,3 +541,6 @@ fn read_at(file: &File, mut bytes: &mut [u8], mut offset: u64) -> io::Result<()>
 #[cfg(all(test, unix))]
 #[path = "durable_payload_tests.rs"]
 mod tests;
+
+#[path = "stored_outcome_records.rs"]
+pub mod outcome_log;
