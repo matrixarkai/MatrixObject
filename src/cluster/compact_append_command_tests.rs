@@ -399,11 +399,25 @@ fn append_once(
     groups: &ChunkGroupCatalog,
     manifest: &mut crate::object_manifest::ObjectManifest,
 ) {
+    append_once_with(service, groups, manifest, false);
+}
+
+/// One reserve-and-publish append. With `slow` the publication is applied the long way: the
+/// expansion prepared for it is forgotten and another holder keeps the catalog entry shared, so
+/// the apply expands for itself and builds a new entry. Returns the two outcomes as they would be
+/// made durable.
+fn append_once_with(
+    service: &mut MatrixMetaService,
+    groups: &ChunkGroupCatalog,
+    manifest: &mut crate::object_manifest::ObjectManifest,
+    slow: bool,
+) -> Vec<Vec<u8>> {
     use crate::{object_manifest::ObjectExtent, staged_allocation::StagedAllocationRequest};
+    let mut durable = Vec::new();
     let prepare = |service: &MatrixMetaService, command: &StagedAllocationRequest| {
         super::super::staged_allocation_commands::prepare_at(service, groups, command, 8192, 1500).unwrap().0
     };
-    prepare(
+    let reserve = prepare(
         service,
         &StagedAllocationRequest {
             version: 2,
@@ -416,9 +430,9 @@ fn append_once(
             ttl_ms: 600_000,
             ..Default::default()
         },
-    )
-    .apply(service)
-    .unwrap();
+    );
+    durable.push(reserve.to_payload().unwrap());
+    reserve.apply(service).unwrap();
     let id = service.placement_commit_index;
     let page = service.object_manifests.staged_allocation(id).unwrap().allocation().unwrap().page(0).unwrap();
     let extent = ObjectExtent {
@@ -451,7 +465,7 @@ fn append_once(
         after_length: after.length,
         after_sha256: chain.digest(&after),
     };
-    prepare(
+    let publish = prepare(
         service,
         &StagedAllocationRequest {
             version: 4,
@@ -460,10 +474,103 @@ fn append_once(
             manifest_append: Some(append),
             ..Default::default()
         },
-    )
-    .apply(service)
-    .unwrap();
+    );
+    durable.push(publish.to_payload().unwrap());
+    let _shared = if slow {
+        crate::placement_outcome::forget_prepared_expansion();
+        service.object_manifests.entry_arc(&object_id)
+    } else {
+        None
+    };
+    publish.apply(service).unwrap();
     *manifest = after;
+    durable
+}
+
+/// A catalog holding an object of `prefill` one-byte extents, with the publication fence on, and
+/// the manifest as published.
+fn prefilled_log(prefill: usize) -> (MatrixMetaService, ChunkGroupCatalog, crate::object_manifest::ObjectManifest) {
+    use crate::{
+        object_manifest::{ManifestOutcome, ObjectExtent, ObjectManifest},
+        staged_allocation::StagedAllocationRequest,
+    };
+    crate::manifest_chain::set_soundness_checks(false);
+    let (mut service, groups) = fixture(1, 0);
+    let manifest = ObjectManifest {
+        format_version: 2,
+        bucket: "bucket".into(),
+        key: "append".into(),
+        generation: 1,
+        length: prefill as u64,
+        extents: (0..prefill)
+            .map(|index| ObjectExtent {
+                group: "group-0".into(),
+                volume_id: 7,
+                chunk_id: index as u64 + 1,
+                object_offset: index as u64,
+                length: 1,
+                write_sequence: 1,
+                data_sha256: vec![(index % 251) as u8; 32],
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    PlacementOutcome::publish_manifest(&service, ManifestOutcome::decide(None, manifest.clone()).unwrap(), 0)
+        .unwrap()
+        .apply(&mut service)
+        .unwrap();
+    super::super::staged_allocation_commands::prepare_at(
+        &service,
+        &groups,
+        &StagedAllocationRequest { version: 1, action: 6, ..Default::default() },
+        8192,
+        1,
+    )
+    .unwrap()
+    .0
+    .apply(&mut service)
+    .unwrap();
+    (service, groups, manifest)
+}
+
+/// Extending the catalog entry in place, reusing the expansion made while preparing, and
+/// skipping the comparisons of the stored extents with themselves must change nothing that is
+/// observable: the outcomes made durable, the catalog image, and the state a replay of those
+/// outcomes rebuilds are byte for byte those of the long way round.
+#[test]
+fn growing_an_entry_in_place_is_byte_identical_to_rebuilding_it() {
+    const STEPS: usize = 40;
+    let (mut quick, groups, mut quick_manifest) = prefilled_log(300);
+    let (mut slow, _, mut slow_manifest) = prefilled_log(300);
+    let (mut replayed, _, _) = prefilled_log(300);
+    let mut quick_durable = Vec::new();
+    let mut slow_durable = Vec::new();
+    for _ in 0..STEPS {
+        quick_durable.extend(append_once_with(&mut quick, &groups, &mut quick_manifest, false));
+        slow_durable.extend(append_once_with(&mut slow, &groups, &mut slow_manifest, true));
+    }
+    assert_eq!(quick_durable, slow_durable, "the outcomes made durable differ");
+    assert_eq!(quick_manifest, slow_manifest);
+    assert_eq!(
+        quick.object_manifests.to_bytes().unwrap(),
+        slow.object_manifests.to_bytes().unwrap(),
+        "the catalog images differ"
+    );
+    // A restart or a follower knows only the durable outcomes: replaying them must rebuild the
+    // same catalog, whatever was or was not prepared on this thread.
+    for payload in &quick_durable {
+        crate::placement_outcome::forget_prepared_expansion();
+        PlacementOutcome::from_payload(payload).unwrap().apply(&mut replayed).unwrap();
+    }
+    assert_eq!(
+        replayed.object_manifests.to_bytes().unwrap(),
+        quick.object_manifests.to_bytes().unwrap(),
+        "a replay of the durable outcomes rebuilds a different catalog"
+    );
+    let id = crate::ObjectId::new("bucket", "append");
+    assert_eq!(replayed.object_manifests.get(&id), Some(&quick_manifest));
+    assert_eq!(quick.object_manifests.get(&id), Some(&quick_manifest));
 }
 
 /// One metadata state machine, an object published with `BENCH_PREFILL` extents (default 250),

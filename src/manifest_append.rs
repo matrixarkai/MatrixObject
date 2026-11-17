@@ -127,19 +127,7 @@ impl ManifestAppend {
     /// by the suffix.
     pub(crate) fn expand_stored(&self, before: &ObjectManifest, stored: &crate::object_manifest::StoredDigest) -> Result<ManifestOutcome, ObjectError> {
         self.validate()?;
-        if before.deleted
-            || before.format_version != 2
-            || before.bucket != self.bucket
-            || before.key != self.key
-            || before.generation != self.before_generation
-            || before.length != self.before_length
-            || before.extents.len() != self.before_extents as usize
-            || stored.digest != self.before_sha256
-        {
-            return Err(ObjectError::PreconditionFailed(
-                "compact append prior manifest changed".into(),
-            ));
-        }
+        self.check_prior(before, stored)?;
         let mut after = before.clone();
         after.generation += 1;
         after.length = self.after_length;
@@ -157,6 +145,26 @@ impl ManifestAppend {
             return Err(invalid("compact append resulting digest mismatch"));
         }
         Ok(outcome)
+    }
+
+    /// Whether `before`, the manifest the catalog holds, is the one this decision was made
+    /// against. A matching stored digest binds the content, so an expansion computed earlier
+    /// from a manifest with this digest is the expansion of this one too.
+    pub(crate) fn check_prior(&self, before: &ObjectManifest, stored: &crate::object_manifest::StoredDigest) -> Result<(), ObjectError> {
+        if before.deleted
+            || before.format_version != 2
+            || before.bucket != self.bucket
+            || before.key != self.key
+            || before.generation != self.before_generation
+            || before.length != self.before_length
+            || before.extents.len() != self.before_extents as usize
+            || stored.digest != self.before_sha256
+        {
+            return Err(ObjectError::PreconditionFailed(
+                "compact append prior manifest changed".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
