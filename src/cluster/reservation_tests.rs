@@ -13,6 +13,24 @@ fn publish_on(
     allocation: &crate::staged_allocation::StagedAllocation,
     reserve: bool,
 ) -> Option<crate::staged_allocation::StagedAllocation> {
+    let (command, after) = build_append(service, manifest, allocation, reserve);
+    let (outcome, reply) =
+        super::super::staged_allocation_commands::prepare_at(service, groups, &command, 8192, 1500).unwrap();
+    outcome.apply(service).unwrap();
+    *manifest = after;
+    match reply {
+        MetaReply::StagedAllocation(reply) => reply.allocation,
+        _ => panic!("unexpected reply"),
+    }
+}
+
+/// The command that appends one extent on `allocation`, and the manifest it results in.
+fn build_append(
+    service: &MatrixMetaService,
+    manifest: &crate::object_manifest::ObjectManifest,
+    allocation: &crate::staged_allocation::StagedAllocation,
+    reserve: bool,
+) -> (crate::staged_allocation::StagedAllocationRequest, crate::object_manifest::ObjectManifest) {
     use crate::{object_manifest::ObjectExtent, staged_allocation::StagedAllocationRequest};
     let page = allocation.allocation().unwrap().page(0).unwrap();
     let extent = ObjectExtent {
@@ -64,14 +82,7 @@ fn publish_on(
             ..Default::default()
         }
     };
-    let (outcome, reply) =
-        super::super::staged_allocation_commands::prepare_at(service, groups, &command, 8192, 1500).unwrap();
-    outcome.apply(service).unwrap();
-    *manifest = after;
-    match reply {
-        MetaReply::StagedAllocation(reply) => reply.allocation,
-        _ => panic!("unexpected reply"),
-    }
+    (command, after)
 }
 
 fn reserving_fixture() -> (
@@ -308,4 +319,70 @@ fn a_publication_reserves_only_while_the_table_has_room_for_other_objects() {
     // A table filled by reservations leaves room: even a full-size table is never what a
     // reservation fills, so another object's allocation is not refused for want of a slot.
     assert!(MAX_STAGED_FOR_RESERVATION + 1 < MAX_STAGED_ALLOCATIONS);
+}
+
+/// The placement record of an append is the prior record extended by the new extents, so once the
+/// record has per-group bytes an append makes no pass over the object's extents for it: the count
+/// of whole-extent-list passes does not move across 50 appends (it was several per append).
+#[test]
+fn appends_after_the_first_make_no_whole_extent_list_pass_for_the_placement_record() {
+    let (mut service, groups, command) = reserving_fixture();
+    let object_id = crate::ObjectId::new("bucket", "append");
+    let mut manifest = service.object_manifests.get(&object_id).unwrap().clone();
+    let mut allocation = service.object_manifests.staged_allocation(command.allocation_id).unwrap().clone();
+    // the first append gives the record its per-group bytes from the whole manifest
+    for _ in 0..3 {
+        allocation = publish_on(&mut service, &groups, &mut manifest, &allocation, true).unwrap();
+    }
+    let before = crate::placement_outcome::full_derivations();
+    for _ in 0..50 {
+        allocation = publish_on(&mut service, &groups, &mut manifest, &allocation, true).unwrap();
+    }
+    assert_eq!(manifest.extents.len(), 53);
+    assert_eq!(
+        crate::placement_outcome::full_derivations(),
+        before,
+        "50 appends made whole-extent-list passes for the placement record"
+    );
+    // and the record is exactly what the whole manifest gives
+    let placement = service.placements.get(&object_id).unwrap();
+    assert_eq!(placement.node_ids, vec!["group-0".to_string()]);
+    assert_eq!(placement.group_bytes, vec![53]);
+    assert_eq!(placement.version, manifest.generation);
+    assert_eq!(placement.length, manifest.length);
+}
+
+/// A publication whose resulting placement names a group the suffix does not, or charges a group
+/// differently than the prior record plus the suffix, or states another length, is refused.
+#[test]
+fn an_append_whose_placement_differs_from_the_prior_record_plus_its_suffix_is_refused() {
+    let (mut service, groups, command) = reserving_fixture();
+    let object_id = crate::ObjectId::new("bucket", "append");
+    let mut manifest = service.object_manifests.get(&object_id).unwrap().clone();
+    let mut allocation = service.object_manifests.staged_allocation(command.allocation_id).unwrap().clone();
+    for _ in 0..3 {
+        allocation = publish_on(&mut service, &groups, &mut manifest, &allocation, true).unwrap();
+    }
+    let (next, _) = build_append(&service, &manifest, &allocation, true);
+    let (good, _) =
+        super::super::staged_allocation_commands::prepare_at(&service, &groups, &next, 8192, 1500).unwrap();
+    // the untouched decision applies
+    good.clone().apply(&mut service.clone()).unwrap();
+    let tampers: [(&str, fn(&mut crate::placement_outcome::PlacementValue)); 3] = [
+        ("a group the suffix does not name", |p| p.node_ids.push("group-9".into())),
+        ("a different charge", |p| p.group_bytes[0] += 1),
+        ("a different length", |p| p.length += 1),
+    ];
+    for (what, tamper) in tampers {
+        let mut outcome = good.clone();
+        tamper(outcome.placements[0].after.as_mut().unwrap());
+        let refused = match PlacementOutcome::from_payload(&match outcome.to_payload() {
+            Ok(payload) => payload,
+            Err(_) => continue, // refused already when the record is encoded
+        }) {
+            Ok(decoded) => decoded.apply(&mut service.clone()).is_err(),
+            Err(_) => true,
+        };
+        assert!(refused, "a placement with {what} was accepted");
+    }
 }
