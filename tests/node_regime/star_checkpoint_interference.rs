@@ -4,10 +4,14 @@
 use super::*;
 use std::io::Read;
 
-fn magic(path: &Path) -> [u8; 4] {
-    let mut bytes = [0; 4];
+fn header(path: &Path) -> [u8; 32] {
+    let mut bytes = [0; 32];
     File::open(path).unwrap().read_exact(&mut bytes).unwrap();
     bytes
+}
+
+fn magic(path: &Path) -> [u8; 4] {
+    header(path)[..4].try_into().unwrap()
 }
 
 fn io_counts(fixture: &Fixture) -> (u64, u64) {
@@ -89,6 +93,8 @@ fn run_checkpoint_case(corpus: usize, operations: usize, checkpoint: bool) {
     let load = host_load();
     let mut samples = Vec::with_capacity(operations);
     let mut transitions = [None; 3];
+    let mut observed_headers: [[u8; 32]; 3] =
+        std::array::from_fn(|id| header(&fixture.journals[id]));
     let began = Instant::now();
     for index in 0..operations {
         let call = Instant::now();
@@ -100,11 +106,17 @@ fn run_checkpoint_case(corpus: usize, operations: usize, checkpoint: bool) {
         samples.push(call.elapsed().as_micros());
         // Probes follow RPC timing. They are included in overall phase elapsed time.
         for (id, path) in fixture.journals.iter().enumerate() {
-            let compacted = magic(path) == *b"MOSJ";
-            if compacted && transitions[id].is_none() {
+            let current = header(path);
+            let compacted = current[..4] == *b"MOSJ";
+            if compacted && current != observed_headers[id] {
+                assert!(
+                    transitions[id].is_none(),
+                    "more than one checkpoint observed"
+                );
                 transitions[id] = Some(index);
             }
             assert!(transitions[id].is_none() || compacted);
+            observed_headers[id] = current;
         }
     }
     let elapsed = began.elapsed();

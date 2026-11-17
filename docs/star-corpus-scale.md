@@ -214,7 +214,8 @@ three data nodes, and enables checkpointing at their restored journal length plu
 it. The interval exceeds all timed append bytes, so at most one checkpoint can
 run on each data node. Controls restart the same way with checkpoints disabled.
 The workload asserts an initial outcome journal and records each replica's first
-transition to a checkpoint image immediately after the corresponding RPC.
+transition to a checkpoint image immediately after the corresponding RPC. The
+checkpoint header must change only once, detecting an unexpected second image.
 
 Three corpus sizes, three rotated repetitions and alternating mode order produce
 18 phases, 2,304 checked appends and 18 full-cluster restart checks. Replication

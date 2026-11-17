@@ -91,8 +91,6 @@ fn start_chunk_with_checkpoint(
     )
 }
 
-#[path = "star_corpus_scale.rs"]
-mod star_corpus_scale;
 #[path = "star_recovery_profiles.rs"]
 mod star_recovery_profiles;
 #[path = "star_corpus_scale.rs"]
