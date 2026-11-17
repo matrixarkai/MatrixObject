@@ -1116,7 +1116,7 @@ mod tests {
         assert!(catalog.get_with_digest(&ObjectManifest { key: "absent".into(), ..sized_manifest(0) }.object_id()).unwrap().is_none());
     }
     #[test]
-    fn replaying_appends_reproduces_the_chain_the_live_catalog_carried_forward() {
+    fn replaying_appends_reproduces_the_chain_the_running_catalog_carried_forward() {
         let id = sized_manifest(1).object_id();
         let mut live = ManifestCatalog::default();
         let mut replayed = ManifestCatalog::default();
