@@ -43,6 +43,9 @@ fn meta_options() -> MetaClientOptions {
     }
 }
 fn start_chunk(endpoint: &str, path: &Path) -> NodeProcess {
+    start_chunk_with_recovery(endpoint, path, "peers")
+}
+fn start_chunk_with_recovery(endpoint: &str, path: &Path, recovery: &str) -> NodeProcess {
     processes::start(
         env!("CARGO_BIN_EXE_chunkserver"),
         &[
@@ -50,9 +53,15 @@ fn start_chunk(endpoint: &str, path: &Path) -> NodeProcess {
             ("MATRIXOBJECT_REPLICA_JOURNAL", path.to_str().unwrap()),
             ("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", "268435456"),
             ("MATRIXOBJECT_REPLICA_MAX_PAGES", "65536"),
+            ("MATRIXOBJECT_REPLICA_LOCAL_RECOVERY", recovery),
         ],
     )
 }
+
+#[path = "star_recovery_profiles.rs"]
+mod star_recovery_profiles;
+#[path = "star_corpus_scale.rs"]
+mod star_corpus_scale;
 impl Fixture {
     fn new() -> Self {
         let directory =
@@ -65,6 +74,7 @@ impl Fixture {
             .iter()
             .map(|path| start_chunk("127.0.0.1:0", path))
             .collect::<Vec<_>>();
+        assert!(chunks.iter().all(|node| node.startup_line.contains("local_recovery=peers")));
         let chunk_endpoints = chunks
             .iter()
             .map(|node| node.endpoint.clone())

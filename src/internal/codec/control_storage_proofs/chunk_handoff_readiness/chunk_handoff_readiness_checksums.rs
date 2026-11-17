@@ -33,18 +33,31 @@ pub(crate) fn chunk_local_state_checksum_with_data_etag(
 ) -> String {
     // Outcome construction passes a digest already checked against the page bytes.
     let stored_checksum = state.checksum();
+    chunk_local_state_checksum_from_parts(
+        state.logical_length, state.write_sequence, &stored_checksum,
+        data_checksum, &state.discarded_ranges,
+    )
+}
+
+pub(crate) fn chunk_local_state_checksum_from_parts(
+    logical_length: u64,
+    write_sequence: u64,
+    stored_checksum: &str,
+    data_checksum: &str,
+    discarded_ranges: &[DataRange],
+) -> String {
     let mut material = Vec::with_capacity(
         std::mem::size_of::<u64>() * 4
             + encoded_string_len(&stored_checksum)
             + encoded_string_len(data_checksum)
-            + state.discarded_ranges.len() * std::mem::size_of::<u64>() * 2,
+            + discarded_ranges.len() * std::mem::size_of::<u64>() * 2,
     );
-    append_u64(&mut material, state.logical_length);
-    append_u64(&mut material, state.write_sequence);
-    append_string(&mut material, &stored_checksum);
+    append_u64(&mut material, logical_length);
+    append_u64(&mut material, write_sequence);
+    append_string(&mut material, stored_checksum);
     append_string(&mut material, data_checksum);
-    append_u64(&mut material, state.discarded_ranges.len() as u64);
-    for range in &state.discarded_ranges {
+    append_u64(&mut material, discarded_ranges.len() as u64);
+    for range in discarded_ranges {
         append_range(&mut material, range);
     }
     etag(&material)

@@ -27,6 +27,7 @@
 //! | `MATRIXOBJECT_CHUNK_HEARTBEAT_MS` | `3000` | report interval, 100..60000 ms |
 //! | `MATRIXOBJECT_REPLICA_MAINTENANCE` | `false` | standalone repair mode; refuse ordinary writes and report offline |
 //! | `MATRIXOBJECT_REPLICA_THREADS` | `4` | connections served at once |
+//! | `MATRIXOBJECT_REPLICA_LOCAL_RECOVERY` | `xor` | `peers` uses a durable journal and configured replica repair instead of a local XOR sidecar |
 //! | `MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
 //! | `MATRIXOBJECT_REPLICA_CAPACITY_BYTES` | `268435456` | total page payload bytes; positive |
 //! | `MATRIXOBJECT_REPLICA_MAX_PAGES` | `65536` | page identities, including empty pages; positive |
@@ -118,6 +119,22 @@ fn main() {
 
     let capacity_bytes = env_usize("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", 256 * 1024 * 1024) as u64;
     let max_pages = env_usize("MATRIXOBJECT_REPLICA_MAX_PAGES", 65_536);
+    let local_recovery = match std::env::var("MATRIXOBJECT_REPLICA_LOCAL_RECOVERY") {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => "xor".into(),
+        Err(_) => {
+            eprintln!("MATRIXOBJECT_REPLICA_LOCAL_RECOVERY must be valid text");
+            std::process::exit(2);
+        }
+    };
+    let local_recovery_sidecar = match local_recovery.as_str() {
+        "xor" => true,
+        "peers" => false,
+        _ => {
+            eprintln!("MATRIXOBJECT_REPLICA_LOCAL_RECOVERY must be xor or peers");
+            std::process::exit(2);
+        }
+    };
     let maintenance = match std::env::var("MATRIXOBJECT_REPLICA_MAINTENANCE") {
         Err(std::env::VarError::NotPresent) => false,
         Ok(raw) => raw.trim().parse::<bool>().unwrap_or_else(|_| {
@@ -135,6 +152,7 @@ fn main() {
             std::process::exit(2);
         }),
         maintenance,
+        local_recovery_sidecar,
         max_payload_bytes,
         worker_threads,
         capacity_bytes,
@@ -382,7 +400,7 @@ fn main() {
     println!(
         "chunkserver listening on {bound} pid={} protocol_stamp={PROTOCOL_STAMP} \
          threads={worker_threads} max_payload_bytes={max_payload_bytes} auth=none \
-         storage={storage} capacity_bytes={capacity_bytes} max_pages={max_pages} maintenance={maintenance}",
+         storage={storage} capacity_bytes={capacity_bytes} max_pages={max_pages} maintenance={maintenance} local_recovery={local_recovery}",
         std::process::id()
     );
     if !bound.ip().is_loopback() {
