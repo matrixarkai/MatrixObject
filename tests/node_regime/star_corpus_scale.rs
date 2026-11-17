@@ -81,11 +81,16 @@ fn phase(
     }
     drop(setup);
     let (ready_tx, ready_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let mut finishers = Vec::new();
     let mut starters = Vec::new();
     let mut handles = Vec::new();
     for client in 0..clients {
         let endpoints = fixture.chunk_endpoints.clone();
         let ready = ready_tx.clone();
+        let done = done_tx.clone();
+        let (finish_tx, finish_rx) = mpsc::channel();
+        finishers.push(finish_tx);
         let (start_tx, start_rx) = mpsc::channel();
         starters.push(start_tx);
         handles.push(std::thread::spawn(move || {
@@ -137,10 +142,14 @@ fn phase(
             if matches!(operation, Operation::Append) {
                 written.push((page(id, client as u64), (operations + 1) * BYTES));
             }
+            // Keep connections and their cleanup outside the measured phase.
+            done.send(()).unwrap();
+            finish_rx.recv_timeout(Duration::from_secs(120)).unwrap();
             (samples, written)
         }));
     }
     drop(ready_tx);
+    drop(done_tx);
     for _ in 0..clients {
         ready_rx.recv_timeout(Duration::from_secs(30)).unwrap();
     }
@@ -162,12 +171,8 @@ fn phase(
     for start in starters {
         start.send(()).unwrap();
     }
-    let mut samples = Vec::new();
-    let mut written = Vec::new();
-    for handle in handles {
-        let (mut latencies, mut pages) = handle.join().unwrap();
-        samples.append(&mut latencies);
-        written.append(&mut pages);
+    for _ in 0..clients {
+        done_rx.recv_timeout(Duration::from_secs(120)).unwrap();
     }
     let elapsed = began.elapsed();
     let ticks = cpu_ticks(fixture).checked_sub(cpu).unwrap();
@@ -177,6 +182,16 @@ fn phase(
         .sum::<u64>()
         .checked_sub(before)
         .unwrap();
+    for finish in finishers {
+        finish.send(()).unwrap();
+    }
+    let mut samples = Vec::new();
+    let mut written = Vec::new();
+    for handle in handles {
+        let (mut latencies, mut pages) = handle.join().unwrap();
+        samples.append(&mut latencies);
+        written.append(&mut pages);
+    }
     samples.sort_unstable();
     assert_eq!(samples.len(), clients * operations);
     if matches!(operation, Operation::Read) {
@@ -208,6 +223,22 @@ fn run_with_group_commit(
     operations: usize,
     group_commit: bool,
 ) {
+    run_workload(
+        corpora,
+        concurrency,
+        operations,
+        group_commit,
+        &[Operation::Read, Operation::Write, Operation::Append],
+    );
+}
+
+fn run_workload(
+    corpora: &[usize],
+    concurrency: &[usize],
+    operations: usize,
+    group_commit: bool,
+    operations_to_measure: &[Operation],
+) {
     for &corpus in corpora {
         assert!((1..=32768).contains(&corpus));
         // Matching phases have exactly the same prior benchmark traffic at
@@ -232,8 +263,9 @@ fn run_with_group_commit(
         drop(set);
         for &clients in concurrency {
             assert!((1..=32).contains(&clients));
-            assert!((1..=128).contains(&operations));
-            for operation in [Operation::Read, Operation::Write, Operation::Append] {
+            assert!((1..=8192).contains(&operations));
+            for &operation in operations_to_measure {
+                assert!(matches!(operation, Operation::Read) || operations <= 128);
                 let written = phase(&fixture, corpus, clients, operations, id, operation);
                 // Bound retained verification metadata to first/last acknowledged
                 // pages per phase; all foreground reads verify their full payload.
@@ -325,5 +357,28 @@ fn measure_star_reads_writes_and_appends_as_corpus_grows() {
         [8192, 32768, 1024],
     ] {
         run(&corpora, &[1, 8, 32], 128);
+    }
+}
+
+#[test]
+#[ignore = "explicit local sustained paired read measurement"]
+fn measure_star_sustained_reads_with_shared_sync() {
+    for round in 0..3 {
+        let corpora = if round % 2 == 0 {
+            [1024, 32768]
+        } else {
+            [32768, 1024]
+        };
+        for corpus in corpora {
+            let rank = usize::from(corpus == 32768);
+            let modes = if (round + rank) % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            };
+            for enabled in modes {
+                run_workload(&[corpus], &[1, 32], 8192, enabled, &[Operation::Read]);
+            }
+        }
     }
 }

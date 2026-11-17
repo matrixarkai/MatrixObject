@@ -139,6 +139,28 @@ The ordinary correctness test also runs both modes. Compare matching modes and
 corpus sizes; inspect host load and variability before attributing a difference
 to journal synchronization. Reads and mutations remain separate timed phases.
 
+### Sustained read measurement
+
+The short sweep uses only 128 reads per client. Use the sustained read workload
+when investigating smaller read-throughput differences:
+
+```sh
+cargo test --locked --release --all-features --test network_metadata_consensus \
+  measure_star_sustained_reads_with_shared_sync -j1 \
+  -- --ignored --test-threads=1 --nocapture
+```
+
+It performs 8,192 verified reads per client at 1,024 and 32,768 background pages,
+with 1 and 32 clients, three repetitions and alternating mode order. Twelve fresh
+fixtures produce 24 phases, 3,244,032 checked reads and 12 full-cluster restart
+checks. Read working sets grow with the corpus; this is not a fixed-hot-set test.
+
+Phase timing ends after every client completes its operations. Client connections
+remain alive until elapsed time, data-process CPU and journal sizes are sampled;
+connection teardown, thread joins and percentile aggregation follow measurement.
+RPC latency samples cover each operation, including response validation. CPU
+ticks cover the three data processes; client CPU is not included.
+
 ## Interpretation and remaining measurements
 
 Source inspection identified two different costs to profile. The general standalone
