@@ -86,11 +86,13 @@ then budgets a 4-KiB append below 512 KiB of total requested allocations at
 framing and validation-index allocations. It is not a separate-process allocation
 measurement or a worst-case guarantee for buffer growth.
 
-The measured requested allocation totals were 50,899 bytes at 16 KiB and
+At source `81f2045`, the measured requested allocation totals were 50,899 bytes at 16 KiB and
 30,341 bytes at both 4 MiB and 64 MiB, with 31, 29 and 29 allocation calls,
 respectively. Setup sends bounded 1-MiB blocks and is outside measurement.
 These counts include client and server framing in the same process; they are
 not peak live memory or separate-process allocation measurements.
+Shared journal synchronization adds a bounded thread handoff; its allocation
+budget and paired workload are described in [shared synchronization](star-journal-synchronization.md).
 
 The [Star corpus workload](star-corpus-scale.md) uses three metadata voters and
 three journal-backed data processes, verifies every member's peer-recovery profile,

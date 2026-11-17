@@ -622,6 +622,17 @@ jobs:
           cargo test --locked --all-features --test replica_recovery_policy -- --test-threads=1 | tee /tmp/replica-recovery-policy.log
           grep -q '^test result: ok. 1 passed; 0 failed;' /tmp/replica-recovery-policy.log
 
+      - name: shared Star journal sync preserves durability and bounded groups
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib shared_sync -- --test-threads=1 | tee /tmp/star-shared-sync.log
+          grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/star-shared-sync.log
+          grep -Fq 'shared_sync_preserves_order_batch_digests_refusals_and_recovery ... ok' /tmp/star-shared-sync.log
+          grep -Fq 'shared_sync_failure_releases_no_successes_and_fences_later_reads ... ok' /tmp/star-shared-sync.log
+          grep -Fq 'shared_sync_counts_mutations_inside_each_request_batch ... ok' /tmp/star-shared-sync.log
+          grep -Fq 'shared_sync_concurrent_conditional_requests_have_one_durable_winner ... ok' /tmp/star-shared-sync.log
+          grep -Fq 'shared_sync_idle_path_refuses_failed_persistence ... ok' /tmp/star-shared-sync.log
+
       - name: compact append decisions enforce ownership and committed identity
         run: |
           set -o pipefail

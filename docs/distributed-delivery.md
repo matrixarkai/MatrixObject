@@ -184,6 +184,12 @@ each tested prefix size and sends 353–360 bytes for the fixed suffix and group
 
 ## Next implementation milestones
 
+[Shared Star journal synchronization](star-journal-synchronization.md) combines
+waiting standalone mutations behind one durable completion point, with request,
+mutation and payload bounds. The paired corpus workload retains three durable
+acknowledgements and reports both modes. Foreground checkpoint stalls, general
+overwrite work and checkpoint/repair interference remain separate costs.
+
 The immediate performance workload is the [Star corpus sweep](star-corpus-scale.md).
 It varies stored data-node pages independently of manifest width and keeps
 `N=3, W=3, R=1`. Its small normal test validates journal bounds and restart

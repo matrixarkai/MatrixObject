@@ -81,11 +81,16 @@ fn phase(
     }
     drop(setup);
     let (ready_tx, ready_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let mut finishers = Vec::new();
     let mut starters = Vec::new();
     let mut handles = Vec::new();
     for client in 0..clients {
         let endpoints = fixture.chunk_endpoints.clone();
         let ready = ready_tx.clone();
+        let done = done_tx.clone();
+        let (finish_tx, finish_rx) = mpsc::channel();
+        finishers.push(finish_tx);
         let (start_tx, start_rx) = mpsc::channel();
         starters.push(start_tx);
         handles.push(std::thread::spawn(move || {
@@ -137,10 +142,14 @@ fn phase(
             if matches!(operation, Operation::Append) {
                 written.push((page(id, client as u64), (operations + 1) * BYTES));
             }
+            // Keep connections and their cleanup outside the measured phase.
+            done.send(()).unwrap();
+            finish_rx.recv_timeout(Duration::from_secs(120)).unwrap();
             (samples, written)
         }));
     }
     drop(ready_tx);
+    drop(done_tx);
     for _ in 0..clients {
         ready_rx.recv_timeout(Duration::from_secs(30)).unwrap();
     }
@@ -162,12 +171,8 @@ fn phase(
     for start in starters {
         start.send(()).unwrap();
     }
-    let mut samples = Vec::new();
-    let mut written = Vec::new();
-    for handle in handles {
-        let (mut latencies, mut pages) = handle.join().unwrap();
-        samples.append(&mut latencies);
-        written.append(&mut pages);
+    for _ in 0..clients {
+        done_rx.recv_timeout(Duration::from_secs(120)).unwrap();
     }
     let elapsed = began.elapsed();
     let ticks = cpu_ticks(fixture).checked_sub(cpu).unwrap();
@@ -177,6 +182,16 @@ fn phase(
         .sum::<u64>()
         .checked_sub(before)
         .unwrap();
+    for finish in finishers {
+        finish.send(()).unwrap();
+    }
+    let mut samples = Vec::new();
+    let mut written = Vec::new();
+    for handle in handles {
+        let (mut latencies, mut pages) = handle.join().unwrap();
+        samples.append(&mut latencies);
+        written.append(&mut pages);
+    }
     samples.sort_unstable();
     assert_eq!(samples.len(), clients * operations);
     if matches!(operation, Operation::Read) {
@@ -191,18 +206,44 @@ fn phase(
             "unexpected journal amplification: {journal} for {logical} bytes"
         );
     }
-    println!("STAR_CORPUS operation={operation:?} background_pages={corpus} stored_pages_before={} background_payload_bytes={} clients={clients} operations={} payload_bytes={BYTES} n=3 w=3 r=1 elapsed_us={} qps={:.2} p50_us={} p95_us={} p99_us={} data_cpu_ticks={ticks} data_journal_bytes={journal} host_load1_before={load} host_load1_after={}",
+    println!("STAR_CORPUS operation={operation:?} group_commit={} background_pages={corpus} stored_pages_before={} background_payload_bytes={} clients={clients} operations={} payload_bytes={BYTES} n=3 w=3 r=1 elapsed_us={} qps={:.2} p50_us={} p95_us={} p99_us={} data_cpu_ticks={ticks} data_journal_bytes={journal} host_load1_before={load} host_load1_after={}",
+        fixture.group_commit,
         counts[0], corpus * BYTES, samples.len(), elapsed.as_micros(), samples.len() as f64 / elapsed.as_secs_f64(),
         percentile(&samples, 50), percentile(&samples, 95), percentile(&samples, 99), host_load());
     written
 }
 
 fn run(corpora: &[usize], concurrency: &[usize], operations: usize) {
+    run_with_group_commit(corpora, concurrency, operations, true);
+}
+
+fn run_with_group_commit(
+    corpora: &[usize],
+    concurrency: &[usize],
+    operations: usize,
+    group_commit: bool,
+) {
+    run_workload(
+        corpora,
+        concurrency,
+        operations,
+        group_commit,
+        &[Operation::Read, Operation::Write, Operation::Append],
+    );
+}
+
+fn run_workload(
+    corpora: &[usize],
+    concurrency: &[usize],
+    operations: usize,
+    group_commit: bool,
+    operations_to_measure: &[Operation],
+) {
     for &corpus in corpora {
         assert!((1..=32768).contains(&corpus));
         // Matching phases have exactly the same prior benchmark traffic at
         // every background size. Earlier corpus cases cannot contaminate them.
-        let mut fixture = Fixture::new();
+        let mut fixture = Fixture::with_group_commit(group_commit);
         let mut seeded = 0;
         let mut id = 10;
         let mut verify = Vec::new();
@@ -222,8 +263,9 @@ fn run(corpora: &[usize], concurrency: &[usize], operations: usize) {
         drop(set);
         for &clients in concurrency {
             assert!((1..=32).contains(&clients));
-            assert!((1..=128).contains(&operations));
-            for operation in [Operation::Read, Operation::Write, Operation::Append] {
+            assert!((1..=8192).contains(&operations));
+            for &operation in operations_to_measure {
+                assert!(matches!(operation, Operation::Read) || operations <= 128);
                 let written = phase(&fixture, corpus, clients, operations, id, operation);
                 // Bound retained verification metadata to first/last acknowledged
                 // pages per phase; all foreground reads verify their full payload.
@@ -272,7 +314,37 @@ fn run(corpora: &[usize], concurrency: &[usize], operations: usize) {
 
 #[test]
 fn star_corpus_workload_verifies_durable_reads_writes_and_appends() {
-    run(&[8, 256], &[1, 2], 4);
+    for enabled in [false, true] {
+        run_with_group_commit(&[8, 256], &[1, 2], 4, enabled);
+    }
+}
+
+#[test]
+#[ignore = "explicit local paired journal synchronization measurement"]
+fn measure_star_shared_sync_at_growing_corpora() {
+    for (round, corpora) in [
+        [1024, 8192, 32768],
+        [32768, 1024, 8192],
+        [8192, 32768, 1024],
+    ]
+    .iter()
+    .enumerate()
+    {
+        for &corpus in corpora {
+            let case = [1024, 8192, 32768]
+                .iter()
+                .position(|value| *value == corpus)
+                .unwrap();
+            let modes = if (round + case) % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            };
+            for enabled in modes {
+                run_with_group_commit(&[corpus], &[1, 32], 128, enabled);
+            }
+        }
+    }
 }
 
 #[test]
@@ -285,5 +357,28 @@ fn measure_star_reads_writes_and_appends_as_corpus_grows() {
         [8192, 32768, 1024],
     ] {
         run(&corpora, &[1, 8, 32], 128);
+    }
+}
+
+#[test]
+#[ignore = "explicit local sustained paired read measurement"]
+fn measure_star_sustained_reads_with_shared_sync() {
+    for round in 0..3 {
+        let corpora = if round % 2 == 0 {
+            [1024, 32768]
+        } else {
+            [32768, 1024]
+        };
+        for corpus in corpora {
+            let rank = usize::from(corpus == 32768);
+            let modes = if (round + rank) % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            };
+            for enabled in modes {
+                run_workload(&[corpus], &[1, 32], 8192, enabled, &[Operation::Read]);
+            }
+        }
     }
 }

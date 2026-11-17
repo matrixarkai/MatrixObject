@@ -23,13 +23,13 @@
 //! read cache are all unchanged, which is the point: what moved is where the state lives,
 //! not what it is.
 //!
-//! # ONE LOCK, AND WHY THAT IS NOT A LIMITATION HERE
+//! # SERIAL MUTATION AND DURABLE COMPLETION
 //!
-//! The replica sits behind a `Mutex`, so concurrent connections to one node serialise. For
-//! this shape that costs nothing worth recovering: a replica node's work per request is a
-//! `BTreeMap` lookup and a `copy_from_slice`, and the coordinator fanning out to it makes
-//! one call at a time per page anyway. Accept threads still earn their keep -- they stop one
-//! slow client from making the node look dead to the others.
+//! One service lock protects mutation, accounting and the durable completion point.
+//! Journal-backed standalone nodes can share a journal synchronization across
+//! requests already offered by bounded executors. Readers and repair cannot see
+//! those mutations before synchronization finishes. Checkpoints and general
+//! mutation shapes can still hold this lock for work proportional to stored data.
 //!
 //! # IT IS UNAUTHENTICATED, AND THE DEFAULT BIND SAYS SO
 //!
@@ -49,6 +49,9 @@ use super::replica_journal::ReplicaJournal;
 use crate::cluster::message::{encode_reply, ReplicaReply, ReplicaRequest};
 use crate::cluster::wire::{RequestCode, StatusCode, MAX_PAYLOAD_BYTES};
 use crate::{MatrixReplicaService, ObjectError};
+
+#[path = "star_group_commit.rs"]
+mod star_group_commit;
 
 #[cfg(feature = "meta-server")]
 #[path = "server_heartbeat.rs"]
@@ -87,6 +90,10 @@ pub struct ReplicaNodeOptions {
     /// callers. Configured replicated Star deployments can use peer repair instead;
     /// changing this does not change journal sync, checksums or client write quorum.
     pub local_recovery_sidecar: bool,
+    /// Share journal synchronization across already waiting standalone mutations.
+    /// Defaults to true; no deliberate batch-fill delay. Ignored without a local
+    /// journal and for Raft groups. Every successful reply still follows sync.
+    pub journal_group_commit: bool,
     /// Largest payload this node will read from a frame.
     ///
     /// A length field arrives before the bytes it describes, so this is the bound on what
@@ -115,6 +122,7 @@ impl Default for ReplicaNodeOptions {
             tls: None,
             maintenance: false,
             local_recovery_sidecar: true,
+            journal_group_commit: true,
             max_payload_bytes: MAX_PAYLOAD_BYTES,
             capacity_bytes: 256 * 1024 * 1024,
             max_pages: 65_536,
@@ -139,6 +147,7 @@ struct NodeCounters {
 /// A bound listener and the one replica behind it.
 pub struct ReplicaNodeServer {
     listener: TcpListener,
+    has_local_journal: bool,
     replica: Arc<Mutex<NodeReplica>>,
     options: ReplicaNodeOptions,
     counters: Arc<NodeCounters>,
@@ -233,6 +242,7 @@ impl ReplicaNodeServer {
         listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
+            has_local_journal: path.is_some(),
             replica: Arc::new(Mutex::new(NodeReplica {
                 used_bytes: service.physical_bytes(),
                 service,
@@ -325,6 +335,14 @@ impl ReplicaNodeServer {
                     "fenced heartbeat placement ID is required only for dynamic chunk consensus"));
             }
         }
+        #[cfg(feature = "chunk-consensus")]
+        let standalone = self.consensus.is_none();
+        #[cfg(not(feature = "chunk-consensus"))]
+        let standalone = true;
+        let group_commit = if standalone && self.options.journal_group_commit && self.has_local_journal
+        {
+            Some(star_group_commit::Committer::start(Arc::clone(&self.replica), self.options.max_payload_bytes)?)
+        } else { None };
         let worker_threads = self.options.worker_threads.max(1);
         let dispatch = super::connections::Dispatch::new(worker_threads, 128);
         let mut handles = Vec::with_capacity(worker_threads);
@@ -335,6 +353,7 @@ impl ReplicaNodeServer {
             let counters = Arc::clone(&self.counters);
             let stop = Arc::clone(&self.stop);
             let options = self.options.clone();
+            let group_commit = group_commit.clone();
             #[cfg(feature = "chunk-consensus")]
             let consensus = self.consensus.clone();
             handles.push(std::thread::spawn(move || {
@@ -345,6 +364,7 @@ impl ReplicaNodeServer {
                     stop,
                     options,
                     dispatch,
+                    group_commit,
                     #[cfg(feature = "chunk-consensus")]
                     consensus,
                 );
@@ -397,6 +417,7 @@ fn accept_loop(
     stop: Arc<ServerShutdown>,
     options: ReplicaNodeOptions,
     dispatch: super::connections::Dispatch,
+    group_commit: Option<Arc<star_group_commit::Committer>>,
     #[cfg(feature = "chunk-consensus")] consensus: Option<Arc<consensus::ChunkConsensus>>,
 ) {
     super::connections::accept_loop(
@@ -410,6 +431,7 @@ fn accept_loop(
                 &replica,
                 &counters,
                 &options,
+                group_commit.as_deref(),
                 #[cfg(feature = "chunk-consensus")]
                 consensus.as_deref(),
             )
@@ -431,6 +453,7 @@ fn frame_response(
     replica: &Arc<Mutex<NodeReplica>>,
     counters: &Arc<NodeCounters>,
     options: &ReplicaNodeOptions,
+    group_commit: Option<&star_group_commit::Committer>,
     #[cfg(feature = "chunk-consensus")] consensus: Option<&consensus::ChunkConsensus>,
 ) -> Vec<u8> {
     let encode_failure = |status, message: &str| {
@@ -450,6 +473,9 @@ fn frame_response(
                 encode_failure(StatusCode::for_error(&err), &err.to_string())
             }
             Ok(request) => {
+                let result = if let Some(committer) = group_commit.filter(|_| star_group_commit::eligible(&request)) {
+                    committer.request(request, payload.len())
+                } else {
                 #[cfg(feature = "chunk-consensus")]
                 let result = match request {
                     ReplicaRequest::ConditionalWriteLimits => {
@@ -530,6 +556,8 @@ fn frame_response(
                     }
                     request => apply(replica, request, options.max_payload_bytes),
                 };
+                    result
+                };
                 match result.and_then(|reply| {
                     crate::cluster::message::check_reply_size(
                         reply.payload_len(),
@@ -562,9 +590,19 @@ fn apply_batch(
                 .to_string(),
         )
     })?;
+    let result = apply_batch_locked(&mut guard, writes, max_payload_bytes);
+    finish_deferred_journal(&mut guard)?;
+    result
+}
+
+fn apply_batch_locked(
+    guard: &mut NodeReplica,
+    writes: Vec<super::message::ConditionalChunkWrite>,
+    max_payload_bytes: usize,
+) -> Result<ReplicaReply, ObjectError> {
     for write in writes {
         if let Err(error) = apply_locked(
-            &mut guard,
+            guard,
             ReplicaRequest::WriteChunkIfSequence {
                 page_id: write.page_id,
                 offset: write.offset,
@@ -574,11 +612,9 @@ fn apply_batch(
             max_payload_bytes,
             false,
         ) {
-            finish_deferred_journal(&mut guard)?;
             return Err(error);
         }
     }
-    finish_deferred_journal(&mut guard)?;
     Ok(ReplicaReply::Applied)
 }
 
@@ -596,10 +632,20 @@ fn apply_batch_digests(
                 .to_string(),
         )
     })?;
+    let result = apply_batch_digests_locked(&mut guard, writes, max_payload_bytes);
+    finish_deferred_journal(&mut guard)?;
+    result
+}
+
+fn apply_batch_digests_locked(
+    guard: &mut NodeReplica,
+    writes: Vec<super::message::ConditionalChunkWrite>,
+    max_payload_bytes: usize,
+) -> Result<ReplicaReply, ObjectError> {
     let mut digests = Vec::with_capacity(writes.len());
     for write in writes {
         let reply = match apply_locked(
-            &mut guard,
+            guard,
             ReplicaRequest::WriteChunkIfSequenceDigest {
                 page_id: write.page_id,
                 offset: write.offset,
@@ -611,7 +657,6 @@ fn apply_batch_digests(
         ) {
             Ok(reply) => reply,
             Err(error) => {
-                finish_deferred_journal(&mut guard)?;
                 return Err(error);
             }
         };
@@ -622,18 +667,19 @@ fn apply_batch_digests(
                 sha256,
             } => digests.push((write_sequence, length, sha256)),
             other => {
-                finish_deferred_journal(&mut guard)?;
                 return Err(ObjectError::Corruption(format!(
                     "unexpected conditional write digest reply: {other:?}"
                 )))
             }
         }
     }
-    finish_deferred_journal(&mut guard)?;
     Ok(ReplicaReply::Digests(digests))
 }
 
 fn finish_deferred_journal(guard: &mut NodeReplica) -> Result<(), ObjectError> {
+    if guard.failed {
+        return Err(ObjectError::Corruption("replica failed before journal synchronization; restart required".into()));
+    }
     let Some(journal) = guard.journal.as_mut() else {
         return Ok(());
     };

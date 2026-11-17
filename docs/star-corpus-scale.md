@@ -74,6 +74,7 @@ when its fixture ends, including failure cleanup.
 ## Output and correctness checks
 
 Each `STAR_CORPUS` row reports operation, background pages and payload bytes,
+the `group_commit` setting,
 actual stored-page count before timing, clients, completed operations, replication
 thresholds, phase elapsed time, QPS, p50/p95/p99 operation latency, aggregate
 data-process CPU ticks and aggregate growth of the three data journals.
@@ -117,6 +118,85 @@ The earlier XOR-profile run had different recovery work and higher contention.
 These runs do not isolate the append optimization's contribution or establish
 flat tail latency. Growing read working sets and independent journal syncs still
 need separate profiling; checkpoints and repair interference remain unmeasured.
+
+## Paired journal synchronization sweep
+
+[Shared Star journal synchronization](star-journal-synchronization.md) adds an
+explicit on/off control. The paired release workload uses the same executable,
+peer-recovery profile, worker count and `N=3, W=3, R=1` for both modes:
+
+```sh
+cargo test --locked --release --all-features --test network_metadata_consensus \
+  measure_star_shared_sync_at_growing_corpora -j1 \
+  -- --ignored --test-threads=1 --nocapture
+```
+
+It rotates the three corpus sizes across three repetitions and reverses each
+corpus's first mode between repetitions. Each mode starts fresh metadata and data
+processes and runs 1/32 clients with 128 operations per client. The 18 fixtures
+produce 108 phases, 228,096 checked operations and 18 full-cluster restart checks.
+The ordinary correctness test also runs both modes. Compare matching modes and
+corpus sizes; inspect host load and variability before attributing a difference
+to journal synchronization. Reads and mutations remain separate timed phases.
+
+### Sustained read measurement
+
+The short sweep uses only 128 reads per client. Use the sustained read workload
+when investigating smaller read-throughput differences:
+
+```sh
+cargo test --locked --release --all-features --test network_metadata_consensus \
+  measure_star_sustained_reads_with_shared_sync -j1 \
+  -- --ignored --test-threads=1 --nocapture
+```
+
+It performs 8,192 verified reads per client at 1,024 and 32,768 background pages,
+with 1 and 32 clients, three repetitions and alternating mode order. Twelve fresh
+fixtures produce 24 phases, 3,244,032 checked reads and 12 full-cluster restart
+checks. Read working sets grow with the corpus; this is not a fixed-hot-set test.
+
+Phase timing ends after every client completes its operations. Client connections
+remain alive until elapsed time, data-process CPU and journal sizes are sampled;
+connection teardown, thread joins and percentile aggregation follow measurement.
+RPC latency samples cover each operation, including response validation. CPU
+ticks cover the three data processes; client CPU is not included.
+
+### Completed paired measurements
+
+The idle-executor implementation at source `5c94b8b` passed the 108-phase paired
+release sweep in 1,015.91 seconds. Journal growth was identical for each matched
+mode pair. At 32 clients, medians across three repetitions were:
+
+| Background pages | Append QPS, individual sync | Append QPS, shared sync | Append phase p99, individual/shared (ms) |
+|---|---:|---:|---:|
+| 1,024 | 190.38 | 326.54 | 369.860 / 192.114 |
+| 8,192 | 247.87 | 370.14 | 404.853 / 159.915 |
+| 32,768 | 265.68 | 395.40 | 422.394 / 142.660 |
+
+These short phases included client cleanup in QPS timing. They showed higher
+append throughput, but not universal latency improvement: fresh-write phase p99
+at 32 clients worsened at 1,024 and 32,768 pages, and short read results were
+mixed. The host was shared with other workloads, with load averages 5.95–15.65.
+
+Source `a10ec8d`, rebased onto `59255ae`, passed the sustained-read workload in
+258.59 seconds: all 24 phases, 3,244,032 checked reads and 12 full-cluster restart
+checks. Every read phase added zero journal bytes. Load averages were 4.36–15.41.
+For each corpus/client count, compare corresponding enabled/disabled phases
+within a repetition, then take the median of the three ratios:
+
+| Background pages | Clients | Median paired QPS ratio | Paired QPS ratio range | Median paired phase p99 ratio |
+|---|---:|---:|---:|---:|
+| 1,024 | 1 | 1.001 | 0.850–1.092 | 0.923 |
+| 1,024 | 32 | 1.048 | 0.779–1.133 | 0.938 |
+| 32,768 | 1 | 0.999 | 0.945–1.083 | 1.001 |
+| 32,768 | 32 | 0.979 | 0.852–1.374 | 1.038 |
+
+A ratio above one means higher QPS or higher latency respectively. These paired
+results do not establish a read-throughput improvement or a consistent large
+read regression. Variability remains substantial, especially at 32 clients.
+Keep the per-repetition results rather than dividing separately computed medians.
+Neither measurement establishes flat latency under checkpoints, repair, larger
+corpora or end-to-end owned-object operations.
 
 ## Interpretation and remaining measurements
 

@@ -3,13 +3,13 @@
 use super::*;
 use crate::{ChunkId, PageId};
 
-struct Fixture {
-    node: Arc<Mutex<NodeReplica>>,
+pub(super) struct Fixture {
+    pub(super) node: Arc<Mutex<NodeReplica>>,
     directory: std::path::PathBuf,
-    path: std::path::PathBuf,
+    pub(super) path: std::path::PathBuf,
 }
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let directory = std::env::temp_dir().join(format!(
             "append-outcomes-{}-{}",
             std::process::id(),
@@ -40,7 +40,7 @@ impl Fixture {
             path,
         }
     }
-    fn request(&self, request: ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
+    pub(super) fn request(&self, request: ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
         apply(&self.node, request, MAX_PAYLOAD_BYTES)
     }
     fn length(&self) -> u64 {
@@ -52,7 +52,7 @@ impl Drop for Fixture {
         let _ = std::fs::remove_dir_all(&self.directory);
     }
 }
-fn page() -> PageId {
+pub(super) fn page() -> PageId {
     PageId {
         chunk_id: ChunkId::new(1, 2).unwrap(),
         page_index: 0,
