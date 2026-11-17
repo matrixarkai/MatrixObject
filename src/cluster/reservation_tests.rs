@@ -216,7 +216,7 @@ fn reserved_allocations_chain_through_many_appends_and_survive_a_snapshot() {
 }
 
 #[test]
-fn publishing_and_reserving_fits_where_a_separate_allocation_no_longer_does() {
+fn a_full_table_still_takes_a_publication_and_frees_its_slot() {
     use crate::staged_allocation::StagedAllocationRequest;
     let (mut service, groups, command) = reserving_fixture();
     let allocate = |service: &mut MatrixMetaService, key: &str| -> Result<(), ObjectError> {
@@ -244,6 +244,68 @@ fn publishing_and_reserving_fits_where_a_separate_allocation_no_longer_does() {
     assert!(allocate(&mut service, "one-too-many").is_err(), "the table is full");
     let (outcome, _) =
         super::super::staged_allocation_commands::prepare_at(&service, &groups, &command, 8192, 1500).unwrap();
+    // At a full table the append is published without a reservation, so the slot its consumed
+    // allocation held is free for another object.
+    assert!(outcome.reserved.is_none());
     outcome.apply(&mut service).unwrap();
-    assert!(allocate(&mut service, "still-full").is_err(), "one consumed, one created: still full");
+    allocate(&mut service, "fits-now").unwrap();
+    assert!(allocate(&mut service, "full-again").is_err(), "the freed slot is the only one");
+}
+
+/// Fill the table with allocations for other objects until it holds `total`.
+fn fill_table_to(service: &mut MatrixMetaService, groups: &ChunkGroupCatalog, total: usize) {
+    use crate::staged_allocation::StagedAllocationRequest;
+    let mut index = 0;
+    while service.object_manifests.staged_count() < total {
+        let create = StagedAllocationRequest {
+            version: 2,
+            action: 1,
+            page_count: 1,
+            ttl_ms: 60_000,
+            bucket: "bucket".into(),
+            key: format!("other-{index}"),
+            ..Default::default()
+        };
+        index += 1;
+        let (outcome, _) =
+            super::super::staged_allocation_commands::prepare_at(service, groups, &create, 8192, 1500).unwrap();
+        outcome.apply(service).unwrap();
+    }
+}
+
+#[test]
+fn a_publication_reserves_only_while_the_table_has_room_for_other_objects() {
+    use crate::staged_allocation::{MAX_STAGED_ALLOCATIONS, MAX_STAGED_FOR_RESERVATION};
+    // At the limit the publication still reserves.
+    let (mut service, groups, command) = reserving_fixture();
+    fill_table_to(&mut service, &groups, MAX_STAGED_FOR_RESERVATION);
+    let (outcome, reply) =
+        super::super::staged_allocation_commands::prepare_at(&service, &groups, &command, 8192, 1500).unwrap();
+    assert!(outcome.reserved.is_some());
+    let MetaReply::StagedAllocation(reply) = reply else { panic!() };
+    assert!(reply.allocation.is_some());
+    // One past it the append is published and nothing is reserved: the allocation it consumed
+    // is the only change to the table, so the table keeps room for other objects.
+    let (mut service, groups, command) = reserving_fixture();
+    fill_table_to(&mut service, &groups, MAX_STAGED_FOR_RESERVATION + 1);
+    let held = service.object_manifests.staged_count();
+    let (outcome, reply) =
+        super::super::staged_allocation_commands::prepare_at(&service, &groups, &command, 8192, 1500).unwrap();
+    assert!(outcome.reserved.is_none(), "no reservation past the limit");
+    assert!(outcome.manifest_append.is_some(), "the append is still published");
+    let MetaReply::StagedAllocation(reply) = reply else { panic!() };
+    assert_eq!(reply.version, 5);
+    assert!(reply.allocation.is_none());
+    assert_eq!(
+        crate::staged_allocation::StagedAllocationReply::from_payload(&reply.encode_to_vec()).unwrap(),
+        reply,
+        "a reply without a reservation is a valid acknowledgement"
+    );
+    outcome.apply(&mut service).unwrap();
+    assert_eq!(service.object_manifests.staged_count(), held - 1);
+    let published = service.object_manifests.get(&crate::ObjectId::new("bucket", "append")).unwrap();
+    assert_eq!(published.generation, 2);
+    // A table filled by reservations leaves room: even a full-size table is never what a
+    // reservation fills, so another object's allocation is not refused for want of a slot.
+    assert!(MAX_STAGED_FOR_RESERVATION + 1 < MAX_STAGED_ALLOCATIONS);
 }

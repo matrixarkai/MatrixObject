@@ -8,6 +8,12 @@ use crate::{
 use prost::Message;
 
 pub(crate) const MAX_STAGED_ALLOCATIONS: usize = 128;
+/// A publication reserves the next allocation only while the table holds at most this many.
+/// Each object that keeps a reservation holds one table slot until its lease ends, so without
+/// a limit the objects of a busy store would fill the table and refuse the allocation of the
+/// next new one. Above it a publication carries no reservation and the next append allocates
+/// as it did before reservations existed.
+pub(crate) const MAX_STAGED_FOR_RESERVATION: usize = MAX_STAGED_ALLOCATIONS / 2;
 pub(crate) const POSITION_CONSUMED: &str = "prepared allocation position is consumed or retired";
 
 /// Admission of this attempt does not establish the result of an earlier attempt.
@@ -349,11 +355,14 @@ impl StagedAllocationReply {
         let value: Self = decode(bytes, 1024 * 1024 + 8192)?;
         if value.version == 5 {
             if value.committed_allocation_id == 0 || value.manifest_sha256.len() != 32
-                || value.allocation.is_none() || value.manifest.is_some() || !value.allocation_ids.is_empty()
+                || value.manifest.is_some() || !value.allocation_ids.is_empty()
                 || value.has_more || value.publication_fence != 0 || value.allocation_cursor != 0 {
                 return Err(invalid("invalid compact append reservation acknowledgement"));
             }
-            value.allocation.as_ref().unwrap().validate()?;
+            // No allocation: the append was published and the table had no room to reserve.
+            if let Some(allocation) = &value.allocation {
+                allocation.validate()?;
+            }
             return Ok(value);
         }
         if value.version == 3 {
