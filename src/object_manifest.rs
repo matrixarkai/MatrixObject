@@ -3,9 +3,34 @@
 //! Binary object extents and conditional publication state. Node wiring is separate.
 use crate::{ChunkId, ObjectError, ObjectId};
 use prost::Message;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 const MAX_MANIFEST: usize = 1024 * 1024;
+
+/// A multiply-and-rotate hasher for the page-uniqueness sets in manifest validation. The keys
+/// are small and bounded (at most 4096 per manifest), nothing is stored or sent from it, and
+/// the default hasher's resistance to crafted collisions is not worth its cost here: a
+/// pathological set costs at most 4096 squared comparisons.
+#[derive(Default)]
+struct PageHasher(u64);
+impl std::hash::Hasher for PageHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = 0u64;
+            for (index, byte) in chunk.iter().enumerate() {
+                word |= u64::from(*byte) << (8 * index);
+            }
+            self.write_u64(word ^ ((chunk.len() as u64) << 56));
+        }
+    }
+    fn write_u64(&mut self, value: u64) {
+        self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+type PageSet<K> = std::collections::HashSet<K, std::hash::BuildHasherDefault<PageHasher>>;
 const MAX_SNAPSHOT: usize = 64 * 1024 * 1024;
 const MAX_OBJECTS: usize = 100_000;
 
@@ -90,11 +115,26 @@ pub struct ObjectManifest {
 fn invalid(message: &str) -> ObjectError {
     ObjectError::Corruption(message.into())
 }
+#[cfg(test)]
+thread_local! {
+    static VALIDATE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+/// Full manifest validations on this thread since the last reset (tests only).
+#[cfg(all(test, feature = "metadata-consensus"))]
+pub(crate) fn validate_calls() -> usize {
+    VALIDATE_CALLS.with(|calls| calls.get())
+}
+#[cfg(all(test, feature = "metadata-consensus"))]
+pub(crate) fn reset_validate_calls() {
+    VALIDATE_CALLS.with(|calls| calls.set(0));
+}
 impl ObjectManifest {
     pub fn object_id(&self) -> ObjectId {
         ObjectId::new(self.bucket.clone(), self.key.clone())
     }
     pub fn validate(&self) -> Result<(), ObjectError> {
+        #[cfg(test)]
+        VALIDATE_CALLS.with(|calls| calls.set(calls.get() + 1));
         crate::validate_bucket(&self.bucket)?;
         crate::validate_key(&self.key)?;
         if !(1..=2).contains(&self.format_version)
@@ -110,7 +150,7 @@ impl ObjectManifest {
             return Err(invalid("deleted object manifest contains data"));
         }
         let mut offset = 0u64;
-        let mut pages = BTreeSet::new();
+        let mut pages = PageSet::with_capacity_and_hasher(self.extents.len(), Default::default());
         for extent in &self.extents {
             ChunkId::new(extent.volume_id, extent.chunk_id)?;
             if extent.group.is_empty()
@@ -145,6 +185,123 @@ impl ObjectManifest {
         }
         if offset != self.length {
             return Err(invalid("object extents do not cover its length"));
+        }
+        Ok(())
+    }
+    /// Validate `self` where the first `prefix.extents.len()` extents are exactly those of
+    /// `prefix`, which the caller has already validated. Only what the append added is checked
+    /// in full: the header, the new extents, their continuity with the prefix, and that none
+    /// of their pages is already named by the prefix. Equivalent to `validate` for such a pair.
+    pub(crate) fn validate_extension(&self, prefix: &ObjectManifest) -> Result<(), ObjectError> {
+        crate::validate_bucket(&self.bucket)?;
+        crate::validate_key(&self.key)?;
+        let kept = prefix.extents.len();
+        if !(1..=2).contains(&self.format_version)
+            || self.format_version != prefix.format_version
+            || self.generation == 0
+            || self.extents.len() > 4096
+            || self.extents.len() < kept
+            || self.encoded_len() > MAX_MANIFEST
+        {
+            return Err(invalid(
+                "invalid object manifest version, generation or size",
+            ));
+        }
+        if self.deleted && (self.length != 0 || !self.extents.is_empty()) {
+            return Err(invalid("deleted object manifest contains data"));
+        }
+        let suffix = &self.extents[kept..];
+        let mut offset = prefix.length;
+        for extent in suffix {
+            ChunkId::new(extent.volume_id, extent.chunk_id)?;
+            if extent.group.is_empty()
+                || extent.group.len() > 128
+                || !extent
+                    .group
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+                || extent.length == 0
+                || extent.write_sequence == 0
+                || (self.format_version == 1 && !extent.data_sha256.is_empty())
+                || (self.format_version == 2 && extent.data_sha256.len() != 32)
+                || extent.object_offset != offset
+                || extent
+                    .page_offset
+                    .checked_add(extent.length)
+                    .map_or(true, |n| n > 256 * 1024 * 1024)
+            {
+                return Err(invalid(
+                    "invalid object extent ordering, identity or bounds",
+                ));
+            }
+            offset = offset
+                .checked_add(extent.length)
+                .ok_or_else(|| invalid("object length overflow"))?;
+        }
+        if offset != self.length {
+            return Err(invalid("object extents do not cover its length"));
+        }
+        // A page may be named once: among the new extents, and against the prefix.
+        let same_page = |a: &ObjectExtent, b: &ObjectExtent| {
+            a.chunk_id == b.chunk_id
+                && a.page_index == b.page_index
+                && a.volume_id == b.volume_id
+                && a.group == b.group
+        };
+        if suffix.len() <= 16 {
+            for (index, extent) in suffix.iter().enumerate() {
+                if suffix[..index].iter().any(|other| same_page(extent, other))
+                    || prefix.extents.iter().any(|other| same_page(extent, other))
+                {
+                    return Err(invalid(
+                        "invalid object extent ordering, identity or bounds",
+                    ));
+                }
+            }
+        } else {
+            let mut pages = PageSet::with_capacity_and_hasher(self.extents.len(), Default::default());
+            for extent in &self.extents {
+                if !pages.insert((&extent.group, extent.volume_id, extent.chunk_id, extent.page_index)) {
+                    return Err(invalid(
+                        "invalid object extent ordering, identity or bounds",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+    /// Validate `self` when its extents are exactly the first extents of `after`, which the
+    /// caller has validated. Every per-extent rule then already holds for `self` (it is a prefix
+    /// of a valid extent list), so only the header and the covered length are left to check.
+    /// Equivalent to `validate` for such a pair.
+    pub(crate) fn validate_as_prefix_of(&self, after: &ObjectManifest) -> Result<(), ObjectError> {
+        crate::validate_bucket(&self.bucket)?;
+        crate::validate_key(&self.key)?;
+        let kept = self.extents.len();
+        if !(1..=2).contains(&self.format_version)
+            || self.generation == 0
+            || kept > 4096
+            || kept > after.extents.len()
+        {
+            return Err(invalid(
+                "invalid object manifest version, generation or size",
+            ));
+        }
+        if self.deleted && (self.length != 0 || !self.extents.is_empty()) {
+            return Err(invalid("deleted object manifest contains data"));
+        }
+        let covered = if kept == after.extents.len() {
+            after.length
+        } else {
+            after.extents[kept].object_offset
+        };
+        if covered != self.length {
+            return Err(invalid("object extents do not cover its length"));
+        }
+        if self.encoded_len() > MAX_MANIFEST {
+            return Err(invalid(
+                "invalid object manifest version, generation or size",
+            ));
         }
         Ok(())
     }
@@ -191,7 +348,11 @@ impl ManifestOutcome {
             .ok_or_else(|| invalid("manifest outcome has no resulting state"))?;
         after.validate()?;
         let generation = if let Some(before) = &self.before {
-            before.validate()?;
+            if before.format_version == after.format_version && after.extents.starts_with(&before.extents) {
+                before.validate_as_prefix_of(after)?;
+            } else {
+                before.validate()?;
+            }
             if before.object_id() != after.object_id() {
                 return Err(invalid("manifest outcome changes object identity"));
             }
@@ -231,15 +392,39 @@ pub struct ManifestCatalog {
     revision: u128,
 }
 /// Immutable catalog value shared by snapshots and speculative undo.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct ManifestEntry {
     manifest: ObjectManifest,
     encoded_bytes: usize,
+    /// The hash chain over the manifest's extents and the manifest digest built from it,
+    /// computed on first use or carried forward from the previous entry by an append. The
+    /// entry is immutable and every change to an object builds a new entry, so the digest
+    /// cannot outlive the value it describes. Not part of an entry's identity.
+    digest: std::sync::OnceLock<StoredDigest>,
 }
+/// The chain over a stored manifest's extents and the digest of the manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StoredDigest {
+    pub(crate) chain: crate::manifest_chain::ChainState,
+    pub(crate) digest: Vec<u8>,
+}
+impl StoredDigest {
+    pub(crate) fn of(manifest: &ObjectManifest) -> Self {
+        let chain = crate::manifest_chain::ChainState::of(&manifest.extents);
+        let digest = chain.digest(manifest);
+        Self { chain, digest }
+    }
+}
+impl PartialEq for ManifestEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.manifest == other.manifest && self.encoded_bytes == other.encoded_bytes
+    }
+}
+impl Eq for ManifestEntry {}
 impl ManifestEntry {
     fn new(manifest: ObjectManifest) -> Self {
         let encoded_bytes = entry_size(&manifest);
-        Self { manifest, encoded_bytes }
+        Self { manifest, encoded_bytes, digest: std::sync::OnceLock::new() }
     }
 }
 impl std::ops::Deref for ManifestEntry {
@@ -620,6 +805,14 @@ impl ManifestCatalog {
     pub fn get(&self, id: &ObjectId) -> Option<&ObjectManifest> {
         self.objects.get(id).map(|entry| &entry.manifest)
     }
+    /// The stored manifest, which was validated when it was stored, and its chain and digest,
+    /// computed once per stored value (an append carries them forward from the entry it
+    /// replaces).
+    pub(crate) fn get_with_digest(&self, id: &ObjectId) -> Result<Option<(&ObjectManifest, &StoredDigest)>, ObjectError> {
+        let Some(entry) = self.objects.get(id) else { return Ok(None) };
+        let digest = entry.digest.get_or_init(|| StoredDigest::of(&entry.manifest));
+        Ok(Some((&entry.manifest, digest)))
+    }
     #[cfg(feature = "metadata-consensus")]
     pub(crate) fn entry_arc(&self, id: &ObjectId) -> Option<Arc<ManifestEntry>> {
         self.objects.get(id).cloned()
@@ -635,6 +828,12 @@ impl ManifestCatalog {
         &self, outcome: &ManifestOutcome, allocation_id: Option<u64>, source: Option<&crate::manifest_copy::LiveCopySource>,
     ) -> Result<Option<usize>, ObjectError> {
         outcome.validate()?;
+        self.check_validated_outcome_with_admission(outcome, allocation_id, source)
+    }
+    /// `check_outcome_with_admission` for an outcome the caller has validated in full.
+    pub(crate) fn check_validated_outcome_with_admission(
+        &self, outcome: &ManifestOutcome, allocation_id: Option<u64>, source: Option<&crate::manifest_copy::LiveCopySource>,
+    ) -> Result<Option<usize>, ObjectError> {
         let after = outcome.after.as_ref().unwrap();
         let id = after.object_id();
         let current = self.get(&id);
@@ -693,7 +892,28 @@ impl ManifestCatalog {
         let id = after.object_id();
         let old_bytes = self.objects.get(&id).map_or(0, |entry| entry.encoded_bytes);
         let encoded_bytes = body_bytes - (self.body_bytes - old_bytes);
-        self.objects.insert(id, Arc::new(ManifestEntry { manifest: after.clone(), encoded_bytes }));
+        // An append keeps every extent of the entry it replaces: its chain and digest are
+        // the old chain extended by the new extents, not a pass over all of them.
+        let digest = std::sync::OnceLock::new();
+        if let Some(previous) = self.objects.get(&id) {
+            let kept = previous.manifest.extents.len();
+            if let Some(stored) = previous.digest.get() {
+                if after.extents.len() >= kept && after.extents[..kept] == previous.manifest.extents[..] {
+                    let chain = stored.chain.extended(&after.extents[kept..]);
+                    let seeded = StoredDigest { digest: chain.digest(after), chain };
+                    #[cfg(test)]
+                    crate::manifest_chain::uncounted(|| {
+                        assert_eq!(seeded, StoredDigest::of(after), "a carried-forward digest differs from a fresh one")
+                    });
+                    let _ = digest.set(seeded);
+                }
+            }
+        }
+        self.objects.insert(id, Arc::new(ManifestEntry {
+            manifest: after.clone(),
+            encoded_bytes,
+            digest,
+        }));
         self.revision += 1;
         self.body_bytes = body_bytes;
     }
@@ -808,6 +1028,253 @@ fn unframe<T: Message + Default>(
 mod tests {
     use super::*;
     include!("manifest_catalog_sharing_tests.rs");
+    fn sized_manifest(count: usize) -> ObjectManifest {
+        ObjectManifest {
+            format_version: 2,
+            bucket: "bucket".into(),
+            key: "key".into(),
+            generation: 1,
+            length: count as u64,
+            extents: (0..count)
+                .map(|index| ObjectExtent {
+                    group: "group".into(),
+                    chunk_id: index as u64 + 1,
+                    object_offset: index as u64,
+                    length: 1,
+                    write_sequence: 1,
+                    data_sha256: vec![1; 32],
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+    /// What `ManifestOutcome::validate` decided before prior manifests were validated as
+    /// prefixes: both manifests in full.
+    fn full_outcome_validation(outcome: &ManifestOutcome) -> bool {
+        if outcome.format_version != 1 {
+            return false;
+        }
+        let Some(after) = &outcome.after else { return false };
+        if after.validate().is_err() {
+            return false;
+        }
+        let generation = if let Some(before) = &outcome.before {
+            if before.validate().is_err() || before.object_id() != after.object_id() {
+                return false;
+            }
+            match before.generation.checked_add(1) {
+                Some(value) => value,
+                None => return false,
+            }
+        } else {
+            1
+        };
+        after.generation == generation
+    }
+    #[test]
+    fn a_stored_manifest_digest_always_describes_the_stored_manifest() {
+        let digest = |m: &ObjectManifest| crate::read_session_outcome::manifest_sha256(m).unwrap();
+        let mut catalog = ManifestCatalog::default();
+        let first = sized_manifest(3);
+        catalog.apply(&ManifestOutcome::decide(None, first.clone()).unwrap()).unwrap();
+        let id = first.object_id();
+        let check = |catalog: &ManifestCatalog, expected: &ObjectManifest| {
+            for _ in 0..2 {
+                let (stored, cached) = catalog.get_with_digest(&id).unwrap().unwrap();
+                assert_eq!(stored, expected);
+                assert_eq!(cached.digest, digest(expected));
+                assert_eq!(cached.chain, crate::manifest_chain::ChainState::of(&expected.extents));
+            }
+        };
+        check(&catalog, &first);
+        // an append, a replacement with the same extent count, a tombstone, a recreation
+        let mut appended = sized_manifest(4);
+        appended.generation = 2;
+        catalog.apply(&ManifestOutcome::decide(Some(first.clone()), appended.clone()).unwrap()).unwrap();
+        check(&catalog, &appended);
+        assert_ne!(digest(&first), digest(&appended));
+        let mut replaced = sized_manifest(4);
+        replaced.generation = 3;
+        replaced.extents[3].data_sha256 = vec![77; 32];
+        catalog.apply(&ManifestOutcome::decide(Some(appended.clone()), replaced.clone()).unwrap()).unwrap();
+        check(&catalog, &replaced);
+        assert_ne!(digest(&appended), digest(&replaced));
+        let tombstone = ObjectManifest { generation: 4, deleted: true, ..sized_manifest(0) };
+        catalog.apply(&ManifestOutcome::decide(Some(replaced), tombstone.clone()).unwrap()).unwrap();
+        check(&catalog, &tombstone);
+        let mut recreated = sized_manifest(2);
+        recreated.generation = 5;
+        catalog.apply(&ManifestOutcome::decide(Some(tombstone), recreated.clone()).unwrap()).unwrap();
+        check(&catalog, &recreated);
+        // a restored catalog computes its own
+        let restored = ManifestCatalog::from_bytes(&catalog.to_bytes().unwrap()).unwrap();
+        let (_, cached) = restored.get_with_digest(&id).unwrap().unwrap();
+        assert_eq!(cached.digest, digest(&recreated));
+        assert_eq!(*cached, StoredDigest::of(&recreated));
+        // a missing object has none
+        assert!(catalog.get_with_digest(&ObjectManifest { key: "absent".into(), ..sized_manifest(0) }.object_id()).unwrap().is_none());
+    }
+    #[test]
+    fn replaying_appends_reproduces_the_chain_the_running_catalog_carried_forward() {
+        let id = sized_manifest(1).object_id();
+        let mut live = ManifestCatalog::default();
+        let mut replayed = ManifestCatalog::default();
+        let mut outcomes = Vec::new();
+        let mut current = sized_manifest(1);
+        outcomes.push(ManifestOutcome::decide(None, current.clone()).unwrap());
+        for step in 0..150usize {
+            let mut next = current.clone();
+            next.generation += 1;
+            next.extents.push(ObjectExtent {
+                group: "group".into(),
+                chunk_id: 1_000 + step as u64,
+                object_offset: next.length,
+                length: 1,
+                write_sequence: 1,
+                data_sha256: vec![(step % 251) as u8; 32],
+                ..Default::default()
+            });
+            next.length += 1;
+            outcomes.push(ManifestOutcome::decide(Some(current), next.clone()).unwrap());
+            current = next;
+        }
+        for outcome in &outcomes {
+            live.apply(outcome).unwrap();
+            // materialise the digest after every step so the next append carries it forward
+            let (stored, digest) = live.get_with_digest(&id).unwrap().unwrap();
+            assert_eq!(digest.chain.count(), stored.extents.len());
+        }
+        // a replica replaying the same outcomes without reading digests in between
+        for outcome in &outcomes {
+            replayed.apply(outcome).unwrap();
+        }
+        let (final_live, carried) = live.get_with_digest(&id).unwrap().unwrap();
+        let (final_replayed, recomputed) = replayed.get_with_digest(&id).unwrap().unwrap();
+        assert_eq!(final_live, final_replayed);
+        assert_eq!(carried, recomputed);
+        assert_eq!(*carried, StoredDigest::of(final_live));
+        // and a catalog restored from a snapshot computes the same
+        let restored = ManifestCatalog::from_bytes(&live.to_bytes().unwrap()).unwrap();
+        assert_eq!(restored.get_with_digest(&id).unwrap().unwrap().1, carried);
+    }
+    #[test]
+    fn outcome_validation_agrees_with_validating_both_manifests_in_full() {
+        let mut checked = 0;
+        for count in [0usize, 1, 2, 40] {
+            for added in [1usize, 3] {
+                let before = sized_manifest(count);
+                let mut after = sized_manifest(count + added);
+                after.generation = 2;
+                for extent in &mut after.extents[count..] {
+                    extent.chunk_id += 10_000;
+                }
+                let changes: Vec<(&str, Box<dyn Fn(&mut ObjectManifest, &mut ObjectManifest)>)> = vec![
+                    ("none", Box::new(|_, _| {})),
+                    ("before length", Box::new(|b, _| b.length += 1)),
+                    ("before length down", Box::new(|b, _| b.length = b.length.saturating_sub(1))),
+                    ("before generation zero", Box::new(|b, _| b.generation = 0)),
+                    ("before generation max", Box::new(|b, _| b.generation = u64::MAX)),
+                    ("before deleted", Box::new(|b, _| b.deleted = true)),
+                    ("before bucket", Box::new(|b, _| b.bucket = "other".into())),
+                    ("before key", Box::new(|b, _| b.key = "bad key ".into())),
+                    ("before version", Box::new(|b, _| b.format_version = 3)),
+                    ("before version one", Box::new(|b, _| b.format_version = 1)),
+                    ("before extent", Box::new(|b, _| if let Some(e) = b.extents.last_mut() { e.length += 1 })),
+                    ("before drops an extent", Box::new(|b, _| { b.extents.pop(); })),
+                    ("after generation", Box::new(|_, a| a.generation = 5)),
+                    ("after length", Box::new(|_, a| a.length += 1)),
+                    ("after prefix extent", Box::new(|_, a| if let Some(e) = a.extents.first_mut() { e.data_sha256[0] ^= 1 })),
+                    ("after duplicate page", Box::new(move |_, a| {
+                        let last = a.extents.len() - 1;
+                        a.extents[last].chunk_id = a.extents[0].chunk_id;
+                    })),
+                ];
+                for (name, change) in changes {
+                    let (mut b, mut a) = (before.clone(), after.clone());
+                    change(&mut b, &mut a);
+                    let outcome = ManifestOutcome { format_version: 1, before: Some(b), after: Some(a) };
+                    assert_eq!(
+                        outcome.validate().is_ok(),
+                        full_outcome_validation(&outcome),
+                        "{name} ({count}+{added})"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100);
+    }
+    #[test]
+    fn the_page_hasher_spreads_sequential_pages_and_validation_still_refuses_repeats() {
+        use std::hash::BuildHasher;
+        let build = std::hash::BuildHasherDefault::<PageHasher>::default();
+        let hashes: std::collections::HashSet<u64> = (0..4096u64)
+            .map(|index| build.hash_one(("group-a", 0u64, index + 1, 0u64)))
+            .collect();
+        assert!(hashes.len() >= 4090, "only {} distinct hashes for 4096 pages", hashes.len());
+        let largest = sized_manifest(4096);
+        assert!(largest.validate().is_ok());
+        for position in [1usize, 17, 2047, 4095] {
+            let mut repeated = sized_manifest(4096);
+            let first = repeated.extents[0].clone();
+            repeated.extents[position].chunk_id = first.chunk_id;
+            repeated.extents[position].page_index = first.page_index;
+            assert!(repeated.validate().is_err(), "repeat at {position}");
+        }
+    }
+    #[test]
+    fn extension_validation_agrees_with_full_validation() {
+        for count in [0usize, 1, 17, 300, 4000] {
+            let before = sized_manifest(count);
+            assert!(before.validate().is_ok());
+            for added in [1usize, 2, 16, 17, 60] {
+                if count + added > 4096 {
+                    continue;
+                }
+                let mut after = sized_manifest(count + added);
+                after.generation = 2;
+                for extent in &mut after.extents[count..] {
+                    extent.chunk_id += 10_000;
+                }
+                assert!(after.validate().is_ok());
+                assert!(after.validate_extension(&before).is_ok(), "{count}+{added}");
+                let damage: Vec<(&str, Box<dyn Fn(&mut ObjectManifest)>)> = vec![
+                    ("offset", Box::new(move |m| m.extents[count].object_offset += 1)),
+                    ("zero length", Box::new(move |m| m.extents[count].length = 0)),
+                    ("digest length", Box::new(move |m| { m.extents[count].data_sha256.pop(); })),
+                    ("sequence", Box::new(move |m| m.extents[count].write_sequence = 0)),
+                    ("total length", Box::new(|m| m.length += 1)),
+                    ("generation", Box::new(|m| m.generation = 0)),
+                    ("group name", Box::new(move |m| m.extents[count].group = "bad group".into())),
+                    ("duplicate inside the append", Box::new(move |m| {
+                        let first = m.extents[count].clone();
+                        let last = m.extents.len() - 1;
+                        m.extents[last].chunk_id = first.chunk_id;
+                        m.extents[last].page_index = first.page_index;
+                    })),
+                    ("duplicate of a prefix page", Box::new(move |m| {
+                        if count > 0 {
+                            m.extents[count].chunk_id = m.extents[0].chunk_id;
+                        } else {
+                            m.extents[count].length = 0;
+                        }
+                    })),
+                ];
+                for (name, change) in damage {
+                    let mut wrong = after.clone();
+                    change(&mut wrong);
+                    if added == 1 && name == "duplicate inside the append" {
+                        continue; // one new extent cannot repeat itself
+                    }
+                    let full = wrong.validate().is_err();
+                    let incremental = wrong.validate_extension(&before).is_err();
+                    assert!(full, "{name} must be refused by full validation ({count}+{added})");
+                    assert_eq!(full, incremental, "{name} ({count}+{added})");
+                }
+            }
+        }
+    }
     #[test]
     fn manifest_listing_is_bounded_ordered_and_bucket_scoped() {
         let mut catalog = ManifestCatalog::default();

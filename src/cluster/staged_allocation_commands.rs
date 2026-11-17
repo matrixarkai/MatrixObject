@@ -103,15 +103,21 @@ pub(super) fn prepare_at(service: &MatrixMetaService, groups: &ChunkGroupCatalog
                     ObjectError::PreconditionFailed("staged allocation is no longer active".into())
                 })?;
             let manifest = if let Some(append) = &command.manifest_append {
-                let current = service.object_manifests.get(&crate::ObjectId::new(append.bucket.clone(), append.key.clone()))
+                let (current, stored) = service.object_manifests.get_with_digest(&crate::ObjectId::new(append.bucket.clone(), append.key.clone()))?
                     .ok_or_else(|| ObjectError::PreconditionFailed("compact append prior manifest missing".into()))?;
-                append.expand(current)?
+                append.expand_stored(current, stored)?
             } else { command.outcome.clone().unwrap() };
             if allocation.expires_at_ms != 0 && (now == 0 || now >= allocation.expires_at_ms) {
                 return Err(ObjectError::PreconditionFailed("staged allocation lease expired".into()));
             }
-            allocation.check_publication(&manifest)?;
-            groups.check_manifest(&manifest)?;
+            if let Some(append) = &command.manifest_append {
+                // `expand_stored` validated what the append adds against the stored manifest.
+                allocation.check_publication_validated(&manifest)?;
+                groups.check_extents(&append.suffix)?;
+            } else {
+                allocation.check_publication(&manifest)?;
+                groups.check_manifest(&manifest)?;
+            }
             if let Some(append) = &command.manifest_append {
                 outcome = PlacementOutcome::publish_staged_append(service, manifest,
                     command.update_time_ms, allocation, append.clone())?;

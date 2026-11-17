@@ -71,7 +71,7 @@ the measured workload the metadata plane wrote about 1.5 KB per write instead of
 134 KB, at the price of one more metadata commit per append (higher sync write latency).
 Requirements:
 
-* Every metadata voter and journal reader must support the version 11 outcome; downgrading
+* Every metadata voter and journal reader must support the version 12 outcome; downgrading
   after use is unsupported.
 * It turns on the durable publication fence the first time it is used. The fence is
   cluster-wide and permanent, and from then on the plain publish path is refused for EVERY

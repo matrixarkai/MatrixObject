@@ -2,10 +2,7 @@
 // Copyright 2026 MatrixArkAI
 //! Compact decisions bind immutable manifests without embedding their extent lists.
 use crate::{object_manifest::ObjectManifest, ObjectError};
-use prost::{
-    bytes::{buf::UninitSlice, BufMut},
-    Message,
-};
+use prost::Message;
 
 #[derive(Clone, PartialEq, Eq, Message)]
 pub struct ReadSessionOpen {
@@ -55,58 +52,17 @@ fn invalid(message: &str) -> ObjectError {
     ObjectError::Corruption(message.into())
 }
 
-struct DigestSink {
-    context: ring::digest::Context,
-    scratch: [u8; 32],
-    written: usize,
-}
-// SAFETY: chunk_mut exposes an initialized buffer. advance_mut checks that
-// the entire advanced prefix fits that buffer before hashing it. put_slice
-// consumes its input directly; no pointer or uninitialized byte is retained.
-unsafe impl BufMut for DigestSink {
-    fn remaining_mut(&self) -> usize {
-        usize::MAX - self.written
-    }
-    fn chunk_mut(&mut self) -> &mut UninitSlice {
-        let available = self.scratch.len().min(self.remaining_mut());
-        UninitSlice::new(&mut self.scratch[..available])
-    }
-    unsafe fn advance_mut(&mut self, count: usize) {
-        assert!(count <= self.scratch.len());
-        assert!(count <= self.remaining_mut());
-        self.context.update(&self.scratch[..count]);
-        self.written = self
-            .written
-            .checked_add(count)
-            .expect("manifest digest length");
-    }
-    fn put_slice(&mut self, bytes: &[u8]) {
-        assert!(bytes.len() <= self.remaining_mut());
-        self.context.update(bytes);
-        self.written = self
-            .written
-            .checked_add(bytes.len())
-            .expect("manifest digest length");
-    }
-}
+/// The digest that binds a manifest: the hash chain over its extents (`manifest_chain`).
 pub(crate) fn manifest_sha256(manifest: &ObjectManifest) -> Result<Vec<u8>, ObjectError> {
-    let mut sink = DigestSink {
-        context: ring::digest::Context::new(&ring::digest::SHA256),
-        scratch: [0; 32],
-        written: 0,
-    };
-    manifest
-        .encode(&mut sink)
-        .map_err(|_| invalid("manifest digest encoding failed"))?;
-    Ok(sink.context.finish().as_ref().to_vec())
+    Ok(crate::manifest_chain::manifest_digest(manifest))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn compact_read_session_hash_matches_protobuf_bytes_at_wire_boundaries() {
-        // The witness is durable; its protobuf interpretation must stay stable.
+    fn compact_read_session_hash_is_the_pinned_chained_digest_at_wire_boundaries() {
+        // The witness is durable; the digest definition must stay stable.
         let first = crate::object_manifest::ObjectExtent {
             group: "g".into(),
             volume_id: 2,
@@ -141,7 +97,7 @@ mod tests {
             .collect();
         assert_eq!(
             digest,
-            "e63b1fa312d4b400aa116295e19a96fcefb0830dff763672288af68bcd4cacb3"
+            "20882c514505c6fe174adb56c5a3efbe4f73cf97786c755276bc46c6af4bf219"
         );
         for generation in [1, 127, 128, 16383, 16384, u64::MAX] {
             for count in [0, 1, 127, 128, 4096] {
@@ -168,7 +124,7 @@ mod tests {
                 manifest.validate().unwrap();
                 assert_eq!(
                     manifest_sha256(&manifest).unwrap(),
-                    ring::digest::digest(&ring::digest::SHA256, &manifest.encode_to_vec()).as_ref()
+                    crate::manifest_chain::manifest_digest(&manifest)
                 );
             }
         }

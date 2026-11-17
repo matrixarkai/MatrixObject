@@ -143,6 +143,20 @@ pub(super) fn project_star_health(
 impl ChunkGroupCatalog {
     pub(super) fn check_manifest(&self, outcome: &crate::object_manifest::ManifestOutcome) -> Result<(), ObjectError> {
         outcome.validate()?;
+        self.check_manifest_validated(outcome)
+    }
+    /// Every one of `extents` names a configured chunk group. An append checks the extents it
+    /// adds; the extents already stored were checked when they were published.
+    pub(super) fn check_extents(&self, extents: &[crate::object_manifest::ObjectExtent]) -> Result<(), ObjectError> {
+        for extent in extents {
+            if !self.groups.contains_key(&extent.group) {
+                return Err(invalid("manifest names an unconfigured chunk group"));
+            }
+        }
+        Ok(())
+    }
+    /// `check_manifest` for an outcome the caller has just validated in full.
+    pub(super) fn check_manifest_validated(&self, outcome: &crate::object_manifest::ManifestOutcome) -> Result<(), ObjectError> {
         for manifest in outcome.before.iter().chain(outcome.after.iter()) {
             for extent in &manifest.extents {
                 if !self.groups.contains_key(&extent.group) {

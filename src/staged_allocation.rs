@@ -93,6 +93,11 @@ impl StagedAllocation {
     pub(crate) fn check_publication(&self, outcome: &ManifestOutcome) -> Result<(), ObjectError> {
         self.validate()?;
         outcome.validate()?;
+        self.check_publication_validated(outcome)
+    }
+    /// `check_publication` for an outcome the caller has just validated in full.
+    pub(crate) fn check_publication_validated(&self, outcome: &ManifestOutcome) -> Result<(), ObjectError> {
+        self.validate()?;
         let after = outcome.after.as_ref().unwrap();
         if after.deleted
             || after.format_version != 2
