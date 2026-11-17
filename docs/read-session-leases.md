@@ -58,7 +58,7 @@ started before activation and upgrade all reader clients before any future
 reclamation rollout. This only protects supported SDK data-read methods; raw
 manifest retrieval and direct data-node reads do not acquire sessions.
 
-Automatic grants bind the selected canonical manifest's SHA-256 and return a
+Automatic grants bind the selected manifest's chain digest and return a
 compact acknowledgement. Metadata request version 3 action 8 adds digest field 10;
 reply version 4 carries handle ID, absolute deadline, relative lease window and
 digest field 8, with no retained manifest. Generation and digest must match the
@@ -112,7 +112,7 @@ zero preserves permanent retention. Version-3 replies carry a relative lease
 window. Version-2 replies acknowledge renewal with only ID and deadline.
 
 Creation uses binary protobuf placement outcome version 9 and field 12. It binds
-the handle ID, object name, generation, deadline and SHA-256 of the canonical
+the handle ID, object name, generation, deadline and chain digest of the canonical
 manifest protobuf. Replay verifies the current generation and digest before
 retaining its manifest. Removal uses version 10 and field 13, binding the immutable
 handle ID and exact prior deadline. A stale removal cannot erase a renewal.

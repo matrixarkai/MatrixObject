@@ -169,7 +169,7 @@ metadata WALs grew by 1,816,467 bytes. Full manifests in publication, its reply
 and planning explain that original amplification cost. Opt-in compact publication
 now reduces those last-case publication and WAL counts to 190 and 2,283 bytes,
 respectively, with the same suffix data-journal cost. It requires all metadata
-voters and journal readers to support the version 11 outcome before use.
+voters and journal readers to support the version 12 outcome before use.
 The compact append helper also uses digest-bound planning, removing the prefix
 extent list from planning replies. Prefix hashing and catalog copies remain
 proportional to the prefix. The protocol includes ownership/CAS guards,

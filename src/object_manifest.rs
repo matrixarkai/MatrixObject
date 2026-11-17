@@ -396,10 +396,24 @@ pub struct ManifestCatalog {
 pub(crate) struct ManifestEntry {
     manifest: ObjectManifest,
     encoded_bytes: usize,
-    /// SHA-256 of the manifest's protobuf encoding, computed on first use. The entry is
-    /// immutable and every change to an object builds a new entry, so the digest cannot
-    /// outlive the value it describes. Not part of an entry's identity.
-    digest: std::sync::OnceLock<Vec<u8>>,
+    /// The hash chain over the manifest's extents and the manifest digest built from it,
+    /// computed on first use or carried forward from the previous entry by an append. The
+    /// entry is immutable and every change to an object builds a new entry, so the digest
+    /// cannot outlive the value it describes. Not part of an entry's identity.
+    digest: std::sync::OnceLock<StoredDigest>,
+}
+/// The chain over a stored manifest's extents and the digest of the manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StoredDigest {
+    pub(crate) chain: crate::manifest_chain::ChainState,
+    pub(crate) digest: Vec<u8>,
+}
+impl StoredDigest {
+    pub(crate) fn of(manifest: &ObjectManifest) -> Self {
+        let chain = crate::manifest_chain::ChainState::of(&manifest.extents);
+        let digest = chain.digest(manifest);
+        Self { chain, digest }
+    }
 }
 impl PartialEq for ManifestEntry {
     fn eq(&self, other: &Self) -> bool {
@@ -791,17 +805,13 @@ impl ManifestCatalog {
     pub fn get(&self, id: &ObjectId) -> Option<&ObjectManifest> {
         self.objects.get(id).map(|entry| &entry.manifest)
     }
-    /// The stored manifest and its SHA-256 digest, computed once per stored value.
-    pub(crate) fn get_with_digest(&self, id: &ObjectId) -> Result<Option<(&ObjectManifest, &[u8])>, ObjectError> {
+    /// The stored manifest, which was validated when it was stored, and its chain and digest,
+    /// computed once per stored value (an append carries them forward from the entry it
+    /// replaces).
+    pub(crate) fn get_with_digest(&self, id: &ObjectId) -> Result<Option<(&ObjectManifest, &StoredDigest)>, ObjectError> {
         let Some(entry) = self.objects.get(id) else { return Ok(None) };
-        let digest = match entry.digest.get() {
-            Some(digest) => digest,
-            None => {
-                let computed = crate::read_session_outcome::manifest_sha256(&entry.manifest)?;
-                entry.digest.get_or_init(|| computed)
-            }
-        };
-        Ok(Some((&entry.manifest, digest.as_slice())))
+        let digest = entry.digest.get_or_init(|| StoredDigest::of(&entry.manifest));
+        Ok(Some((&entry.manifest, digest)))
     }
     #[cfg(feature = "metadata-consensus")]
     pub(crate) fn entry_arc(&self, id: &ObjectId) -> Option<Arc<ManifestEntry>> {
@@ -818,6 +828,12 @@ impl ManifestCatalog {
         &self, outcome: &ManifestOutcome, allocation_id: Option<u64>, source: Option<&crate::manifest_copy::LiveCopySource>,
     ) -> Result<Option<usize>, ObjectError> {
         outcome.validate()?;
+        self.check_validated_outcome_with_admission(outcome, allocation_id, source)
+    }
+    /// `check_outcome_with_admission` for an outcome the caller has validated in full.
+    pub(crate) fn check_validated_outcome_with_admission(
+        &self, outcome: &ManifestOutcome, allocation_id: Option<u64>, source: Option<&crate::manifest_copy::LiveCopySource>,
+    ) -> Result<Option<usize>, ObjectError> {
         let after = outcome.after.as_ref().unwrap();
         let id = after.object_id();
         let current = self.get(&id);
@@ -876,10 +892,25 @@ impl ManifestCatalog {
         let id = after.object_id();
         let old_bytes = self.objects.get(&id).map_or(0, |entry| entry.encoded_bytes);
         let encoded_bytes = body_bytes - (self.body_bytes - old_bytes);
+        // An append keeps every extent of the entry it replaces: its chain and digest are
+        // the old chain extended by the new extents, not a pass over all of them.
+        let digest = std::sync::OnceLock::new();
+        if let Some(previous) = self.objects.get(&id) {
+            let kept = previous.manifest.extents.len();
+            if let Some(stored) = previous.digest.get() {
+                if after.extents.len() >= kept && after.extents[..kept] == previous.manifest.extents[..] {
+                    let chain = stored.chain.extended(&after.extents[kept..]);
+                    let seeded = StoredDigest { digest: chain.digest(after), chain };
+                    #[cfg(test)]
+                    assert_eq!(seeded, StoredDigest::of(after), "a carried-forward digest differs from a fresh one");
+                    let _ = digest.set(seeded);
+                }
+            }
+        }
         self.objects.insert(id, Arc::new(ManifestEntry {
             manifest: after.clone(),
             encoded_bytes,
-            digest: std::sync::OnceLock::new(),
+            digest,
         }));
         self.revision += 1;
         self.body_bytes = body_bytes;
@@ -1050,7 +1081,8 @@ mod tests {
             for _ in 0..2 {
                 let (stored, cached) = catalog.get_with_digest(&id).unwrap().unwrap();
                 assert_eq!(stored, expected);
-                assert_eq!(cached, digest(expected).as_slice());
+                assert_eq!(cached.digest, digest(expected));
+                assert_eq!(cached.chain, crate::manifest_chain::ChainState::of(&expected.extents));
             }
         };
         check(&catalog, &first);
@@ -1076,9 +1108,53 @@ mod tests {
         // a restored catalog computes its own
         let restored = ManifestCatalog::from_bytes(&catalog.to_bytes().unwrap()).unwrap();
         let (_, cached) = restored.get_with_digest(&id).unwrap().unwrap();
-        assert_eq!(cached, digest(&recreated).as_slice());
+        assert_eq!(cached.digest, digest(&recreated));
+        assert_eq!(*cached, StoredDigest::of(&recreated));
         // a missing object has none
         assert!(catalog.get_with_digest(&ObjectManifest { key: "absent".into(), ..sized_manifest(0) }.object_id()).unwrap().is_none());
+    }
+    #[test]
+    fn replaying_appends_reproduces_the_chain_the_live_catalog_carried_forward() {
+        let id = sized_manifest(1).object_id();
+        let mut live = ManifestCatalog::default();
+        let mut replayed = ManifestCatalog::default();
+        let mut outcomes = Vec::new();
+        let mut current = sized_manifest(1);
+        outcomes.push(ManifestOutcome::decide(None, current.clone()).unwrap());
+        for step in 0..150usize {
+            let mut next = current.clone();
+            next.generation += 1;
+            next.extents.push(ObjectExtent {
+                group: "group".into(),
+                chunk_id: 1_000 + step as u64,
+                object_offset: next.length,
+                length: 1,
+                write_sequence: 1,
+                data_sha256: vec![(step % 251) as u8; 32],
+                ..Default::default()
+            });
+            next.length += 1;
+            outcomes.push(ManifestOutcome::decide(Some(current), next.clone()).unwrap());
+            current = next;
+        }
+        for outcome in &outcomes {
+            live.apply(outcome).unwrap();
+            // materialise the digest after every step so the next append carries it forward
+            let (stored, digest) = live.get_with_digest(&id).unwrap().unwrap();
+            assert_eq!(digest.chain.count(), stored.extents.len());
+        }
+        // a replica replaying the same outcomes without reading digests in between
+        for outcome in &outcomes {
+            replayed.apply(outcome).unwrap();
+        }
+        let (final_live, carried) = live.get_with_digest(&id).unwrap().unwrap();
+        let (final_replayed, recomputed) = replayed.get_with_digest(&id).unwrap().unwrap();
+        assert_eq!(final_live, final_replayed);
+        assert_eq!(carried, recomputed);
+        assert_eq!(*carried, StoredDigest::of(final_live));
+        // and a catalog restored from a snapshot computes the same
+        let restored = ManifestCatalog::from_bytes(&live.to_bytes().unwrap()).unwrap();
+        assert_eq!(restored.get_with_digest(&id).unwrap().unwrap().1, carried);
     }
     #[test]
     fn outcome_validation_agrees_with_validating_both_manifests_in_full() {

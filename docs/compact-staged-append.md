@@ -9,14 +9,14 @@ methods keep their existing protocol.
 Upgrade **every metadata voter, recovery binary and journal reader** before
 calling either method. The opt-in request is opcode 93, version 4, action 11.
 Its acknowledgement is version 3 and contains only the committed allocation ID
-and resulting manifest SHA-256. The durable binary protobuf placement outcome
-uses version 11 and field 14. An older reader cannot replay this outcome;
+and resulting manifest digest (the extent hash chain, `docs/manifest-chain-digest.md`). The durable binary protobuf placement outcome
+uses version 12 and field 14. An older reader cannot replay this outcome;
 downgrading after activation is unsupported. There is no automatic fallback to
 full publication and no automatic replay after an uncertain response.
 
 The decision contains the exact prior generation, length, extent count and
-canonical manifest SHA-256, the immutable suffix, and the resulting length and
-SHA-256. Publication requires live staged ownership, the unchanged prefix,
+manifest chain digest, the immutable suffix, and the resulting length and
+chain digest. Publication requires live staged ownership, the unchanged prefix,
 fresh pages in the owned namespace, a live lease, configured groups and the
 existing capacity and publication-fence checks. The allocation is consumed
 atomically with publication. Replay checks the recorded decision against the

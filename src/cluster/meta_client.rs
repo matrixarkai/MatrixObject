@@ -109,7 +109,7 @@ impl MetaCallOutcome {
 /// because the metaserver checks both digests against what it stores.
 #[derive(Debug, Default)]
 pub(crate) struct ManifestDigestMemo {
-    entry: Option<(DigestKey, Vec<u8>)>,
+    entry: Option<(DigestKey, crate::object_manifest::StoredDigest)>,
 }
 #[derive(Debug, PartialEq, Eq)]
 struct DigestKey {
@@ -139,12 +139,12 @@ impl DigestKey {
     }
 }
 impl ManifestDigestMemo {
-    pub(crate) fn lookup(&self, manifest: &crate::object_manifest::ObjectManifest) -> Option<Vec<u8>> {
-        let (key, digest) = self.entry.as_ref()?;
-        (*key == DigestKey::of(manifest)).then(|| digest.clone())
+    pub(crate) fn lookup(&self, manifest: &crate::object_manifest::ObjectManifest) -> Option<crate::object_manifest::StoredDigest> {
+        let (key, stored) = self.entry.as_ref()?;
+        (*key == DigestKey::of(manifest)).then(|| stored.clone())
     }
-    pub(crate) fn remember(&mut self, manifest: &crate::object_manifest::ObjectManifest, digest: Vec<u8>) {
-        self.entry = Some((DigestKey::of(manifest), digest));
+    pub(crate) fn remember(&mut self, manifest: &crate::object_manifest::ObjectManifest, stored: crate::object_manifest::StoredDigest) {
+        self.entry = Some((DigestKey::of(manifest), stored));
     }
 }
 
@@ -1824,21 +1824,38 @@ impl RemoteMetaClient {
         outcome.validate()?;
         let before = outcome.before.as_ref()
             .ok_or_else(|| ObjectError::Corruption("append requires a prior manifest".into()))?;
-        let before_sha256 = self.manifest_digest(before)?;
-        let after_sha256 = self.manifest_digest(outcome.after.as_ref().unwrap())?;
-        crate::manifest_append::ManifestAppend::decide_with_digests(outcome, before_sha256, after_sha256)
+        let after = outcome.after.as_ref().unwrap();
+        let prior = self.manifest_stored_digest(before);
+        // The chain of the result is the prior chain extended by the new extents when the
+        // result keeps every prior extent; otherwise `decide_with_digests` refuses it.
+        let chain = if after.extents.starts_with(&before.extents) {
+            prior.chain.extended(&after.extents[before.extents.len()..])
+        } else {
+            crate::manifest_chain::ChainState::of(&after.extents)
+        };
+        let result = crate::object_manifest::StoredDigest { digest: chain.digest(after), chain };
+        let append = crate::manifest_append::ManifestAppend::decide_with_digests(
+            outcome, prior.digest, result.digest.clone())?;
+        self.manifest_digests.remember(after, result);
+        Ok(append)
     }
 
     /// SHA-256 of the manifest's encoding, reusing the last one computed when it was for this
     /// very manifest.
     pub(super) fn manifest_digest(&mut self, manifest: &crate::object_manifest::ObjectManifest)
         -> Result<Vec<u8>, ObjectError> {
-        if let Some(digest) = self.manifest_digests.lookup(manifest) {
-            return Ok(digest);
+        Ok(self.manifest_stored_digest(manifest).digest)
+    }
+
+    /// The chain and digest of `manifest`, from the memo when it is for this very manifest.
+    fn manifest_stored_digest(&mut self, manifest: &crate::object_manifest::ObjectManifest)
+        -> crate::object_manifest::StoredDigest {
+        if let Some(stored) = self.manifest_digests.lookup(manifest) {
+            return stored;
         }
-        let digest = crate::read_session_outcome::manifest_sha256(manifest)?;
-        self.manifest_digests.remember(manifest, digest.clone());
-        Ok(digest)
+        let stored = crate::object_manifest::StoredDigest::of(manifest);
+        self.manifest_digests.remember(manifest, stored.clone());
+        stored
     }
 
     pub(super) fn publish_compact_append_preserving_outcome(&mut self,
@@ -3008,7 +3025,7 @@ include!("meta_client_read_sessions.rs");
 #[cfg(test)]
 mod digest_memo_tests {
     use super::ManifestDigestMemo;
-    use crate::object_manifest::{ObjectExtent, ObjectManifest};
+    use crate::object_manifest::{ObjectExtent, ObjectManifest, StoredDigest};
 
     fn manifest(generation: u64, extents: usize) -> ObjectManifest {
         ObjectManifest {
@@ -3040,9 +3057,9 @@ mod digest_memo_tests {
         let mut memo = ManifestDigestMemo::default();
         let base = manifest(3, 5);
         assert!(memo.lookup(&base).is_none());
-        memo.remember(&base, digest(&base));
-        assert_eq!(memo.lookup(&base), Some(digest(&base)));
-        assert_eq!(memo.lookup(&base.clone()), Some(digest(&base)));
+        memo.remember(&base, StoredDigest::of(&base));
+        assert_eq!(memo.lookup(&base).map(|stored| stored.digest), Some(digest(&base)));
+        assert_eq!(memo.lookup(&base.clone()).map(|stored| stored.digest), Some(digest(&base)));
         let mut other = Vec::new();
         other.push(manifest(4, 5));
         other.push(manifest(3, 6));
@@ -3071,8 +3088,8 @@ mod digest_memo_tests {
             assert!(memo.lookup(changed).is_none(), "variant {index} must not hit");
         }
         // remembering another replaces the first
-        memo.remember(&other[0], digest(&other[0]));
+        memo.remember(&other[0], StoredDigest::of(&other[0]));
         assert!(memo.lookup(&base).is_none());
-        assert_eq!(memo.lookup(&other[0]), Some(digest(&other[0])));
+        assert_eq!(memo.lookup(&other[0]).map(|stored| stored.digest), Some(digest(&other[0])));
     }
 }

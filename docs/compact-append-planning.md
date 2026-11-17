@@ -3,7 +3,7 @@
 `RemoteMetaClient::plan_append_routes_compact` selects placement against an
 exact live immutable manifest. `append_staged_object_compact` now uses it before
 writing suffix pages. The request binds bucket, key, generation and canonical
-manifest SHA-256. The metadata server checks the borrowed current manifest at a
+manifest chain digest. The metadata server checks the borrowed current manifest at a
 current-term quorum read barrier, then returns the plan, selected identity and
 routes. Neither direction carries the prefix extent list.
 
@@ -16,7 +16,7 @@ selected group and current membership fence before data access. Group count
 selects placement groups; it does not change a Star group's replication thresholds.
 
 Upgrade metadata voters before calling the new planner. The compact append
-helper already requires version 11 publication support; it now also requires
+helper already requires version 12 publication support; it now also requires
 opcode 95. Unsupported peers are refused without a full-manifest fallback.
 Existing ordinary planning and write methods retain their existing protocols.
 Planning is read-only and may retry across metadata leader changes. It grants

@@ -169,13 +169,18 @@ fn matches_manifest(placement: &PlacementValue, manifest: &ObjectManifest) -> bo
 }
 impl PlacementOutcome {
     fn validate_manifest_binding(&self) -> Result<(), ObjectError> {
+        self.validate_manifest_binding_with(false)
+    }
+    /// `manifest_validated` says the publication's manifests were validated by the caller
+    /// (the expansion of a compact append), so they are not walked again.
+    fn validate_manifest_binding_with(&self, manifest_validated: bool) -> Result<(), ObjectError> {
         if let Some(append) = &self.manifest_append {
             append.validate()?;
             let record = self.staging.as_ref().and_then(|change|
                 if change.after.is_none() { change.before.as_ref() } else { None })
                 .ok_or_else(|| invalid("compact append must consume staged ownership"))?;
             record.validate()?;
-            if self.version != 11 || self.before_index.checked_add(1) != Some(self.after_index)
+            if self.version != 12 || self.before_index.checked_add(1) != Some(self.after_index)
                 || self.manifest.is_some() || self.retention.is_some() || self.retention_deadline.is_some()
                 || self.publication_fence.is_some() || self.copy_source.is_some()
                 || self.read_session_open.is_some() || self.read_session_removal.is_some()
@@ -203,7 +208,7 @@ impl PlacementOutcome {
                 }
             }
             return Ok(());
-        } else if self.version == 11 { return Err(invalid("compact append outcome lacks suffix")); }
+        } else if self.version == 12 { return Err(invalid("compact append outcome lacks suffix")); }
         if self.read_session_open.is_some() || self.read_session_removal.is_some() {
             if self.before_index.checked_add(1) != Some(self.after_index)
                 || self.manifest.is_some() || self.retention.is_some() || self.staging.is_some()
@@ -259,7 +264,13 @@ impl PlacementOutcome {
                     before.validate()?;
                     after.validate()?;
                 }
-                (Some(record), None, Some(manifest)) if record.allocation_id <= self.before_index => record.check_publication(manifest)?,
+                (Some(record), None, Some(manifest)) if record.allocation_id <= self.before_index => {
+                    if manifest_validated {
+                        record.check_publication_validated(manifest)?
+                    } else {
+                        record.check_publication(manifest)?
+                    }
+                }
                 _ => return Err(invalid("invalid staged outcome transition")),
             }
             if self.manifest.is_none() {
@@ -282,7 +293,9 @@ impl PlacementOutcome {
         match (self.version, &self.manifest) {
             (1, None) => Ok(()),
             (2 | 4 | 6, Some(manifest)) => {
-                manifest.validate()?;
+                if !manifest_validated {
+                    manifest.validate()?;
+                }
                 if self.placements.len() != 1 {
                     return Err(invalid("manifest publication needs one placement change"));
                 }
@@ -418,14 +431,14 @@ impl PlacementOutcome {
             read_session_removal: None,
             manifest_append: None,
         };
-        outcome.validate_manifest_binding()?;
-        outcome.validate_publication(service, true)?;
+        outcome.validate_manifest_binding_with(compact_append.is_some())?;
+        outcome.validate_publication(service, true, compact_append.is_some())?;
         if let Some(append) = compact_append {
             // `validate_publication` above validated the outcome in full.
             if crate::manifest_append::ManifestAppend::decide_validated(outcome.manifest.as_ref().unwrap())? != append {
                 return Err(invalid("compact append differs from validated publication"));
             }
-            outcome.version = 11;
+            outcome.version = 12;
             outcome.manifest = None;
             outcome.manifest_append = Some(append);
             outcome.validate_manifest_binding()?;
@@ -438,15 +451,19 @@ impl PlacementOutcome {
         &self,
         service: &MatrixMetaService,
         admit: bool,
+        manifest_validated: bool,
     ) -> Result<Option<usize>, ObjectError> {
         let manifest = self.manifest.as_ref().unwrap();
         let after = manifest.after.as_ref().unwrap();
         if service.object_manifests.get(&after.object_id()) != manifest.before.as_ref() {
             return Err(invalid("manifest publication prior state mismatch"));
         }
-        let body_bytes = service.object_manifests.check_outcome_with_admission(manifest,
-            self.staging.as_ref().and_then(|change| change.before.as_ref()).map(|record| record.allocation_id),
-            self.copy_source.as_ref())?;
+        let allocation_id = self.staging.as_ref().and_then(|change| change.before.as_ref()).map(|record| record.allocation_id);
+        let body_bytes = if manifest_validated {
+            service.object_manifests.check_validated_outcome_with_admission(manifest, allocation_id, self.copy_source.as_ref())?
+        } else {
+            service.object_manifests.check_outcome_with_admission(manifest, allocation_id, self.copy_source.as_ref())?
+        };
         let change = &self.placements[0];
         if service
             .placements
@@ -620,15 +637,20 @@ impl PlacementOutcome {
         Ok(outcome)
     }
     pub fn apply(&self, service: &mut MatrixMetaService) -> Result<(), ObjectError> {
-        self.validate_manifest_binding()?;
+        self.apply_with(service, false)
+    }
+    /// `manifest_validated`: the publication's manifests come from the expansion of a compact
+    /// append against the stored manifest, which validated them.
+    fn apply_with(&self, service: &mut MatrixMetaService, manifest_validated: bool) -> Result<(), ObjectError> {
+        self.validate_manifest_binding_with(manifest_validated)?;
         if let Some(append) = &self.manifest_append {
-            let (before, digest) = service.object_manifests.get_with_digest(&ObjectId::new(append.bucket.clone(), append.key.clone()))?
+            let (before, stored) = service.object_manifests.get_with_digest(&ObjectId::new(append.bucket.clone(), append.key.clone()))?
                 .ok_or_else(|| invalid("compact append prior manifest missing"))?;
             let mut expanded = self.clone();
             expanded.version = 4;
-            expanded.manifest = Some(append.expand_with_digest(before, digest)?);
+            expanded.manifest = Some(append.expand_stored(before, stored)?);
             expanded.manifest_append = None;
-            return expanded.apply(service);
+            return expanded.apply_with(service, true);
         }
         if self.before_index != service.placement_commit_index
             || !(self.before_index.checked_add(1) == Some(self.after_index)
@@ -704,7 +726,7 @@ impl PlacementOutcome {
         let read_session_removal = if let Some(removal) = &self.read_session_removal {
             Some((removal.retention_id, service.object_manifests.check_read_session_removal(removal)?))
         } else { None };
-        let publication_bytes = if self.manifest.is_some() { self.validate_publication(service, false)? } else { None };
+        let publication_bytes = if self.manifest.is_some() { self.validate_publication(service, false, manifest_validated)? } else { None };
         if let Some(staging) = &self.staging {
             service.object_manifests.apply_staging(staging)?;
         }
