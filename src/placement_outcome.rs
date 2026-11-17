@@ -944,7 +944,7 @@ impl PlacementOutcome {
         let read_session = if let Some(open) = &self.read_session_open {
             let (manifest, bytes) = service.object_manifests.check_read_session_open(open)?;
             Some((crate::manifest_retention::RetainedManifest { retention_id: open.retention_id,
-                manifest: Some(manifest.clone()), expires_at_ms: open.expires_at_ms }, bytes))
+                manifest: Some(manifest), expires_at_ms: open.expires_at_ms }, bytes))
         } else { None };
         let read_session_removal = if let Some(removal) = &self.read_session_removal {
             Some((removal.retention_id, service.object_manifests.check_read_session_removal(removal)?))

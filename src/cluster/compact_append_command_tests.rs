@@ -789,9 +789,10 @@ fn client_append_cpu_cost_at_extents() {
 /// The work of reading a range of an object with `BENCH_PREFILL` extents, without I/O, in the
 /// phases of a ranged read. `BENCH_PHASE` selects one: `server_read` (the metaserver reads the
 /// manifest and encodes its reply), `client_decode` (the client decodes the reply),
-/// `client_prepare` (the client validates the manifest, digests it for the read session, validates
-/// it again and picks the extents of a one-page range), `open_session` (the metaserver prepares
-/// the read session for the digest). `BENCH_APPENDS` repetitions.
+/// `client_prepare` (the client validates the manifest, takes its digest for the read session and
+/// picks the extents of a one-page range; with `BENCH_FIRST_READ` set it computes the digest as it
+/// must the first time it reads a generation), `open_session` (the metaserver prepares the read
+/// session for the digest). `BENCH_APPENDS` repetitions.
 #[test]
 #[ignore = "profiling aid: run under callgrind"]
 fn read_cpu_cost_at_extents() {
@@ -816,8 +817,13 @@ fn read_cpu_cost_at_extents() {
         }
         "client_prepare" => {
             manifest.validate().unwrap();
-            let sha = crate::read_session_outcome::manifest_sha256(&manifest).unwrap();
-            manifest.validate().unwrap();
+            // the session digest is the client's remembered one when it digested this manifest
+            // before, and the first read of a generation pays `manifest_sha256` once
+            let sha = if std::env::var("BENCH_FIRST_READ").is_ok() {
+                crate::read_session_outcome::manifest_sha256(&manifest).unwrap()
+            } else {
+                digest.clone()
+            };
             let picked = manifest
                 .extents
                 .iter()

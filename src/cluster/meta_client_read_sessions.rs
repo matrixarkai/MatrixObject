@@ -18,8 +18,10 @@ impl RemoteMetaClient {
         manifest: &crate::object_manifest::ObjectManifest,
         ttl_ms: u64,
     ) -> Result<u64, ObjectError> {
-        manifest.validate()?;
-        let digest = crate::read_session_outcome::manifest_sha256(manifest)?;
+        // The manifest is validated in full before any page is read from it
+        // (`read_object_from_manifest_routes`), so it is not validated a second time here; the
+        // digest is the remembered one when this client last digested this very manifest.
+        let digest = self.manifest_digest(manifest)?;
         let reply = self.retention_call(crate::manifest_retention::ManifestRetentionRequest {
             version: 3,
             action: 8,
