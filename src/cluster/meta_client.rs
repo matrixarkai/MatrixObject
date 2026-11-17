@@ -1546,6 +1546,12 @@ impl RemoteMetaClient {
         if manifest.deleted {
             return Err(ObjectError::NotFound("object is deleted".into()));
         }
+        // Log-chunk extents parse and validate, but this reader reads whole pages only.
+        if manifest.extents.iter().any(|extent| extent.kind != crate::object_manifest::EXTENT_KIND_PAGE) {
+            return Err(ObjectError::PreconditionFailed(
+                "object holds log-chunk extents this reader cannot read".into(),
+            ));
+        }
         let (range_start, range_length) = range.unwrap_or((0, manifest.length));
         let range_end = range_start.checked_add(range_length)
             .filter(|end| *end <= manifest.length)
@@ -2539,7 +2545,7 @@ mod operation_deadline_tests {
                 length: 1,
                 write_sequence: 1,
                 data_checksum: 1,
-                data_sha256: Vec::new(),
+                data_sha256: Vec::new(), ..Default::default()
             }).collect(),
             deleted: false,
         };
