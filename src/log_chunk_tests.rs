@@ -77,7 +77,11 @@ fn a_cut_at_every_byte_of_the_last_record_replays_to_the_records_before_it() {
         assert_eq!(chunk.length(), 137, "cut at byte {cut}");
         assert_eq!(chunk.read(0, 137), before_last);
         // the cut is made durable: the file is exactly the whole records
-        assert_eq!(fs::metadata(&copy).unwrap().len(), ends[1], "cut at byte {cut}");
+        assert_eq!(
+            fs::metadata(&copy).unwrap().len(),
+            ends[1],
+            "cut at byte {cut}"
+        );
     }
     // a cut exactly after the last record loses nothing
     let chunk = LogChunk::open(&path, 1, MAX).unwrap();
@@ -85,7 +89,7 @@ fn a_cut_at_every_byte_of_the_last_record_replays_to_the_records_before_it() {
 }
 
 #[test]
-fn a_header_that_is_partly_written_with_zeros_after_it_is_cut() {
+fn a_complete_damaged_header_with_zero_data_refuses_recovery() {
     let dir = Dir::new("zerotail");
     let path = dir.file("c");
     let (all, ends) = three(&path);
@@ -96,8 +100,11 @@ fn a_header_that_is_partly_written_with_zeros_after_it_is_cut() {
         *byte = 0;
     }
     fs::write(&path, &original).unwrap();
-    let chunk = LogChunk::open(&path, 1, MAX).unwrap();
-    assert_eq!(chunk.length(), 137);
+    assert!(matches!(
+        LogChunk::open(&path, 1, MAX),
+        Err(LogError::Corrupt(_))
+    ));
+    assert_eq!(fs::read(&path).unwrap(), original);
     assert!(all.len() > 137);
 }
 
@@ -108,10 +115,16 @@ fn damage_that_is_not_a_torn_tail_refuses_the_open_and_changes_nothing() {
     let (_, ends) = three(&path);
     let original = fs::read(&path).unwrap();
     let cases: Vec<(&str, usize)> = vec![
-        ("data byte of a record with records after it", LOG_HEADER_LEN + 3),
+        (
+            "data byte of a record with records after it",
+            LOG_HEADER_LEN + 3,
+        ),
         ("header byte of a record with records after it", 9),
         ("header byte of the second record", ends[0] as usize + 13),
-        ("data byte of the middle record", ends[0] as usize + LOG_HEADER_LEN + 2),
+        (
+            "data byte of the middle record",
+            ends[0] as usize + LOG_HEADER_LEN + 2,
+        ),
     ];
     for (name, at) in cases {
         let mut damaged = original.clone();
@@ -120,17 +133,28 @@ fn damage_that_is_not_a_torn_tail_refuses_the_open_and_changes_nothing() {
         fs::write(&copy, &damaged).unwrap();
         match LogChunk::open(&copy, 1, MAX) {
             Err(LogError::Corrupt(_)) => {}
-            other => panic!("{name}: expected Corrupt, got {:?}", other.map(|c| c.length())),
+            other => panic!(
+                "{name}: expected Corrupt, got {:?}",
+                other.map(|c| c.length())
+            ),
         }
-        assert_eq!(fs::read(&copy).unwrap(), damaged, "{name}: the file must not be changed");
+        assert_eq!(
+            fs::read(&copy).unwrap(),
+            damaged,
+            "{name}: the file must not be changed"
+        );
     }
-    // damaged data in the LAST record, with nothing after it, is a write that never finished
+    // A complete final record may have been acknowledged: damage must never discard it.
     let mut tail = original.clone();
     let last = tail.len() - 1;
     tail[last] ^= 0x01;
     let copy = dir.file("tail");
     fs::write(&copy, &tail).unwrap();
-    assert_eq!(LogChunk::open(&copy, 1, MAX).unwrap().length(), 137);
+    assert!(matches!(
+        LogChunk::open(&copy, 1, MAX),
+        Err(LogError::Corrupt(_))
+    ));
+    assert_eq!(fs::read(&copy).unwrap(), tail);
 }
 
 #[test]
@@ -138,13 +162,19 @@ fn a_record_of_another_generation_or_a_backwards_epoch_is_refused() {
     let dir = Dir::new("generation");
     let path = dir.file("c");
     three(&path);
-    assert!(matches!(LogChunk::open(&path, 2, MAX), Err(LogError::Corrupt(_))));
+    assert!(matches!(
+        LogChunk::open(&path, 2, MAX),
+        Err(LogError::Corrupt(_))
+    ));
     // epoch 5 then a record at epoch 3 is damage
     let path2 = dir.file("e");
     let mut chunk = LogChunk::open(&path2, 1, MAX).unwrap();
     chunk.append(5, 0, &bytes(1, 10)).unwrap();
     // the in-memory fence refuses the stale epoch, so build the bad file by hand
-    assert!(matches!(chunk.append(3, 10, &bytes(2, 10)), Err(LogError::Fenced { current: 5 })));
+    assert!(matches!(
+        chunk.append(3, 10, &bytes(2, 10)),
+        Err(LogError::Fenced { current: 5 })
+    ));
 }
 
 #[test]
@@ -204,14 +234,26 @@ fn the_reorder_window_is_bounded() {
     chunk.set_reorder_window(2, 1000);
     chunk.append(1, 100, &bytes(1, 10)).unwrap();
     chunk.append(1, 200, &bytes(1, 10)).unwrap();
-    assert!(matches!(chunk.append(1, 300, &bytes(1, 10)), Err(LogError::Window)));
+    assert!(matches!(
+        chunk.append(1, 300, &bytes(1, 10)),
+        Err(LogError::Window)
+    ));
     chunk.set_reorder_window(8, 25);
-    assert!(matches!(chunk.append(1, 300, &bytes(1, 10)), Err(LogError::Window)));
+    assert!(matches!(
+        chunk.append(1, 300, &bytes(1, 10)),
+        Err(LogError::Window)
+    ));
     // the same waiting record again is not new
     assert_eq!(chunk.append(1, 100, &bytes(1, 10)).unwrap(), 0);
     // overlapping a waiting record with another shape is refused
-    assert!(matches!(chunk.append(1, 105, &bytes(1, 10)), Err(LogError::Overlap)));
-    assert!(matches!(chunk.append(1, 95, &bytes(1, 10)), Err(LogError::Overlap)));
+    assert!(matches!(
+        chunk.append(1, 105, &bytes(1, 10)),
+        Err(LogError::Overlap)
+    ));
+    assert!(matches!(
+        chunk.append(1, 95, &bytes(1, 10)),
+        Err(LogError::Overlap)
+    ));
 }
 
 #[test]
@@ -224,7 +266,11 @@ fn a_retry_is_acknowledged_again_and_a_conflicting_rewrite_is_refused() {
     let size = fs::metadata(&path).unwrap().len();
     assert_eq!(chunk.append(1, 0, &data).unwrap(), 500);
     assert_eq!(chunk.append(1, 100, &data[100..300]).unwrap(), 500);
-    assert_eq!(fs::metadata(&path).unwrap().len(), size, "a retry writes nothing");
+    assert_eq!(
+        fs::metadata(&path).unwrap().len(),
+        size,
+        "a retry writes nothing"
+    );
     let mut other = data.clone();
     other[250] ^= 1;
     assert!(matches!(chunk.append(1, 0, &other), Err(LogError::Overlap)));
@@ -242,8 +288,14 @@ fn a_stale_writer_is_fenced_and_a_new_epoch_may_cut_the_tail() {
     let mut chunk = LogChunk::open(&path, 1, MAX).unwrap();
     chunk.append(1, 0, &bytes(1, 300)).unwrap();
     chunk.append(2, 300, &bytes(2, 100)).unwrap();
-    assert!(matches!(chunk.append(1, 400, &bytes(3, 10)), Err(LogError::Fenced { current: 2 })));
-    assert!(matches!(chunk.truncate(1, 100), Err(LogError::Fenced { current: 2 })));
+    assert!(matches!(
+        chunk.append(1, 400, &bytes(3, 10)),
+        Err(LogError::Fenced { current: 2 })
+    ));
+    assert!(matches!(
+        chunk.truncate(1, 100),
+        Err(LogError::Fenced { current: 2 })
+    ));
     // the new owner decides the tail is 350 and cuts the bytes only this replica held
     chunk.truncate(3, 350).unwrap();
     assert_eq!(chunk.length(), 350);
@@ -266,9 +318,15 @@ fn a_seal_records_the_footer_and_refuses_every_later_change() {
     let sealed = chunk.seal(1, true).unwrap();
     assert_eq!(sealed.length, 3000);
     assert_eq!(sealed.footer_crc, crc32c(&data));
-    let want: [u8; 32] = ring::digest::digest(&ring::digest::SHA256, &data).as_ref().try_into().unwrap();
+    let want: [u8; 32] = ring::digest::digest(&ring::digest::SHA256, &data)
+        .as_ref()
+        .try_into()
+        .unwrap();
     assert_eq!(sealed.sha256, Some(want));
-    assert!(matches!(chunk.append(1, 3000, &bytes(1, 1)), Err(LogError::Sealed)));
+    assert!(matches!(
+        chunk.append(1, 3000, &bytes(1, 1)),
+        Err(LogError::Sealed)
+    ));
     assert!(matches!(chunk.truncate(2, 0), Err(LogError::Sealed)));
     assert!(matches!(chunk.seal(1, false), Err(LogError::Sealed)));
     let again = LogChunk::open(&path, 1, MAX).unwrap();
@@ -280,7 +338,10 @@ fn a_seal_records_the_footer_and_refuses_every_later_change() {
     chunk.append(1, 0, &data).unwrap();
     let sealed = chunk.seal(1, false).unwrap();
     assert_eq!(sealed.sha256, None);
-    assert_eq!(LogChunk::open(&plain, 1, MAX).unwrap().sealed(), Some(&sealed));
+    assert_eq!(
+        LogChunk::open(&plain, 1, MAX).unwrap().sealed(),
+        Some(&sealed)
+    );
 }
 
 #[test]
@@ -300,7 +361,10 @@ fn a_seal_with_waiting_records_is_refused_and_a_damaged_seal_is_corruption() {
     let mut file = fs::read(&path).unwrap();
     file[LOG_HEADER_LEN + 5] ^= 1; // the append's data: its own CRC now fails, with a seal after it
     fs::write(&path, &file).unwrap();
-    assert!(matches!(LogChunk::open(&path, 1, MAX), Err(LogError::Corrupt(_))));
+    assert!(matches!(
+        LogChunk::open(&path, 1, MAX),
+        Err(LogError::Corrupt(_))
+    ));
 }
 
 #[test]
@@ -308,11 +372,23 @@ fn limits_are_enforced() {
     let dir = Dir::new("limits");
     let mut chunk = LogChunk::open(&dir.file("c"), 1, 1000).unwrap();
     assert!(matches!(chunk.append(1, 0, &[]), Err(LogError::Bounds(_))));
-    assert!(matches!(chunk.append(1, 0, &vec![0; MAX_RECORD_DATA + 1]), Err(LogError::Bounds(_))));
-    assert!(matches!(chunk.append(1, 0, &vec![0; 1001]), Err(LogError::Bounds(_))));
+    assert!(matches!(
+        chunk.append(1, 0, &vec![0; MAX_RECORD_DATA + 1]),
+        Err(LogError::Bounds(_))
+    ));
+    assert!(matches!(
+        chunk.append(1, 0, &vec![0; 1001]),
+        Err(LogError::Bounds(_))
+    ));
     chunk.append(1, 0, &bytes(1, 1000)).unwrap();
-    assert!(matches!(chunk.append(1, 1000, &bytes(1, 1)), Err(LogError::Bounds(_))));
-    assert!(matches!(LogChunk::open(&dir.file("x"), 1, 0), Err(LogError::Bounds(_))));
+    assert!(matches!(
+        chunk.append(1, 1000, &bytes(1, 1)),
+        Err(LogError::Bounds(_))
+    ));
+    assert!(matches!(
+        LogChunk::open(&dir.file("x"), 1, 0),
+        Err(LogError::Bounds(_))
+    ));
 }
 
 #[test]
@@ -327,4 +403,99 @@ fn one_commit_makes_many_records_durable() {
     assert_eq!(chunk.durable_length(), 0);
     assert_eq!(chunk.commit().unwrap(), 1000);
     assert_eq!(chunk.durable_length(), 1000);
+}
+
+#[test]
+fn complete_zero_payload_and_control_headers_are_never_removed_as_torn_tails() {
+    let dir = Dir::new("complete-controls");
+    for kind in ["append", "truncate", "seal"] {
+        let path = dir.file(kind);
+        let mut chunk = LogChunk::open(&path, 1, MAX).unwrap();
+        chunk.append(1, 0, &[0; 64]).unwrap();
+        chunk.commit().unwrap();
+        let start = fs::metadata(&path).unwrap().len() as usize;
+        match kind {
+            "append" => {
+                chunk.append(1, 64, &[0; 64]).unwrap();
+                chunk.commit().unwrap();
+            }
+            "truncate" => {
+                chunk.truncate(2, 32).unwrap();
+                chunk.commit().unwrap();
+            }
+            _ => {
+                chunk.seal(2, false).unwrap();
+            }
+        }
+        drop(chunk);
+        let mut damaged = fs::read(&path).unwrap();
+        damaged[start + 9] ^= 1;
+        fs::write(&path, &damaged).unwrap();
+        assert!(
+            matches!(LogChunk::open(&path, 1, MAX), Err(LogError::Corrupt(_))),
+            "{kind}"
+        );
+        assert_eq!(fs::read(&path).unwrap(), damaged, "{kind}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_failed_write_fences_commit_and_every_mutation_until_reopen() {
+    let mut chunk = LogChunk::open(std::path::Path::new("/dev/full"), 1, MAX).unwrap();
+    assert!(matches!(
+        chunk.append(1, 0, b"not persisted"),
+        Err(LogError::Io(_))
+    ));
+    assert_eq!(chunk.length(), 0);
+    assert_eq!(chunk.durable_length(), 0);
+    assert!(matches!(chunk.commit(), Err(LogError::Unavailable)));
+    assert!(matches!(
+        chunk.append(1, 0, b"retry"),
+        Err(LogError::Unavailable)
+    ));
+    assert!(matches!(chunk.truncate(2, 0), Err(LogError::Unavailable)));
+    assert!(matches!(chunk.seal(2, false), Err(LogError::Unavailable)));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_failed_sync_never_advances_the_acknowledged_length_or_allows_retries() {
+    let mut chunk = LogChunk::open(std::path::Path::new("/dev/null"), 1, MAX).unwrap();
+    assert_eq!(chunk.append(1, 0, b"applied").unwrap(), 7);
+    assert!(matches!(chunk.commit(), Err(LogError::Io(_))));
+    assert_eq!(chunk.durable_length(), 0);
+    assert!(matches!(
+        chunk.append(1, 0, b"applied"),
+        Err(LogError::Unavailable)
+    ));
+    assert!(matches!(chunk.commit(), Err(LogError::Unavailable)));
+    assert!(matches!(chunk.truncate(2, 0), Err(LogError::Unavailable)));
+    assert!(matches!(chunk.seal(2, true), Err(LogError::Unavailable)));
+}
+
+#[test]
+fn an_incomplete_payload_does_not_hide_a_foreign_generation_or_stale_epoch() {
+    let dir = Dir::new("invalid-short-tail");
+    let path = dir.file("source");
+    let (_, ends) = three(&path);
+    let original = fs::read(&path).unwrap();
+    for (name, field) in [("generation", 8usize), ("epoch", 12usize)] {
+        let start = ends[1] as usize;
+        let mut damaged = original[..original.len() - 1].to_vec();
+        if field == 8 {
+            damaged[start + 8..start + 12].copy_from_slice(&2u32.to_le_bytes());
+        } else {
+            damaged[start + 12..start + 20].copy_from_slice(&0u64.to_le_bytes());
+        }
+        let checksum = crc32c(&damaged[start..start + 36]);
+        damaged[start + 36..start + 40].copy_from_slice(&checksum.to_le_bytes());
+        let copy = dir.file(name);
+        fs::write(&copy, &damaged).unwrap();
+        assert!(matches!(
+            LogChunk::open(&copy, 1, MAX),
+            Err(LogError::Corrupt(_))
+        ));
+        assert_eq!(fs::read(&copy).unwrap(), damaged);
+    }
 }
