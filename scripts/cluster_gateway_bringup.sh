@@ -16,6 +16,9 @@
 #   GATEWAY_ENV   extra NAME=VALUE pairs for the gateway, space separated, e.g.
 #                 "MATRIXOBJECT_CLUSTER_COMPACT_APPEND=1"
 #   CHECKPOINT_BYTES  MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES for raft3 voters (default unset)
+#   HEARTBEAT_TTL_MS  how long a chunk server stays healthy after its last heartbeat (default 15000, five
+#                     of the default 3000 ms intervals: a TTL under two intervals expires a node on one
+#                     late heartbeat and placement then refuses every write)
 #
 # Only processes this script started are signalled: their pids are recorded in $RUN/pids and
 # `down` reads that file. Nothing is matched by name.
@@ -100,7 +103,7 @@ up() {
       MATRIXOBJECT_METASERVER_ADDR="127.0.0.1:$((BASE))" \
       MATRIXOBJECT_METASERVER_CHUNK_GROUPS_FILE="$RUN/catalog.bin" \
       MATRIXOBJECT_METASERVER_STATE_DIR="$RUN/meta1" \
-      MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS=5000 \
+      MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS="${HEARTBEAT_TTL_MS:-15000}" \
       "$BIN/metaserver"
     wait_line "$RUN/meta1.log" 20 || fail "metaserver did not report listening; see $RUN/meta1.log"
     META_EPS="127.0.0.1:$BASE"
@@ -118,7 +121,7 @@ up() {
         MATRIXOBJECT_METASERVER_RAFT_STATE_DIR="$RUN/meta$i" \
         MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS=3000         "${CKPT_ENV[@]}" \
         MATRIXOBJECT_METASERVER_CHUNK_GROUPS_FILE="$RUN/catalog.bin" \
-        MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS=5000 \
+        MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS="${HEARTBEAT_TTL_MS:-15000}" \
         "$BIN/metaserver"
       META_EPS="$META_EPS${META_EPS:+,}127.0.0.1:$((BASE + 3 + i))"
     done

@@ -829,6 +829,8 @@ impl ClusterGateway {
         let resource = format!("/{bucket}/{key}");
         const ATTEMPTS: usize = 4;
         let mut last_staged_mismatch: Option<ObjectError> = None;
+        // The refusal that made the last attempt retry, so a gateway that gives up can say why.
+        let mut last_retried = String::new();
         for attempt in 0..ATTEMPTS {
             // A retry exists because the end moved, so it never trusts the cache.
             let cached = if attempt == 0 {
@@ -900,6 +902,7 @@ impl ClusterGateway {
                     // A refusal decided from the manifest this call read answers the client as
                     // it stands; only a lost publish race is worth another look.
                     if !decided && lost_race(&failure.error) {
+                        last_retried = failure.error.to_string();
                         if staged_state_mismatch(&failure.error) {
                             last_staged_mismatch = Some(failure.error);
                         }
@@ -908,6 +911,7 @@ impl ClusterGateway {
                     // A refusal decided from a REMEMBERED manifest may only mean the memory is
                     // stale (another gateway appended), so it is checked once against a read.
                     if decided && used_cache && lost_race(&failure.error) {
+                        last_retried = failure.error.to_string();
                         continue;
                     }
                     return error_response(failure.error, &resource, false);
@@ -921,7 +925,9 @@ impl ClusterGateway {
         }
         s3::error_response(
             s3::S3ErrorCode::PreconditionFailed,
-            "the object kept changing under this append; gave up after several attempts",
+            &format!(
+                "the object kept changing under this append; gave up after several attempts (the last refusal: {last_retried})"
+            ),
             &resource,
         )
     }
@@ -1157,8 +1163,19 @@ fn closed_range(header: &str) -> Option<(u64, u64)> {
 /// Whether a refusal says another writer published first, as opposed to a refusal of the
 /// request itself.
 fn lost_race(error: &ObjectError) -> bool {
-    (matches!(error, ObjectError::PreconditionFailed(_)) && !plane_unreachable(error))
+    (matches!(error, ObjectError::PreconditionFailed(_))
+        && !plane_unreachable(error)
+        && !placement_unavailable(error))
         || staged_state_mismatch(error)
+}
+
+/// The metadata plane has no healthy data group to place the write on (the chunk servers'
+/// heartbeats have lapsed, for example when one is missed under load). Nothing is wrong with the
+/// client's request and nothing changed under it: it is the cluster being briefly unable, which
+/// clears when the next heartbeat lands, so it is a retryable 503, not a lost race to retry at
+/// once (which would only be refused again) and not a 412.
+fn placement_unavailable(error: &ObjectError) -> bool {
+    matches!(error, ObjectError::PreconditionFailed(message) if message.contains("could not satisfy replica count"))
 }
 
 /// The SDK refuses a staged write as an invalid argument when the allocation it holds no longer
@@ -1281,6 +1298,7 @@ fn error_response(error: ObjectError, resource: &str, missing_is_bucket: bool) -
             s3::S3ErrorCode::InvalidRequest
         }
         _ if plane_unreachable(&error)
+            || placement_unavailable(&error)
             || staged_state_mismatch(&error)
             || consensus_unavailable(&error) =>
         {
@@ -1868,6 +1886,32 @@ mod tests {
         assert_eq!(gateway.handle(&request("GET", "/b/wal", &[], b"")).body, b"abc");
         // The client's retry at the same offset then lands.
         assert_eq!(append(&gateway, "wal", 3, b"de").status, 200);
+    }
+
+    const NO_HEALTHY_GROUP: &str = "precondition failed: root placement could not satisfy replica count";
+
+    #[test]
+    fn a_placement_with_no_healthy_group_is_a_503_and_not_a_lost_race() {
+        let error = ObjectError::PreconditionFailed(NO_HEALTHY_GROUP.into());
+        assert!(!lost_race(&error), "it must not be retried at once as a race");
+        let (gateway, armed) = timeout_gateway(error, false);
+        assert_eq!(append(&gateway, "wal", 0, b"abc").status, 200);
+        *armed.lock().unwrap() = true;
+        let response = append(&gateway, "wal", 3, b"de");
+        assert_eq!(response.status, 503, "{}", String::from_utf8_lossy(&response.body));
+        assert!(String::from_utf8_lossy(&response.body).contains("could not satisfy replica count"));
+        assert_eq!(gateway.handle(&request("GET", "/b/wal", &[], b"")).body, b"abc", "nothing was written");
+        // the client's retry at the same offset lands once the groups are healthy again
+        assert_eq!(append(&gateway, "wal", 3, b"de").status, 200);
+    }
+
+    #[test]
+    fn a_real_lost_race_is_still_a_412() {
+        // another writer moved the object: a precondition refusal that is not the placement's
+        let error = ObjectError::PreconditionFailed("object manifest changed before write".into());
+        assert!(lost_race(&error));
+        let response = error_response(error, "/b/k", false);
+        assert_eq!(response.status, 412);
     }
 
     #[test]
