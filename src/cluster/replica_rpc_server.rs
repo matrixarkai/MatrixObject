@@ -835,6 +835,10 @@ fn apply(
 #[path = "replica_append_tests.rs"]
 mod append_outcome_tests;
 
+#[cfg(all(test, unix))]
+#[path = "log_op_tests.rs"]
+mod log_op_tests;
+
 fn prepare_rpc_append(
     service: &MatrixReplicaService,
     request: &ReplicaRequest,
