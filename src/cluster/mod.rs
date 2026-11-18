@@ -255,6 +255,10 @@ pub use log_op::{LogOpReply, LogOpRequest};
 mod chunk_log;
 #[cfg(feature = "replica-server")]
 pub use chunk_log::{ChunkLogError, ChunkLogReader, ChunkLogWriter, LogCallError, SealedFooter, LOG_QUORUM, LOG_REPLICAS};
+#[cfg(all(feature = "replica-server", feature = "meta-server"))]
+mod log_object;
+#[cfg(all(feature = "replica-server", feature = "meta-server"))]
+pub use log_object::{renew_leases, LogMeta, LogObject, LogObjectError, LogObjectOptions, LogObjectReader};
 #[cfg(all(test, feature = "replica-server"))]
 mod chunk_log_tests;
 #[cfg(feature = "replica-server")]
