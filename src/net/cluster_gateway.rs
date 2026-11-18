@@ -175,6 +175,9 @@ pub struct CompactState(
     /// When each object was last appended to, for the objects appended to lately: a reservation
     /// is made only for an object that is being appended to repeatedly.
     std::sync::Mutex<std::collections::HashMap<(String, String), std::time::Instant>>,
+    /// The read leases of this gateway, shared by every connection: in a fenced catalog every
+    /// read needs a lease on the generation it reads, and reads of one generation share one.
+    std::sync::Arc<crate::cluster::ReadLeaseCache>,
 );
 
 /// An object counts as being appended to repeatedly when its previous append was this recent.
@@ -246,6 +249,7 @@ impl SdkPlane {
         // The placement and routes of an object's appends rarely change: reuse them for a short
         // while (well inside the metadata plane's health lifetime) instead of a round trip each.
         client.cache_append_plans(Duration::from_secs(1));
+        client.share_read_leases(Arc::clone(&compact.3));
         Self {
             client,
             options,

@@ -10,7 +10,158 @@ struct ReadLease {
     digest: Vec<u8>,
 }
 
+/// How long a read lease the client opens lasts, in milliseconds.
+const READ_LEASE_TTL_MS: u64 = 60_000;
+/// A held lease with less than this left is not used again: a read could outlive it.
+const READ_LEASE_MIN_REMAINING: Duration = Duration::from_secs(5);
+
+type LeaseKey = (String, String, u64, Vec<u8>);
+
+#[derive(Debug)]
+struct Held {
+    handle: u64,
+    deadline: Instant,
+    used: u64,
+    /// Reads running now that rely on this lease; it is never released under one.
+    users: u32,
+}
+
+#[derive(Debug, Default)]
+struct LeaseTable {
+    held: std::collections::HashMap<LeaseKey, Held>,
+    tick: u64,
+}
+
+enum Placed {
+    /// Kept for later reads; these handles were dropped to make room and are to be released.
+    Cached(Vec<u64>),
+    /// No room (or an entry for the key is in use): the read releases it when it is done. These
+    /// handles were dropped on the way and are to be released too.
+    Alone(Vec<u64>),
+}
+
+/// Read leases kept by a gateway, shared by every connection it has.
+///
+/// In a catalog with publication fencing every ordinary read must hold a lease on the exact
+/// manifest generation it reads, which was one durable open and one durable release per read.
+/// A lease lasts 60 s, so reads of the same generation within that time can share one. The
+/// table that holds leases on the metadata side is small (128 handles for the whole cluster), so
+/// this keeps few: a hot set, least recently used out, and a lease is only dropped when no read
+/// is using it. A lease that is not used again expires by itself.
+#[derive(Debug)]
+pub struct ReadLeaseCache {
+    capacity: usize,
+    /// How long a lease opened now is counted as lasting, a little under its 60 s.
+    window: Duration,
+    table: std::sync::Mutex<LeaseTable>,
+    hits: std::sync::atomic::AtomicU64,
+    opens: std::sync::atomic::AtomicU64,
+}
+
+impl Default for ReadLeaseCache {
+    fn default() -> Self {
+        Self::new(16)
+    }
+}
+
+impl ReadLeaseCache {
+    /// A cache of at most `capacity` leases; 0 keeps none (every read opens and releases).
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            window: Duration::from_millis(READ_LEASE_TTL_MS - 100),
+            table: Default::default(),
+            hits: Default::default(),
+            opens: Default::default(),
+        }
+    }
+
+    /// Reads that used a lease already held.
+    pub fn hits(&self) -> u64 {
+        self.hits.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Leases opened because none was held.
+    pub fn opens(&self) -> u64 {
+        self.opens.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Leases held now.
+    pub fn held(&self) -> usize {
+        self.table().held.len()
+    }
+
+    fn table(&self) -> std::sync::MutexGuard<'_, LeaseTable> {
+        // Only whole values are assigned, so a panic elsewhere cannot leave this half-written.
+        self.table.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[cfg(feature = "replica-server")]
+    fn key(lease: &ReadLease) -> LeaseKey {
+        (lease.bucket.clone(), lease.key.clone(), lease.generation, lease.digest.clone())
+    }
+
+    /// The deadline of the lease held for `key`, taken for one read, when it has time left.
+    fn lookup(&self, key: &LeaseKey, now: Instant) -> Option<Instant> {
+        let mut table = self.table();
+        table.tick += 1;
+        let tick = table.tick;
+        let held = table.held.get_mut(key)?;
+        if held.deadline < now + READ_LEASE_MIN_REMAINING {
+            return None;
+        }
+        held.used = tick;
+        held.users += 1;
+        self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Some(held.deadline)
+    }
+
+    /// Keep the lease just opened for `key`, taken for one read.
+    fn insert(&self, key: LeaseKey, handle: u64, deadline: Instant, now: Instant) -> Placed {
+        self.opens.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut table = self.table();
+        table.tick += 1;
+        let tick = table.tick;
+        // What expired is gone from the metadata side too.
+        table.held.retain(|_, held| held.deadline > now || held.users > 0);
+        if self.capacity == 0 || table.held.contains_key(&key) {
+            return Placed::Alone(Vec::new());
+        }
+        let mut dropped = Vec::new();
+        while table.held.len() >= self.capacity {
+            let oldest = table
+                .held
+                .iter()
+                .filter(|(_, held)| held.users == 0)
+                .min_by_key(|(_, held)| held.used)
+                .map(|(key, _)| key.clone());
+            let Some(oldest) = oldest else {
+                // Every lease is in use: nothing a reader holds is given up for this one.
+                return Placed::Alone(dropped);
+            };
+            dropped.push(table.held.remove(&oldest).unwrap().handle);
+        }
+        table.held.insert(key, Held { handle, deadline, used: tick, users: 1 });
+        Placed::Cached(dropped)
+    }
+
+    /// A read that used these leases has finished with them.
+    fn finish(&self, keys: &[LeaseKey]) {
+        let mut table = self.table();
+        for key in keys {
+            if let Some(held) = table.held.get_mut(key) {
+                held.users = held.users.saturating_sub(1);
+            }
+        }
+    }
+}
+
 impl RemoteMetaClient {
+    /// Use `cache` for the read leases of every read this client makes.
+    pub fn share_read_leases(&mut self, cache: std::sync::Arc<ReadLeaseCache>) {
+        self.read_lease_cache = Some(cache);
+    }
+
     fn observe_read_protection(&mut self, fence: u64) -> Result<(), ObjectError> {
         if self.read_protection_fence != 0 && fence != self.read_protection_fence {
             return Err(ObjectError::PreconditionFailed(
@@ -101,8 +252,13 @@ impl RemoteMetaClient {
         if self.read_protection_fence == 0 || leases.is_empty() {
             return read(self, options);
         }
+        if let Some(cache) = self.read_lease_cache.clone() {
+            if leases.len() <= cache.capacity {
+                return self.with_cached_read_leases(&cache, leases, options, read);
+            }
+        }
         // Later grants cannot extend the first protected generation's window.
-        const TTL_MS: u64 = 60_000;
+        const TTL_MS: u64 = READ_LEASE_TTL_MS;
         let deadline = Instant::now()
             .checked_add(Duration::from_millis(TTL_MS - 100))
             .ok_or_else(|| ObjectError::InvalidArgument("read session deadline overflow".into()))?;
@@ -126,6 +282,92 @@ impl RemoteMetaClient {
                 Ok(value)
             })
         })
+    }
+
+    /// `with_read_leases` for a gateway that keeps leases: a lease already held for exactly this
+    /// generation and digest, with time left, is used again instead of opened, and a lease this
+    /// read opens is kept for the next one instead of released. A kept lease is released when
+    /// the cache evicts it, or left to expire. Leases are only ever released here when no read
+    /// holds them.
+    #[cfg(feature = "replica-server")]
+    fn with_cached_read_leases<T>(
+        &mut self,
+        cache: &ReadLeaseCache,
+        leases: &[ReadLease],
+        options: &super::ReplicaClientOptions,
+        read: impl FnOnce(&mut Self, &super::ReplicaClientOptions) -> Result<T, ObjectError>,
+    ) -> Result<T, ObjectError> {
+        let start = Instant::now();
+        let opened_deadline = start
+            .checked_add(cache.window)
+            .ok_or_else(|| ObjectError::InvalidArgument("read session deadline overflow".into()))?;
+        // `held`: leases this read holds in the cache. `own`: leases opened for this read alone,
+        // because the cache had no room. `evicted`: handles the cache dropped to make room.
+        let mut held: Vec<LeaseKey> = Vec::new();
+        let mut own: Vec<u64> = Vec::new();
+        let mut evicted: Vec<u64> = Vec::new();
+        let mut deadline = opened_deadline;
+        let mut misses = Vec::new();
+        for lease in leases {
+            let key = ReadLeaseCache::key(lease);
+            match cache.lookup(&key, start) {
+                Some(until) => {
+                    deadline = deadline.min(until);
+                    held.push(key);
+                }
+                None => misses.push((lease, key)),
+            }
+        }
+        let result = self.with_operation_deadline(Some(deadline), |client| {
+            let mut bounded = options.clone();
+            bounded.deadline = client.operation_deadline();
+            let mut opened = Vec::new();
+            let mut failure = None;
+            for (lease, key) in &misses {
+                match client.open_leased_read_session(lease, READ_LEASE_TTL_MS) {
+                    Ok(handle) => opened.push((key.clone(), handle)),
+                    Err(error) => {
+                        failure = Some(error);
+                        break;
+                    }
+                }
+            }
+            if let Some(error) = failure {
+                // Nothing is cached from a read that did not get all its leases.
+                for (_, handle) in opened {
+                    let _ = client.release_manifest(handle);
+                }
+                return Err(error);
+            }
+            for (key, handle) in opened {
+                match cache.insert(key.clone(), handle, opened_deadline, start) {
+                    Placed::Cached(dropped) => {
+                        held.push(key);
+                        evicted.extend(dropped);
+                    }
+                    Placed::Alone(dropped) => {
+                        own.push(handle);
+                        evicted.extend(dropped);
+                    }
+                }
+            }
+            let result = (|| {
+                client.check_operation_deadline()?;
+                read(client, &bounded)
+            })();
+            for handle in own.drain(..) {
+                let _ = client.release_manifest(handle);
+            }
+            result.and_then(|value| {
+                client.check_operation_deadline()?;
+                Ok(value)
+            })
+        });
+        cache.finish(&held);
+        for handle in evicted {
+            let _ = self.release_manifest(handle);
+        }
+        result
     }
 
     /// Read the bytes of `range` from the extents a ranged manifest reply carried, under a read
@@ -297,5 +539,241 @@ mod ordinary_read_protection {
         assert!(client.observe_read_protection(8).is_err());
         client.observe_read_protection(7).unwrap();
         assert_eq!(client.read_protection_fence, 7);
+    }
+}
+
+#[cfg(all(test, feature = "replica-server"))]
+mod shared_read_leases {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// What a stand-in metaserver saw: (action, retention id or generation).
+    type Seen = Arc<Mutex<Vec<(u32, u64)>>>;
+
+    struct Harness {
+        client: RemoteMetaClient,
+        seen: Seen,
+        worker: std::thread::JoinHandle<()>,
+    }
+
+    impl Harness {
+        fn new(cache: Option<Arc<ReadLeaseCache>>, fence: u64) -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = listener.local_addr().unwrap().to_string();
+            let seen: Seen = Arc::default();
+            let log = Arc::clone(&seen);
+            let worker = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                let mut next_handle = 0u64;
+                loop {
+                    let mut header = [0; HEADER_BYTES];
+                    if socket.read_exact(&mut header).is_err() {
+                        return;
+                    }
+                    let mut payload =
+                        vec![0; u32::from_be_bytes(header[2..].try_into().unwrap()) as usize];
+                    socket.read_exact(&mut payload).unwrap();
+                    let MetaRequest::ManifestRetention(request) =
+                        MetaRequest::decode(MetaRequestCode::from_u8(header[1]).unwrap(), &payload)
+                            .unwrap()
+                    else {
+                        panic!("only retention requests are expected")
+                    };
+                    let reply = if request.action == 8 {
+                        next_handle += 1;
+                        log.lock().unwrap().push((8, request.generation));
+                        crate::manifest_retention::ManifestRetentionReply {
+                            version: 4,
+                            retention_id: next_handle,
+                            expires_at_ms: 60_000,
+                            lease_ms: request.ttl_ms,
+                            manifest_sha256: request.manifest_sha256,
+                            ..Default::default()
+                        }
+                    } else {
+                        assert_eq!(request.action, 2);
+                        log.lock().unwrap().push((2, request.retention_id));
+                        crate::manifest_retention::ManifestRetentionReply {
+                            version: 1,
+                            ..Default::default()
+                        }
+                    };
+                    socket
+                        .write_all(&super::super::meta_message::encode_meta_reply(
+                            &MetaReply::ManifestRetention(reply),
+                        ))
+                        .unwrap();
+                }
+            });
+            let mut client =
+                RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+            client.read_protection_fence = fence;
+            if let Some(cache) = cache {
+                client.share_read_leases(cache);
+            }
+            Self { client, seen, worker }
+        }
+
+        fn read(&mut self, generation: u64, digest: u8) {
+            let leases = [lease(generation, digest)];
+            self.client
+                .with_read_leases(&leases, &Default::default(), |_, _| Ok(()))
+                .unwrap();
+        }
+
+        fn finish(self) -> Vec<(u32, u64)> {
+            drop(self.client);
+            self.worker.join().unwrap();
+            let seen = self.seen.lock().unwrap().clone();
+            seen
+        }
+    }
+
+    fn lease(generation: u64, digest: u8) -> ReadLease {
+        ReadLease {
+            bucket: "bucket".into(),
+            key: "object".into(),
+            generation,
+            digest: vec![digest; 32],
+        }
+    }
+
+    fn opens(seen: &[(u32, u64)]) -> usize {
+        seen.iter().filter(|(action, _)| *action == 8).count()
+    }
+
+    fn releases(seen: &[(u32, u64)]) -> Vec<u64> {
+        seen.iter().filter(|(action, _)| *action == 2).map(|(_, id)| *id).collect()
+    }
+
+    /// Reads of one generation share one lease: one open, no release, the rest are hits.
+    #[test]
+    fn reads_of_one_generation_share_one_lease() {
+        let cache = Arc::new(ReadLeaseCache::new(4));
+        let mut harness = Harness::new(Some(Arc::clone(&cache)), 1);
+        for _ in 0..5 {
+            harness.read(1, 7);
+        }
+        let seen = harness.finish();
+        assert_eq!((opens(&seen), releases(&seen).len()), (1, 0), "{seen:?}");
+        assert_eq!((cache.opens(), cache.hits(), cache.held()), (1, 4, 1));
+    }
+
+    /// Without a cache every read opens and releases, as before.
+    #[test]
+    fn without_a_cache_every_read_opens_and_releases() {
+        let mut harness = Harness::new(None, 1);
+        for _ in 0..3 {
+            harness.read(1, 7);
+        }
+        let seen = harness.finish();
+        assert_eq!((opens(&seen), releases(&seen).len()), (3, 3), "{seen:?}");
+    }
+
+    /// A lease is for exactly one generation and one digest.
+    #[test]
+    fn another_generation_or_digest_opens_another_lease() {
+        let cache = Arc::new(ReadLeaseCache::new(8));
+        let mut harness = Harness::new(Some(Arc::clone(&cache)), 1);
+        harness.read(1, 7);
+        harness.read(2, 7);
+        harness.read(1, 8);
+        harness.read(1, 7);
+        let seen = harness.finish();
+        assert_eq!(opens(&seen), 3, "{seen:?}");
+        assert_eq!(cache.hits(), 1);
+    }
+
+    /// Past its capacity the cache drops the least recently used lease, and releases it.
+    #[test]
+    fn the_least_recently_used_lease_is_released_when_the_cache_is_full() {
+        let cache = Arc::new(ReadLeaseCache::new(2));
+        let mut harness = Harness::new(Some(Arc::clone(&cache)), 1);
+        harness.read(1, 1); // handle 1
+        harness.read(2, 1); // handle 2
+        harness.read(3, 1); // handle 3: drops generation 1 (handle 1)
+        harness.read(2, 1); // a hit that makes generation 3 the older
+        harness.read(1, 1); // handle 4: drops generation 3 (handle 3)
+        let seen = harness.finish();
+        assert_eq!(opens(&seen), 4, "{seen:?}");
+        assert_eq!(releases(&seen), vec![1, 3], "{seen:?}");
+        assert_eq!((cache.hits(), cache.held()), (1, 2));
+    }
+
+    /// A lease a read is using is never released for another, and the other is released as soon
+    /// as its own read is done.
+    #[test]
+    fn a_lease_in_use_is_not_dropped_for_another_read() {
+        let cache = Arc::new(ReadLeaseCache::new(1));
+        let mut harness = Harness::new(Some(Arc::clone(&cache)), 1);
+        let first = [lease(1, 1)];
+        let second = [lease(2, 1)];
+        harness
+            .client
+            .with_read_leases(&first, &Default::default(), |client, options| {
+                client.with_read_leases(&second, options, |_, _| Ok(()))
+            })
+            .unwrap();
+        let seen = harness.finish();
+        assert_eq!(opens(&seen), 2, "{seen:?}");
+        // Handle 1 is the outer read's and stays; handle 2 was opened for the inner read alone.
+        assert_eq!(releases(&seen), vec![2], "{seen:?}");
+        assert_eq!(cache.held(), 1);
+    }
+
+    /// A read that needs more leases than the cache can hold does not use it.
+    #[test]
+    fn a_read_of_more_leases_than_the_cache_holds_opens_and_releases_them_all() {
+        let cache = Arc::new(ReadLeaseCache::new(1));
+        let mut harness = Harness::new(Some(Arc::clone(&cache)), 1);
+        let both = [lease(1, 1), lease(2, 1)];
+        harness
+            .client
+            .with_read_leases(&both, &Default::default(), |_, _| Ok(()))
+            .unwrap();
+        let seen = harness.finish();
+        assert_eq!((opens(&seen), releases(&seen).len()), (2, 2), "{seen:?}");
+        assert_eq!((cache.held(), cache.opens()), (0, 0));
+    }
+
+    /// A lease with too little time left is not used: the read opens another.
+    #[test]
+    fn a_lease_about_to_expire_is_opened_again() {
+        let mut cache = ReadLeaseCache::new(4);
+        cache.window = READ_LEASE_MIN_REMAINING + Duration::from_millis(300);
+        let cache = Arc::new(cache);
+        let mut harness = Harness::new(Some(Arc::clone(&cache)), 1);
+        harness.read(1, 1);
+        harness.read(1, 1);
+        std::thread::sleep(Duration::from_millis(500));
+        harness.read(1, 1);
+        let seen = harness.finish();
+        assert_eq!(opens(&seen), 2, "{seen:?}");
+        assert_eq!(cache.hits(), 1);
+    }
+
+    /// In a catalog without publication fencing a read takes no lease at all.
+    #[test]
+    fn an_unfenced_catalog_takes_no_lease() {
+        let cache = Arc::new(ReadLeaseCache::new(4));
+        let mut harness = Harness::new(Some(Arc::clone(&cache)), 0);
+        harness.read(1, 1);
+        let seen = harness.finish();
+        assert!(seen.is_empty(), "{seen:?}");
+        assert_eq!(cache.held(), 0);
+    }
+
+    /// A connection that is replaced keeps the gateway's cache.
+    #[test]
+    fn a_replaced_connection_keeps_the_lease_cache() {
+        let cache = Arc::new(ReadLeaseCache::new(4));
+        let mut first = Harness::new(Some(Arc::clone(&cache)), 1);
+        let second = Harness::new(None, 1);
+        first.client.adopt_connection(second.client);
+        assert!(first.client.read_lease_cache.is_some());
+        first.read(1, 1);
+        assert_eq!(cache.opens(), 1);
+        drop(first.client);
     }
 }

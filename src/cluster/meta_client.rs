@@ -183,6 +183,8 @@ pub struct RemoteMetaClient {
     /// Whether the metaserver answers the ranged manifest read; `None` until one was asked.
     ranged_manifest_reads: Option<bool>,
     read_protection_fence: u64,
+    /// Read leases shared by every connection of one gateway, when it keeps any.
+    read_lease_cache: Option<std::sync::Arc<ReadLeaseCache>>,
     manifest_digests: ManifestDigestMemo,
     /// Set for the next compact append: reserve the allocation for the one after it, with this
     /// many pages and lease.
@@ -273,6 +275,7 @@ impl RemoteMetaClient {
             wide_manifest_route_reads: None,
             ranged_manifest_reads: None,
             read_protection_fence: 0,
+            read_lease_cache: None,
             manifest_digests: ManifestDigestMemo::default(),
             reserve_next: None,
             reservation: None,
@@ -2304,6 +2307,7 @@ impl RemoteMetaClient {
 
     fn adopt_connection(&mut self, mut next: Self) {
         next.read_protection_fence = self.read_protection_fence;
+        next.read_lease_cache = self.read_lease_cache.take();
         // Settings and short-lived memory of the caller outlive the connection they ran on.
         next.append_plan_ttl = self.append_plan_ttl;
         next.append_plan = self.append_plan.take();

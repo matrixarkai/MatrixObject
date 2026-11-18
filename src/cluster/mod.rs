@@ -219,7 +219,7 @@ pub use server::{
 #[cfg(feature = "meta-server")]
 pub use directory::{ControlPlaneStatus, MetaDirectory};
 #[cfg(feature = "meta-server")]
-pub use meta_client::{MetaCallOutcome, MetaClientOptions, RemoteMetaClient};
+pub use meta_client::{MetaCallOutcome, MetaClientOptions, ReadLeaseCache, RemoteMetaClient};
 #[cfg(feature = "meta-server")]
 pub use meta_message::{
     CommittedPlacement, ManifestRangeEntry, ManifestRouteEntry, MetaReply, MetaRequest, PlacementAssignment,
