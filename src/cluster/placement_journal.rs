@@ -152,6 +152,7 @@ mod tests {
             read_session_removal: None,
             manifest_append: None,
             reserved: None,
+            features: None,
         };
         let second = PlacementOutcome {
             before_index: base + 1,

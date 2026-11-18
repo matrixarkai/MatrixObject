@@ -744,6 +744,7 @@ fn read_only(request: &MetaRequest) -> bool {
         MetaRequest::StagedAllocation(command) => command.is_read(),
         MetaRequest::ManifestRetention(command) => command.is_read(),
         MetaRequest::Membership(command) => command.is_read(),
+        MetaRequest::Features(command) => command.is_read(),
         MetaRequest::ReadManifest { .. }
         | MetaRequest::ReadManifestRoutes { .. }
         | MetaRequest::ReadManifestRoutesWide { .. }
@@ -1146,6 +1147,18 @@ fn prepare(
     if let MetaRequest::CopyManifest(command) = request {
         let (outcome, reply) = super::manifest_copy_commands::prepare(service, groups, command, limit)?;
         return Ok((outcome.to_payload()?, Some(reply)));
+    }
+    if let MetaRequest::Features(command) = request {
+        if !command.is_read() {
+            return Ok(match super::features_commands::prepare(service, command)? {
+                Some(outcome) => {
+                    let after = outcome.features.as_ref().and_then(|change| change.after.clone())
+                        .ok_or_else(|| ObjectError::Corruption("feature outcome lacks its result".into()))?;
+                    (outcome.to_payload()?, Some(MetaReply::Features(after)))
+                }
+                None => (Vec::new(), Some(super::features_commands::reply(&service.cluster_features))),
+            });
+        }
     }
     if let MetaRequest::StagedAllocation(command) = request {
         if !command.is_read() {
