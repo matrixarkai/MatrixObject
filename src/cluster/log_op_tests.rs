@@ -100,7 +100,8 @@ fn malformed_operations_are_refused_before_they_reach_a_chunk() {
         LogOpRequest { data: vec![1], ..LogOpRequest::read(V, C, 1, 0, 4) },
         LogOpRequest::read(V, C, 1, 0, (MAX_OP_DATA + 1) as u32),
         LogOpRequest { flags: 2, ..LogOpRequest::seal(V, C, 1, 1, false) },
-        LogOpRequest::seal(0, C, 1, 1, false),
+        // an identity past thirty-two bits has no chunk to name
+        LogOpRequest::seal(1 << 32, C, 1, 1, false),
     ];
     for op in bad {
         assert!(op.validate().is_err(), "{op:?}");
