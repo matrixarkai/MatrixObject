@@ -91,6 +91,7 @@ impl LogChunkStore {
     }
 
     /// Replace the function that syncs a file (a test makes it slow or failing).
+    #[cfg(test)]
     pub fn set_syncer(&mut self, syncer: fn(&File) -> std::io::Result<()>) {
         self.syncer = syncer;
     }
@@ -100,6 +101,7 @@ impl LogChunkStore {
     }
 
     /// Syncs completed so far.
+    #[cfg(test)]
     pub fn commits(&self) -> u64 {
         self.commits
     }
