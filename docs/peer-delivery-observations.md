@@ -44,12 +44,22 @@ frames. Other values leave the setting disabled. No capability negotiation or
 fallback is performed; leave this unset in a mixed-version deployment.
 
 With this setting, each destination worker retains at most one connection and its
-TLS session. It reuses that connection only when its last successful send was less
-than 50 ms ago, below the receiver's 100 ms idle-and-frame budget. A new packet still
+TLS session. It reuses that connection only while its last successful send is younger
+than `PEER_REUSE_AGE` (4 s), which is derived from the receiver's idle budget
+`PEER_IDLE_BUDGET` (5 s) minus a 1 s margin; a compile-time assertion keeps the two
+together. The receiver keeps a connection that has finished a frame for the idle
+budget, but a frame that has started still gets only the short frame budget (100 ms),
+so a stalled partial frame is not held longer. Before reusing a cached socket the sender
+checks, without reading, whether the receiver has already closed it (or sent
+anything); if so it connects afresh for that packet, so a packet is never written to
+a socket known to be closed. This also covers a receiver with a shorter idle budget
+than the sender assumes, such as a build from before this setting. A new packet still
 uses its original absolute deadline, including queue time. Any send failure drops
 the connection without replaying the packet; Raft handles retransmission. A locally
-successful send does not prove remote receipt, and an idle or restarted receiver
-can close a connection before a sender notices. Shutdown releases cached sockets.
+successful send does not prove remote receipt, and a receiver that restarts between
+the check and the write can still lose that one packet. Shutdown releases cached
+sockets. The observation counters `peer_reused` and `peer_closed_by_peer` count sends on
+a cached socket and cached sockets found closed before a send.
 
 This option requires scale and partition validation before a deployment performance
 claim. It changes neither admission limits nor quorum and durability requirements.

@@ -38,6 +38,8 @@ const READ_BUDGET: usize = 64 * 1024;
 struct Frame {
     stream: PeerSocket,
     deadline: Instant,
+    /// What a frame that has started gets, however long the connection sat idle before it.
+    frame_timeout: Duration,
     header: [u8; 4],
     header_read: usize,
     body: Vec<u8>,
@@ -53,6 +55,10 @@ impl Frame {
             let n = self.stream.read(&mut self.header[self.header_read..])?;
             if n == 0 {
                 return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            if self.completed && self.header_read == 0 {
+                // The first byte of the next frame ends the idle wait and starts the frame budget.
+                self.deadline = Instant::now() + self.frame_timeout;
             }
             self.header_read += n;
             if self.header_read < 4 {
@@ -112,17 +118,21 @@ pub(super) fn receive_with_transport(
         incoming,
         stop,
         timeout,
+        timeout,
         wake,
         transport,
         &PeerReceiveCounters::default(),
     );
 }
 
+/// `timeout` bounds a frame once it has started (and a connection that has sent nothing yet);
+/// `idle` bounds the wait for the next frame on a connection that has finished one.
 pub(super) fn receive_observed(
     listener: TcpListener,
     incoming: SyncSender<Vec<u8>>,
     stop: &ServerShutdown,
     timeout: Duration,
+    idle: Duration,
     wake: Option<Notify>,
     transport: &PeerTransport,
     counters: &PeerReceiveCounters,
@@ -150,6 +160,7 @@ pub(super) fn receive_observed(
                     frames.push(Frame {
                         stream,
                         deadline: Instant::now() + timeout,
+                        frame_timeout: timeout,
                         header: [0; 4],
                         header_read: 0,
                         body: Vec::new(),
@@ -193,7 +204,7 @@ pub(super) fn receive_observed(
                     frame.completed = true;
                     // Idle time and the next frame share a bounded budget. Bytes
                     // trickled into a partial frame never extend its deadline.
-                    frame.deadline = Instant::now() + timeout;
+                    frame.deadline = Instant::now() + idle;
                     progressed = true;
                     index += 1;
                 }
@@ -252,8 +263,67 @@ fn wait_for_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::sync::{mpsc, Arc};
+
+    #[test]
+    fn an_idle_connection_outlives_the_frame_budget_but_a_started_frame_does_not() {
+        // Frame budget 250 ms, idle budget 3 s: the wait between frames is long, a frame is not.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(ServerShutdown::default());
+        let worker_stop = stop.clone();
+        let (tx, rx) = mpsc::sync_channel(8);
+        let counters = PeerReceiveCounters::default();
+        let observed = counters.clone();
+        let worker = std::thread::spawn(move || receive_observed(
+            listener, tx, &worker_stop, Duration::from_millis(250), Duration::from_secs(3), None,
+            &PeerTransport::Plain, &observed,
+        ));
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream.write_all(b"\0\0\0\x02ok").unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), b"ok");
+        std::thread::sleep(Duration::from_millis(700)); // past the frame budget, inside the idle one
+        stream.write_all(b"\0\0\0\x03abc").unwrap();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+            b"abc",
+            "the idle wait between frames must not be cut at the frame budget"
+        );
+        // A frame that starts and stalls is still held to the frame budget.
+        stream.write_all(b"\0\0\0\x04x").unwrap();
+        use std::sync::atomic::Ordering::Relaxed;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while counters.0.expired.load(Relaxed) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(counters.0.expired.load(Relaxed), 1, "a stalled frame must expire at the frame budget");
+        stop.stop();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn an_idle_connection_is_closed_at_the_idle_budget() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(ServerShutdown::default());
+        let worker_stop = stop.clone();
+        let (tx, rx) = mpsc::sync_channel(8);
+        let worker = std::thread::spawn(move || receive_observed(
+            listener, tx, &worker_stop, Duration::from_secs(2), Duration::from_millis(300), None,
+            &PeerTransport::Plain, &PeerReceiveCounters::default(),
+        ));
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream.write_all(b"\0\0\0\x02ok").unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), b"ok");
+        stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let mut byte = [0u8; 1];
+        assert_eq!(stream.read(&mut byte).unwrap(), 0, "the receiver must close an idle connection");
+        stop.stop();
+        worker.join().unwrap();
+    }
 
     #[test]
     fn receiver_preserves_frame_order_on_one_connection() {
@@ -266,7 +336,7 @@ mod tests {
         let counters = PeerReceiveCounters::default();
         let observed = counters.clone();
         let worker = std::thread::spawn(move || receive_observed(
-            listener, tx, &worker_stop, Duration::from_secs(2), None,
+            listener, tx, &worker_stop, Duration::from_secs(2), Duration::from_secs(2), None,
             &PeerTransport::Plain, &observed,
         ));
         let mut stream = TcpStream::connect(address).unwrap();
@@ -296,7 +366,7 @@ mod tests {
         let counters = PeerReceiveCounters::default();
         let observed = counters.clone();
         let worker = std::thread::spawn(move || receive_observed(
-            listener, tx, &worker_stop, Duration::from_millis(250), None,
+            listener, tx, &worker_stop, Duration::from_millis(250), Duration::from_millis(250), None,
             &PeerTransport::Plain, &observed,
         ));
         let mut stream = TcpStream::connect(address).unwrap();
@@ -343,6 +413,7 @@ mod tests {
                 listener,
                 tx,
                 &shutdown,
+                Duration::from_secs(2),
                 Duration::from_secs(2),
                 None,
                 &PeerTransport::Plain,
@@ -393,6 +464,7 @@ mod tests {
             frames.push(Frame {
                 stream: stream.into(),
                 deadline: Instant::now() + Duration::from_secs(5),
+                frame_timeout: Duration::from_secs(5),
                 header: [0; 4],
                 header_read: 0,
                 body: Vec::new(),
@@ -440,6 +512,7 @@ mod tests {
                 Frame {
                     stream: stream.into(),
                     deadline: Instant::now() + Duration::from_secs(5),
+                    frame_timeout: Duration::from_secs(5),
                     header: [0; 4],
                     header_read: 0,
                     body: Vec::new(),

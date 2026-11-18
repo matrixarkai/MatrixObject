@@ -191,6 +191,20 @@ impl PeerSendStream {
         let _ = transport;
         Ok(Self { socket, #[cfg(feature = "peer-tls")] tls })
     }
+    /// True when the receiver has closed this socket (or sent anything: a receiver never sends on a
+    /// healthy stream, so unread bytes mean a TLS alert or garbage) and a write would be lost.
+    /// Looks without reading and leaves the socket as it was.
+    pub(super) fn peer_closed(&self) -> bool {
+        if self.socket.set_nonblocking(true).is_err() {
+            return true;
+        }
+        let mut probe = [0u8; 1];
+        let closed = match self.socket.peek(&mut probe) {
+            Ok(_) => true,
+            Err(error) => !matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted),
+        };
+        closed || self.socket.set_nonblocking(false).is_err()
+    }
     pub(super) fn send(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<()> {
         #[cfg(feature = "peer-tls")]
         if let Some(connection) = &mut self.tls {
