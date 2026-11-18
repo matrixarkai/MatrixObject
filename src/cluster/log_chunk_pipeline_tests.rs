@@ -151,7 +151,7 @@ mod log_chunk_pipeline_tests {
         );
 
         // a renewal alone: nothing else in the batch names those objects, so the draft saves their
-        // leases only because the renewal's own references were collected
+        // leases only because the renewal's own entries were collected
         run_batch(
             "a renewal alone",
             &mut leader,
