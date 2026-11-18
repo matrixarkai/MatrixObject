@@ -20,7 +20,7 @@
 //!
 //! | variable | default | meaning |
 //! |---|---|---|
-//! | `MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES` | `0` | opt-in WAL checkpoint interval; 1024..134217728 bytes when enabled |
+//! | `MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES` | `67108864` | WAL checkpoint interval; 1024..134217728 bytes; `0` disables checkpoints (the WAL is then never truncated and a voter refuses appends at 512 MiB) |
 //! | `MATRIXOBJECT_METASERVER_ADDR` | `127.0.0.1:17200` | address to bind; port `0` lets the kernel choose |
 //! | `MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS` | `15000` | automatic expiry TTL, 1000..3600000 ms; `0` turns expiry off. The default is five chunk report intervals |
 //! | `MATRIXOBJECT_METASERVER_THREADS` | logical CPUs, clamped to `4..=16` | connections served at once |
@@ -81,6 +81,12 @@ fn main() {
     );
     std::process::exit(2);
 }
+
+#[cfg(all(feature = "meta-server", feature = "metadata-consensus"))]
+/// How much new WAL history triggers a checkpoint when `MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES`
+/// is not set. Without checkpoints the metadata Raft WAL is never truncated and a voter refuses
+/// appends at 512 MiB; 64 MiB keeps well under that. Set `0` to turn checkpoints off.
+const DEFAULT_RAFT_CHECKPOINT_BYTES: usize = 64 * 1024 * 1024;
 
 #[cfg(feature = "meta-server")]
 fn worker_threads_for_parallelism(parallelism: usize) -> usize {
@@ -343,7 +349,7 @@ fn main() {
                     .map_err(|e| e.to_string())?,
                     checkpoint_after_bytes: env_usize(
                         "MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES",
-                        0,
+                        DEFAULT_RAFT_CHECKPOINT_BYTES,
                     ) as u64,
                     wal_zero_fill_bytes: wal_zero_fill,
                     node_id,
@@ -359,10 +365,10 @@ fn main() {
             if let Ok(options) = &configured {
                 if options.checkpoint_after_bytes == 0 {
                     eprintln!(
-                        "warning: MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES is unset; the \
+                        "warning: MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES is 0; the \
                          metadata Raft WAL is never truncated and refuses appends at 512 MiB. \
-                         Set it (1024..134217728) for any workload that publishes many objects \
-                         or appends to log objects"
+                         Remove it for the default (67108864) or set 1024..134217728 for any \
+                         workload that publishes many objects or appends to log objects"
                     );
                 }
             }
@@ -423,6 +429,21 @@ fn main() {
 #[cfg(all(test, feature = "meta-server"))]
 mod tests {
     use super::worker_threads_for_parallelism;
+    #[cfg(feature = "metadata-consensus")]
+    use super::DEFAULT_RAFT_CHECKPOINT_BYTES;
+
+    #[cfg(feature = "metadata-consensus")]
+    #[test]
+    fn the_raft_checkpoint_default_keeps_the_wal_bounded_and_is_a_value_the_server_accepts() {
+        // A WAL that is never truncated refuses appends at 512 MiB, and a plain append writes a
+        // whole-manifest record, so a default of 0 stopped a voter after about 8,000 appends to
+        // objects of ~1,000 extents. The default must be nonzero, inside the accepted range
+        // (1024..=134217728), and well under the refusal size.
+        assert_ne!(DEFAULT_RAFT_CHECKPOINT_BYTES, 0, "0 disables checkpoints");
+        assert!((1024..=134_217_728).contains(&DEFAULT_RAFT_CHECKPOINT_BYTES));
+        assert!(DEFAULT_RAFT_CHECKPOINT_BYTES * 4 <= 512 * 1024 * 1024);
+        assert_eq!(DEFAULT_RAFT_CHECKPOINT_BYTES, 64 * 1024 * 1024);
+    }
 
     #[test]
     fn metadata_worker_default_is_bounded_by_host_parallelism() {

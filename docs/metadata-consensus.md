@@ -196,9 +196,9 @@ separate work. Network chunk Raft is described in `chunk-consensus.md`.
 
 ## Application checkpoint recovery
 
-After upgrading every voter, set `MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES`
-to enable automatic capture, for example `33554432` (32 MiB of new WAL history).
-The default is `0`, which disables capture for a controlled rolling upgrade.
+`MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES` controls automatic capture and
+defaults to `67108864` (64 MiB of new WAL history). Set it to `0` to disable capture
+for a controlled rolling upgrade, and restore it once every voter is upgraded.
 Nonzero values must be between 1024 and 134217728 bytes. Library callers use
 `checkpoint_after_bytes` in their Raft options. The setting does not change group
 identity and may differ between voters; every voter must support restoration.
