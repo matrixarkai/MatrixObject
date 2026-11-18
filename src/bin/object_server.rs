@@ -27,7 +27,7 @@
 //! | `MATRIXOBJECT_CLUSTER_TIMEOUT_MS` | `10000` | bound on one cluster operation |
 //! | `MATRIXOBJECT_CLUSTER_PAGE_BYTES` | `1048576` | page size for written data, 1 to 1048576 |
 //! | `MATRIXOBJECT_CLUSTER_COMPACT_APPEND` | `0` | `1` publishes appends as compact staged decisions; every metadata voter must support the version 11 outcome |
-//! | `MATRIXOBJECT_CLUSTER_RESERVE_NEXT` | `0` | `1` (with compact append) reserves the next append's staged allocation in the commit that publishes the current one, one metadata commit per append instead of two; every metadata voter must support the version 13 outcome |
+//! | `MATRIXOBJECT_CLUSTER_RESERVE_NEXT` | `1` with compact append, else `0` | reserves the next append's staged allocation in the commit that publishes the current one, one metadata commit per append instead of two; every metadata voter must support the version 13 outcome; `0` turns it off |
 //! | `MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS` | *(unset)* | 2 to 4096: merge a log object's short tail once it holds this many extents, so it stays appendable past 4096 |
 //! | `MATRIXOBJECT_CLUSTER_TARGET_GROUPS` | `1` | data groups one object is spread over |
 //! | `MATRIXOBJECT_GATEWAY_NODE_ID` | *(unset)* | cluster mode: this door's id in the metaserver roster (declared there with `MATRIXOBJECT_METASERVER_GATEWAY_ROSTER`). When set, the door heartbeats that node online, withdraws it (draining) on SIGTERM, and clients find live doors with `RemoteMetaClient::list_gateways` |
@@ -211,11 +211,22 @@ fn main() {
         let page_bytes = env_usize("MATRIXOBJECT_CLUSTER_PAGE_BYTES", 1024 * 1024);
         let target_groups = env_usize("MATRIXOBJECT_CLUSTER_TARGET_GROUPS", 1);
         let compact_append = env_usize("MATRIXOBJECT_CLUSTER_COMPACT_APPEND", 0) != 0;
-        let reserve_next = env_usize("MATRIXOBJECT_CLUSTER_RESERVE_NEXT", 0) != 0;
-        if reserve_next && !compact_append {
-            eprintln!("MATRIXOBJECT_CLUSTER_RESERVE_NEXT needs MATRIXOBJECT_CLUSTER_COMPACT_APPEND=1");
-            std::process::exit(2);
-        }
+        // On whenever compact append is: it saves a metadata commit per append (see the table
+        // above). `MATRIXOBJECT_CLUSTER_RESERVE_NEXT=0` turns it off.
+        let reserve_requested = std::env::var("MATRIXOBJECT_CLUSTER_RESERVE_NEXT")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(|_| env_usize("MATRIXOBJECT_CLUSTER_RESERVE_NEXT", 0));
+        let reserve_next = match matrixobjectstore_rs::net::cluster_gateway::resolve_reserve_next(
+            compact_append,
+            reserve_requested,
+        ) {
+            Ok(reserve) => reserve,
+            Err(message) => {
+                eprintln!("{message}");
+                std::process::exit(2);
+            }
+        };
         let compact_extents = match env_usize("MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS", 0) {
             0 => None,
             bound if (2..=4096).contains(&bound) => Some(bound),

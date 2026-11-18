@@ -58,13 +58,21 @@ Refused with `NotImplemented`: multipart, copy, tagging, versioning, `versionId`
 
 ## Opt-in append modes
 
-Both modes are off by default, and the default append is the plain one described above.
+Compact publication and tail compaction are off by default, and the default append is the plain
+one described above. Reserving the next allocation follows compact publication: on with it,
+off without it.
 
 | Variable | Mode |
 |---|---|
 | `MATRIXOBJECT_CLUSTER_COMPACT_APPEND=1` | compact publication |
-| `MATRIXOBJECT_CLUSTER_RESERVE_NEXT=1` | with compact publication, reserve the next append's allocation in the publishing commit (one metadata commit per append) |
+| `MATRIXOBJECT_CLUSTER_RESERVE_NEXT` (on with compact publication; `0` turns it off) | with compact publication, reserve the next append's allocation in the publishing commit (one metadata commit per append instead of two) |
 | `MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS=N` (2 to 4096, for example 3500) | tail compaction |
+
+**Upgrade order.** Compact publication needs every metadata voter to support the version 11
+outcome, and reserving the next allocation the version 13 outcome. Upgrade the voters before the
+gateways. A gateway paired with a voter that does not understand them is not detected: the gateway
+does not fall back, and its appends fail (the S3 answer is a 412 "the object kept changing under
+this append" after its retries). There is no capability handshake yet.
 
 **Compact publication.** Each append takes a leased staged allocation (60 s) and publishes a
 digest-bound decision with `append_staged_object_compact`, instead of the whole manifest. On
