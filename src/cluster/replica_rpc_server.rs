@@ -977,7 +977,7 @@ fn apply_locked(
         ));
     }
     if let ReplicaRequest::LogOp(op) = &request {
-        if guard.maintenance && op.is_mutation() {
+        if guard.health.maintenance() && op.is_mutation() {
             return Err(ObjectError::PreconditionFailed("replica maintenance mode refuses ordinary mutations".into()));
         }
         let store = guard.log_chunks.as_mut().ok_or_else(|| {

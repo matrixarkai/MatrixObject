@@ -21,17 +21,19 @@ impl Drop for Dir {
 }
 
 fn node(dir: Option<&Path>) -> NodeReplica {
+    node_in(dir, false)
+}
+fn node_in(dir: Option<&Path>, maintenance: bool) -> NodeReplica {
+    let health = super::replica_health::ReplicaHealth::new(maintenance, 0, 0);
+    let used_bytes = super::replica_health::Used::new(0, std::sync::Arc::clone(&health));
     NodeReplica {
-        used_bytes: 0,
+        used_bytes,
         service: MatrixReplicaService::new(),
         journal: None,
         journal_checkpoint_after_bytes: 0,
         staged: None,
-        maintenance: false,
         max_pages: 65_536,
-        #[cfg(all(feature = "chunk-consensus", feature = "meta-server"))]
-        applied_membership: None,
-        failed: false,
+        health,
         log_chunks: dir.map(|dir| LogChunkStore::open(dir).unwrap()),
     }
 }
@@ -178,9 +180,10 @@ fn log_chunks_need_durable_storage_and_maintenance_mode_allows_only_reads() {
     let error = call(&mut none, LogOpRequest::tail(V, C, 1)).unwrap_err();
     assert!(matches!(error, ObjectError::PreconditionFailed(_)));
     let dir = Dir::new("maintenance");
-    let mut held = node(Some(&dir.0));
-    call(&mut held, LogOpRequest::append(V, C, 1, 1, 0, bytes(1, 10))).unwrap();
-    held.maintenance = true;
+    let mut open = node(Some(&dir.0));
+    call(&mut open, LogOpRequest::append(V, C, 1, 1, 0, bytes(1, 10))).unwrap();
+    drop(open);
+    let mut held = node_in(Some(&dir.0), true);
     assert!(call(&mut held, LogOpRequest::append(V, C, 1, 1, 10, bytes(1, 10))).is_err());
     assert!(call(&mut held, LogOpRequest::truncate(V, C, 1, 2, 5)).is_err());
     assert!(call(&mut held, LogOpRequest::seal(V, C, 1, 1, false)).is_err());
@@ -202,5 +205,5 @@ fn many_chunks_are_independent_and_the_open_set_is_bounded() {
     // the replica error paths do not poison the node
     assert!(call(&mut a, LogOpRequest::append(V, 1, 1, 1, 5, bytes(0, 10))).is_err(), "differing bytes over held bytes");
     assert_eq!(call(&mut a, LogOpRequest::tail(V, 1, 1)).unwrap().length, 10);
-    assert!(!a.failed);
+    assert!(!a.health.failed());
 }
