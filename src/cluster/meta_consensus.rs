@@ -2771,6 +2771,7 @@ mod tests {
     include!("feature_draft_tests.rs");
     include!("log_chunk_outcome_command_tests.rs");
     include!("log_chunk_commands_tests.rs");
+    include!("log_chunk_cost_probes.rs");
 
     #[test]
     fn compact_read_session_batches_restore_shared_records_before_committing_removal_and_creation() {

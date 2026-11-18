@@ -12,8 +12,8 @@ mod log_chunk_commands_tests {
 
     fn raise(service: &mut MatrixMetaService) {
         service.cluster_features = crate::cluster_features::ClusterFeatures {
-            raised: crate::cluster_features::FEATURE_CHUNK_MANIFEST,
-            declared: [(1, 7)].into(),
+            raised: crate::cluster_features::FEATURE_CHUNK_MANIFEST | crate::cluster_features::FEATURE_LOG_CHUNK_LEASES,
+            declared: [(1, 0x17)].into(),
         };
     }
     fn stored(service: &MatrixMetaService, key: &str) -> Option<ObjectManifest> {
@@ -68,6 +68,14 @@ mod log_chunk_commands_tests {
         // the general publication path still refuses a format 3 manifest, feature or not
         let chunked = ObjectManifest { format_version: 3, bucket: "bucket".into(), key: "x".into(), generation: 1, ..Default::default() };
         assert!(crate::object_manifest::ManifestOutcome::decide(None, chunked).is_err());
+        // a build may read format 3 manifests and not the outcomes that make them: one bit is not enough
+        service.cluster_features = crate::cluster_features::ClusterFeatures {
+            raised: crate::cluster_features::FEATURE_CHUNK_MANIFEST,
+            declared: [(1, 0x17)].into(),
+        };
+        assert!(run(&mut service, &groups, request.clone(), NOW).is_err());
+        service.cluster_features.raised = crate::cluster_features::FEATURE_LOG_CHUNK_LEASES;
+        assert!(run(&mut service, &groups, request.clone(), NOW).is_err());
         raise(&mut service);
         run(&mut service, &groups, request, NOW).unwrap();
         assert_eq!(service.writer_leases.len(), 1);
@@ -156,7 +164,9 @@ mod log_chunk_commands_tests {
             ("gateway-a", lease.epoch, NOW + 20, "nothing"),
         ] {
             let attempt = LogChunkRequest::switch("bucket", key, holder, epoch, "group-0", 10, 0, Vec::new());
-            assert!(run(&mut service, &groups, attempt, now).is_err(), "{holder} {epoch} {now} {key}");
+            // refused by the leader itself (a precondition), not only by the outcome reader behind it
+            let error = run(&mut service, &groups, attempt, now).unwrap_err();
+            assert!(matches!(error, ObjectError::PreconditionFailed(_)), "{holder} {epoch} {now} {key}: {error:?}");
         }
         assert_eq!(service.placement_commit_index, before + 1);
         // a switch that asks for a shorter term never shortens the lease
@@ -242,6 +252,15 @@ mod log_chunk_commands_tests {
         assert_eq!(reply.dropped, 2);
         assert_eq!(service.placement_commit_index, before + 1);
         assert_eq!(service.writer_leases.len(), 1);
+        assert!(service.writer_leases.get("bucket", "c").is_some());
+        // a sweep that names a lease that is NOT over (c runs later) drops nothing and costs no entry
+        let c = service.writer_leases.get("bucket", "c").unwrap();
+        let live = LogChunkRequest::sweep(vec![lref("c", c.epoch)]);
+        let before_live = service.placement_commit_index;
+        let (reply, committed) = run(&mut service, &groups, live, NOW + TTL + 2).unwrap();
+        assert!(!committed);
+        assert_eq!(reply.dropped, 0);
+        assert_eq!(service.placement_commit_index, before_live);
         assert!(service.writer_leases.get("bucket", "c").is_some());
         // a sweep of what is already gone, or whose lease changed since, is filtered out
         let (reply, committed) = run(&mut service, &groups, command, NOW + TTL + 2).unwrap();
@@ -338,5 +357,129 @@ mod log_chunk_commands_tests {
         assert_eq!(switched.length, 100);
         let renewed = reply_of(apply(&mut service, LogChunkRequest::renew("gateway-a", 2 * TTL, vec![lref("log", lease.epoch)])).unwrap());
         assert_eq!(renewed.renewed, 1);
+    }
+
+    // ---- the chunk ids: one id space, named after the entry that creates the chunk ----
+
+    #[test]
+    fn a_page_and_a_grant_name_their_chunks_by_one_function_of_the_raft_index() {
+        use crate::object_manifest::ObjectPageAllocation;
+        let probes = [1u64, 2, 3, 1000, u32::MAX as u64 - 1, u32::MAX as u64, 1 << 32, (1 << 32) + 1, (5 << 32) | 7, (7 << 32) | u32::MAX as u64];
+        let mut seen = std::collections::BTreeSet::new();
+        for index in probes {
+            let (volume, chunk) = lcc::chunk_identity(index);
+            // the encoding a page allocation uses, field for field
+            let page = ObjectPageAllocation { format_version: 1, allocation_id: index, page_count: 1 }.page(0).unwrap();
+            assert_eq!((page.chunk_id.volume_id(), page.chunk_id.id()), (volume, chunk), "index {index}");
+            // the id IS the index, so it is injective
+            assert_eq!((volume << 32) | chunk, index);
+            assert!(volume <= u32::MAX as u64 && chunk <= u32::MAX as u64, "the chunkserver store takes 32 bits");
+            assert!(seen.insert((volume, chunk)), "index {index} repeats an id");
+        }
+    }
+
+    /// Every chunk id the state has named so far, by the entry that named it: a page allocation's
+    /// chunk, and every extent of every object (sealed ones stay in the manifest).
+    fn named_ids(service: &MatrixMetaService, keys: &[String], pages: &[(u64, u64)]) -> Vec<(u64, u64, &'static str)> {
+        let mut all: Vec<(u64, u64, &'static str)> = pages.iter().map(|(v, c)| (*v, *c, "page")).collect();
+        for key in keys {
+            if let Some(manifest) = stored(service, key) {
+                all.extend(manifest.extents.iter().map(|extent| (extent.volume_id, extent.chunk_id, "tail")));
+            }
+        }
+        all
+    }
+
+    #[test]
+    fn interleaved_grants_switches_sweeps_and_allocations_never_name_a_chunk_twice_and_ids_only_go_up() {
+        let (mut service, groups) = fixture(1, 0);
+        raise(&mut service);
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |bound: u64| {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 33) % bound
+        };
+        let mut clock = NOW;
+        let mut keys: Vec<String> = Vec::new();
+        let mut pages: Vec<(u64, u64)> = Vec::new();
+        let mut last_id = 0u64;
+        let check_entry = |service: &MatrixMetaService, last_id: &mut u64, id: (u64, u64)| {
+            // a chunk id is the index of the entry that created it, and entries only go up
+            let combined = (id.0 << 32) | id.1;
+            assert_eq!(combined, service.placement_commit_index, "id {id:?} is not named after its own entry");
+            assert!(combined > *last_id, "ids went back: {combined} after {last_id}");
+            *last_id = combined;
+        };
+        let mut restored = false;
+        for round in 0..400u32 {
+            clock += 400; // leases of one second run out all the time
+            match next(6) {
+                0 => {
+                    // a page allocation: a different entry from any grant
+                    let (outcome, reply) = crate::cluster::meta_server::decide_allocation(&service, 3, 1 << 20).unwrap();
+                    outcome.apply(&mut service).unwrap();
+                    let allocation = match reply {
+                        crate::cluster::MetaReply::ObjectPages(allocation) => allocation,
+                        other => panic!("unexpected reply {other:?}"),
+                    };
+                    let page = allocation.page(0).unwrap();
+                    let id = (page.chunk_id.volume_id(), page.chunk_id.id());
+                    check_entry(&service, &mut last_id, id);
+                    for index in 1..3 {
+                        assert_eq!(allocation.page(index).unwrap().chunk_id, page.chunk_id, "one allocation, one chunk");
+                    }
+                    pages.push(id);
+                }
+                1 => {
+                    let key = format!("o{}", keys.len());
+                    let granted = run(&mut service, &groups, LogChunkRequest::grant("bucket", &key, "gw", lcc::MIN_TTL_MS, "group-0"), clock).unwrap().0;
+                    let open = granted.open.unwrap();
+                    check_entry(&service, &mut last_id, (open.volume_id, open.chunk_id));
+                    keys.push(key);
+                }
+                2 | 3 if !keys.is_empty() => {
+                    let key = keys[next(keys.len() as u64) as usize].clone();
+                    let lease = match service.writer_leases.get("bucket", &key) {
+                        Some(lease) if lease.expires_at_ms > clock => lease,
+                        _ => {
+                            // the lease ran out or was swept: take it over (a later epoch, the open chunk stays open)
+                            let again = run(&mut service, &groups, LogChunkRequest::grant("bucket", &key, "gw2", lcc::MIN_TTL_MS, "group-0"), clock).unwrap().0;
+                            let lease = again.lease.unwrap();
+                            assert_eq!(lease.epoch, service.placement_commit_index);
+                            lease
+                        }
+                    };
+                    let switch = LogChunkRequest::switch("bucket", &key, &lease.holder, lease.epoch, "group-0", 1 + next(1000), 0, Vec::new());
+                    let switched = run(&mut service, &groups, switch.with_ttl(lcc::MIN_TTL_MS), clock).unwrap().0;
+                    let open = switched.open.unwrap();
+                    check_entry(&service, &mut last_id, (open.volume_id, open.chunk_id));
+                }
+                4 => {
+                    for command in lcc::expired(&service, clock) {
+                        let crate::cluster::MetaRequest::LogChunk(command) = command else { unreachable!() };
+                        run(&mut service, &groups, command, clock).unwrap();
+                    }
+                }
+                _ => {}
+            }
+            if round == 200 && !restored {
+                // a restart: the state comes back from its snapshot and the ids carry on from it
+                let bytes = service.export_snapshot().to_bytes().unwrap();
+                let mut late = MatrixMetaService::new();
+                late.install_snapshot(crate::MetaSnapshot::from_bytes(&bytes).unwrap()).unwrap();
+                assert_eq!(late.placement_commit_index, service.placement_commit_index);
+                service = late;
+                restored = true;
+            }
+        }
+        assert!(restored && pages.len() > 20 && keys.len() > 20, "the run exercised allocations and grants: {} {}", pages.len(), keys.len());
+        // after all of it, no chunk id is named twice, across pages and every chunk of every object,
+        // sealed ones included
+        let all = named_ids(&service, &keys, &pages);
+        let unique: std::collections::BTreeSet<(u64, u64)> = all.iter().map(|(v, c, _)| (*v, *c)).collect();
+        assert_eq!(unique.len(), all.len(), "a chunk id is named twice");
+        assert!(all.iter().any(|(_, _, kind)| *kind == "tail") && all.iter().any(|(_, _, kind)| *kind == "page"));
+        let sealed = keys.iter().filter_map(|key| stored(&service, key)).map(|m| m.extents.iter().filter(|e| e.flags & EXTENT_FLAG_SEALED != 0).count()).sum::<usize>();
+        assert!(sealed > 20, "the run sealed {sealed} chunks");
     }
 }

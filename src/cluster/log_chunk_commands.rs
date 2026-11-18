@@ -14,13 +14,14 @@
 //! * sweep (action 5): ONE entry drops many leases whose term is over. Issued by the leader's
 //!   cleanup loop, not by a writer.
 //!
-//! Everything that writes is refused unless the cluster has raised `FEATURE_CHUNK_MANIFEST`: a
+//! Everything that writes is refused unless the cluster has raised `FEATURE_CHUNK_MANIFEST` and
+//! `FEATURE_LOG_CHUNK_LEASES`: a
 //! format 3 manifest cannot be read by a build that predates it, and nothing raises the feature
 //! unless an operator does (see `features_commands`). Decisions are made here on the leader
 //! against the committed state and carried by the outcome, which every node checks again when it
 //! applies it.
 use super::meta_message::MetaReply;
-use crate::cluster_features::FEATURE_CHUNK_MANIFEST;
+use crate::cluster_features::{FEATURE_CHUNK_MANIFEST, FEATURE_LOG_CHUNK_LEASES};
 use crate::log_chunk_outcome::{
     LeaseBatch, LeaseRef, LogChunkChange, WriterLease, ACTION_GRANT, ACTION_SEAL_SWITCH, MAX_BATCH_LEASES,
     MAX_LEASE_TTL_MS,
@@ -271,10 +272,15 @@ pub fn reply_from_payload(bytes: &[u8]) -> Result<LogChunkReply, ObjectError> {
     Ok(reply)
 }
 
-/// The volume and the chunk of the chunk a commit at raft index `index` opens. Unique because an
-/// index is, and each fits 32 bits, which the chunkserver's store requires.
+/// The volume and the chunk of the chunk a commit at raft index `index` opens. This is the very
+/// function a page allocation derives its chunk from (`ObjectPageAllocation::page`): both name a
+/// chunk after the index of the one entry that creates it, in one id space with one encoding.
+/// An entry is either an allocation or a grant, never both, so a chunk id is the index of
+/// exactly one entry: unique, never reused after a lease ends or a chunk seals (an index is never
+/// issued twice, and it is part of the snapshot), and never equal to a page's. Each half fits 32
+/// bits, which the chunkserver's store requires.
 pub fn chunk_identity(index: u64) -> (u64, u64) {
-    (1 + (index >> 32), index & 0xFFFF_FFFF)
+    crate::object_manifest::chunk_identity_of_index(index)
 }
 
 pub fn reply(
@@ -316,7 +322,8 @@ pub(super) enum Decision {
 }
 
 fn require_feature(service: &MatrixMetaService) -> Result<(), ObjectError> {
-    if !service.cluster_features.has(FEATURE_CHUNK_MANIFEST) {
+    // both: a build that reads format 3 manifests may still not read the outcomes that make them
+    if !service.cluster_features.has(FEATURE_CHUNK_MANIFEST | FEATURE_LOG_CHUNK_LEASES) {
         return Err(refused("chunk-granular manifests are not enabled for this cluster"));
     }
     Ok(())

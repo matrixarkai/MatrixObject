@@ -30,11 +30,17 @@ pub const FEATURE_CHUNK_MANIFEST: u64 = 1 << 2;
 /// reclaims pages frees a superseded generation only a grace window after it was superseded (see
 /// docs/read-session-leases.md). Declared by a voter whose reclamation, if any, keeps that rule.
 pub const FEATURE_READ_GRACE: u64 = 1 << 3;
+/// The metadata plane reads and applies the log chunk outcomes (versions 15 and 16: the writer
+/// lease grant, the chunk switch, the batched renewal and drop). Declared only by a build that
+/// reads all of them; the log chunk commands need this bit AND `FEATURE_CHUNK_MANIFEST`. Bit 3 is
+/// taken by the gateway side, and bits 8 through 15 are held for it.
+pub const FEATURE_LOG_CHUNK_LEASES: u64 = 1 << 4;
 /// Bits 8 through 15 are held for the gateway recovery records.
 pub const FEATURE_GATEWAY_RESERVED_MASK: u64 = 0xff << 8;
 /// Every bit this build knows how to read.
 pub const SUPPORTED_FEATURES: u64 =
     FEATURE_COMPACT_APPEND | FEATURE_RESERVE_NEXT | FEATURE_CHUNK_MANIFEST | FEATURE_READ_GRACE
+        | FEATURE_LOG_CHUNK_LEASES
         | FEATURE_GATEWAY_RESERVED_MASK;
 
 /// Most voters a declaration table holds.
