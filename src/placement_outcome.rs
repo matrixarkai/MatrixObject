@@ -105,6 +105,74 @@ pub struct PlacementChange {
     #[prost(message, optional, tag = "2")]
     pub after: Option<PlacementValue>,
 }
+/// One voter's declared feature bits.
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct FeatureDeclaration {
+    #[prost(uint64, tag = "1")]
+    pub voter: u64,
+    #[prost(uint64, tag = "2")]
+    pub bits: u64,
+}
+/// The cluster feature set as it is carried by an outcome.
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct FeatureTable {
+    #[prost(uint64, tag = "1")]
+    pub raised: u64,
+    /// Ordered by voter id, one entry per voter.
+    #[prost(message, repeated, tag = "2")]
+    pub declared: Vec<FeatureDeclaration>,
+}
+impl FeatureTable {
+    pub(crate) fn from_features(features: &crate::cluster_features::ClusterFeatures) -> Self {
+        Self {
+            raised: features.raised,
+            declared: features.declared.iter().map(|(voter, bits)| FeatureDeclaration { voter: *voter, bits: *bits }).collect(),
+        }
+    }
+    pub(crate) fn to_features(&self) -> Result<crate::cluster_features::ClusterFeatures, ObjectError> {
+        let mut declared = std::collections::BTreeMap::new();
+        for entry in &self.declared {
+            if declared.insert(entry.voter, entry.bits).is_some() {
+                return Err(invalid("feature table repeats a voter"));
+            }
+        }
+        let features = crate::cluster_features::ClusterFeatures { raised: self.raised, declared };
+        features.validate()?;
+        Ok(features)
+    }
+}
+/// A change of the cluster feature set: either one voter declares its bits, or the raised bits
+/// grow. Applied only against exactly the set it was decided from.
+#[derive(Clone, PartialEq, Message)]
+pub struct FeaturesChange {
+    #[prost(message, optional, tag = "1")]
+    pub before: Option<FeatureTable>,
+    #[prost(message, optional, tag = "2")]
+    pub after: Option<FeatureTable>,
+}
+impl FeaturesChange {
+    fn validate(&self) -> Result<(), ObjectError> {
+        let before = self.before.as_ref().ok_or_else(|| invalid("feature change lacks its prior set"))?.to_features()?;
+        let after = self.after.as_ref().ok_or_else(|| invalid("feature change lacks its resulting set"))?.to_features()?;
+        let raised_changed = after.raised != before.raised;
+        let declared_changed = after.declared != before.declared;
+        // a bit never goes down, and this build refuses a bit it cannot read itself
+        if after.raised & before.raised != before.raised
+            || after.raised & !crate::cluster_features::SUPPORTED_FEATURES != 0
+            || raised_changed == declared_changed
+        {
+            return Err(invalid("invalid cluster feature change"));
+        }
+        if declared_changed {
+            // exactly one voter is added or changed, none is removed
+            let changed = after.declared.iter().filter(|(voter, bits)| before.declared.get(voter) != Some(bits)).count();
+            if changed != 1 || before.declared.keys().any(|voter| !after.declared.contains_key(voter)) {
+                return Err(invalid("a feature change declares one voter at a time"));
+            }
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, PartialEq, Message)]
 pub struct PlacementOutcome {
     #[prost(uint32, tag = "1")]
@@ -138,6 +206,9 @@ pub struct PlacementOutcome {
     /// The next append's allocation, created by the commit that publishes this one.
     #[prost(message, optional, tag = "15")]
     pub reserved: Option<crate::staged_allocation::StagedAllocation>,
+    /// Version 14 only: a change of the cluster feature set and nothing else.
+    #[prost(message, optional, tag = "16")]
+    pub features: Option<FeaturesChange>,
 }
 fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
@@ -270,6 +341,20 @@ impl PlacementOutcome {
     /// `manifest_validated` says the publication's manifests were validated by the caller
     /// (the expansion of a compact append), so they are not walked again.
     fn validate_manifest_binding_with(&self, manifest_validated: bool) -> Result<(), ObjectError> {
+        if self.features.is_some() || self.version == 14 {
+            let change = self.features.as_ref().filter(|_| self.version == 14)
+                .ok_or_else(|| invalid("a feature outcome is version 14 and carries its change"))?;
+            change.validate()?;
+            if self.before_index.checked_add(1) != Some(self.after_index)
+                || self.manifest.is_some() || self.retention.is_some() || self.staging.is_some()
+                || self.retention_deadline.is_some() || self.copy_source.is_some()
+                || self.publication_fence.is_some() || self.manifest_append.is_some() || self.reserved.is_some()
+                || self.read_session_open.is_some() || self.read_session_removal.is_some()
+                || !self.nodes.is_empty() || !self.placements.is_empty() {
+                return Err(invalid("a feature outcome changes unrelated state"));
+            }
+            return Ok(());
+        }
         if self.reserved.is_some() && !(self.version == 13 || (self.version == 4 && self.manifest.is_some())) {
             return Err(invalid("a reservation belongs to a publication"));
         }
@@ -513,6 +598,7 @@ impl PlacementOutcome {
             read_session_removal: None,
             manifest_append: Some(append),
             reserved: None,
+            features: None,
         };
         outcome.validate_manifest_binding()?;
         outcome.validate_append_publication(service, true, before_manifest, after_manifest)?;
@@ -604,6 +690,7 @@ impl PlacementOutcome {
             read_session_removal: None,
             manifest_append: None,
             reserved: None,
+            features: None,
         };
         outcome.validate_manifest_binding()?;
         outcome.validate_publication(service, true)?;
@@ -785,6 +872,7 @@ impl PlacementOutcome {
             read_session_removal: None,
             manifest_append: None,
             reserved: None,
+            features: None,
         })
     }
     pub fn finish(mut self, service: &MatrixMetaService) -> Result<Self, ObjectError> {
@@ -820,6 +908,25 @@ impl PlacementOutcome {
         self.to_payload()?;
         Ok(self)
     }
+    /// The outcome that records one voter's declaration or raises bits: `after` is the whole
+    /// set the service will hold. The caller has decided the change is allowed.
+    pub(crate) fn features_change(
+        service: &MatrixMetaService,
+        after: &crate::cluster_features::ClusterFeatures,
+    ) -> Result<Self, ObjectError> {
+        let outcome = Self {
+            version: 14,
+            before_index: service.placement_commit_index,
+            after_index: service.placement_commit_index + 1,
+            features: Some(FeaturesChange {
+                before: Some(FeatureTable::from_features(&service.cluster_features)),
+                after: Some(FeatureTable::from_features(after)),
+            }),
+            ..Default::default()
+        };
+        outcome.to_payload()?;
+        Ok(outcome)
+    }
     pub fn to_payload(&self) -> Result<Vec<u8>, ObjectError> {
         self.validate_manifest_binding()?;
         if self.encoded_len() > LIMIT - 12 {
@@ -853,6 +960,17 @@ impl PlacementOutcome {
     /// append against the stored manifest, which validated them.
     fn apply_with(&self, service: &mut MatrixMetaService, manifest_validated: bool) -> Result<(), ObjectError> {
         self.validate_manifest_binding_with(manifest_validated)?;
+        if let Some(change) = &self.features {
+            // checked against exactly the state it was decided from; never skipped
+            let before = change.before.as_ref().unwrap().to_features()?;
+            if self.before_index != service.placement_commit_index || before != service.cluster_features {
+                return Err(invalid("cluster feature outcome does not match the current set"));
+            }
+            service.cluster_features = change.after.as_ref().unwrap().to_features()?;
+            service.placement_commit_index = self.after_index;
+            service.invalidate_snapshot_export_cache();
+            return Ok(());
+        }
         if let Some(append) = &self.manifest_append {
             let (before, stored) = service.object_manifests.get_with_digest(&ObjectId::new(append.bucket.clone(), append.key.clone()))?
                 .ok_or_else(|| invalid("compact append prior manifest missing"))?;

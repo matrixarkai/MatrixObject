@@ -831,6 +831,14 @@ fn apply(
     let decision = match &request {
         MetaRequest::CopyManifest(command) => Some(super::manifest_copy_commands::prepare(
             &guard.service, &guard.groups, command, max_payload_bytes)?),
+        MetaRequest::Features(command) if !command.is_read() => match super::features_commands::prepare(&guard.service, command)? {
+            Some(outcome) => {
+                let after = outcome.features.as_ref().and_then(|change| change.after.clone())
+                    .ok_or_else(|| ObjectError::Corruption("feature outcome lacks its result".into()))?;
+                Some((outcome, MetaReply::Features(after)))
+            }
+            None => return Ok(super::features_commands::reply(&guard.service.cluster_features)),
+        },
         MetaRequest::StagedAllocation(command) if !command.is_read() => {
             if guard.storage.is_none() {
                 return Err(ObjectError::PreconditionFailed("staged allocation requires durable metadata storage".into()));
@@ -1050,6 +1058,7 @@ pub(super) fn decide_allocation(
         read_session_removal: None,
             manifest_append: None,
             reserved: None,
+            features: None,
     };
     outcome.to_payload()?;
     Ok((outcome, reply))
@@ -1142,6 +1151,19 @@ pub(super) fn apply_with_groups(
         let (outcome, reply) = super::manifest_copy_commands::prepare(service, groups, command, limit)?;
         outcome.apply(service)?;
         return Ok(reply);
+    }
+    if let MetaRequest::Features(command) = &request {
+        if !command.is_read() {
+            return match super::features_commands::prepare(service, command)? {
+                Some(outcome) => {
+                    let after = outcome.features.as_ref().and_then(|change| change.after.clone())
+                        .ok_or_else(|| ObjectError::Corruption("feature outcome lacks its result".into()))?;
+                    outcome.apply(service)?;
+                    Ok(MetaReply::Features(after))
+                }
+                None => Ok(super::features_commands::reply(&service.cluster_features)),
+            };
+        }
     }
     if let MetaRequest::StagedAllocation(command) = &request {
         if !command.is_read() {
@@ -1363,6 +1385,8 @@ pub(super) fn apply_to_meta(
 ) -> Result<MetaReply, ObjectError> {
     match request {
         MetaRequest::CopyManifest(_) => Err(ObjectError::InvalidArgument("atomic copy requires catalog dispatch".into())),
+        MetaRequest::Features(command) if command.is_read() => super::features_commands::read(guard, &command),
+        MetaRequest::Features(_) => Err(ObjectError::InvalidArgument("feature changes require catalog dispatch".into())),
         MetaRequest::StagedAllocation(command) => super::staged_allocation_commands::read(guard, &command, max_payload_bytes),
         MetaRequest::ManifestRetention(command) => {
             command.validate()?;

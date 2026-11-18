@@ -109,6 +109,8 @@ pub enum MetaRequestCode {
     StagedAllocation = 93,
     CopyManifest = 94,
     PlanAppendRoutes = 95,
+    /// Declare, raise or read the cluster feature set.
+    Features = 96,
 }
 
 impl MetaRequestCode {
@@ -151,6 +153,7 @@ impl MetaRequestCode {
             93 => Some(MetaRequestCode::StagedAllocation),
             94 => Some(MetaRequestCode::CopyManifest),
             95 => Some(MetaRequestCode::PlanAppendRoutes),
+            96 => Some(MetaRequestCode::Features),
             _ => None,
         }
     }
@@ -190,6 +193,7 @@ impl MetaRequestCode {
             MetaRequestCode::StagedAllocation,
             MetaRequestCode::CopyManifest,
             MetaRequestCode::PlanAppendRoutes,
+            MetaRequestCode::Features,
         ]
     }
 }

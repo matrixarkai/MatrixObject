@@ -396,6 +396,25 @@ impl RemoteMetaClient {
             reply => Err(unexpected_reply("metadata membership", &reply)),
         }
     }
+    /// The cluster feature set as committed.
+    pub fn read_cluster_features(&mut self) -> Result<crate::cluster_features::ClusterFeatures, ObjectError> {
+        self.feature_call(super::FeaturesRequest::read())
+    }
+    /// Record the feature bits `voter` reads. A repeat of what is already recorded changes nothing.
+    pub fn declare_voter_features(&mut self, voter: u64, bits: u64) -> Result<crate::cluster_features::ClusterFeatures, ObjectError> {
+        self.feature_call(super::FeaturesRequest::declare(voter, bits))
+    }
+    /// Raise `bits`. Refused unless every voter in `voters` (the whole membership, ascending) has
+    /// declared every one of them.
+    pub fn raise_cluster_features(&mut self, bits: u64, voters: Vec<u64>) -> Result<crate::cluster_features::ClusterFeatures, ObjectError> {
+        self.feature_call(super::FeaturesRequest::raise(bits, voters))
+    }
+    fn feature_call(&mut self, request: super::FeaturesRequest) -> Result<crate::cluster_features::ClusterFeatures, ObjectError> {
+        match self.call(MetaRequest::Features(request))? {
+            MetaReply::Features(table) => table.to_features(),
+            other => Err(unexpected_reply("a cluster feature set", &other)),
+        }
+    }
     /// Describe this voter without leader routing or a read barrier.
     pub fn metadata_group_identity(&mut self) -> Result<super::MetaGroupIdentity, ObjectError> {
         match self.call_one(&MetaRequest::GroupIdentity).into_result()? {

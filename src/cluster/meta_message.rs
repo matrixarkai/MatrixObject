@@ -208,6 +208,7 @@ pub fn object_id(bucket: &str, key: &str) -> ObjectId {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaRequest {
     CopyManifest(crate::manifest_copy::ManifestCopyRequest),
+    Features(super::features_commands::FeaturesRequest),
     PlanAppendRoutes(super::append_plan::AppendPlanRequest),
     StagedAllocation(crate::staged_allocation::StagedAllocationRequest),
     ManifestRetention(crate::manifest_retention::ManifestRetentionRequest),
@@ -331,6 +332,7 @@ impl MetaRequest {
             MetaRequest::ManifestRetention(_) => MetaRequestCode::ManifestRetention,
             MetaRequest::StagedAllocation(_) => MetaRequestCode::StagedAllocation,
             MetaRequest::CopyManifest(_) => MetaRequestCode::CopyManifest,
+            MetaRequest::Features(_) => MetaRequestCode::Features,
             MetaRequest::PlanAppendRoutes(_) => MetaRequestCode::PlanAppendRoutes,
             MetaRequest::GroupIdentity => MetaRequestCode::GroupIdentity,
             MetaRequest::HeartbeatRootNode { .. } => MetaRequestCode::HeartbeatRootNode,
@@ -407,6 +409,7 @@ impl MetaRequest {
             MetaRequest::ManifestRetention(request) => return request.encode_to_vec(),
             MetaRequest::StagedAllocation(request) => return request.encode_to_vec(),
             MetaRequest::CopyManifest(request) => return request.encode_to_vec(),
+            MetaRequest::Features(request) => return request.encode_to_vec(),
             MetaRequest::PlanAppendRoutes(request) => return request.encode_to_vec(),
             MetaRequest::GroupIdentity => {}
             MetaRequest::CommitObjectPlacementIfCurrent {
@@ -559,6 +562,9 @@ impl MetaRequest {
         if code == MetaRequestCode::CopyManifest {
             return crate::manifest_copy::ManifestCopyRequest::from_payload(payload).map(Self::CopyManifest);
         }
+        if code == MetaRequestCode::Features {
+            return super::features_commands::FeaturesRequest::from_payload(payload).map(Self::Features);
+        }
         if code == MetaRequestCode::ListChunkRoutes {
             let request = super::chunk_group_route::RoutePageRead::from_payload(payload)?;
             return Ok(Self::ListChunkRoutes { after: request.after, limit: request.limit });
@@ -692,6 +698,7 @@ impl MetaRequest {
             | MetaRequestCode::ManifestRetention
             | MetaRequestCode::StagedAllocation
             | MetaRequestCode::CopyManifest
+            | MetaRequestCode::Features
             | MetaRequestCode::PlanAppendRoutes
             | MetaRequestCode::ReportChunkNode
             | MetaRequestCode::AllocateObjectPages
@@ -859,6 +866,7 @@ fn validate_manifest_route_payload(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaReply {
     StagedAllocation(crate::staged_allocation::StagedAllocationReply),
+    Features(crate::placement_outcome::FeatureTable),
     AppendPlan(super::append_plan::AppendPlanReply),
     ManifestRetention(crate::manifest_retention::ManifestRetentionReply),
     Manifests(crate::object_manifest::ManifestListPage),
@@ -923,6 +931,7 @@ impl MetaReply {
             Self::Manifests(page) => page.encoded_len(),
             Self::ManifestRetention(reply) => reply.encoded_len(),
             Self::StagedAllocation(reply) => reply.encoded_len(),
+            Self::Features(reply) => reply.encoded_len(),
             Self::AppendPlan(reply) => reply.encoded_len(),
             Self::PlacementNode(node) => node_payload_len(
                 &node.node_id,
@@ -987,6 +996,7 @@ impl MetaReply {
             MetaReply::Manifests(page) => return page.encode_to_vec(),
             MetaReply::ManifestRetention(reply) => return reply.encode_to_vec(),
             MetaReply::StagedAllocation(reply) => return reply.encode_to_vec(),
+            MetaReply::Features(reply) => return reply.encode_to_vec(),
             MetaReply::AppendPlan(reply) => return reply.encode_to_vec(),
             MetaReply::PlacementNode(node) => put_node(&mut out, node),
             MetaReply::RootNodes(nodes) => {
@@ -1184,6 +1194,9 @@ impl MetaReply {
         if code == MetaRequestCode::StagedAllocation {
             return crate::staged_allocation::StagedAllocationReply::from_payload(payload).map(Self::StagedAllocation);
         }
+        if code == MetaRequestCode::Features {
+            return super::features_commands::reply_from_payload(payload).map(Self::Features);
+        }
         if code == MetaRequestCode::ListChunkRoutes {
             return super::chunk_group_route::RoutePage::from_payload(payload)
                 .map(Self::ChunkRoutePage);
@@ -1226,6 +1239,7 @@ impl MetaReply {
             | MetaRequestCode::ManifestRetention
             | MetaRequestCode::StagedAllocation
             | MetaRequestCode::CopyManifest
+            | MetaRequestCode::Features
             | MetaRequestCode::PlanAppendRoutes
             | MetaRequestCode::GroupIdentity => unreachable!(),
             MetaRequestCode::ChunkCatalog

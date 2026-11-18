@@ -190,6 +190,10 @@ mod staged_allocation_commands;
 #[cfg(feature = "meta-server")]
 mod staged_lease_sweeper;
 #[cfg(feature = "meta-server")]
+mod features_commands;
+#[cfg(feature = "meta-server")]
+pub use features_commands::FeaturesRequest;
+#[cfg(feature = "meta-server")]
 pub use meta_identity::MetaGroupIdentity;
 
 pub use message::{ChunkGroupIdentity, ReplicaReply, ReplicaRequest};
