@@ -3261,3 +3261,95 @@ fn a_node_that_stops_reporting_is_still_expired_when_reports_are_suppressed() {
 }
 #[path = "node_regime/cluster_gateway_processes.rs"]
 mod cluster_gateway_processes;
+
+/// The log chunk commands and the feature commands through the REAL leader pipeline: three voter
+/// processes, each request prepared against a draft and committed through Raft, then applied by
+/// every voter. A plain-service test cannot see a field the draft forgets to restore; here the
+/// commit-apply fails on a service that already holds the change and the leader's consensus worker
+/// dies, so the next request is refused. The state is read back from the leader, a follower is
+/// killed and restarted, and the state must come back identical from its journal and the leader.
+#[test]
+fn log_chunk_and_feature_commands_commit_through_the_real_leader_pipeline() {
+    use matrixobjectstore_rs::cluster::{ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity};
+    use matrixobjectstore_rs::cluster_features::{FEATURE_CHUNK_MANIFEST, FEATURE_LOG_CHUNK_LEASES, SUPPORTED_FEATURES};
+    use matrixobjectstore_rs::log_chunk_outcome::LeaseRef;
+    let config = ChunkGroupConfig {
+        placement_id: "group-a".into(),
+        failure_domain: "rack-a".into(),
+        identity: Some(ChunkGroupIdentity {
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
+            version: 1,
+            group_id: 1,
+            node_id: 1,
+            capacity_bytes: 1 << 40,
+            max_pages: 1 << 20,
+            voters: vec![1, 2, 3],
+            peer_endpoints: vec!["127.0.0.1:9101".into(), "127.0.0.1:9102".into(), "127.0.0.1:9103".into()],
+        }),
+        api_endpoints: vec!["127.0.0.1:9201".into(), "127.0.0.1:9202".into(), "127.0.0.1:9203".into()],
+        member_ids: vec!["member-a".into(), "member-b".into(), "member-c".into()],
+    };
+    let catalog = ChunkGroupCatalog::new(vec![config]).unwrap();
+    let mut group = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    // nothing is enabled by default: a grant is refused
+    assert!(client.grant_log_chunk("bucket", "early", "gw-a", 30_000, "group-a").is_err());
+    // declare and raise, each a request the leader prepares against a draft then commits
+    for voter in 1..=3u64 {
+        client.declare_voter_features(voter, SUPPORTED_FEATURES).unwrap();
+    }
+    let both = FEATURE_CHUNK_MANIFEST | FEATURE_LOG_CHUNK_LEASES;
+    assert!(client.raise_cluster_features(both, vec![1, 2, 3]).unwrap().has(both));
+    // the leader survived: its next requests are still served
+    assert!(client.read_cluster_features().unwrap().has(both));
+    // grants of several objects, switches, a batched renewal, a takeover after expiry, a sweep
+    let mut leases = Vec::new();
+    for object in 0..4 {
+        let key = format!("log-{object}");
+        let reply = client.grant_log_chunk("bucket", &key, "gw-a", 30_000, "group-a").unwrap();
+        leases.push((key, reply.lease.unwrap().epoch));
+    }
+    for (key, epoch) in &leases {
+        client.switch_log_chunk("bucket", key, "gw-a", *epoch, "group-a", 4096, 7, Vec::new()).unwrap();
+    }
+    let refs: Vec<LeaseRef> = leases.iter().map(|(key, epoch)| LeaseRef { bucket: "bucket".into(), key: key.clone(), epoch: *epoch }).collect();
+    let renewed = client.renew_log_leases("gw-a", 60_000, refs).unwrap();
+    assert_eq!((renewed.renewed, renewed.lost.len()), (4, 0));
+    // a short lease runs out, another writer takes it over (a later epoch), and the sweep drops the rest
+    let short = client.grant_log_chunk("bucket", "short", "gw-a", 1_000, "group-a").unwrap().lease.unwrap();
+    std::thread::sleep(Duration::from_millis(1_300));
+    let taken = client.grant_log_chunk("bucket", "short", "gw-b", 30_000, "group-a").unwrap().lease.unwrap();
+    assert!(taken.epoch > short.epoch);
+    // a lease nobody renews is dropped by the leader's own cleanup loop, through the same pipeline
+    client.grant_log_chunk("bucket", "gone", "gw-a", 1_000, "group-a").unwrap();
+    let until = Instant::now() + Duration::from_secs(15);
+    while client.read_log_chunk("bucket", "gone").unwrap().lease.is_some() {
+        assert!(Instant::now() < until, "the expired lease was never swept");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // what the leader answers is what a read of each object says, and the leader is still alive
+    let read = client.read_log_chunk("bucket", "log-0").unwrap();
+    assert_eq!(read.lease.unwrap().epoch, leases[0].1);
+    assert_eq!(read.length, 4096);
+    // kill a follower and restart it: its journal replays every entry on top of the leader's state
+    let lagging = (leader + 1) % 3;
+    group.kill(lagging);
+    client.switch_log_chunk("bucket", "log-1", "gw-a", leases[1].1, "group-a", 8192, 7, Vec::new()).unwrap();
+    group.start(lagging);
+    // after a full restart of every voter the committed state is the same from any of them
+    for index in 0..3 {
+        group.kill(index);
+    }
+    for index in 0..3 {
+        group.start(index);
+    }
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    let after = client.read_log_chunk("bucket", "log-1").unwrap();
+    assert_eq!(after.lease.unwrap().epoch, leases[1].1);
+    assert_eq!(after.length, 4096 + 8192);
+    assert!(client.read_cluster_features().unwrap().has(both));
+    assert_eq!(client.read_log_chunk("bucket", "short").unwrap().lease.unwrap().holder, "gw-b");
+}
