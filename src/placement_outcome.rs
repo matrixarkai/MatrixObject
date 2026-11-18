@@ -948,7 +948,7 @@ impl PlacementOutcome {
     }
     /// The version 15 outcome for `change`, with the manifest change `manifest` makes. Tests only:
     /// nothing in a build decides one yet.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "metadata-consensus"))]
     pub(crate) fn log_chunk_for_tests(
         service: &MatrixMetaService,
         change: crate::log_chunk_outcome::LogChunkChange,
