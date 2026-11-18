@@ -382,7 +382,7 @@ mod log_chunk_outcome_tests {
         let id = crate::ObjectId::new("bucket".to_string(), "log".to_string());
         {
             let nodes = groups.affected_nodes(vec!["group-0".to_string()]);
-            let mut draft = PlacementDraft::with_records(&mut service, nodes, vec![id]);
+            let draft = PlacementDraft::with_records(&mut service, nodes, vec![id]);
             switch.apply(draft.service).unwrap();
         }
         assert_eq!(service.writer_leases, leases);
