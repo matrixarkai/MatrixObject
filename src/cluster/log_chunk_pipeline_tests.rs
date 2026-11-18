@@ -188,4 +188,45 @@ mod log_chunk_pipeline_tests {
             false,
         );
     }
+
+    #[test]
+    fn a_switch_into_another_group_restores_the_capacity_of_the_group_it_leaves() {
+        // two groups: the object holds a sealed chunk in group-0 and its next chunk opens in group-1.
+        // The capacity the sealed bytes charge group-0 is saved only because the draft names the
+        // groups of the placement the object already has; the request names group-1 alone.
+        let (mut leader, groups) = fixture(2, 0);
+        let mut follower = leader.clone();
+        let both = crate::cluster_features::FEATURE_CHUNK_MANIFEST | crate::cluster_features::FEATURE_LOG_CHUNK_LEASES;
+        run_batch(
+            "features",
+            &mut leader,
+            &mut follower,
+            &groups,
+            vec![
+                MetaRequest::Features(FeaturesRequest::declare(1, crate::cluster_features::SUPPORTED_FEATURES)),
+                MetaRequest::Features(FeaturesRequest::raise(both, vec![1])),
+            ],
+            true,
+        );
+        run_batch(
+            "a grant in group-0",
+            &mut leader,
+            &mut follower,
+            &groups,
+            vec![MetaRequest::LogChunk(LogChunkRequest::grant("bucket", "move", "gw-a", 30_000, "group-0"))],
+            true,
+        );
+        let epoch = leader.writer_leases.get("bucket", "move").unwrap().epoch;
+        run_batch(
+            "a switch into group-1",
+            &mut leader,
+            &mut follower,
+            &groups,
+            vec![MetaRequest::LogChunk(LogChunkRequest::switch("bucket", "move", "gw-a", epoch, "group-1", 4096, 9, Vec::new()))],
+            true,
+        );
+        let charged = |service: &MatrixMetaService, node: &str| service.nodes[node].committed_bytes;
+        assert!(charged(&leader, "group-0") > 0, "the sealed chunk charges the group it lives in");
+        assert_eq!(charged(&leader, "group-1"), 0);
+    }
 }
