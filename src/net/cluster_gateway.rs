@@ -540,11 +540,71 @@ fn now_ms() -> u64 {
         .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
+/// Idle metadata connections the gateway keeps, from `MATRIXOBJECT_CLUSTER_POOL_MAX` when it is a
+/// positive number (else 64) and never fewer than the worker threads: each open HTTP connection
+/// holds a metadata connection for the length of a request, and one more than the pool holds is
+/// opened for that request and dropped afterwards.
+pub fn resolve_pool_max(requested: Option<&str>, worker_threads: usize) -> usize {
+    requested
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value >= 1)
+        .unwrap_or(64)
+        .max(worker_threads.max(1))
+}
+
+/// The manifests the gateway remembers so a repeated append can skip reading one: at most a
+/// fixed number, the least recently used leaving first. (Emptying the whole cache when it was
+/// full, as this once did, made every object miss at once whenever the working set exceeded it.)
+#[derive(Default)]
+pub(crate) struct ManifestCache {
+    entries: HashMap<(String, String), (ObjectManifest, u64)>,
+    /// Entries by the tick of their last use, oldest first.
+    order: std::collections::BTreeMap<u64, (String, String)>,
+    tick: u64,
+}
+
+impl ManifestCache {
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(crate) fn get(&mut self, bucket: &str, key: &str) -> Option<ObjectManifest> {
+        let id = (bucket.to_owned(), key.to_owned());
+        let (manifest, used) = self.entries.get_mut(&id)?;
+        self.order.remove(used);
+        self.tick += 1;
+        *used = self.tick;
+        self.order.insert(self.tick, id);
+        Some(manifest.clone())
+    }
+
+    pub(crate) fn insert(&mut self, manifest: ObjectManifest, capacity: usize) {
+        let id = (manifest.bucket.clone(), manifest.key.clone());
+        if let Some((_, used)) = self.entries.remove(&id) {
+            self.order.remove(&used);
+        }
+        while self.entries.len() >= capacity.max(1) {
+            let Some((_, oldest)) = self.order.pop_first() else { break };
+            self.entries.remove(&oldest);
+        }
+        self.tick += 1;
+        self.order.insert(self.tick, id.clone());
+        self.entries.insert(id, (manifest, self.tick));
+    }
+
+    pub(crate) fn remove(&mut self, bucket: &str, key: &str) {
+        if let Some((_, used)) = self.entries.remove(&(bucket.to_owned(), key.to_owned())) {
+            self.order.remove(&used);
+        }
+    }
+}
+
 /// The S3 door over the cluster.
 pub struct ClusterGateway {
     connect: Box<Connector>,
     pool: Mutex<Vec<Box<dyn ObjectPlane>>>,
-    manifests: Mutex<HashMap<(String, String), ObjectManifest>>,
+    manifests: Mutex<ManifestCache>,
     options: GatewayOptions,
     bucket_hint: String,
 }
@@ -565,7 +625,7 @@ impl ClusterGateway {
         Self {
             connect: Box::new(connect),
             pool: Mutex::new(Vec::new()),
-            manifests: Mutex::new(HashMap::new()),
+            manifests: Mutex::new(ManifestCache::default()),
             options,
             bucket_hint: bucket_hint.into(),
         }
@@ -626,27 +686,18 @@ impl ClusterGateway {
 
     fn remember(&self, manifest: &ObjectManifest) {
         if let Ok(mut cache) = self.manifests.lock() {
-            if cache.len() >= self.options.cache_entries.max(1) {
-                cache.clear();
-            }
-            cache.insert(
-                (manifest.bucket.clone(), manifest.key.clone()),
-                manifest.clone(),
-            );
+            cache.insert(manifest.clone(), self.options.cache_entries.max(1));
         }
     }
 
     fn forget(&self, bucket: &str, key: &str) {
         if let Ok(mut cache) = self.manifests.lock() {
-            cache.remove(&(bucket.to_string(), key.to_string()));
+            cache.remove(bucket, key);
         }
     }
 
     fn cached(&self, bucket: &str, key: &str) -> Option<ObjectManifest> {
-        self.manifests
-            .lock()
-            .ok()
-            .and_then(|cache| cache.get(&(bucket.to_string(), key.to_string())).cloned())
+        self.manifests.lock().ok().and_then(|mut cache| cache.get(bucket, key))
     }
 
     fn route(&self, request: &Request) -> Response {
@@ -1403,6 +1454,66 @@ mod tests {
             state.note_append("b", &format!("object-{index}"));
         }
         assert!(state.2.lock().unwrap().len() <= RECENT_APPENDS_CAP);
+    }
+
+    #[test]
+    fn the_pool_holds_a_connection_for_every_thread_and_more_by_default() {
+        assert_eq!(resolve_pool_max(None, 4), 64);
+        assert_eq!(resolve_pool_max(Some(""), 4), 64);
+        assert_eq!(resolve_pool_max(Some("0"), 4), 64);
+        assert_eq!(resolve_pool_max(Some("nonsense"), 4), 64);
+        assert_eq!(resolve_pool_max(Some(" 200 "), 4), 200);
+        assert_eq!(resolve_pool_max(Some("8"), 16), 16, "never fewer than the worker threads");
+        assert_eq!(resolve_pool_max(None, 256), 256);
+    }
+
+    fn manifest_of(key: &str, generation: u64) -> ObjectManifest {
+        ObjectManifest { format_version: 2, bucket: "b".into(), key: key.into(), generation, ..Default::default() }
+    }
+
+    #[test]
+    fn the_manifest_cache_is_bounded_and_drops_the_least_recently_used_first() {
+        let mut cache = ManifestCache::default();
+        for index in 0..4 {
+            cache.insert(manifest_of(&format!("k{index}"), 1), 4);
+        }
+        // touching k0 makes k1 the oldest
+        assert!(cache.get("b", "k0").is_some());
+        cache.insert(manifest_of("k4", 1), 4);
+        assert_eq!(cache.len(), 4);
+        assert!(cache.get("b", "k1").is_none(), "the least recently used left");
+        for key in ["k0", "k2", "k3", "k4"] {
+            assert!(cache.get("b", key).is_some(), "{key} must still be cached");
+        }
+        // a replaced entry keeps one slot and holds the new value
+        cache.insert(manifest_of("k0", 9), 4);
+        assert_eq!(cache.len(), 4);
+        assert_eq!(cache.get("b", "k0").unwrap().generation, 9);
+        cache.remove("b", "k0");
+        assert!(cache.get("b", "k0").is_none());
+        assert_eq!(cache.len(), 3);
+    }
+
+    #[test]
+    fn a_hot_set_survives_a_working_set_larger_than_the_cache() {
+        let mut cache = ManifestCache::default();
+        let capacity = 64;
+        let (mut hits, mut requests) = (0u32, 0u32);
+        // 32 objects appended to in turn, and between two appends to one of them 32 appends to
+        // objects never seen again: more objects than the cache holds, a hot set that fits
+        for round in 0..2000u64 {
+            let hot = format!("hot-{}", round % 32);
+            requests += 1;
+            if cache.get("b", &hot).is_some() {
+                hits += 1;
+            }
+            cache.insert(manifest_of(&hot, round), capacity);
+            cache.insert(manifest_of(&format!("cold-{round}"), 1), capacity);
+            assert!(cache.len() <= capacity);
+        }
+        // emptying the cache when it filled made the hot set miss after every wipe (about every
+        // 64 inserts); least-recently-used misses only while the hot set is first loaded
+        assert!(hits * 100 >= requests * 95, "hot set hit {hits} of {requests}");
     }
 
     #[test]

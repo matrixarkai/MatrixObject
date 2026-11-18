@@ -28,6 +28,7 @@
 //! | `MATRIXOBJECT_CLUSTER_PAGE_BYTES` | `1048576` | page size for written data, 1 to 1048576 |
 //! | `MATRIXOBJECT_CLUSTER_COMPACT_APPEND` | `0` | `1` publishes appends as compact staged decisions; every metadata voter must support the version 11 outcome |
 //! | `MATRIXOBJECT_CLUSTER_RESERVE_NEXT` | `1` with compact append, else `0` | reserves the next append's staged allocation in the commit that publishes the current one, one metadata commit per append instead of two; every metadata voter must support the version 13 outcome; `0` turns it off |
+//! | `MATRIXOBJECT_CLUSTER_POOL_MAX` | `64` (at least the thread count) | idle metadata connections kept for reuse; a request that finds the pool empty opens one and drops it when the pool is full |
 //! | `MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS` | *(unset)* | 2 to 4096: merge a log object's short tail once it holds this many extents, so it stays appendable past 4096 |
 //! | `MATRIXOBJECT_CLUSTER_TARGET_GROUPS` | `1` | data groups one object is spread over |
 //! | `MATRIXOBJECT_GATEWAY_NODE_ID` | *(unset)* | cluster mode: this door's id in the metaserver roster (declared there with `MATRIXOBJECT_METASERVER_GATEWAY_ROSTER`). When set, the door heartbeats that node online, withdraws it (draining) on SIGTERM, and clients find live doors with `RemoteMetaClient::list_gateways` |
@@ -419,12 +420,19 @@ fn run_cluster_gateway(
         write_timeout: timeout,
         ..ReplicaClientOptions::default()
     };
+    // Each open HTTP connection is served on its own thread and takes a metadata connection for
+    // the length of a request: a pool smaller than the connections in flight opens a new metadata
+    // connection for every request beyond it and drops it afterwards.
+    let pool_max = matrixobjectstore_rs::net::cluster_gateway::resolve_pool_max(
+        std::env::var("MATRIXOBJECT_CLUSTER_POOL_MAX").ok().as_deref(),
+        worker_threads,
+    );
     let options = GatewayOptions {
         write,
         replica,
         operation_timeout: timeout,
         max_object_bytes: max_body_bytes,
-        pool_max: worker_threads.max(1),
+        pool_max,
         compact_append,
         compact_extents,
         reserve_next,
