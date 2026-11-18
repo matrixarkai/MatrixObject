@@ -1127,7 +1127,12 @@ jobs:
       - name: suppressed chunk reports add no entries and never expire a live node
         run: |
           set -o pipefail
-          for name in             unchanged_chunk_reports_add_no_raft_entries_while_changes_and_the_keepalive_are_replicated             a_live_node_stays_online_through_a_leader_change_while_its_reports_are_suppressed             a_node_that_stops_reporting_is_still_expired_when_reports_are_suppressed; do
+          for name in             unchanged_chunk_reports_add_no_raft_entries_while_changes_and_the_keepalive_are_replicated             a_live_node_stays_online_through_a_leader_change_while_its_reports_are_suppressed             a_node_that_stops_reporting_is_still_expired_when_reports_are_suppressed \
+            leader_liveness_costs_no_raft_entries_for_a_node_that_reports_on_time_however_old_its_stamp \
+            after_a_leader_change_a_reporting_node_stays_online_and_a_silent_one_expires_after_the_grace \
+            a_node_that_really_dies_is_expired_within_the_ttl_without_any_leader_change \
+            a_restarted_follower_catches_up_while_the_leader_keeps_a_reporting_node_online \
+            a_healthy_chunk_group_stays_in_placement_through_a_leader_change_and_leaves_when_its_members_die; do
             cargo test --locked --all-features --test network_metadata_consensus "$name" -- --exact --nocapture | tee /tmp/report-suppression.log
             grep -q 'test result: ok. 1 passed' /tmp/report-suppression.log
           done
