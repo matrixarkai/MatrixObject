@@ -16,7 +16,8 @@
 #   GATEWAY_ENV   extra NAME=VALUE pairs for the gateway, space separated, e.g.
 #                 "MATRIXOBJECT_CLUSTER_COMPACT_APPEND=1"
 #   CHECKPOINT_BYTES  MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES for raft3 voters (default unset)
-#   CHUNK_HEARTBEAT_MS chunk server heartbeat interval (default 200 here, 3000 in the product)
+#   CHUNK_HEARTBEAT_MS chunk server heartbeat interval (default 3000, the product default; a shorter value
+#                     is only for quick tests and needs HEARTBEAT_TTL_MS of at least three intervals)
 #   HEARTBEAT_TTL_MS  how long a chunk server stays healthy after its last heartbeat (default 15000, five
 #                     of the default 3000 ms intervals: a TTL under two intervals expires a node on one
 #                     late heartbeat and placement then refuses every write)
@@ -39,7 +40,7 @@ fail() { echo "STOP: $*" >&2; exit 1; }
 
 # a chunk server that is not heard from for HEARTBEAT_TTL_MS is placed out of every group: with a TTL under
 # three heartbeat intervals one heartbeat skipped under load takes a node out until the next one lands
-HB_INTERVAL_MS=${CHUNK_HEARTBEAT_MS:-200}
+HB_INTERVAL_MS=${CHUNK_HEARTBEAT_MS:-3000}
 TTL_MS=${HEARTBEAT_TTL_MS:-15000}
 [ "$TTL_MS" -ge $((3 * HB_INTERVAL_MS)) ] || { echo "STOP: HEARTBEAT_TTL_MS=$TTL_MS is under three chunk heartbeat intervals ($HB_INTERVAL_MS ms)" >&2; exit 1; }
 
