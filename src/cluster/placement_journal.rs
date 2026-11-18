@@ -153,6 +153,7 @@ mod tests {
             manifest_append: None,
             reserved: None,
             features: None,
+            log_chunk: None,
         };
         let second = PlacementOutcome {
             before_index: base + 1,

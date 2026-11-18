@@ -29,7 +29,7 @@ impl MetaSnapshot {
         let version = magic
             .strip_prefix("MOSRSMETA")
             .and_then(|suffix| suffix.parse::<u64>().ok())
-            .filter(|version| (1..=21).contains(version))
+            .filter(|version| (1..=22).contains(version))
             .ok_or_else(|| {
                 ObjectError::Corruption("metadata snapshot byte magic mismatch".to_string())
             })?;
@@ -38,8 +38,8 @@ impl MetaSnapshot {
                 "metadata snapshot byte magic mismatch".to_string(),
             ));
         }
-        if cursor.stream.is_some() && !(18..=21).contains(&version) {
-            return Err(ObjectError::Corruption("streamed metadata snapshot needs version 18 through 21".into()));
+        if cursor.stream.is_some() && !(18..=22).contains(&version) {
+            return Err(ObjectError::Corruption("streamed metadata snapshot needs version 18 through 22".into()));
         }
         let has_transaction_read_versions = version >= 2;
         let has_tombstone_compaction_counters = version >= 3;
@@ -368,6 +368,27 @@ impl MetaSnapshot {
         } else {
             Default::default()
         };
+        let writer_leases = if version >= 22 {
+            let count = cursor.read_u64()?;
+            if count as usize > crate::log_chunk_outcome::MAX_WRITER_LEASES {
+                return Err(ObjectError::Corruption("writer lease table exceeds its bound".into()));
+            }
+            let mut table = crate::log_chunk_outcome::WriterLeaseTable::default();
+            for _ in 0..count {
+                let bucket = cursor.read_string()?;
+                let key = cursor.read_string()?;
+                let holder = cursor.read_string()?;
+                let epoch = cursor.read_u64()?;
+                let expires_at_ms = cursor.read_u64()?;
+                if table.get(&bucket, &key).is_some() {
+                    return Err(ObjectError::Corruption("writer lease table repeats an object".into()));
+                }
+                table.set(&bucket, &key, &crate::log_chunk_outcome::WriterLease { holder, epoch, expires_at_ms });
+            }
+            table
+        } else {
+            Default::default()
+        };
         let checksum = cursor.read_string()?;
         let envelope_digest = cursor.prefix_digest();
         let envelope_checksum = cursor.read_string()?;
@@ -416,6 +437,7 @@ impl MetaSnapshot {
             placement_coordinator_config: placement_roster.coordinator_config,
             placement_commit_index,
             cluster_features,
+            writer_leases,
             checksum,
         };
         if !has_batch_request_receipts

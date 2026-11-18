@@ -31,6 +31,7 @@ pub struct MatrixMetaService {
     placement_coordinator_config: MetadataCoordinatorConfig,
     pub(crate) placement_commit_index: u64,
     pub(crate) cluster_features: crate::cluster_features::ClusterFeatures,
+    pub(crate) writer_leases: crate::log_chunk_outcome::WriterLeaseTable,
     placement_snapshot_export_cache: RefCell<Option<PlacementSnapshotExportCache>>,
     root_state_fingerprint_cache: RefCell<Option<String>>,
     /// Ordered by each record's own key, which the record already holds -- see

@@ -193,6 +193,20 @@ impl MetaSnapshot {
             }
             digest = fnv1a64_resumed(digest, &material);
         }
+        if !self.writer_leases.is_empty() {
+            // Covered only when present, so every snapshot that predates it keeps its checksum.
+            material.clear();
+            append_string(&mut material, "MOSRSLEASES1");
+            append_u64(&mut material, self.writer_leases.len() as u64);
+            for (bucket, key, lease) in self.writer_leases.iter() {
+                append_string(&mut material, bucket);
+                append_string(&mut material, key);
+                append_string(&mut material, &lease.holder);
+                append_u64(&mut material, lease.epoch);
+                append_u64(&mut material, lease.expires_at_ms);
+            }
+            digest = fnv1a64_resumed(digest, &material);
+        }
         let mut checksum = String::with_capacity(24);
         append_etag_of_digest(&mut checksum, digest);
         checksum

@@ -2503,6 +2503,7 @@ mod tests {
     include!("append_plan_command_tests.rs");
     include!("ranged_manifest_read_tests.rs");
     include!("feature_draft_tests.rs");
+    include!("log_chunk_outcome_command_tests.rs");
 
     #[test]
     fn compact_read_session_batches_restore_shared_records_before_committing_removal_and_creation() {

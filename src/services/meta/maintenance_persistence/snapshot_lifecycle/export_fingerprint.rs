@@ -61,6 +61,7 @@ impl MatrixMetaService {
             placement_coordinator_config: self.placement_coordinator_config.clone(),
             placement_commit_index: self.placement_commit_index,
             cluster_features: self.cluster_features.clone(),
+            writer_leases: self.writer_leases.clone(),
             next_change_sequence: self.next_change_sequence,
             compacted_tombstone_count: self.compacted_tombstone_count,
             last_tombstone_compaction_commit_index: self.last_tombstone_compaction_commit_index,

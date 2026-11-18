@@ -9,6 +9,7 @@ mod chunked_manifest_tests;
 pub mod durable_payload;
 pub(crate) mod extent_list;
 pub mod cluster_features;
+pub mod log_chunk_outcome;
 #[cfg(test)]
 mod cluster_features_tests;
 pub mod log_chunk;
