@@ -116,6 +116,53 @@ fn journal_control_tcp_checkpoint_reports_published_epoch_and_recovers_tail() {
     }
 }
 #[test]
+fn journal_control_tcp_negotiates_maintenance_without_mutating_status_reads() {
+    for segmented in [false, true] {
+        let dir = Directory::new();
+        let path = dir.0.join("journal");
+        let options = ReplicaNodeOptions {
+            local_recovery_sidecar: false,
+            ..Default::default()
+        };
+        let server = if segmented {
+            ReplicaNodeServer::bind_with_segmented_journal("127.0.0.1:0", options, &path)
+        } else {
+            ReplicaNodeServer::bind_with_journal("127.0.0.1:0", options, &path)
+        }
+        .unwrap();
+        let (_running, mut client) = run(server);
+        let page = PageId {
+            chunk_id: ChunkId::new(1, 3).unwrap(),
+            page_index: 0,
+        };
+        client.write_chunk(page.clone(), 0, b"durable").unwrap();
+        let v1 = client.journal_status().unwrap();
+        let v2 = client.journal_maintenance_status().unwrap();
+        assert_eq!(v1.version, 1);
+        assert_eq!(v2.version, 2);
+        let mut downgrade = v2.clone();
+        downgrade.version = 1;
+        assert_eq!(v1, downgrade);
+        for _ in 0..5 {
+            assert_eq!(client.journal_maintenance_status().unwrap(), v2);
+            assert_eq!(client.journal_status().unwrap(), v1);
+        }
+        let target = client.checkpoint_journal_with_maintenance().unwrap();
+        assert_eq!(target.version, 2);
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            let status = client.journal_maintenance_status().unwrap();
+            if status.maintenance_is_complete(&target).unwrap() {
+                break;
+            }
+            assert!(Instant::now() < until, "maintenance failed to finish");
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(client.journal_status().unwrap().version, 1);
+        assert_eq!(client.read_chunk(&page, 0, 7).unwrap().data, b"durable");
+    }
+}
+#[test]
 fn journal_control_memory_refusal_does_not_fence_ordinary_requests() {
     let (_running, mut client) =
         run(ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap());

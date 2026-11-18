@@ -11,7 +11,7 @@ use super::{
 use crate::durable_payload::{
     outcome_log::{CheckpointFragment, DecidedMutation, StoredOutcomePosition},
     outcome_segments::SegmentedOutcomeLog,
-    DEFAULT_CAPACITY_BYTES, MAX_BATCH_BYTES, MAX_BATCH_EXTENTS, MAX_EXTENT_BYTES,
+    MAX_BATCH_BYTES, MAX_BATCH_EXTENTS, MAX_EXTENT_BYTES,
 };
 use crate::{
     chunk_namespace_fence::NamespaceFenceOutcome, outcome::PageOutcome, MatrixReplicaService,
@@ -23,6 +23,7 @@ use std::{
     path::Path,
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 fn invalid(error: impl ToString) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
@@ -74,21 +75,46 @@ pub(super) struct SegmentedReplicaJournal {
     job: Option<Job>,
     reapers: Vec<JoinHandle<()>>,
     max_pages: usize,
+    retention_threshold: usize,
+    cleanup: Option<JoinHandle<io::Result<()>>>,
+    next_cleanup: Instant,
     #[cfg(test)]
     syncs: u64,
 }
 impl SegmentedReplicaJournal {
+    #[cfg(all(test, unix))]
     pub fn open(
         path: &Path,
         service: &mut MatrixReplicaService,
         max_pages: usize,
     ) -> io::Result<Self> {
+        Self::open_with_settings(
+            path,
+            service,
+            max_pages,
+            crate::durable_payload::DEFAULT_CAPACITY_BYTES,
+            16,
+        )
+    }
+    pub fn open_with_settings(
+        path: &Path,
+        service: &mut MatrixReplicaService,
+        max_pages: usize,
+        capacity: u64,
+        retention_threshold: usize,
+    ) -> io::Result<Self> {
+        if !(2..=1_000_000).contains(&retention_threshold) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "retention threshold must be 2..1000000 segments",
+            ));
+        }
         if max_pages == 0 {
             return Err(invalid("zero replica page limit"));
         }
-        let log = Arc::new(SegmentedOutcomeLog::open(path, DEFAULT_CAPACITY_BYTES)?);
+        let log = Arc::new(SegmentedOutcomeLog::open(path, capacity)?);
         let loaded = replica_checkpoint_catalog::latest(&log, max_pages)?;
-        let (state, epoch, bytes_since_checkpoint) = match loaded {
+        let (mut state, epoch, bytes_since_checkpoint) = match loaded {
             Some(loaded) => {
                 let epoch = loaded.header.epoch;
                 let mut state = CheckpointState::from_checkpoint(loaded)?;
@@ -108,6 +134,9 @@ impl SegmentedReplicaJournal {
                 (None, 0, 0)
             }
         };
+        if let Some(state) = &mut state {
+            state.next_collection_segments = retention_threshold;
+        }
         let cut = state.as_ref().and_then(|s| s.cut.clone());
         let mut journal = Self {
             log,
@@ -126,6 +155,9 @@ impl SegmentedReplicaJournal {
             job: None,
             reapers: Vec::new(),
             max_pages,
+            retention_threshold,
+            cleanup: None,
+            next_cleanup: Instant::now(),
             #[cfg(test)]
             syncs: 0,
         };
@@ -135,6 +167,7 @@ impl SegmentedReplicaJournal {
         Ok(journal)
     }
     fn health(&mut self) -> io::Result<()> {
+        self.log.check_health()?;
         if let Some(error) = self
             .failure
             .lock()
@@ -170,6 +203,34 @@ impl SegmentedReplicaJournal {
                     .map_err(|_| invalid("checkpoint reaper panicked"))?;
             } else {
                 at += 1;
+            }
+        }
+        if self.cleanup.as_ref().is_some_and(|job| job.is_finished()) {
+            self.cleanup
+                .take()
+                .unwrap()
+                .join()
+                .map_err(|_| invalid("retirement worker panicked"))??;
+        }
+        let now = Instant::now();
+        if self.cleanup.is_none() && now >= self.next_cleanup {
+            self.next_cleanup = now + Duration::from_secs(1);
+            if self.log.retired_segment_count()? != 0 || self.log.retirement_snapshot_needed()? {
+                let log = self.log.clone();
+                let failure = self.failure.clone();
+                self.cleanup = Some(
+                    thread::Builder::new()
+                        .name("replica-retirement".into())
+                        .spawn(move || {
+                            let result = retention::finish_retirements(&log);
+                            if let Err(error) = &result {
+                                if let Ok(mut failed) = failure.lock() {
+                                    *failed = Some(error.to_string());
+                                }
+                            }
+                            result
+                        })?,
+                );
             }
         }
         Ok(())
@@ -255,6 +316,7 @@ impl SegmentedReplicaJournal {
         self.started_epoch = epoch;
         self.retire_job();
         let mut state = CheckpointState::new(service.export_snapshot_unsealed_without_pages())?;
+        state.next_collection_segments = self.retention_threshold;
         let snapshot = service.export_snapshot_unsealed();
         if snapshot.pages.len() > self.max_pages {
             return Err(invalid("replica page count exceeds configured limit"));
@@ -314,7 +376,8 @@ impl SegmentedReplicaJournal {
         if *publication != epoch {
             return Err(cancelled());
         }
-        let commit = prepared.publish(&self.log)?;
+        let (commit, position) = prepared.publish_record(&self.log)?;
+        state.publication = Some((commit.clone(), position));
         drop(publication);
         self.published_epoch = epoch;
         self.cut = commit.through.clone();
@@ -338,6 +401,8 @@ impl SegmentedReplicaJournal {
         let publication = self.publication.clone();
         let failure = self.failure.clone();
         let max_pages = self.max_pages;
+        let allow_collection = self.reapers.is_empty() && self.cleanup.is_none();
+        let retention_threshold = self.retention_threshold;
         let epoch = {
             let mut epoch = publication
                 .lock()
@@ -387,8 +452,19 @@ impl SegmentedReplicaJournal {
                         if *guard != epoch {
                             return Err(cancelled());
                         }
-                        prepared.publish(&log)?;
+                        let (commit, position) = prepared.publish_record(&log)?;
+                        state.publication = Some((commit, position));
                         drop(guard);
+                        if allow_collection {
+                            retention::collect_checkpoint(
+                                &log,
+                                &mut state,
+                                retention_threshold,
+                                &publication,
+                                epoch,
+                                &check,
+                            )?;
+                        }
                         Ok(Some(Completed {
                             epoch,
                             state,
@@ -424,7 +500,22 @@ impl ReplicaJournalBackend for SegmentedReplicaJournal {
             bytes_since_checkpoint: self.bytes_since_checkpoint,
             journal_bytes: self.log.logical_length()?,
             segments: self.log.segment_count()? as u64,
+            ..Default::default()
         })
+    }
+    fn maintenance_status(
+        &self,
+    ) -> io::Result<super::replica_journal_control::ReplicaJournalStatus> {
+        let mut status = self.status()?;
+        status.version = 2;
+        let managed = self.log.managed_status()?;
+        status.segments = managed.segments as u64;
+        status.journal_bytes = managed.journal_bytes;
+        status.retired_segments = managed.retired_segments as u64;
+        status.retired_journal_bytes = managed.retired_journal_bytes;
+        status.retirement_in_flight =
+            self.cleanup.is_some() || !self.reapers.is_empty() || managed.snapshot_pending;
+        Ok(status)
     }
     fn requires_context(&self) -> bool {
         true
@@ -463,9 +554,27 @@ impl ReplicaJournalBackend for SegmentedReplicaJournal {
         self.revision
     }
     fn checkpoint_due(&self, interval: u64) -> bool {
-        interval != 0 && self.job.is_none() && self.bytes_since_checkpoint >= interval
+        interval != 0
+            && self.job.is_none()
+            && (self.bytes_since_checkpoint >= interval
+                || (self.reapers.is_empty()
+                    && self.cleanup.is_none()
+                    && self.state.as_ref().is_some_and(|state| {
+                        Instant::now() >= state.next_collection_attempt
+                            && self
+                                .log
+                                .retained_segment_count()
+                                .is_ok_and(|count| count >= state.next_collection_segments)
+                    })))
     }
     fn checkpoint(&mut self, service: &MatrixReplicaService) -> io::Result<()> {
+        self.start_checkpoint(service)
+    }
+    fn checkpoint_requested(&mut self, service: &MatrixReplicaService) -> io::Result<()> {
+        if let Some(state) = self.state.as_mut() {
+            // A manual barrier gets a fresh collection attempt after writers drain.
+            state.next_collection_attempt = Instant::now();
+        }
         self.start_checkpoint(service)
     }
     fn checkpoint_for_install(&mut self, service: &MatrixReplicaService) -> io::Result<()> {
@@ -485,9 +594,15 @@ impl Drop for SegmentedReplicaJournal {
         for reaper in self.reapers.drain(..) {
             let _ = reaper.join();
         }
+        if let Some(cleanup) = self.cleanup.take() {
+            let _ = cleanup.join();
+        }
     }
 }
 
 #[cfg(all(test, unix))]
 #[path = "replica_segmented_journal_tests.rs"]
 mod tests;
+
+#[path = "replica_checkpoint_retention.rs"]
+mod retention;

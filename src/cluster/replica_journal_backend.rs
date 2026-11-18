@@ -9,6 +9,11 @@ use crate::{
 use std::io;
 pub(super) trait ReplicaJournalBackend: Send {
     fn status(&self) -> io::Result<ReplicaJournalStatus>;
+    fn maintenance_status(&self) -> io::Result<ReplicaJournalStatus> {
+        let mut status = self.status()?;
+        status.version = 2;
+        Ok(status)
+    }
     fn requires_context(&self) -> bool {
         false
     }
@@ -35,6 +40,9 @@ pub(super) trait ReplicaJournalBackend: Send {
     fn logical_length(&self) -> u64;
     fn checkpoint_due(&self, interval: u64) -> bool;
     fn checkpoint(&mut self, service: &MatrixReplicaService) -> io::Result<()>;
+    fn checkpoint_requested(&mut self, service: &MatrixReplicaService) -> io::Result<()> {
+        self.checkpoint(service)
+    }
     fn checkpoint_for_install(&mut self, service: &MatrixReplicaService) -> io::Result<()> {
         self.checkpoint(service)
     }
@@ -54,6 +62,7 @@ impl ReplicaJournalBackend for ReplicaJournal {
             bytes_since_checkpoint: self.checkpoint_bytes(),
             journal_bytes: self.logical_length(),
             segments: 1,
+            ..Default::default()
         })
     }
     fn append_owned(

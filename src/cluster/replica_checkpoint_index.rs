@@ -200,6 +200,7 @@ struct Node {
     height: u32,
     count: u64,
     saved: Option<BlobRef>,
+    extent_segments: Vec<[u8; 16]>,
 }
 fn height(node: &Option<Box<Node>>) -> u32 {
     node.as_ref().map_or(0, |n| n.height)
@@ -229,11 +230,17 @@ impl Node {
         left.update();
         left
     }
-    fn put(node: Option<Box<Self>>, key: PageId, value: Value) -> Box<Self> {
+    fn put(
+        node: Option<Box<Self>>,
+        key: PageId,
+        value: Value,
+        extent_segments: Vec<[u8; 16]>,
+    ) -> Box<Self> {
         let Some(mut node) = node else {
             return Box::new(Self {
                 key,
                 value,
+                extent_segments,
                 left: None,
                 right: None,
                 height: 1,
@@ -242,11 +249,16 @@ impl Node {
             });
         };
         match key.cmp(&node.key) {
-            std::cmp::Ordering::Less => node.left = Some(Self::put(node.left.take(), key, value)),
-            std::cmp::Ordering::Greater => {
-                node.right = Some(Self::put(node.right.take(), key, value))
+            std::cmp::Ordering::Less => {
+                node.left = Some(Self::put(node.left.take(), key, value, extent_segments))
             }
-            std::cmp::Ordering::Equal => node.value = value,
+            std::cmp::Ordering::Greater => {
+                node.right = Some(Self::put(node.right.take(), key, value, extent_segments))
+            }
+            std::cmp::Ordering::Equal => {
+                node.value = value;
+                node.extent_segments = extent_segments;
+            }
         }
         node.update();
         if height(&node.left) > height(&node.right) + 1 {
@@ -324,13 +336,17 @@ impl IndexState {
             }
         }
     }
+    #[cfg(all(test, unix))]
     fn put(&mut self, key: PageId, value: Value) {
-        self.root = Some(Node::put(self.root.take(), key, value));
+        self.put_with_extents(key, value, Vec::new());
+    }
+    fn put_with_extents(&mut self, key: PageId, value: Value, extent_segments: Vec<[u8; 16]>) {
+        self.root = Some(Node::put(self.root.take(), key, value, extent_segments));
     }
 }
 enum Slot {
     Extent(ExtentKey, Arc<PayloadExtent>),
-    Page(PageId),
+    Page(PageId, Vec<[u8; 16]>),
     Node(PageId),
 }
 struct Pending {
@@ -435,12 +451,13 @@ impl Writer<'_> {
                         },
                     );
                 }
-                Slot::Page(key) => state.put(
+                Slot::Page(key, extent_segments) => state.put_with_extents(
                     key,
                     Value {
                         page: Some(saved),
                         catalog: Vec::new(),
                     },
+                    extent_segments,
                 ),
                 Slot::Node(key) => state.root.as_mut().unwrap().find_mut(&key).saved = Some(saved),
             }
@@ -535,6 +552,7 @@ pub(super) fn prepare(
         check()?;
         let page = &catalog.pages[key];
         let mut block = Block::new(log, epoch, PAGE);
+        let mut extent_segments = BTreeSet::new();
         let mut large = page.metadata.encoded_len() > CheckpointFragment::MAX_DATA_BYTES / 2;
         if !large {
             block.page = Some(Page {
@@ -547,6 +565,13 @@ pub(super) fn prepare(
                     .saved
                     .clone()
                     .ok_or_else(|| invalid("unsaved page extent"))?;
+                let segment: [u8; 16] = extent
+                    .position()?
+                    .store_id
+                    .as_slice()
+                    .try_into()
+                    .map_err(invalid)?;
+                extent_segments.insert(segment);
                 let value = Span {
                     offset: span.offset,
                     length: span.length,
@@ -564,15 +589,22 @@ pub(super) fn prepare(
         if large {
             writer.flush(state)?;
             let prepared = catalog::prepare_page_checked(log, key, page, epoch, check)?;
-            state.put(
+            state.put_with_extents(
                 key.clone(),
                 Value {
                     page: None,
                     catalog: prepared.commit.encode_to_vec(),
                 },
+                Vec::new(),
             );
         } else {
-            writer.push(state, Slot::Page(key.clone()), block, 0, 0)?;
+            writer.push(
+                state,
+                Slot::Page(key.clone(), extent_segments.into_iter().collect()),
+                block,
+                0,
+                0,
+            )?;
         }
     }
     writer.flush(state)?;
@@ -849,7 +881,8 @@ impl Reader<'_> {
         key: &PageId,
         parent: &StoredOutcomePosition,
         state: &mut IndexState,
-    ) -> io::Result<CatalogPage> {
+    ) -> io::Result<(CatalogPage, Vec<[u8; 16]>)> {
+        let mut extent_segments = BTreeSet::new();
         let page = match (&value.page, value.catalog.is_empty()) {
             (Some(location), true) => {
                 location.plain()?;
@@ -859,13 +892,18 @@ impl Reader<'_> {
                     .ok_or_else(|| invalid("missing indexed page metadata"))?;
                 let mut spans = Vec::with_capacity(saved.spans.len());
                 for span in saved.spans {
-                    let extent = self.extent(
-                        span.extent
-                            .as_ref()
-                            .ok_or_else(|| invalid("missing indexed page extent"))?,
-                        location.position()?,
-                        state,
-                    )?;
+                    let saved_extent = span
+                        .extent
+                        .as_ref()
+                        .ok_or_else(|| invalid("missing indexed page extent"))?;
+                    let segment: [u8; 16] = saved_extent
+                        .position()?
+                        .store_id
+                        .as_slice()
+                        .try_into()
+                        .map_err(invalid)?;
+                    extent_segments.insert(segment);
+                    let extent = self.extent(saved_extent, location.position()?, state)?;
                     spans.push(PayloadSpan {
                         offset: span.offset,
                         length: span.length,
@@ -908,7 +946,7 @@ impl Reader<'_> {
             return Err(invalid("index page key mismatch"));
         }
         page.validate_spans()?;
-        Ok(page)
+        Ok((page, extent_segments.into_iter().collect()))
     }
     fn node(
         &mut self,
@@ -1027,7 +1065,7 @@ impl Reader<'_> {
         {
             return Err(invalid("unbalanced or inconsistent index geometry"));
         }
-        let page = self.page(&value, &key, position, state)?;
+        let (page, extent_segments) = self.page(&value, &key, position, state)?;
         if pages.pages.insert(key.clone(), page).is_some() {
             return Err(invalid("duplicate indexed page"));
         }
@@ -1039,6 +1077,7 @@ impl Reader<'_> {
             height,
             count,
             saved: Some(location.clone()),
+            extent_segments,
         }))
     }
 }
@@ -1117,8 +1156,12 @@ pub(super) fn load(
         catalog: pages,
         commit,
         index: Some(index),
+        publication_position: None,
     })
 }
 #[cfg(all(test, unix))]
 #[path = "replica_checkpoint_index_tests.rs"]
 mod tests;
+
+#[path = "replica_checkpoint_reachability.rs"]
+mod reachability;

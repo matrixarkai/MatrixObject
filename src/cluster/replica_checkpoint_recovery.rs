@@ -60,6 +60,12 @@ pub(super) struct CheckpointState {
     pub cut: Option<StoredOutcomePosition>,
     pub index: Option<super::replica_checkpoint_index::IndexState>,
     pub dirty_pages: BTreeSet<crate::PageId>,
+    pub publication: Option<(
+        super::replica_checkpoint_catalog::CheckpointCommit,
+        StoredOutcomePosition,
+    )>,
+    pub next_collection_segments: usize,
+    pub next_collection_attempt: std::time::Instant,
 }
 impl CheckpointState {
     pub fn new(metadata: ReplicaServiceSnapshot) -> io::Result<Self> {
@@ -77,6 +83,9 @@ impl CheckpointState {
             cut: None,
             index: None,
             dirty_pages: BTreeSet::new(),
+            publication: None,
+            next_collection_segments: 16,
+            next_collection_attempt: std::time::Instant::now(),
         })
     }
     pub fn from_checkpoint(loaded: LoadedCheckpoint) -> io::Result<Self> {
@@ -85,12 +94,19 @@ impl CheckpointState {
         if !metadata.pages.is_empty() {
             return Err(invalid("checkpoint metadata contains payloads"));
         }
+        let publication = loaded
+            .publication_position
+            .clone()
+            .map(|position| (loaded.commit.clone(), position));
         Ok(Self {
             catalog: loaded.catalog,
             metadata,
             cut: loaded.commit.through,
             index: loaded.index,
             dirty_pages: BTreeSet::new(),
+            publication,
+            next_collection_segments: 16,
+            next_collection_attempt: std::time::Instant::now(),
         })
     }
     pub fn fold_record(

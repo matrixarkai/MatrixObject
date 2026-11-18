@@ -8,6 +8,62 @@ use std::{
     time::{Duration, Instant},
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn segmented_replica_retirement_preserves_cold_payloads_and_reopens_overwritten_pages() {
+    let dir = Dir::new();
+    let mut live = service();
+    let mut journal = SegmentedReplicaJournal::open_with_settings(
+        &dir.path(),
+        &mut live,
+        1024,
+        crate::durable_payload::outcome_segments::MIN_SEGMENT_BYTES,
+        2,
+    )
+    .unwrap();
+    append(&mut journal, &mut live, 100, 0, &[0xcd; 4096], true);
+    let mut collections = 0;
+    for generation in 0..8 {
+        let bytes = vec![generation as u8 + 7; 1024 * 1024];
+        for n in 0..16 {
+            append(&mut journal, &mut live, n, 0, &bytes, false);
+        }
+        journal.sync_deferred().unwrap();
+        let before = journal.log.retained_segment_count().unwrap();
+        journal.checkpoint(&live).unwrap();
+        finish(&mut journal);
+        let after = journal.log.retained_segment_count().unwrap();
+        if after < before {
+            collections += 1;
+        }
+        assert_eq!(
+            &*live.read_chunk_state(&page(100)).unwrap().data,
+            &[0xcd; 4096]
+        );
+    }
+    assert!(
+        collections >= 2,
+        "automatic collection did not retire overwritten history"
+    );
+    assert_eq!(
+        &std::fs::read(dir.path().with_file_name("journal.segments")).unwrap()[..8],
+        b"MOSEGM02"
+    );
+    assert_eq!(journal.log.retired_segment_count().unwrap(), 0);
+    let expected = live.export_snapshot();
+    drop(journal);
+    let mut restored = MatrixReplicaService::new();
+    let journal = SegmentedReplicaJournal::open_with_settings(
+        &dir.path(),
+        &mut restored,
+        1024,
+        crate::durable_payload::outcome_segments::MIN_SEGMENT_BYTES,
+        2,
+    )
+    .unwrap();
+    assert_eq!(restored.export_snapshot(), expected);
+    assert!(journal.log.retained_segment_count().unwrap() < 8);
+}
 struct Dir(PathBuf);
 impl Dir {
     fn new() -> Self {

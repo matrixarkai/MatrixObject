@@ -118,6 +118,7 @@ pub(super) struct LoadedCheckpoint {
     pub catalog: PageCatalog,
     pub commit: CheckpointCommit,
     pub index: Option<super::replica_checkpoint_index::IndexState>,
+    pub publication_position: Option<StoredOutcomePosition>,
 }
 pub(super) fn extent_key(extent: &PayloadExtent) -> io::Result<([u8; 16], u64)> {
     let id = extent
@@ -394,7 +395,14 @@ fn prepare_iter_checked<'a>(
 impl PreparedCheckpoint {
     /// Call under the journal publication gate after checking its current epoch.
     /// A failed append publishes nothing usable and fences the log on uncertain I/O.
+    #[cfg(all(test, unix))]
     pub fn publish(self, log: &SegmentedOutcomeLog) -> io::Result<CheckpointCommit> {
+        self.publish_record(log).map(|(commit, _)| commit)
+    }
+    pub fn publish_record(
+        self,
+        log: &SegmentedOutcomeLog,
+    ) -> io::Result<(CheckpointCommit, StoredOutcomePosition)> {
         validate_commit(log, &self.commit)?;
         let fragment = CheckpointFragment {
             version: 1,
@@ -403,8 +411,8 @@ impl PreparedCheckpoint {
             ordinal: self.commit.epoch,
             data: self.commit.encode_to_vec(),
         };
-        log.append_decided_batch(&[DecidedMutation::CheckpointFragment(&fragment)])?;
-        Ok(self.commit)
+        let record = log.append_decided_batch(&[DecidedMutation::CheckpointFragment(&fragment)])?;
+        Ok((self.commit, record.position))
     }
 }
 fn validate_commit(log: &SegmentedOutcomeLog, commit: &CheckpointCommit) -> io::Result<()> {
@@ -655,6 +663,7 @@ pub(super) fn load(
         catalog,
         commit,
         index: None,
+        publication_position: None,
     })
 }
 /// Discover commits with metadata reads only. An invalid newest published
@@ -700,7 +709,9 @@ pub(super) fn latest(
     }
     // Ensure the catalog was fully present before its publication record.
     log.metadata_cursor_after_through(commit.last.as_ref(), &position)?;
-    load(log, commit, max_pages).map(Some)
+    let mut loaded = load(log, commit, max_pages)?;
+    loaded.publication_position = Some(position);
+    Ok(Some(loaded))
 }
 #[cfg(all(test, unix))]
 #[path = "replica_checkpoint_catalog_tests.rs"]

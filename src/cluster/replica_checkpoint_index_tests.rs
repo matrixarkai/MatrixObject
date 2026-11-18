@@ -614,3 +614,111 @@ fn checkpoint_index_sparse_discard_and_shorter_states_survive_repeated_reopen() 
         index = loaded.index;
     }
 }
+
+#[test]
+fn checkpoint_index_retention_preserves_every_duplicate_extent_record_after_reload() {
+    fn next_segment(log: &SegmentedOutcomeLog) -> StoredOutcomePosition {
+        let count = log.retained_segment_count().unwrap();
+        let mut fragment = CheckpointFragment {
+            version: 1,
+            checkpoint_id: vec![0x88; 16],
+            kind: CheckpointFragment::PAYLOAD,
+            ordinal: 0,
+            data: vec![0x32; CheckpointFragment::MAX_DATA_BYTES],
+        };
+        loop {
+            let record = log
+                .append_decided_batch(&[DecidedMutation::CheckpointFragment(&fragment)])
+                .unwrap();
+            if log.retained_segment_count().unwrap() != count {
+                return record.position;
+            }
+            fragment.ordinal += 1;
+            assert!(fragment.ordinal < 32);
+        }
+    }
+    fn descriptor(
+        log: &SegmentedOutcomeLog,
+        index: &mut IndexState,
+        extent: &Arc<PayloadExtent>,
+        epoch: u64,
+    ) -> BlobRef {
+        let key = catalog::extent_key(extent).unwrap();
+        let mut writer = Writer {
+            log,
+            id: identity().unwrap(),
+            ordinal: 0,
+            pending: Vec::new(),
+            bytes: 0,
+            check: &|| Ok(()),
+        };
+        let mut block = Block::new(log, epoch, EXTENT);
+        block.extent = Some((**extent).clone());
+        writer
+            .push(index, Slot::Extent(key, extent.clone()), block, 0, 0)
+            .unwrap();
+        writer.flush(index).unwrap();
+        index.extents[&key].saved.clone().unwrap()
+    }
+    let dir = Dir::new();
+    let log = dir.open();
+    let mut pages = PageCatalog::default();
+    seed(&log, &mut pages, 2);
+    let extent = pages.pages[&id(0)].spans[0].extent.clone();
+    let mut index = IndexState::default();
+    next_segment(&log);
+    let first = descriptor(&log, &mut index, &extent, 1);
+    let cut = next_segment(&log);
+    let mut index = Some(index);
+    let mut dirty = BTreeSet::from([id(0), id(1)]);
+    publish(&log, &pages, &mut index, &mut dirty, cut, 1);
+    next_segment(&log);
+    let duplicate = descriptor(&log, index.as_mut().unwrap(), &extent, 2);
+    next_segment(&log); // A completely unreachable storage-only segment.
+    let cut = next_segment(&log);
+    dirty.insert(id(1));
+    publish(&log, &pages, &mut index, &mut dirty, cut, 2);
+    assert_ne!(
+        first.position().unwrap().store_id,
+        duplicate.position().unwrap().store_id
+    );
+    drop(index);
+    drop(pages);
+    drop(log);
+    let log = dir.open();
+    let mut loaded = catalog::latest(&log, 2).unwrap().unwrap();
+    let position = loaded.publication_position.as_ref().unwrap();
+    let index = loaded.index.as_mut().unwrap();
+    // Interning is allowed to choose either valid descriptor record. A leaf
+    // that names the other one must remain recoverable after collection.
+    index
+        .extents
+        .get_mut(&catalog::extent_key(&extent).unwrap())
+        .unwrap()
+        .saved = Some(duplicate);
+    let keep = index
+        .protected_segments(&log, &loaded.catalog, &loaded.commit, position, &|| Ok(()))
+        .unwrap();
+    assert!(keep.contains(&first.position().unwrap().store_id));
+    let before = log.retained_segment_count().unwrap();
+    let committed = log
+        .prepare_retention(&keep, loaded.commit.through.as_ref().unwrap(), &|| Ok(()))
+        .unwrap()
+        .unwrap()
+        .commit()
+        .unwrap();
+    assert!(committed.finish().unwrap().removed > 0);
+    assert!(log.retained_segment_count().unwrap() < before);
+    drop(loaded);
+    drop(log);
+    let log = dir.open();
+    let loaded = catalog::latest(&log, 2).unwrap().unwrap();
+    for n in 0..2 {
+        assert_eq!(
+            loaded.catalog.pages[&id(n)]
+                .materialize(|e, o, n| log.read_payload_range(e, o, n))
+                .unwrap(),
+            page(vec![0x31; 16], 1)
+        );
+    }
+}
