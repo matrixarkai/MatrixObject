@@ -511,4 +511,154 @@ mod log_chunk_outcome_tests {
         };
         assert!(ObjectManifest { format_version: 2, ..manifest(1, 0, vec![page]) }.validate().is_err());
     }
+
+    // ---- version 16: one entry renews or drops the leases of many objects ----
+
+    use crate::log_chunk_outcome::{LeaseBatch, LeaseRef};
+
+    fn lref(bucket: &str, key: &str, epoch: u64) -> LeaseRef {
+        LeaseRef { bucket: bucket.into(), key: key.into(), epoch }
+    }
+    fn batch_outcome(service: &MatrixMetaService, batch: LeaseBatch) -> PlacementOutcome {
+        let outcome = PlacementOutcome {
+            version: 16,
+            before_index: service.placement_commit_index,
+            after_index: service.placement_commit_index + 1,
+            lease_batch: Some(batch),
+            ..Default::default()
+        };
+        outcome.to_payload().unwrap();
+        outcome
+    }
+    fn renewal(holder: &str, expires: u64, refs: Vec<LeaseRef>) -> LeaseBatch {
+        LeaseBatch { holder: holder.into(), now_ms: NOW, expires_at_ms: expires, renewed: refs, dropped: Vec::new() }
+    }
+    fn drop_batch(now: u64, refs: Vec<LeaseRef>) -> LeaseBatch {
+        LeaseBatch { holder: String::new(), now_ms: now, expires_at_ms: 0, renewed: Vec::new(), dropped: refs }
+    }
+    /// Three objects leased to `gateway-a` at epochs 2, 3, 4 and one to `gateway-b` at epoch 5.
+    fn leased_objects(service: &mut MatrixMetaService) {
+        for (i, key) in ["a", "b", "c"].iter().enumerate() {
+            service.writer_leases.set("bucket", key, &lease("gateway-a", 2 + i as u64, NOW + 1000));
+        }
+        service.writer_leases.set("bucket", "d", &lease("gateway-b", 5, NOW + 1000));
+        service.placement_commit_index = 10;
+    }
+
+    #[test]
+    fn one_entry_renews_many_leases_keeps_their_epochs_and_moves_only_the_expiry() {
+        let (mut service, _groups) = fixture(1, 0);
+        leased_objects(&mut service);
+        let before = service.placement_commit_index;
+        let refs = vec![lref("bucket", "a", 2), lref("bucket", "b", 3), lref("bucket", "c", 4)];
+        let outcome = batch_outcome(&service, renewal("gateway-a", NOW + 30_000, refs));
+        assert_eq!(outcome.version, 16);
+        commit(&mut service, &outcome).unwrap();
+        // exactly one entry for three objects
+        assert_eq!(service.placement_commit_index, before + 1);
+        for (i, key) in ["a", "b", "c"].iter().enumerate() {
+            assert_eq!(service.writer_leases.get("bucket", key).unwrap(), lease("gateway-a", 2 + i as u64, NOW + 30_000));
+        }
+        // another writer's lease is not touched
+        assert_eq!(service.writer_leases.get("bucket", "d").unwrap(), lease("gateway-b", 5, NOW + 1000));
+    }
+
+    #[test]
+    fn a_renewal_of_a_lease_the_writer_does_not_hold_fails_and_changes_nothing() {
+        let (mut service, _groups) = fixture(1, 0);
+        leased_objects(&mut service);
+        let wrong_epoch = batch_outcome(&service, renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "a", 3)]));
+        assert!(commit(&mut service, &wrong_epoch).is_err());
+        let other_holder = batch_outcome(&service, renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "d", 5)]));
+        assert!(commit(&mut service, &other_holder).is_err());
+        let unknown = batch_outcome(&service, renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "zz", 2)]));
+        assert!(commit(&mut service, &unknown).is_err());
+        // one bad entry spoils the batch whole: the good lease before it did not move either
+        let mixed = batch_outcome(&service, renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "a", 2), lref("bucket", "d", 5)]));
+        assert!(commit(&mut service, &mixed).is_err());
+        assert_eq!(service.writer_leases.get("bucket", "a").unwrap(), lease("gateway-a", 2, NOW + 1000));
+        assert_eq!(service.placement_commit_index, 10);
+    }
+
+    #[test]
+    fn a_renewal_never_shortens_a_lease() {
+        let (mut service, _groups) = fixture(1, 0);
+        leased_objects(&mut service);
+        // the lease runs to NOW + 1000; a renewal to NOW + 500 would shorten it
+        let shorter = batch_outcome(&service, renewal("gateway-a", NOW + 500, vec![lref("bucket", "a", 2)]));
+        assert!(commit(&mut service, &shorter).is_err());
+        assert_eq!(service.writer_leases.get("bucket", "a").unwrap(), lease("gateway-a", 2, NOW + 1000));
+    }
+
+    #[test]
+    fn a_drop_removes_only_leases_that_are_over_and_a_later_grant_still_gets_a_later_epoch() {
+        let (mut service, _groups) = fixture(1, 0);
+        leased_objects(&mut service);
+        // not over yet: refused
+        let early = batch_outcome(&service, drop_batch(NOW + 500, vec![lref("bucket", "a", 2)]));
+        assert!(commit(&mut service, &early).is_err());
+        // over: dropped, in one entry for two objects, the third and the other writer's stay
+        let over = batch_outcome(&service, drop_batch(NOW + 1001, vec![lref("bucket", "a", 2), lref("bucket", "b", 3)]));
+        commit(&mut service, &over).unwrap();
+        assert!(service.writer_leases.get("bucket", "a").is_none());
+        assert!(service.writer_leases.get("bucket", "b").is_none());
+        assert!(service.writer_leases.get("bucket", "c").is_some());
+        assert_eq!(service.placement_commit_index, 11);
+        // a stale epoch is refused
+        let stale = batch_outcome(&service, drop_batch(NOW + 2000, vec![lref("bucket", "c", 99)]));
+        assert!(commit(&mut service, &stale).is_err());
+    }
+
+    #[test]
+    fn malformed_lease_batches_are_refused_before_they_can_apply() {
+        let (mut service, _groups) = fixture(1, 0);
+        leased_objects(&mut service);
+        let ok = renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "a", 2)]);
+        let index = service.placement_commit_index;
+        let check = |batch: LeaseBatch| batch.validate(index, index + 1).is_err();
+        assert!(!check(ok.clone()));
+        // neither list, and both lists
+        assert!(check(LeaseBatch { renewed: Vec::new(), ..ok.clone() }));
+        assert!(check(LeaseBatch { dropped: vec![lref("bucket", "b", 3)], ..ok.clone() }));
+        // not ascending, or repeating an object
+        assert!(check(renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "b", 3), lref("bucket", "a", 2)])));
+        assert!(check(renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "a", 2), lref("bucket", "a", 2)])));
+        // an epoch from the future, and epoch zero
+        assert!(check(renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "a", index + 1)])));
+        assert!(check(renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "a", 0)])));
+        // the term: not after now, over the bound
+        assert!(check(renewal("gateway-a", NOW, vec![lref("bucket", "a", 2)])));
+        assert!(check(renewal("gateway-a", NOW + MAX_LEASE_TTL_MS + 1, vec![lref("bucket", "a", 2)])));
+        // a renewal needs a holder; a drop names none and no term
+        assert!(check(renewal("", NOW + 30_000, vec![lref("bucket", "a", 2)])));
+        assert!(check(LeaseBatch { holder: "gateway-a".into(), ..drop_batch(NOW, vec![lref("bucket", "a", 2)]) }));
+        assert!(check(LeaseBatch { expires_at_ms: NOW + 5, ..drop_batch(NOW, vec![lref("bucket", "a", 2)]) }));
+        // the bound on the batch
+        let many: Vec<LeaseRef> = (0..=crate::log_chunk_outcome::MAX_BATCH_LEASES).map(|i| lref("bucket", &format!("k{i:06}"), 2)).collect();
+        assert!(check(renewal("gateway-a", NOW + 30_000, many)));
+        // not version 16, or version 16 without its batch
+        let mut wrong_version = batch_outcome(&service, ok.clone());
+        wrong_version.version = 15;
+        assert!(wrong_version.to_payload().is_err());
+        let mut empty = batch_outcome(&service, ok);
+        empty.lease_batch = None;
+        assert!(empty.to_payload().is_err());
+        // it changes nothing else
+        let mut extra = batch_outcome(&service, renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "a", 2)]));
+        extra.features = Some(Default::default());
+        assert!(extra.to_payload().is_err());
+    }
+
+    #[test]
+    fn a_renewed_lease_survives_a_snapshot() {
+        let (mut service, _groups) = fixture(1, 0);
+        leased_objects(&mut service);
+        let outcome = batch_outcome(&service, renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "a", 2)]));
+        commit(&mut service, &outcome).unwrap();
+        let bytes = service.export_snapshot().to_bytes().unwrap();
+        let mut late = MatrixMetaService::new();
+        late.install_snapshot(crate::MetaSnapshot::from_bytes(&bytes).unwrap()).unwrap();
+        assert_eq!(late.writer_leases.get("bucket", "a").unwrap(), lease("gateway-a", 2, NOW + 30_000));
+        assert_eq!(late.writer_leases.get("bucket", "d").unwrap(), lease("gateway-b", 5, NOW + 1000));
+    }
 }

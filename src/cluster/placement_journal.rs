@@ -154,6 +154,7 @@ mod tests {
             reserved: None,
             features: None,
             log_chunk: None,
+            lease_batch: None,
         };
         let second = PlacementOutcome {
             before_index: base + 1,

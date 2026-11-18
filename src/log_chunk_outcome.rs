@@ -110,6 +110,9 @@ impl WriterLeaseTable {
             WriterLeaseValue { holder: lease.holder.clone(), epoch: lease.epoch, expires_at_ms: lease.expires_at_ms },
         );
     }
+    pub fn remove(&mut self, bucket: &str, key: &str) {
+        self.leases.remove(&(bucket.to_string(), key.to_string()));
+    }
     /// `(bucket, key, lease)` in key order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str, &WriterLeaseValue)> {
         self.leases.iter().map(|((bucket, key), lease)| (bucket.as_str(), key.as_str(), lease))
@@ -322,4 +325,108 @@ fn check_new_tail(
         return Err(invalid("a new chunk is empty, being written, owned by its outcome and not already named"));
     }
     Ok(())
+}
+
+/// Most leases one batch renews or drops.
+pub const MAX_BATCH_LEASES: usize = 1024;
+
+/// One lease a batch names: the object and the epoch the sender believes it is held under.
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct LeaseRef {
+    #[prost(string, tag = "1")]
+    pub bucket: String,
+    #[prost(string, tag = "2")]
+    pub key: String,
+    #[prost(uint64, tag = "3")]
+    pub epoch: u64,
+}
+
+/// The change a version 16 outcome makes to the lease table and to nothing else: ONE entry renews
+/// the leases a writer holds on many objects, or drops many leases that ran out. A renewal keeps
+/// the epoch (the writer is the same, so nobody needs fencing) and moves the expiry later; it
+/// never shortens one. A drop removes a lease the leader's clock says is over; the next grant of
+/// that object gets a later epoch whatever the table held, so a drop loses nothing.
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct LeaseBatch {
+    /// Renewal: the writer renewing. Empty for a drop.
+    #[prost(string, tag = "1")]
+    pub holder: String,
+    /// The clock reading the leader decided this from.
+    #[prost(uint64, tag = "2")]
+    pub now_ms: u64,
+    /// Renewal: the new expiry of every lease in `renewed`. Zero for a drop.
+    #[prost(uint64, tag = "3")]
+    pub expires_at_ms: u64,
+    /// Ascending by (bucket, key), one entry per object.
+    #[prost(message, repeated, tag = "4")]
+    pub renewed: Vec<LeaseRef>,
+    #[prost(message, repeated, tag = "5")]
+    pub dropped: Vec<LeaseRef>,
+}
+
+fn refs_ok(refs: &[LeaseRef], after_index: u64) -> bool {
+    refs.len() <= MAX_BATCH_LEASES
+        && refs.iter().all(|r| {
+            !r.bucket.is_empty()
+                && r.bucket.len() <= MAX_NAME
+                && !r.key.is_empty()
+                && r.key.len() <= MAX_NAME
+                && r.epoch != 0
+                && r.epoch < after_index
+        })
+        && refs.windows(2).all(|pair| (&pair[0].bucket, &pair[0].key) < (&pair[1].bucket, &pair[1].key))
+}
+
+impl LeaseBatch {
+    pub fn validate(&self, before_index: u64, after_index: u64) -> Result<(), ObjectError> {
+        if self.now_ms == 0
+            || before_index.checked_add(1) != Some(after_index)
+            || self.renewed.is_empty() == self.dropped.is_empty()
+            || !refs_ok(&self.renewed, after_index)
+            || !refs_ok(&self.dropped, after_index)
+        {
+            return Err(invalid("invalid lease batch"));
+        }
+        if self.dropped.is_empty() {
+            let term_ok = self.expires_at_ms > self.now_ms && self.expires_at_ms - self.now_ms <= MAX_LEASE_TTL_MS;
+            let holder_ok = !self.holder.is_empty()
+                && self.holder.len() <= MAX_HOLDER
+                && self.holder.bytes().all(|b| b.is_ascii_graphic());
+            if !term_ok || !holder_ok {
+                return Err(invalid("a renewal names its holder and a bounded new term"));
+            }
+        } else if !self.holder.is_empty() || self.expires_at_ms != 0 {
+            return Err(invalid("a drop names no holder and no term"));
+        }
+        Ok(())
+    }
+
+    /// Every lease the batch names is in the table as the batch says. Nothing is changed.
+    pub fn check_leases(&self, table: &WriterLeaseTable) -> Result<(), ObjectError> {
+        for r in &self.renewed {
+            let held = table.get(&r.bucket, &r.key);
+            let ok = held.is_some_and(|lease| {
+                lease.holder == self.holder && lease.epoch == r.epoch && lease.expires_at_ms <= self.expires_at_ms
+            });
+            if !ok {
+                return Err(invalid("a renewal does not match the lease held"));
+            }
+        }
+        for r in &self.dropped {
+            let held = table.get(&r.bucket, &r.key);
+            if !held.is_some_and(|lease| lease.epoch == r.epoch && lease.expires_at_ms < self.now_ms) {
+                return Err(invalid("a drop names a lease that is not over"));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn apply_leases(&self, table: &mut WriterLeaseTable) {
+        for r in &self.renewed {
+            table.set(&r.bucket, &r.key, &WriterLease { holder: self.holder.clone(), epoch: r.epoch, expires_at_ms: self.expires_at_ms });
+        }
+        for r in &self.dropped {
+            table.remove(&r.bucket, &r.key);
+        }
+    }
 }
