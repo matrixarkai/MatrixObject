@@ -213,7 +213,10 @@ impl CompactState {
 }
 
 impl SdkPlane {
-    pub fn new(client: RemoteMetaClient, options: GatewayOptions, compact: Arc<CompactState>) -> Self {
+    pub fn new(mut client: RemoteMetaClient, options: GatewayOptions, compact: Arc<CompactState>) -> Self {
+        // The placement and routes of an object's appends rarely change: reuse them for a short
+        // while (well inside the metadata plane's health lifetime) instead of a round trip each.
+        client.cache_append_plans(Duration::from_secs(1));
         Self {
             client,
             options,
