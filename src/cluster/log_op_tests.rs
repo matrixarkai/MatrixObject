@@ -49,8 +49,8 @@ const C: u64 = 11;
 
 #[test]
 fn the_verb_round_trips_on_the_wire_and_an_older_replica_would_not_know_it() {
-    assert_eq!(RequestCode::from_u8(27), Some(RequestCode::LogOp));
-    assert_eq!(RequestCode::from_u8(28), None);
+    assert_eq!(RequestCode::from_u8(28), Some(RequestCode::LogOp));
+    assert_eq!(RequestCode::from_u8(29), None);
     for op in [
         LogOpRequest::append(V, C, 1, 5, 100, bytes(1, 300)),
         LogOpRequest::seal(V, C, 1, 5, true),
