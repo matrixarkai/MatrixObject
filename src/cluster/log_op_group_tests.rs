@@ -26,17 +26,15 @@ impl Drop for Dir {
     }
 }
 fn node(dir: &Path) -> NodeReplica {
+    let (used_bytes, health) = super::replica_health::test_parts();
     NodeReplica {
-        used_bytes: 0,
+        used_bytes,
         service: MatrixReplicaService::new(),
         journal: None,
         journal_checkpoint_after_bytes: 0,
         staged: None,
-        maintenance: false,
         max_pages: 65_536,
-        #[cfg(all(feature = "chunk-consensus", feature = "meta-server"))]
-        applied_membership: None,
-        failed: false,
+        health,
         log_chunks: Some(LogChunkStore::open(dir).unwrap()),
     }
 }
