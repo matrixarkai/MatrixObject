@@ -465,8 +465,10 @@ mod log_chunk_commands_tests {
             if round == 200 && !restored {
                 // a restart: the state comes back from its snapshot and the ids carry on from it
                 let bytes = service.export_snapshot().to_bytes().unwrap();
+                let snapshot = crate::MetaSnapshot::from_bytes(&bytes).unwrap();
                 let mut late = MatrixMetaService::new();
-                late.install_snapshot(crate::MetaSnapshot::from_bytes(&bytes).unwrap()).unwrap();
+                late.install_snapshot(snapshot.clone()).unwrap();
+                late.install_placement_roster(&snapshot).unwrap();
                 assert_eq!(late.placement_commit_index, service.placement_commit_index);
                 service = late;
                 restored = true;
