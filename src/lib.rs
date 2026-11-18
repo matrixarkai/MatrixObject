@@ -14,6 +14,8 @@ mod cluster_features_tests;
 pub mod log_chunk;
 #[cfg(test)]
 mod log_chunk_tests;
+#[cfg(test)]
+mod log_chunk_sealed_tests;
 pub mod log_tail;
 #[cfg(test)]
 mod log_tail_tests;

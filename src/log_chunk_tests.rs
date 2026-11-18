@@ -58,7 +58,7 @@ fn the_length_is_derived_on_replay_and_nothing_else_stores_it() {
     let chunk = LogChunk::open(&path, 1, MAX).unwrap();
     assert_eq!(chunk.length(), all.len() as u64);
     assert_eq!(chunk.durable_length(), all.len() as u64);
-    assert_eq!(chunk.read(0, all.len()), &all[..]);
+    assert_eq!(chunk.read_vec(0, all.len()).unwrap(), &all[..]);
     assert_eq!(chunk.footer_crc(), crc32c(&all));
     assert_eq!(chunk.epoch(), 1);
 }
@@ -75,7 +75,7 @@ fn a_cut_at_every_byte_of_the_last_record_replays_to_the_records_before_it() {
         fs::write(&copy, &original[..cut as usize]).unwrap();
         let chunk = LogChunk::open(&copy, 1, MAX).unwrap();
         assert_eq!(chunk.length(), 137, "cut at byte {cut}");
-        assert_eq!(chunk.read(0, 137), before_last);
+        assert_eq!(chunk.read_vec(0, 137).unwrap(), before_last);
         // the cut is made durable: the file is exactly the whole records
         assert_eq!(
             fs::metadata(&copy).unwrap().len(),
@@ -206,10 +206,10 @@ fn pipelined_records_arriving_out_of_order_are_applied_in_offset_order() {
     assert_eq!(acks[7], at);
     chunk.commit().unwrap();
     let flat: Vec<u8> = parts.concat();
-    assert_eq!(chunk.read(0, flat.len()), &flat[..]);
+    assert_eq!(chunk.read_vec(0, flat.len()).unwrap(), &flat[..]);
     // the file holds the records in offset order, so replay reproduces the bytes
     let again = LogChunk::open(&path, 1, MAX).unwrap();
-    assert_eq!(again.read(0, flat.len()), &flat[..]);
+    assert_eq!(again.read_vec(0, flat.len()).unwrap(), &flat[..]);
     assert_eq!(again.pending_records(), 0);
 }
 
@@ -303,7 +303,7 @@ fn a_stale_writer_is_fenced_and_a_new_epoch_may_cut_the_tail() {
     chunk.commit().unwrap();
     let expected = [bytes(1, 300), bytes(2, 100)[..50].to_vec(), bytes(4, 20)].concat();
     let again = LogChunk::open(&path, 1, MAX).unwrap();
-    assert_eq!(again.read(0, 1000), &expected[..]);
+    assert_eq!(again.read_vec(0, 1000).unwrap(), &expected[..]);
     assert_eq!(again.epoch(), 3);
     assert!(matches!(chunk.truncate(3, 999), Err(LogError::Bounds(_))));
 }
