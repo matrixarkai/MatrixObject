@@ -4,7 +4,7 @@ use super::*;
 use matrixobjectstore_rs::{
     cluster::{
         ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ObjectWriteOptions,
-        RemoteReplicaClient, ReplicaClientOptions,
+        RemoteMetaClient, RemoteReplicaClient, ReplicaClientOptions,
     },
     object_manifest::{ManifestOutcome, ObjectManifest},
     staged_allocation::{
@@ -196,6 +196,7 @@ impl Fixture {
                 total.publications += value.publications;
                 total.publication_bytes += value.publication_bytes;
                 total.frames += value.frames;
+                total.allocations += value.allocations;
                 total
             })
     }
@@ -592,6 +593,103 @@ fn a_cached_append_plan_is_asked_for_again_once_it_is_old() {
     }
     // planned, reused, expired and planned again, reused
     assert_eq!(frames, vec![2, 1, 2, 1], "frames per append: {frames:?}");
+}
+
+fn staged_total(client: &mut RemoteMetaClient) -> usize {
+    let (mut after, mut total) = (0, 0);
+    loop {
+        let (ids, more) = client.list_staged_allocations(after, 32).unwrap();
+        total += ids.len();
+        match ids.last() {
+            Some(last) if more => after = *last,
+            _ => return total,
+        }
+    }
+}
+
+fn create_object(fixture: &Fixture, client: &mut RemoteMetaClient, key: &str) -> ObjectManifest {
+    let options = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        replica: ReplicaClientOptions::default(),
+        ..Default::default()
+    };
+    let allocation = fixture.reserve(client, key, None, 1, false);
+    client
+        .write_staged_object(&allocation, None, &vec![1u8; 4096], &options)
+        .unwrap()
+}
+
+fn gateway_plane(fixture: &Fixture) -> matrixobjectstore_rs::net::cluster_gateway::SdkPlane {
+    use matrixobjectstore_rs::net::cluster_gateway::{CompactState, GatewayOptions, SdkPlane};
+    let mut options = GatewayOptions::default();
+    options.compact_append = true;
+    options.reserve_next = true;
+    options.write = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        replica: ReplicaClientOptions::default(),
+        ..Default::default()
+    };
+    SdkPlane::new(fixture.client(), options, std::sync::Arc::new(CompactState::default()))
+}
+
+/// The gateway reserves the next allocation only for an object it is appending to repeatedly. A
+/// cold object's append leaves no reservation in the metadata plane's table (it would hold a slot
+/// until it expires, and cost an expiry commit); an append to a hot object whose reservation was
+/// made needs no allocation request. Frames are metadata requests; the allocation request is the
+/// difference between a cold append and an append that used a reservation.
+#[test]
+fn the_gateway_reserves_only_for_objects_appended_to_repeatedly() {
+    use matrixobjectstore_rs::net::cluster_gateway::{ObjectPlane, HOT_WINDOW};
+    let fixture = Fixture::new();
+    let mut plane = gateway_plane(&fixture);
+    let mut probe = fixture.client();
+    let key = "hot-log";
+    let mut manifest = create_object(&fixture, &mut probe, key);
+    let mut allocations = Vec::new();
+    let mut staged = Vec::new();
+    // cold, hot without a reservation yet, hot with one, hot with one, cold with one, cold
+    for pause in [0u64, 0, 0, 0, HOT_WINDOW.as_millis() as u64 + 500, HOT_WINDOW.as_millis() as u64 + 500] {
+        std::thread::sleep(Duration::from_millis(pause));
+        fixture.settle();
+        let before = fixture.wire().allocations;
+        manifest = plane.append_best(manifest, &vec![2u8; 4096]).map_err(|failure| failure.error).unwrap();
+        fixture.settle();
+        allocations.push(fixture.wire().allocations - before);
+        staged.push(staged_total(&mut probe));
+    }
+    assert_eq!(staged, vec![0, 1, 1, 1, 0, 0], "table entries after each append: {staged:?}");
+    // allocation commits per append: a cold append and a hot one without a reservation allocate; a
+    // hot append whose reservation exists does not, and neither does a cold one that uses it
+    assert_eq!(allocations, vec![1, 1, 0, 0, 0, 1], "allocation commits per append: {allocations:?}");
+}
+
+/// With the metadata plane's table past the point where publications reserve, hot appends go on
+/// as they did before reservations existed: no reservation, no failure, the table does not grow.
+#[test]
+fn hot_appends_with_a_nearly_full_table_carry_no_reservation_and_still_succeed() {
+    use matrixobjectstore_rs::net::cluster_gateway::ObjectPlane;
+    let fixture = Fixture::new();
+    let mut plane = gateway_plane(&fixture);
+    let mut probe = fixture.client();
+    let mut manifest = create_object(&fixture, &mut probe, "busy");
+    for index in 0..70 {
+        fixture.reserve(&mut probe, &format!("filler-{index:03}"), None, 1, false);
+    }
+    fixture.settle();
+    let table = staged_total(&mut probe);
+    assert!(table > 64, "the table must be past the reservation limit: {table}");
+    let mut allocations = Vec::new();
+    for _ in 0..4 {
+        fixture.settle();
+        let before = fixture.wire().allocations;
+        manifest = plane.append_best(manifest, &vec![2u8; 4096]).map_err(|failure| failure.error).unwrap();
+        fixture.settle();
+        allocations.push(fixture.wire().allocations - before);
+    }
+    assert_eq!(staged_total(&mut probe), table, "a hot append reserved with the table past its limit");
+    assert_eq!(allocations, vec![1, 1, 1, 1], "every append allocates: {allocations:?}");
 }
 
 #[test]

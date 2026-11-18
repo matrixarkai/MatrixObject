@@ -172,7 +172,17 @@ pub struct CompactState(
     std::sync::atomic::AtomicU8,
     /// Allocations reserved by the last append to each object, with when they were stored.
     std::sync::Mutex<std::collections::HashMap<(String, String), (crate::staged_allocation::StagedAllocation, std::time::Instant)>>,
+    /// When each object was last appended to, for the objects appended to lately: a reservation
+    /// is made only for an object that is being appended to repeatedly.
+    std::sync::Mutex<std::collections::HashMap<(String, String), std::time::Instant>>,
 );
+
+/// An object counts as being appended to repeatedly when its previous append was this recent.
+/// A reservation costs a slot of the metadata plane's table and, when nobody uses it, an expiry
+/// commit later, so only an object likely to be appended to again soon should get one.
+pub const HOT_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+/// Objects the gateway remembers an append time for.
+const RECENT_APPENDS_CAP: usize = 4096;
 
 /// Lease of an allocation reserved for the next append. Short, because a reservation nobody
 /// uses (an idle log, another writer got there first) holds one of the metadata plane's 128
@@ -180,6 +190,25 @@ pub struct CompactState(
 const RESERVATION_TTL_MS: u64 = 10_000;
 
 impl CompactState {
+    /// Whether this object was appended to within [`HOT_WINDOW`], and note that it is being
+    /// appended to now. The map is bounded: when it is full the entries older than the window are
+    /// dropped, and if it is still full it is emptied, which only makes objects cold.
+    pub(crate) fn note_append(&self, bucket: &str, key: &str) -> bool {
+        let Ok(mut map) = self.2.lock() else { return false };
+        let now = std::time::Instant::now();
+        let hot = map
+            .get(&(bucket.to_owned(), key.to_owned()))
+            .is_some_and(|last| now.duration_since(*last) < HOT_WINDOW);
+        if map.len() >= RECENT_APPENDS_CAP {
+            map.retain(|_, last| now.duration_since(*last) < HOT_WINDOW);
+            if map.len() >= RECENT_APPENDS_CAP {
+                map.clear();
+            }
+        }
+        map.insert((bucket.to_owned(), key.to_owned()), now);
+        hot
+    }
+
     /// The allocation the last append to this object reserved, if it is still for the manifest
     /// being extended and well inside its lease (`ttl_ms` is the lease it was made with). A
     /// reservation is used once: it is removed whether or not it fits, and an append that fails
@@ -240,6 +269,10 @@ impl SdkPlane {
             }
         }
         let pages = data.len().div_ceil(self.options.write.page_bytes.max(1)).max(1) as u32;
+        // Reserve the next allocation only for an object appended to repeatedly: a cold object
+        // would leave a reservation nobody uses in the metadata plane's table until it expires.
+        let hot = self.compact.note_append(&expected.bucket, &expected.key);
+        let reserve_next = self.options.reserve_next && hot;
         let reserved = if self.options.reserve_next {
             self.compact.take_reservation(expected, pages, self.options.staged_ttl_ms.min(RESERVATION_TTL_MS))
         } else {
@@ -263,7 +296,7 @@ impl SdkPlane {
         // that published the previous append, used within half its lease): no read-back.
         self.client.confirm_staged_allocation(allocation.allocation_id);
         let options = self.write_options();
-        let result = if self.options.reserve_next {
+        let result = if reserve_next {
             self.client
                 .append_staged_object_compact_reserving(
                     &allocation,
@@ -1318,6 +1351,25 @@ mod tests {
         state.store_reservation(reservation(5, 1));
         std::thread::sleep(std::time::Duration::from_millis(30));
         assert_eq!(state.take_reservation(&manifest_at(5), 1, 40), None);
+    }
+
+    #[test]
+    fn an_object_is_hot_only_when_it_was_appended_to_lately_and_the_memory_is_bounded() {
+        let state = CompactState::default();
+        assert!(!state.note_append("b", "k"), "the first append to an object is cold");
+        assert!(state.note_append("b", "k"), "the next one, at once, is hot");
+        assert!(!state.note_append("b", "other"), "another object is cold");
+        // an append older than the window no longer makes the next one hot
+        state.2.lock().unwrap().insert(
+            ("b".into(), "k".into()),
+            std::time::Instant::now().checked_sub(HOT_WINDOW + std::time::Duration::from_millis(50)).unwrap(),
+        );
+        assert!(!state.note_append("b", "k"), "an old append is cold");
+        // the memory is bounded however many objects are appended to
+        for index in 0..RECENT_APPENDS_CAP * 3 {
+            state.note_append("b", &format!("object-{index}"));
+        }
+        assert!(state.2.lock().unwrap().len() <= RECENT_APPENDS_CAP);
     }
 
     #[test]
