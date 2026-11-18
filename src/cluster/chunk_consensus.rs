@@ -312,6 +312,7 @@ impl ChunkConsensus {
                 incoming,
                 &inbound_stop,
                 NETWORK_TIMEOUT,
+                crate::cluster::peer_delivery::PEER_IDLE_BUDGET,
                 inbound_wake,
                 &inbound_transport,
                 &inbound_observation,

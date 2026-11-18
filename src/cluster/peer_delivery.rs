@@ -9,6 +9,21 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+/// How long a receiver keeps a connection that has finished a frame, waiting for the next one.
+/// A frame that has started still gets only the receiver's (short) frame budget.
+pub(super) const PEER_IDLE_BUDGET: Duration = Duration::from_secs(5);
+/// How much earlier than the receiver's idle budget a sender stops trusting a cached socket.
+pub(super) const PEER_REUSE_MARGIN: Duration = Duration::from_secs(1);
+/// A cached socket is reused only while it is younger than this. It is derived from the receiver's
+/// idle budget, so the two can only move together: the sender never starts a frame on a socket the
+/// receiver is about to close.
+pub(super) const PEER_REUSE_AGE: Duration =
+    Duration::from_millis((PEER_IDLE_BUDGET.as_millis() - PEER_REUSE_MARGIN.as_millis()) as u64);
+const _: () = assert!(
+    PEER_REUSE_AGE.as_millis() + PEER_REUSE_MARGIN.as_millis() <= PEER_IDLE_BUDGET.as_millis(),
+    "the sender's reuse age must stay under the receiver's idle budget by the margin"
+);
+
 /// Per-worker observations only; a successful send is not a peer acknowledgment.
 #[derive(Clone, Default)]
 pub(super) struct PeerDeliveryCounters(Arc<DeliveryCounts>);
@@ -21,6 +36,10 @@ struct DeliveryCounts {
     write_failed: AtomicU64,
     sent: AtomicU64,
     max_queue_ms: AtomicU64,
+    /// Sends that went out on a cached socket instead of a new connection.
+    reused: AtomicU64,
+    /// Cached sockets dropped before a send because the receiver had already closed them.
+    closed_by_peer: AtomicU64,
 }
 impl PeerDeliveryCounters {
     pub(super) fn queue_rejected(&self) {
@@ -28,7 +47,7 @@ impl PeerDeliveryCounters {
     }
     pub(super) fn describe(&self) -> String {
         let c = &self.0;
-        format!("; peer_attempted={}; peer_queue_rejected={}; peer_expired_before_connect={}; peer_connect_failed={}; peer_write_failed={}; peer_sent={}; peer_max_queue_ms={}", c.attempted.load(Ordering::Relaxed), c.queue_rejected.load(Ordering::Relaxed), c.expired.load(Ordering::Relaxed), c.connect_failed.load(Ordering::Relaxed), c.write_failed.load(Ordering::Relaxed), c.sent.load(Ordering::Relaxed), c.max_queue_ms.load(Ordering::Relaxed))
+        format!("; peer_attempted={}; peer_queue_rejected={}; peer_expired_before_connect={}; peer_connect_failed={}; peer_write_failed={}; peer_sent={}; peer_max_queue_ms={}; peer_reused={}; peer_closed_by_peer={}", c.attempted.load(Ordering::Relaxed), c.queue_rejected.load(Ordering::Relaxed), c.expired.load(Ordering::Relaxed), c.connect_failed.load(Ordering::Relaxed), c.write_failed.load(Ordering::Relaxed), c.sent.load(Ordering::Relaxed), c.max_queue_ms.load(Ordering::Relaxed), c.reused.load(Ordering::Relaxed), c.closed_by_peer.load(Ordering::Relaxed))
     }
 }
 
@@ -119,6 +138,8 @@ pub(super) struct PeerSender {
     address: SocketAddr,
     transport: super::peer_tls::PeerTransport,
     reuse: bool,
+    /// Oldest a cached socket may be and still be reused; [`PEER_REUSE_AGE`] unless a test says so.
+    reuse_age: Duration,
     cached: Option<(super::peer_tls::PeerSendStream, Instant)>,
 }
 impl PeerSender {
@@ -126,22 +147,38 @@ impl PeerSender {
         Self::new(address, transport, std::env::var_os("MATRIXOBJECT_RAFT_STREAMS").is_some_and(|v| v == "1"))
     }
     fn new(address: SocketAddr, transport: super::peer_tls::PeerTransport, reuse: bool) -> Self {
-        Self { address, transport, reuse, cached: None }
+        Self { address, transport, reuse, reuse_age: PEER_REUSE_AGE, cached: None }
     }
     pub(super) fn send(&mut self, delivery: PeerDelivery) -> io::Result<()> {
         if !self.reuse { return delivery.send_with_transport(&self.address, &self.transport); }
         let c = &delivery.counters.0;
         c.max_queue_ms.fetch_max(delivery.created.elapsed().as_millis().min(u128::from(u64::MAX)) as u64, Ordering::Relaxed);
         remaining(delivery.deadline).inspect_err(|_| { c.expired.fetch_add(1, Ordering::Relaxed); })?;
-        let cached = self.cached.take().filter(|(_, used)| used.elapsed() < Duration::from_millis(50));
+        // A cached socket is used only while it is younger than `reuse_age` (under the receiver's
+        // idle budget) AND the receiver has not closed it: a write to a closed socket succeeds
+        // locally and the packet is lost, and a packet must never be replayed after an uncertain
+        // write, so the closed socket is found out before the send, not after it.
+        let cached = match self.cached.take() {
+            Some((stream, used)) if used.elapsed() < self.reuse_age => {
+                if stream.peer_closed() {
+                    c.closed_by_peer.fetch_add(1, Ordering::Relaxed);
+                    None
+                } else {
+                    Some(stream)
+                }
+            }
+            _ => None,
+        };
+        let reused = cached.is_some();
         let mut stream = match cached {
-            Some((stream, _)) => stream,
+            Some(stream) => stream,
             None => super::peer_tls::PeerSendStream::connect(&self.address, &self.transport, delivery.deadline)
                 .inspect_err(|_| { c.connect_failed.fetch_add(1, Ordering::Relaxed); })?,
         };
         match stream.send(&delivery.bytes, delivery.deadline) {
             Ok(()) => {
                 c.sent.fetch_add(1, Ordering::Relaxed);
+                if reused { c.reused.fetch_add(1, Ordering::Relaxed); }
                 self.cached = Some((stream, Instant::now()));
                 Ok(())
             }
@@ -187,12 +224,12 @@ pub(super) fn write_until(
 mod tests {
     use super::*;
     use std::io::Read;
+    use std::sync::Arc;
     use std::net::TcpListener;
     use std::sync::mpsc;
 
     #[test]
     fn sender_stream_reuses_connection_and_drops_expired_cache() {
-        use std::sync::Arc;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
@@ -209,7 +246,7 @@ mod tests {
         assert_eq!(sender.cached.as_ref().unwrap().0.local_port(), first_port);
         assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), b"one");
         assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), b"two");
-        sender.cached.as_mut().unwrap().1 = Instant::now() - Duration::from_secs(1);
+        sender.cached.as_mut().unwrap().1 = Instant::now() - PEER_REUSE_AGE - Duration::from_millis(100);
         sender.send(PeerDelivery::new(b"new".to_vec(), Duration::from_secs(2))).unwrap();
         assert_ne!(sender.cached.as_ref().unwrap().0.local_port(), first_port);
         assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), b"new");
@@ -224,6 +261,90 @@ mod tests {
         assert!(rx.try_recv().is_err());
         stop.stop();
         worker.join().unwrap();
+    }
+
+    fn receiver_for(
+        timeout: Duration,
+        idle: Duration,
+    ) -> (
+        SocketAddr,
+        Arc<super::super::shutdown::ServerShutdown>,
+        std::thread::JoinHandle<()>,
+        mpsc::Receiver<Vec<u8>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(super::super::shutdown::ServerShutdown::default());
+        let worker_stop = stop.clone();
+        let (tx, rx) = mpsc::sync_channel(8);
+        let worker = std::thread::spawn(move || {
+            super::super::peer_receiver::receive_observed(
+                listener,
+                tx,
+                &worker_stop,
+                timeout,
+                idle,
+                None,
+                &super::super::peer_tls::PeerTransport::Plain,
+                &super::super::peer_receiver::PeerReceiveCounters::default(),
+            )
+        });
+        (address, stop, worker, rx)
+    }
+
+    #[test]
+    fn a_cached_socket_survives_a_pause_longer_than_the_old_fifty_milliseconds() {
+        // The cache used to be trusted for 50 ms under a 100 ms receiver budget, so at 10 appends a
+        // second (100 ms apart) every message paid a new connection on every node.
+        let (address, stop, worker, rx) = receiver_for(Duration::from_secs(2), Duration::from_secs(2));
+        let counters = PeerDeliveryCounters::default();
+        let mut sender = PeerSender::new(address, super::super::peer_tls::PeerTransport::Plain, true);
+        sender.send(PeerDelivery::observed(b"one".to_vec(), Duration::from_secs(2), counters.clone())).unwrap();
+        let first_port = sender.cached.as_ref().unwrap().0.local_port();
+        std::thread::sleep(Duration::from_millis(150));
+        sender.send(PeerDelivery::observed(b"two".to_vec(), Duration::from_secs(2), counters.clone())).unwrap();
+        assert_eq!(
+            sender.cached.as_ref().unwrap().0.local_port(),
+            first_port,
+            "a 150 ms pause must reuse the connection"
+        );
+        assert_eq!(counters.0.reused.load(Ordering::Relaxed), 1);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), b"one");
+        assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), b"two");
+        stop.stop();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn a_socket_the_receiver_closed_is_replaced_before_the_next_send_without_loss_or_duplicate() {
+        // The receiver closes a connection idle for 300 ms. The sender's reuse age is set far past
+        // that, which is what a receiver with a shorter budget than the sender assumes looks like;
+        // the closed socket must be found out BEFORE the write, because a write to it succeeds
+        // locally and the packet is lost, and a packet is never replayed after an uncertain write.
+        let (address, stop, worker, rx) = receiver_for(Duration::from_secs(2), Duration::from_millis(300));
+        let counters = PeerDeliveryCounters::default();
+        let mut sender = PeerSender::new(address, super::super::peer_tls::PeerTransport::Plain, true);
+        sender.reuse_age = Duration::from_secs(60);
+        sender.send(PeerDelivery::observed(b"one".to_vec(), Duration::from_secs(2), counters.clone())).unwrap();
+        let first_port = sender.cached.as_ref().unwrap().0.local_port();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), b"one");
+        std::thread::sleep(Duration::from_millis(900));
+        sender.send(PeerDelivery::observed(b"two".to_vec(), Duration::from_secs(2), counters.clone())).unwrap();
+        assert_ne!(sender.cached.as_ref().unwrap().0.local_port(), first_port, "the closed socket must not be reused");
+        assert_eq!(counters.0.closed_by_peer.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.0.reused.load(Ordering::Relaxed), 0);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), b"two", "the message after a close must arrive");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(rx.try_recv().is_err(), "no message may be delivered twice");
+        stop.stop();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn the_reuse_age_stays_under_the_receivers_idle_budget_by_the_margin() {
+        assert!(PEER_REUSE_AGE + PEER_REUSE_MARGIN <= PEER_IDLE_BUDGET);
+        assert!(PEER_REUSE_AGE > Duration::from_millis(50), "the window was 50 ms and is meant to be longer");
     }
 
     #[test]
