@@ -1000,6 +1000,7 @@ fn read_only(request: &ReplicaRequest) -> bool {
     match request {
         ReplicaRequest::ReadNamespaceFence { .. } => true,
         ReplicaRequest::FenceNamespace(_) | ReplicaRequest::JournalControl(_) => false,
+        ReplicaRequest::LogOp(op) => !op.is_mutation(),
         ReplicaRequest::Membership(command) => command.is_read(),
         ReplicaRequest::ReadChunk { .. }
         | ReplicaRequest::ReadChunkBatch { .. }
