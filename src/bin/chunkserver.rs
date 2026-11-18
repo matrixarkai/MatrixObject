@@ -50,6 +50,11 @@
 //!
 //! On Unix, `MATRIXOBJECT_REPLICA_CHECKPOINT_BYTES` enables standalone journal
 //! compaction after 1024..536870912 new outcome bytes; absent means disabled.
+//! `MATRIXOBJECT_REPLICA_SEGMENTED_OUTCOMES=true` selects an opt-in immutable
+//! outcome journal with background metadata-only checkpoints. Use a fresh journal
+//! path. This layout retains old segments and currently keeps payloads resident;
+//! see `docs/replica-segmented-journal.md` for limits and validation commands.
+//!
 //! Set `MATRIXOBJECT_REPLICA_JOURNAL` to a file in an existing directory to retain
 //! writes and discards across restarts. Each successful mutation is synced before
 //! acknowledgment. Without this setting the replica remains in memory only.
@@ -110,10 +115,11 @@ fn main() {
         }
     }
 
-    let wal_zero_fill = matrixobjectstore_rs::cluster::wal_zero_fill_from_env().unwrap_or_else(|error| {
-        eprintln!("{error}");
-        std::process::exit(2);
-    });
+    let wal_zero_fill =
+        matrixobjectstore_rs::cluster::wal_zero_fill_from_env().unwrap_or_else(|error| {
+            eprintln!("{error}");
+            std::process::exit(2);
+        });
     let addr = env_string("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:17300");
     let worker_threads = env_usize("MATRIXOBJECT_REPLICA_THREADS", 4).max(1);
     let max_payload_bytes = env_usize("MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES", MAX_PAYLOAD_BYTES);
@@ -159,10 +165,11 @@ fn main() {
         }
     };
     let options = ReplicaNodeOptions {
-        tls: matrixobjectstore_rs::cluster::ApiTlsConfig::from_env("MATRIXOBJECT_API").unwrap_or_else(|error| {
-            eprintln!("invalid API TLS configuration: {error}");
-            std::process::exit(2);
-        }),
+        tls: matrixobjectstore_rs::cluster::ApiTlsConfig::from_env("MATRIXOBJECT_API")
+            .unwrap_or_else(|error| {
+                eprintln!("invalid API TLS configuration: {error}");
+                std::process::exit(2);
+            }),
         maintenance,
         local_recovery_sidecar,
         journal_group_commit,
@@ -175,6 +182,20 @@ fn main() {
     };
     let journal = std::env::var_os("MATRIXOBJECT_REPLICA_JOURNAL");
     let raft_peers = std::env::var_os("MATRIXOBJECT_CHUNK_RAFT_PEERS");
+    let segmented = match std::env::var("MATRIXOBJECT_REPLICA_SEGMENTED_OUTCOMES").as_deref() {
+        Ok("1" | "true") => true,
+        Ok("0" | "false") | Err(std::env::VarError::NotPresent) => false,
+        _ => {
+            eprintln!("MATRIXOBJECT_REPLICA_SEGMENTED_OUTCOMES must be true or false");
+            std::process::exit(2);
+        }
+    };
+    if segmented && (journal.is_none() || raft_peers.is_some() || wal_zero_fill.is_some()) {
+        eprintln!(
+            "segmented outcomes require a standalone journal without zero-filled frames or Raft"
+        );
+        std::process::exit(2);
+    }
     if raft_peers.is_none()
         && [
             "MATRIXOBJECT_CHUNK_RAFT_BOOTSTRAP_VOTERS",
@@ -198,14 +219,24 @@ fn main() {
         std::process::exit(2);
     }
     #[allow(unused_mut)]
-    let mut storage = if journal.is_some() {
+    let mut storage = if segmented {
+        "segmented-outcomes"
+    } else if journal.is_some() {
         "journal"
     } else {
         "memory"
     };
     let bound_server = match journal {
         Some(path) => {
-            ReplicaNodeServer::bind_with_journal(&addr, options, std::path::Path::new(&path))
+            if segmented {
+                ReplicaNodeServer::bind_with_segmented_journal(
+                    &addr,
+                    options,
+                    std::path::Path::new(&path),
+                )
+            } else {
+                ReplicaNodeServer::bind_with_journal(&addr, options, std::path::Path::new(&path))
+            }
         }
         None => ReplicaNodeServer::bind(&addr, options),
     };
@@ -385,7 +416,10 @@ fn main() {
                         Err(std::env::VarError::NotPresent) => None,
                         Err(_) => return Err("chunk placement ID is not UTF-8".into()),
                     },
-                    tls: matrixobjectstore_rs::cluster::ApiTlsConfig::from_env("MATRIXOBJECT_CLIENT").map_err(|error| error.to_string())?,
+                    tls: matrixobjectstore_rs::cluster::ApiTlsConfig::from_env(
+                        "MATRIXOBJECT_CLIENT",
+                    )
+                    .map_err(|error| error.to_string())?,
                     expected_metadata_identity,
                     node_id,
                     advertised_endpoint,
@@ -410,7 +444,7 @@ fn main() {
         }
     }
 
-    let group_commit = journal_group_commit && storage == "journal";
+    let group_commit = journal_group_commit && matches!(storage, "journal" | "segmented-outcomes");
     println!(
         "chunkserver listening on {bound} pid={} protocol_stamp={PROTOCOL_STAMP} \
          threads={worker_threads} max_payload_bytes={max_payload_bytes} auth=none \

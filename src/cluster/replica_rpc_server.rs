@@ -46,6 +46,8 @@ use std::time::Duration;
 use super::shutdown::ServerShutdown;
 
 use super::replica_journal::ReplicaJournal;
+use super::replica_journal_backend::ReplicaJournalBackend;
+use super::replica_segmented_journal::SegmentedReplicaJournal;
 use crate::cluster::message::{encode_reply, ReplicaReply, ReplicaRequest};
 use crate::cluster::wire::{RequestCode, StatusCode, MAX_PAYLOAD_BYTES};
 use crate::{MatrixReplicaService, ObjectError};
@@ -67,7 +69,7 @@ pub use consensus::ChunkRaftOptions;
 
 struct NodeReplica {
     service: MatrixReplicaService,
-    journal: Option<ReplicaJournal>,
+    journal: Option<Box<dyn ReplicaJournalBackend>>,
     journal_checkpoint_after_bytes: u64,
     staged: Option<super::state_install::StagedState>,
     maintenance: bool,
@@ -161,7 +163,7 @@ pub struct ReplicaNodeServer {
 impl ReplicaNodeServer {
     /// Bind `addr` and serve a fresh in-memory replica.
     pub fn bind(addr: &str, options: ReplicaNodeOptions) -> std::io::Result<Self> {
-        Self::bind_storage(addr, options, None)
+        Self::bind_storage_layout(addr, options, None, false)
     }
 
     /// Replay a locked journal and sync every successful mutation before replying.
@@ -172,7 +174,23 @@ impl ReplicaNodeServer {
         options: ReplicaNodeOptions,
         path: &std::path::Path,
     ) -> std::io::Result<Self> {
-        Self::bind_storage(addr, options, Some(path))
+        Self::bind_storage_layout(addr, options, Some(path), false)
+    }
+
+    /// Use immutable outcome segments and asynchronous metadata-only checkpoints.
+    /// This opt-in layout requires its own fresh path; it retains all segments.
+    pub fn bind_with_segmented_journal(
+        addr: &str,
+        options: ReplicaNodeOptions,
+        path: &std::path::Path,
+    ) -> std::io::Result<Self> {
+        if options.wal_zero_fill_bytes.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "segmented outcomes cannot use zero-filled journal frames",
+            ));
+        }
+        Self::bind_storage_layout(addr, options, Some(path), true)
     }
 
     /// Compact a standalone journal after this many new outcome bytes. Unix only.
@@ -198,10 +216,11 @@ impl ReplicaNodeServer {
         Ok(())
     }
 
-    fn bind_storage(
+    fn bind_storage_layout(
         addr: &str,
         options: ReplicaNodeOptions,
         path: Option<&std::path::Path>,
+        segmented: bool,
     ) -> std::io::Result<Self> {
         crate::cluster::message::validate_payload_limit(options.max_payload_bytes)?;
         if options.capacity_bytes == 0 || options.max_pages == 0 {
@@ -211,8 +230,10 @@ impl ReplicaNodeServer {
             ));
         }
         if !options.local_recovery_sidecar && path.is_none() {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
-                "peer recovery requires a durable standalone replica journal"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "peer recovery requires a durable standalone replica journal",
+            ));
         }
         let mut service = MatrixReplicaService::new();
         service.set_keep_ec_sidecar(options.local_recovery_sidecar);
@@ -221,20 +242,31 @@ impl ReplicaNodeServer {
             .map_err(|err| {
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
             })?;
-        let journal = path
-            .map(|path| {
-                ReplicaJournal::open_with_options(
-                    path,
-                    &mut service,
-                    options.max_pages,
-                    options.wal_zero_fill_bytes.unwrap_or(0),
-                )
+        let journal: Option<Box<dyn ReplicaJournalBackend>> = path
+            .map(|path| -> std::io::Result<Box<dyn ReplicaJournalBackend>> {
+                if segmented {
+                    Ok(Box::new(SegmentedReplicaJournal::open(
+                        path,
+                        &mut service,
+                        options.max_pages,
+                    )?))
+                } else {
+                    Ok(Box::new(ReplicaJournal::open_with_options(
+                        path,
+                        &mut service,
+                        options.max_pages,
+                        options.wal_zero_fill_bytes.unwrap_or(0),
+                    )?))
+                }
             })
             .transpose()?;
         // A restored checkpoint also restores its old runtime recovery policy.
         // Apply this deployment's explicit policy before exposing the listener.
-        service.configure_journal_recovery(options.local_recovery_sidecar).map_err(|error|
-            std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
+        service
+            .configure_journal_recovery(options.local_recovery_sidecar)
+            .map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+            })?;
         if let Some(path) = path {
             super::api_tls::pin_file(&super::api_tls::journal_pin(path), options.tls.is_some())?;
         }
@@ -327,22 +359,32 @@ impl ReplicaNodeServer {
         #[cfg(feature = "meta-server")]
         if let Some(options) = &self.heartbeat {
             #[cfg(feature = "chunk-consensus")]
-            let dynamic = self.consensus.as_ref().is_some_and(|c| c.identity().version == 2);
+            let dynamic = self
+                .consensus
+                .as_ref()
+                .is_some_and(|c| c.identity().version == 2);
             #[cfg(not(feature = "chunk-consensus"))]
             let dynamic = false;
             if options.placement_id.is_some() != dynamic {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
-                    "fenced heartbeat placement ID is required only for dynamic chunk consensus"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "fenced heartbeat placement ID is required only for dynamic chunk consensus",
+                ));
             }
         }
         #[cfg(feature = "chunk-consensus")]
         let standalone = self.consensus.is_none();
         #[cfg(not(feature = "chunk-consensus"))]
         let standalone = true;
-        let group_commit = if standalone && self.options.journal_group_commit && self.has_local_journal
-        {
-            Some(star_group_commit::Committer::start(Arc::clone(&self.replica), self.options.max_payload_bytes)?)
-        } else { None };
+        let group_commit =
+            if standalone && self.options.journal_group_commit && self.has_local_journal {
+                Some(star_group_commit::Committer::start(
+                    Arc::clone(&self.replica),
+                    self.options.max_payload_bytes,
+                )?)
+            } else {
+                None
+            };
         let worker_threads = self.options.worker_threads.max(1);
         let dispatch = super::connections::Dispatch::new(worker_threads, 128);
         let mut handles = Vec::with_capacity(worker_threads);
@@ -377,9 +419,13 @@ impl ReplicaNodeServer {
             #[cfg(feature = "chunk-consensus")]
             let consensus = self.consensus.clone();
             handles.push(std::thread::spawn(move || {
-                heartbeat::run(options, replica, stop,
+                heartbeat::run(
+                    options,
+                    replica,
+                    stop,
                     #[cfg(feature = "chunk-consensus")]
-                    consensus)
+                    consensus,
+                )
             }));
         }
         for handle in handles {
@@ -473,89 +519,94 @@ fn frame_response(
                 encode_failure(StatusCode::for_error(&err), &err.to_string())
             }
             Ok(request) => {
-                let result = if let Some(committer) = group_commit.filter(|_| star_group_commit::eligible(&request)) {
+                let result = if let Some(committer) =
+                    group_commit.filter(|_| star_group_commit::eligible(&request))
+                {
                     committer.request(request, payload.len())
                 } else {
-                #[cfg(feature = "chunk-consensus")]
-                let result = match request {
-                    ReplicaRequest::ConditionalWriteLimits => {
-                        Ok(ReplicaReply::ConditionalWriteLimits {
-                            max_writes: if consensus.is_some() { 8 } else { 32 },
-                            max_payload_bytes: options
-                                .max_payload_bytes
-                                .min(4 * 1024 * 1024 + 4096)
-                                as u32,
-                        })
-                    }
-                    ReplicaRequest::WideConditionalWriteLimits => {
-                        Ok(ReplicaReply::ConditionalWriteLimits {
-                            max_writes: if consensus.is_some() { 8 } else { 32 },
-                            max_payload_bytes: options
-                                .max_payload_bytes
-                                .min(if consensus.is_some() {
-                                    4 * 1024 * 1024 + 4096
+                    #[cfg(feature = "chunk-consensus")]
+                    let result = match request {
+                        ReplicaRequest::ConditionalWriteLimits => {
+                            Ok(ReplicaReply::ConditionalWriteLimits {
+                                max_writes: if consensus.is_some() { 8 } else { 32 },
+                                max_payload_bytes: options
+                                    .max_payload_bytes
+                                    .min(4 * 1024 * 1024 + 4096)
+                                    as u32,
+                            })
+                        }
+                        ReplicaRequest::WideConditionalWriteLimits => {
+                            Ok(ReplicaReply::ConditionalWriteLimits {
+                                max_writes: if consensus.is_some() { 8 } else { 32 },
+                                max_payload_bytes: options.max_payload_bytes.min(
+                                    if consensus.is_some() {
+                                        4 * 1024 * 1024 + 4096
+                                    } else {
+                                        MAX_PAYLOAD_BYTES
+                                    },
+                                ) as u32,
+                            })
+                        }
+                        ReplicaRequest::ReadBatchLimits => Ok(ReplicaReply::ReadBatchLimits {
+                            max_reads: if consensus.is_some() { 8 } else { 32 },
+                            max_reply_payload_bytes: options.max_payload_bytes.min(
+                                if consensus.is_some() {
+                                    4 * 1024 * 1024
                                 } else {
                                     MAX_PAYLOAD_BYTES
-                                }) as u32,
-                        })
-                    }
-                    ReplicaRequest::ReadBatchLimits => Ok(ReplicaReply::ReadBatchLimits {
-                        max_reads: if consensus.is_some() { 8 } else { 32 },
-                        max_reply_payload_bytes: options
-                            .max_payload_bytes
-                            .min(if consensus.is_some() {
-                                4 * 1024 * 1024
-                            } else {
-                                MAX_PAYLOAD_BYTES
-                            }) as u32,
-                    }),
-                    ReplicaRequest::WriteChunkBatchIfSequence { writes } => match consensus {
-                        Some(c) => c.request_batch(writes),
-                        None => apply_batch(replica, writes, options.max_payload_bytes),
-                    },
-                    ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } => match consensus {
-                        Some(c) => c.request_batch_digests(writes),
-                        None => apply_batch_digests(replica, writes, options.max_payload_bytes),
-                    },
-                    request => match consensus {
-                        Some(c) => c.request(request),
-                        None => apply(replica, request, options.max_payload_bytes),
-                    },
-                };
-                #[cfg(not(feature = "chunk-consensus"))]
-                let result = match request {
-                    ReplicaRequest::ConditionalWriteLimits => {
-                        Ok(ReplicaReply::ConditionalWriteLimits {
-                            max_writes: 32,
-                            max_payload_bytes: options
-                                .max_payload_bytes
-                                .min(4 * 1024 * 1024 + 4096)
-                                as u32,
-                        })
-                    }
-                    ReplicaRequest::WideConditionalWriteLimits => {
-                        Ok(ReplicaReply::ConditionalWriteLimits {
-                            max_writes: 32,
-                            max_payload_bytes: options
+                                },
+                            ) as u32,
+                        }),
+                        ReplicaRequest::WriteChunkBatchIfSequence { writes } => match consensus {
+                            Some(c) => c.request_batch(writes),
+                            None => apply_batch(replica, writes, options.max_payload_bytes),
+                        },
+                        ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } => {
+                            match consensus {
+                                Some(c) => c.request_batch_digests(writes),
+                                None => {
+                                    apply_batch_digests(replica, writes, options.max_payload_bytes)
+                                }
+                            }
+                        }
+                        request => match consensus {
+                            Some(c) => c.request(request),
+                            None => apply(replica, request, options.max_payload_bytes),
+                        },
+                    };
+                    #[cfg(not(feature = "chunk-consensus"))]
+                    let result = match request {
+                        ReplicaRequest::ConditionalWriteLimits => {
+                            Ok(ReplicaReply::ConditionalWriteLimits {
+                                max_writes: 32,
+                                max_payload_bytes: options
+                                    .max_payload_bytes
+                                    .min(4 * 1024 * 1024 + 4096)
+                                    as u32,
+                            })
+                        }
+                        ReplicaRequest::WideConditionalWriteLimits => {
+                            Ok(ReplicaReply::ConditionalWriteLimits {
+                                max_writes: 32,
+                                max_payload_bytes: options.max_payload_bytes.min(MAX_PAYLOAD_BYTES)
+                                    as u32,
+                            })
+                        }
+                        ReplicaRequest::ReadBatchLimits => Ok(ReplicaReply::ReadBatchLimits {
+                            max_reads: 32,
+                            max_reply_payload_bytes: options
                                 .max_payload_bytes
                                 .min(MAX_PAYLOAD_BYTES)
                                 as u32,
-                        })
-                    }
-                    ReplicaRequest::ReadBatchLimits => Ok(ReplicaReply::ReadBatchLimits {
-                        max_reads: 32,
-                        max_reply_payload_bytes: options
-                            .max_payload_bytes
-                            .min(MAX_PAYLOAD_BYTES) as u32,
-                    }),
-                    ReplicaRequest::WriteChunkBatchIfSequence { writes } => {
-                        apply_batch(replica, writes, options.max_payload_bytes)
-                    }
-                    ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } => {
-                        apply_batch_digests(replica, writes, options.max_payload_bytes)
-                    }
-                    request => apply(replica, request, options.max_payload_bytes),
-                };
+                        }),
+                        ReplicaRequest::WriteChunkBatchIfSequence { writes } => {
+                            apply_batch(replica, writes, options.max_payload_bytes)
+                        }
+                        ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } => {
+                            apply_batch_digests(replica, writes, options.max_payload_bytes)
+                        }
+                        request => apply(replica, request, options.max_payload_bytes),
+                    };
                     result
                 };
                 match result.and_then(|reply| {
@@ -678,7 +729,9 @@ fn apply_batch_digests_locked(
 
 fn finish_deferred_journal(guard: &mut NodeReplica) -> Result<(), ObjectError> {
     if guard.failed {
-        return Err(ObjectError::Corruption("replica failed before journal synchronization; restart required".into()));
+        return Err(ObjectError::Corruption(
+            "replica failed before journal synchronization; restart required".into(),
+        ));
     }
     let Some(journal) = guard.journal.as_mut() else {
         return Ok(());
@@ -736,24 +789,50 @@ fn prepare_rpc_append(
     request: &ReplicaRequest,
 ) -> Result<Option<crate::outcome::PreparedPageAppend>, ObjectError> {
     let (page, offset, data, sequence, state_checksum) = match request {
-        ReplicaRequest::WriteChunk { page_id, offset, data } =>
-            (page_id, *offset, data, None, None),
-        ReplicaRequest::WriteChunkIfSequence { page_id, offset, data, expected_sequence } =>
-            (page_id, *offset, data, Some(*expected_sequence), None),
-        ReplicaRequest::WriteChunkIfSequenceDigest { page_id, offset, data, expected_sequence }
-            if data.len() <= 1024 * 1024 =>
-            (page_id, *offset, data, Some(*expected_sequence), None),
-        ReplicaRequest::WriteChunkIfState { page_id, offset, data, expected_sequence, expected_state_checksum } =>
-            (page_id, *offset, data, Some(*expected_sequence), Some(expected_state_checksum)),
+        ReplicaRequest::WriteChunk {
+            page_id,
+            offset,
+            data,
+        } => (page_id, *offset, data, None, None),
+        ReplicaRequest::WriteChunkIfSequence {
+            page_id,
+            offset,
+            data,
+            expected_sequence,
+        } => (page_id, *offset, data, Some(*expected_sequence), None),
+        ReplicaRequest::WriteChunkIfSequenceDigest {
+            page_id,
+            offset,
+            data,
+            expected_sequence,
+        } if data.len() <= 1024 * 1024 => (page_id, *offset, data, Some(*expected_sequence), None),
+        ReplicaRequest::WriteChunkIfState {
+            page_id,
+            offset,
+            data,
+            expected_sequence,
+            expected_state_checksum,
+        } => (
+            page_id,
+            *offset,
+            data,
+            Some(*expected_sequence),
+            Some(expected_state_checksum),
+        ),
         _ => return Ok(None),
     };
     if let Some(sequence) = sequence {
-        if sequence == 0 || sequence == u64::MAX || service.page_write_sequence(page) != Some(sequence) {
+        if sequence == 0
+            || sequence == u64::MAX
+            || service.page_write_sequence(page) != Some(sequence)
+        {
             return Ok(None);
         }
     }
     if let Some(expected) = state_checksum {
-        if service.head_chunk(page)?.state_checksum != *expected { return Ok(None); }
+        if service.head_chunk(page)?.state_checksum != *expected {
+            return Ok(None);
+        }
     }
     service.prepare_journal_append(page, offset, data)
 }
@@ -768,6 +847,12 @@ fn apply_locked(
         return Err(ObjectError::Corruption(
             "replica journal failed; restart and recover before serving requests".to_string(),
         ));
+    }
+    if let Some(journal) = guard.journal.as_mut() {
+        if let Err(error) = journal.check_health() {
+            guard.failed = true;
+            return Err(ObjectError::Corruption(error.to_string()));
+        }
     }
     if guard.staged.as_ref().is_some_and(|stage| stage.expired()) {
         guard.staged = None;
@@ -791,27 +876,65 @@ fn apply_locked(
         return apply_state_install(guard, request);
     }
     if let ReplicaRequest::FenceNamespace(fence) = request {
-        let outcome = crate::chunk_namespace_fence::NamespaceFenceOutcome::decide(&guard.service, fence)?;
-        crate::cluster::message::check_reply_size(prost::Message::encoded_len(outcome.after.as_ref().unwrap()), max_payload_bytes)?;
-        let journal = guard.journal.as_mut().ok_or_else(|| ObjectError::PreconditionFailed(
-            "namespace fencing requires durable replica storage".into()))?;
-        if let Err(error) = journal.append_namespace_fence_deferred(&outcome)
-            .and_then(|()| if sync_journal { journal.sync_deferred() } else { Ok(()) }) {
+        let outcome =
+            crate::chunk_namespace_fence::NamespaceFenceOutcome::decide(&guard.service, fence)?;
+        crate::cluster::message::check_reply_size(
+            prost::Message::encoded_len(outcome.after.as_ref().unwrap()),
+            max_payload_bytes,
+        )?;
+        if guard.journal.is_none() {
+            return Err(ObjectError::PreconditionFailed(
+                "namespace fencing requires durable replica storage".into(),
+            ));
+        }
+        let contextual = guard
+            .journal
+            .as_ref()
+            .unwrap()
+            .capture_context(&guard.service)
+            .is_some();
+        if contextual {
+            if let Err(error) = outcome.apply(&mut guard.service) {
+                guard.failed = true;
+                return Err(error);
+            }
+        }
+        let context = guard
+            .journal
+            .as_ref()
+            .unwrap()
+            .capture_context(&guard.service);
+        let reply = outcome.after.clone().unwrap();
+        if let Err(error) = guard.journal.as_mut().unwrap().append_namespace_owned(
+            outcome.clone(),
+            context,
+            sync_journal,
+        ) {
             guard.failed = true;
             return Err(ObjectError::Corruption(error.to_string()));
         }
-        if let Err(error) = outcome.apply(&mut guard.service) {
-            guard.failed = true;
-            return Err(error);
+        if !contextual {
+            if let Err(error) = outcome.apply(&mut guard.service) {
+                guard.failed = true;
+                return Err(error);
+            }
         }
-        if sync_journal && guard.journal.as_ref().unwrap().checkpoint_due(guard.journal_checkpoint_after_bytes) {
-            let NodeReplica { service, journal, .. } = guard;
+        if sync_journal
+            && guard
+                .journal
+                .as_ref()
+                .unwrap()
+                .checkpoint_due(guard.journal_checkpoint_after_bytes)
+        {
+            let NodeReplica {
+                service, journal, ..
+            } = guard;
             if let Err(error) = journal.as_mut().unwrap().checkpoint(service) {
                 guard.failed = true;
                 return Err(ObjectError::Corruption(error.to_string()));
             }
         }
-        return Ok(ReplicaReply::NamespaceFence(outcome.after.unwrap()));
+        return Ok(ReplicaReply::NamespaceFence(reply));
     }
     if let ReplicaRequest::ReadChunkStateRange { length, .. } = &request {
         let size = usize::try_from(*length)
@@ -827,11 +950,14 @@ fn apply_locked(
         crate::cluster::message::check_reply_size(size, max_payload_bytes)?;
     }
     if let ReplicaRequest::ReadChunkBatch { reads } = &request {
-        let size = reads.iter().try_fold(0usize, |sum, (_, _, length)| {
-            usize::try_from(*length).ok().and_then(|length| {
-                sum.checked_add(length.saturating_add(64))
+        let size = reads
+            .iter()
+            .try_fold(0usize, |sum, (_, _, length)| {
+                usize::try_from(*length)
+                    .ok()
+                    .and_then(|length| sum.checked_add(length.saturating_add(64)))
             })
-        }).unwrap_or(usize::MAX);
+            .unwrap_or(usize::MAX);
         crate::cluster::message::check_reply_size(size, max_payload_bytes)?;
     }
     let page = if guard.journal.is_some() {
@@ -849,7 +975,9 @@ fn apply_locked(
     };
     let append = if guard.journal.is_some() {
         prepare_rpc_append(&guard.service, &request)?
-    } else { None };
+    } else {
+        None
+    };
     let before = if let Some(page) = page.as_ref().filter(|_| append.is_none()) {
         match guard.service.read_chunk_state(page) {
             Ok(state) => Some(state),
@@ -897,29 +1025,33 @@ fn apply_locked(
                 guard.service.verify_journal_append(&append)?;
                 append.outcome
             } else {
-            let after = match guard.service.read_chunk_state(&page) {
-                Ok(state) => state,
-                Err(ObjectError::NotFound(_)) if before.is_none() => return Ok(()),
-                Err(err) => return Err(err),
-            };
-            if before.as_ref() == Some(&after)
-                && counters == crate::outcome::PageOutcome::counters(&guard.service)
-            {
-                return Ok(());
-            }
-            crate::outcome::PageOutcome::between(&page, before.as_ref(), &after)?
+                let after = match guard.service.read_chunk_state(&page) {
+                    Ok(state) => state,
+                    Err(ObjectError::NotFound(_)) if before.is_none() => return Ok(()),
+                    Err(err) => return Err(err),
+                };
+                if before.as_ref() == Some(&after)
+                    && counters == crate::outcome::PageOutcome::counters(&guard.service)
+                {
+                    return Ok(());
+                }
+                crate::outcome::PageOutcome::between(&page, before.as_ref(), &after)?
             };
             let outcome = outcome.with_counters(
-                    counters,
-                    crate::outcome::PageOutcome::counters(&guard.service),
-                );
-            let journal = guard.journal.as_mut().unwrap();
-            if sync_journal {
-                journal.append_outcome(&outcome)
-            } else {
-                journal.append_outcome_deferred(&outcome)
-            }
-            .map_err(|err| ObjectError::Corruption(err.to_string()))
+                counters,
+                crate::outcome::PageOutcome::counters(&guard.service),
+            );
+            let context = guard
+                .journal
+                .as_ref()
+                .unwrap()
+                .capture_context(&guard.service);
+            guard
+                .journal
+                .as_mut()
+                .unwrap()
+                .append_owned(outcome, context, sync_journal)
+                .map_err(|err| ObjectError::Corruption(err.to_string()))
         })();
         let persist = persist.and_then(|()| {
             if !sync_journal {
@@ -990,8 +1122,13 @@ fn apply_state_install(
             }
             let page = request.page_id()?;
             let head = request.head.as_ref().unwrap();
-            node.service.validate_namespace_install_shape(&page, head.logical_length,
-                head.data_length, head.write_sequence, !head.discarded_ranges.is_empty())?;
+            node.service.validate_namespace_install_shape(
+                &page,
+                head.logical_length,
+                head.data_length,
+                head.write_sequence,
+                !head.discarded_ranges.is_empty(),
+            )?;
             check_install_destination(
                 node,
                 &page,
@@ -1049,7 +1186,7 @@ fn apply_state_install(
             // A complete checkpoint can exceed the bounded normal outcome record.
             // Publish the candidate in memory only after durable replacement succeeds.
             if let Some(journal) = node.journal.as_mut() {
-                if let Err(error) = journal.checkpoint(&candidate) {
+                if let Err(error) = journal.checkpoint_for_install(&candidate) {
                     node.failed = true;
                     return Err(ObjectError::Corruption(format!(
                         "install persistence failed; restart required: {error}"
@@ -1071,14 +1208,16 @@ pub(super) fn apply_to_replica(
 ) -> Result<ReplicaReply, ObjectError> {
     match request {
         ReplicaRequest::FenceNamespace(fence) => {
-            let outcome = crate::chunk_namespace_fence::NamespaceFenceOutcome::decide(guard, fence)?;
+            let outcome =
+                crate::chunk_namespace_fence::NamespaceFenceOutcome::decide(guard, fence)?;
             outcome.apply(guard)?;
             Ok(ReplicaReply::NamespaceFence(outcome.after.unwrap()))
         }
-        ReplicaRequest::ReadNamespaceFence { namespace } => {
-            guard.namespace_fence(&namespace).cloned().map(ReplicaReply::NamespaceFence)
-                .ok_or_else(|| ObjectError::NotFound("namespace fence is missing".into()))
-        }
+        ReplicaRequest::ReadNamespaceFence { namespace } => guard
+            .namespace_fence(&namespace)
+            .cloned()
+            .map(ReplicaReply::NamespaceFence)
+            .ok_or_else(|| ObjectError::NotFound("namespace fence is missing".into())),
         ReplicaRequest::StateInstall(_) => Err(ObjectError::PreconditionFailed(
             "state installation requires a standalone node".into(),
         )),
@@ -1126,8 +1265,10 @@ pub(super) fn apply_to_replica(
             guard.read_chunk(&page_id, offset, length)?,
         )),
         ReplicaRequest::ReadChunkBatch { reads } => {
-            let reads = reads.into_iter().map(|(page_id, offset, length)|
-                guard.read_chunk(&page_id, offset, length)).collect::<Result<Vec<_>, _>>()?;
+            let reads = reads
+                .into_iter()
+                .map(|(page_id, offset, length)| guard.read_chunk(&page_id, offset, length))
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(ReplicaReply::Reads(reads))
         }
         ReplicaRequest::DigestChunk {
@@ -1142,7 +1283,8 @@ pub(super) fn apply_to_replica(
             }
             let read = guard.read_chunk(&page_id, offset, length)?;
             let mut sha256 = [0u8; 32];
-            sha256.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, &read.data).as_ref());
+            sha256
+                .copy_from_slice(ring::digest::digest(&ring::digest::SHA256, &read.data).as_ref());
             Ok(ReplicaReply::Digest {
                 write_sequence: read.write_sequence,
                 length: read.data.len() as u64,
@@ -1151,13 +1293,17 @@ pub(super) fn apply_to_replica(
         }
         ReplicaRequest::DigestChunkBatch { reads } => {
             if reads.len() > 8 || reads.iter().any(|(_, _, length)| *length > 1024 * 1024) {
-                return Err(ObjectError::InvalidArgument("digest batch exceeds range bounds".into()));
+                return Err(ObjectError::InvalidArgument(
+                    "digest batch exceeds range bounds".into(),
+                ));
             }
             let mut digests = Vec::with_capacity(reads.len());
             for (page_id, offset, length) in reads {
                 let read = guard.read_chunk(&page_id, offset, length)?;
                 let mut sha256 = [0; 32];
-                sha256.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, &read.data).as_ref());
+                sha256.copy_from_slice(
+                    ring::digest::digest(&ring::digest::SHA256, &read.data).as_ref(),
+                );
                 digests.push((read.write_sequence, read.data.len() as u64, sha256));
             }
             Ok(ReplicaReply::Digests(digests))
@@ -1258,9 +1404,7 @@ pub(super) fn apply_to_replica(
                 Err(error) => return Err(error),
             };
             if !matches {
-                return Err(ObjectError::PreconditionFailed(
-                    "page state changed".into(),
-                ));
+                return Err(ObjectError::PreconditionFailed("page state changed".into()));
             }
             apply_to_replica(
                 guard,
@@ -1345,9 +1489,17 @@ mod journal_failure_tests {
             chunk_id: ChunkId::new(1, 1).unwrap(),
             page_index: 0,
         };
-        let reply = apply_to_replica(&mut service, ReplicaRequest::WriteChunkIfSequenceDigest {
-            page_id: page_id.clone(), offset: 0, data: b"page".to_vec(), expected_sequence: 0,
-        }, 8).unwrap();
+        let reply = apply_to_replica(
+            &mut service,
+            ReplicaRequest::WriteChunkIfSequenceDigest {
+                page_id: page_id.clone(),
+                offset: 0,
+                data: b"page".to_vec(),
+                expected_sequence: 0,
+            },
+            8,
+        )
+        .unwrap();
         let mut expected = [0u8; 32];
         expected.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, b"page").as_ref());
         assert!(matches!(reply, ReplicaReply::Digest {
@@ -1451,7 +1603,7 @@ mod journal_failure_tests {
         let replica = Arc::new(Mutex::new(NodeReplica {
             used_bytes: 0,
             service,
-            journal: Some(journal),
+            journal: Some(Box::new(journal)),
             journal_checkpoint_after_bytes: 0,
             staged: None,
             maintenance: false,
@@ -1492,11 +1644,7 @@ mod journal_failure_tests {
         );
 
         assert!(matches!(
-            apply_batch(
-                &replica,
-                vec![write(8, 0), write(9, 1)],
-                MAX_PAYLOAD_BYTES,
-            ),
+            apply_batch(&replica, vec![write(8, 0), write(9, 1)], MAX_PAYLOAD_BYTES,),
             Err(ObjectError::PreconditionFailed(_))
         ));
         assert_eq!(
@@ -1543,7 +1691,7 @@ mod journal_failure_tests {
         let replica = Arc::new(Mutex::new(NodeReplica {
             used_bytes: 0,
             service,
-            journal: Some(journal),
+            journal: Some(Box::new(journal)),
             journal_checkpoint_after_bytes: 0,
             staged: None,
             maintenance: false,
@@ -1559,12 +1707,14 @@ mod journal_failure_tests {
         let writes = [b"abc".as_slice(), b"def", b"ghi"]
             .into_iter()
             .enumerate()
-            .map(|(index, data)| super::super::message::ConditionalChunkWrite {
-                page_id: page.clone(),
-                offset: (index * 3) as u64,
-                data: data.to_vec(),
-                expected_sequence: index as u64,
-            })
+            .map(
+                |(index, data)| super::super::message::ConditionalChunkWrite {
+                    page_id: page.clone(),
+                    offset: (index * 3) as u64,
+                    data: data.to_vec(),
+                    expected_sequence: index as u64,
+                },
+            )
             .collect();
 
         assert_eq!(
@@ -1605,7 +1755,7 @@ mod journal_failure_tests {
         let replica = Arc::new(Mutex::new(NodeReplica {
             used_bytes: 0,
             service: MatrixReplicaService::new(),
-            journal: Some(ReplicaJournal::read_only_for_test(&path)),
+            journal: Some(Box::new(ReplicaJournal::read_only_for_test(&path))),
             journal_checkpoint_after_bytes: 0,
             staged: None,
             maintenance: false,

@@ -105,7 +105,10 @@ impl Committer {
             match self.replica.try_lock() {
                 Ok(mut guard) => {
                     if self.offered_requests.load(Ordering::Acquire) == 0 {
-                        let before = guard.journal.as_ref().map(ReplicaJournal::logical_length);
+                        let before = guard
+                            .journal
+                            .as_ref()
+                            .map(|journal| journal.logical_length());
                         let result = apply_queued(&mut guard, request, self.max_payload_bytes);
                         finish_mutations(&mut guard, before, finish_deferred_journal)?;
                         return result;
@@ -220,7 +223,10 @@ fn commit_jobs(
 ) {
     let failure = match replica.lock() {
         Ok(mut guard) => {
-            let before = guard.journal.as_ref().map(ReplicaJournal::logical_length);
+            let before = guard
+                .journal
+                .as_ref()
+                .map(|journal| journal.logical_length());
             for job in jobs.iter_mut() {
                 job.result = Some(apply_queued(
                     &mut guard,
@@ -261,7 +267,12 @@ fn finish_mutations(
             "replica failed before group synchronization".into(),
         ));
     }
-    if before != guard.journal.as_ref().map(ReplicaJournal::logical_length) {
+    if before
+        != guard
+            .journal
+            .as_ref()
+            .map(|journal| journal.logical_length())
+    {
         if let Err(error) = sync(guard) {
             guard.failed = true;
             return Err(error);

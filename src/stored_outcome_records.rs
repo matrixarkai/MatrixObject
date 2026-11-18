@@ -23,6 +23,7 @@ const RECORD_MAGIC: &[u8; 8] = b"MOEXREC1";
 const ENVELOPE: usize = 128;
 const COMMIT_OFFSET: u64 = 127;
 const MAX_HEADER: usize = 16 * 1024 * 1024;
+pub const MAX_REPLICA_METADATA_BYTES: usize = 64 * 1024;
 #[derive(Debug)]
 pub(super) struct CapacityExhausted;
 impl std::fmt::Display for CapacityExhausted {
@@ -32,16 +33,20 @@ impl std::fmt::Display for CapacityExhausted {
 }
 impl std::error::Error for CapacityExhausted {}
 
+pub use crate::checkpoint_fragment::CheckpointFragment;
+
 /// An already decided mutation. Persistence does not re-execute a client request.
 #[derive(Clone, Copy)]
 pub enum DecidedMutation<'a> {
     Page(&'a PageOutcome),
     NamespaceFence(&'a NamespaceFenceOutcome),
+    CheckpointFragment(&'a CheckpointFragment),
 }
 #[derive(Debug, PartialEq)]
 pub enum RecoveredMutation {
     Page(PageOutcome),
     NamespaceFence(NamespaceFenceOutcome),
+    CheckpointFragment(CheckpointFragment),
 }
 impl RecoveredMutation {
     pub fn apply(
@@ -52,12 +57,16 @@ impl RecoveredMutation {
         match self {
             Self::Page(value) => value.apply(service, max_pages),
             Self::NamespaceFence(value) => value.apply(service),
+            Self::CheckpointFragment(_) => Err(ObjectError::Corruption(
+                "checkpoint storage records require checkpoint-aware recovery".into(),
+            )),
         }
     }
     pub fn to_payload(&self) -> Result<Vec<u8>, ObjectError> {
         match self {
             Self::Page(value) => value.to_payload(),
             Self::NamespaceFence(value) => value.to_payload(),
+            Self::CheckpointFragment(value) => value.to_payload(),
         }
     }
 }
@@ -88,15 +97,21 @@ pub struct StoredDecision {
     pub original_length: u32,
     #[prost(message, optional, tag = "6")]
     pub namespace_fence: Option<NamespaceFenceOutcome>,
+    #[prost(message, optional, boxed, tag = "7")]
+    pub checkpoint_fragment: Option<Box<CheckpointFragment>>,
 }
 #[derive(Clone, PartialEq, Message)]
 pub struct StoredOutcomeBatch {
+    /// Version 1 carries state transitions; version 2 carries only checkpoint fragments.
     #[prost(uint32, tag = "1")]
     pub version: u32,
     #[prost(message, repeated, tag = "2")]
     pub decisions: Vec<StoredDecision>,
     #[prost(message, repeated, tag = "3")]
     pub payloads: Vec<PayloadExtent>,
+    /// Version 3 binds bounded replica metadata to the same data synchronization.
+    #[prost(bytes = "vec", tag = "4")]
+    pub replica_metadata: Vec<u8>,
 }
 #[derive(Debug)]
 pub struct StoredRecordMetadata {
@@ -234,7 +249,7 @@ fn preflight(mut bytes: &[u8]) -> io::Result<()> {
             (1, 0) => {
                 prost::encoding::decode_varint(&mut bytes).map_err(object)?;
             }
-            (field @ (2 | 3), 2) => {
+            (field @ (2 | 3 | 4), 2) => {
                 let length =
                     usize::try_from(prost::encoding::decode_varint(&mut bytes).map_err(object)?)
                         .map_err(object)?;
@@ -245,6 +260,10 @@ fn preflight(mut bytes: &[u8]) -> io::Result<()> {
                     decisions += 1;
                     if decisions > MAX_BATCH_EXTENTS {
                         return Err(invalid("too many stored decisions"));
+                    }
+                } else if field == 4 {
+                    if length > MAX_REPLICA_METADATA_BYTES {
+                        return Err(invalid("replica metadata exceeds bound"));
                     }
                 } else {
                     payloads += 1;
@@ -326,10 +345,43 @@ impl DurableOutcomeLog {
         mutations: &[DecidedMutation<'_>],
         sync: impl FnOnce(&File) -> io::Result<()>,
     ) -> io::Result<StoredRecordMetadata> {
+        self.append_with_sync_metadata(mutations, None, sync)
+    }
+    pub fn append_decided_batch_with_metadata(
+        &self,
+        mutations: &[DecidedMutation<'_>],
+        metadata: &[u8],
+    ) -> io::Result<StoredRecordMetadata> {
+        self.append_with_sync_metadata(mutations, Some(metadata), File::sync_data)
+    }
+    pub(super) fn append_with_sync_metadata(
+        &self,
+        mutations: &[DecidedMutation<'_>],
+        metadata: Option<&[u8]>,
+        sync: impl FnOnce(&File) -> io::Result<()>,
+    ) -> io::Result<StoredRecordMetadata> {
+        if metadata
+            .is_some_and(|bytes| bytes.is_empty() || bytes.len() > MAX_REPLICA_METADATA_BYTES)
+        {
+            return Err(argument("invalid replica metadata context length"));
+        }
         self.store.healthy()?;
         if mutations.is_empty() || mutations.len() > MAX_BATCH_EXTENTS {
             return Err(argument(
                 "stored outcome batch must contain 1..64 decisions",
+            ));
+        }
+        let checkpoint_batch = matches!(mutations[0], DecidedMutation::CheckpointFragment(_));
+        if mutations.iter().any(|value| {
+            matches!(value, DecidedMutation::CheckpointFragment(_)) != checkpoint_batch
+        }) {
+            return Err(argument(
+                "checkpoint fragments cannot share a batch with state transitions",
+            ));
+        }
+        if checkpoint_batch && metadata.is_some() {
+            return Err(argument(
+                "checkpoint fragments cannot carry replica metadata context",
             ));
         }
         let mut decisions = Vec::with_capacity(mutations.len());
@@ -340,6 +392,7 @@ impl DurableOutcomeLog {
             let original = match mutation {
                 DecidedMutation::Page(page) => page.to_payload(),
                 DecidedMutation::NamespaceFence(fence) => fence.to_payload(),
+                DecidedMutation::CheckpointFragment(fragment) => fragment.to_payload(),
             }
             .map_err(object)?;
             logical = logical
@@ -355,6 +408,7 @@ impl DurableOutcomeLog {
                 original_sha256: digest::digest(&digest::SHA256, &original).as_ref().to_vec(),
                 original_length: original.len() as u32,
                 namespace_fence: None,
+                checkpoint_fragment: None,
             };
             match mutation {
                 DecidedMutation::Page(page) => {
@@ -366,6 +420,12 @@ impl DurableOutcomeLog {
                 }
                 DecidedMutation::NamespaceFence(fence) => {
                     decision.namespace_fence = Some((*fence).clone());
+                }
+                DecidedMutation::CheckpointFragment(fragment) => {
+                    decision.patch_lengths.push(fragment.data.len() as u32);
+                    data_length += fragment.data.len() as u64;
+                    patches.push(fragment.data.as_slice());
+                    decision.checkpoint_fragment = Some(Box::new(fragment.without_data()));
                 }
             }
             decisions.push(decision);
@@ -385,9 +445,16 @@ impl DurableOutcomeLog {
             return Err(argument("stored payload stream exceeds byte limit"));
         }
         let mut batch = StoredOutcomeBatch {
-            version: 1,
+            version: if checkpoint_batch {
+                2
+            } else if metadata.is_some() {
+                3
+            } else {
+                1
+            },
             decisions,
             payloads: descriptors(self.store_id(), &data),
+            replica_metadata: metadata.map_or_else(Vec::new, |bytes| bytes.to_vec()),
         };
         let _writer = self.store.writer.lock().map_err(|_| {
             self.store.failed.store(true, Ordering::Release);
@@ -464,12 +531,17 @@ impl DurableOutcomeLog {
         header: usize,
         end: u64,
     ) -> io::Result<()> {
-        if batch.version != 1
+        if !matches!(batch.version, 1 | 2 | 3)
             || batch.decisions.is_empty()
             || batch.decisions.len() > MAX_BATCH_EXTENTS
             || batch.payloads.len() > 8
         {
             return Err(invalid("invalid stored outcome batch"));
+        }
+        if batch.replica_metadata.len() > MAX_REPLICA_METADATA_BYTES
+            || (batch.version == 3) != !batch.replica_metadata.is_empty()
+        {
+            return Err(invalid("invalid stored replica metadata context"));
         }
         let mut data = 0u64;
         let mut logical = 0usize;
@@ -486,14 +558,29 @@ impl DurableOutcomeLog {
             if logical > MAX_BATCH_BYTES {
                 return Err(invalid("stored decisions exceed byte bound"));
             }
-            match (&decision.page, &decision.namespace_fence) {
-                (Some(page), None) => {
+            match (
+                &decision.page,
+                &decision.namespace_fence,
+                &decision.checkpoint_fragment,
+            ) {
+                (Some(page), None, None) if matches!(batch.version, 1 | 3) => {
                     data = data
                         .checked_add(page_shape(page, &decision.patch_lengths, true)?)
                         .ok_or_else(|| invalid("stored payload length overflow"))?;
                 }
-                (None, Some(fence)) if decision.patch_lengths.is_empty() => {
+                (None, Some(fence), None)
+                    if matches!(batch.version, 1 | 3) && decision.patch_lengths.is_empty() =>
+                {
                     fence.to_payload().map_err(object)?;
+                }
+                (None, None, Some(fragment))
+                    if batch.version == 2 && decision.patch_lengths.len() == 1 =>
+                {
+                    let length = decision.patch_lengths[0];
+                    fragment.validate_external(length).map_err(object)?;
+                    data = data
+                        .checked_add(u64::from(length))
+                        .ok_or_else(|| invalid("stored checkpoint payload length overflow"))?;
                 }
                 _ => return Err(invalid("stored decision must have one supported outcome")),
             }
@@ -721,6 +808,19 @@ impl DurableOutcomeLog {
                     offset += u64::from(length);
                 }
                 RecoveredMutation::Page(page)
+            } else if let Some(fragment) = &decision.checkpoint_fragment {
+                let mut fragment = (**fragment).clone();
+                let offset = usize::try_from(decision.data_offset).map_err(object)?;
+                let end = offset
+                    .checked_add(decision.patch_lengths[0] as usize)
+                    .filter(|end| *end <= flat.len())
+                    .ok_or_else(|| invalid("stored checkpoint payload coverage mismatch"))?;
+                fragment.data = if one_patch {
+                    std::mem::take(&mut flat)
+                } else {
+                    flat[offset..end].to_vec()
+                };
+                RecoveredMutation::CheckpointFragment(fragment)
             } else {
                 RecoveredMutation::NamespaceFence(
                     decision.namespace_fence.as_ref().unwrap().clone(),
@@ -741,7 +841,21 @@ impl DurableOutcomeLog {
         &self,
         position: &StoredOutcomePosition,
     ) -> io::Result<Vec<RecoveredMutation>> {
-        self.hydrate(&self.read_metadata(position)?.batch)
+        let record = self.read_metadata(position)?;
+        if !record.batch.replica_metadata.is_empty() {
+            return Err(invalid(
+                "replica metadata context requires context-aware recovery",
+            ));
+        }
+        self.hydrate(&record.batch)
+    }
+    pub fn read_outcomes_with_metadata(
+        &self,
+        position: &StoredOutcomePosition,
+    ) -> io::Result<(Vec<RecoveredMutation>, Vec<u8>)> {
+        let record = self.read_metadata(position)?;
+        let outcomes = self.hydrate(&record.batch)?;
+        Ok((outcomes, record.batch.replica_metadata))
     }
     /// Replay into startup state; callers must not serve partially replayed state
     /// if a later record fails validation. Returns the applied mutation count.
@@ -754,6 +868,11 @@ impl DurableOutcomeLog {
         let mut at = offset;
         let mut count = 0;
         while let Some(record) = self.next_metadata(at)? {
+            if !record.batch.replica_metadata.is_empty() {
+                return Err(invalid(
+                    "replica metadata context requires context-aware recovery",
+                ));
+            }
             for outcome in self.hydrate(&record.batch)? {
                 outcome.apply(service, max_pages).map_err(object)?;
                 count += 1;
@@ -766,3 +885,7 @@ impl DurableOutcomeLog {
 #[cfg(all(test, unix))]
 #[path = "stored_outcome_record_tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "stored_checkpoint_fragment_tests.rs"]
+mod checkpoint_fragment_tests;

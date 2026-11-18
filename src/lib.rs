@@ -1,26 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub mod object_manifest;
-pub mod manifest_append;
-pub(crate) mod manifest_chain;
+#[cfg(any(feature = "replica-server", feature = "meta-server"))]
+mod checkpoint_fragment;
+pub mod chunk_namespace_fence;
 #[cfg(test)]
 mod chunked_manifest_tests;
+#[cfg(any(feature = "replica-server", feature = "meta-server"))]
+pub mod durable_payload;
+pub(crate) mod extent_list;
 pub mod log_chunk;
+#[cfg(test)]
+mod log_chunk_tests;
 pub mod log_tail;
 #[cfg(test)]
 mod log_tail_tests;
-#[cfg(test)]
-mod log_chunk_tests;
-pub(crate) mod extent_list;
+pub mod manifest_append;
+pub(crate) mod manifest_chain;
+pub mod manifest_copy;
 pub mod manifest_retention;
+pub mod object_manifest;
+pub mod outcome;
+pub mod placement_outcome;
 pub mod read_session_outcome;
 pub mod staged_allocation;
-pub mod manifest_copy;
-pub mod outcome;
-#[cfg(any(feature = "replica-server", feature = "meta-server"))]
-pub mod durable_payload;
-pub mod chunk_namespace_fence;
-pub mod placement_outcome;
 
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
@@ -262,10 +264,10 @@ mod replica_service;
 pub use replica_service::*;
 use replica_service::{
     select_bounded_chunk_discard_ranges_from, select_bounded_chunk_write_ranges_from,
-    trim_btree_map_to_retention, trim_deque_front_to_retention, validate_page_route_qos_config,
-    validate_chunk_mutation_qos_config, validate_meta_retention_limit,
-    validate_metadata_admission_policy, validate_metadata_qos_config,
-    validate_metadata_route_cache_config, validate_storage_receipt_retention,
+    trim_btree_map_to_retention, trim_deque_front_to_retention, validate_chunk_mutation_qos_config,
+    validate_meta_retention_limit, validate_metadata_admission_policy,
+    validate_metadata_qos_config, validate_metadata_route_cache_config,
+    validate_page_route_qos_config, validate_storage_receipt_retention,
     verify_storage_receipt_page_invariants,
 };
 

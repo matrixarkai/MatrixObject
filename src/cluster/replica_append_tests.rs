@@ -26,7 +26,7 @@ impl Fixture {
         Self {
             node: Arc::new(Mutex::new(NodeReplica {
                 service,
-                journal: Some(journal),
+                journal: Some(Box::new(journal)),
                 used_bytes: 0,
                 journal_checkpoint_after_bytes: 0,
                 staged: None,
@@ -157,7 +157,8 @@ fn journal_append_persistence_failure_refuses_ack_and_recovers_only_prior_data()
             data: b"base".to_vec(),
         })
         .unwrap();
-    fixture.node.lock().unwrap().journal = Some(ReplicaJournal::read_only_for_test(&fixture.path));
+    fixture.node.lock().unwrap().journal =
+        Some(Box::new(ReplicaJournal::read_only_for_test(&fixture.path)));
     assert!(fixture
         .request(ReplicaRequest::WriteChunk {
             page_id: page(),
@@ -283,4 +284,99 @@ fn journal_append_peer_recovery_requires_durable_storage() {
         }
     )
     .is_err());
+}
+
+#[test]
+fn segmented_journal_recovery_policy_is_applied_after_checkpoint_restore() {
+    let fixture = Fixture::new();
+    let segmented_path = fixture.directory.join("segmented.journal");
+    fixture.node.lock().unwrap().journal = None;
+    let write = |server: &ReplicaNodeServer, offset, data: &[u8]| {
+        apply(
+            &server.replica,
+            ReplicaRequest::WriteChunk {
+                page_id: page(),
+                offset,
+                data: data.to_vec(),
+            },
+            MAX_PAYLOAD_BYTES,
+        )
+        .unwrap();
+    };
+    let checkpoint = |server: &ReplicaNodeServer| {
+        let mut guard = server.replica.lock().unwrap();
+        let NodeReplica {
+            service, journal, ..
+        } = &mut *guard;
+        journal.as_mut().unwrap().checkpoint(service).unwrap();
+    };
+    let original = ReplicaNodeServer::bind_with_segmented_journal(
+        "127.0.0.1:0",
+        ReplicaNodeOptions::default(),
+        &segmented_path,
+    )
+    .unwrap();
+    write(&original, 0, b"base");
+    assert!(!original
+        .replica
+        .lock()
+        .unwrap()
+        .service
+        .read_chunk_state(&page())
+        .unwrap()
+        .fragment_bytes()
+        .is_empty());
+    checkpoint(&original);
+    drop(original);
+    let peer = ReplicaNodeServer::bind_with_segmented_journal(
+        "127.0.0.1:0",
+        ReplicaNodeOptions {
+            local_recovery_sidecar: false,
+            ..Default::default()
+        },
+        &segmented_path,
+    )
+    .unwrap();
+    {
+        let node = peer.replica.lock().unwrap();
+        assert!(node
+            .service
+            .read_chunk_state(&page())
+            .unwrap()
+            .fragment_bytes()
+            .is_empty());
+        assert!(node
+            .service
+            .prepare_journal_append(&page(), 4, b"tail")
+            .unwrap()
+            .is_some());
+    }
+    write(&peer, 4, b"tail");
+    checkpoint(&peer);
+    drop(peer);
+    let original = ReplicaNodeServer::bind_with_segmented_journal(
+        "127.0.0.1:0",
+        ReplicaNodeOptions::default(),
+        &segmented_path,
+    )
+    .unwrap();
+    let mut node = original.replica.lock().unwrap();
+    assert!(!node
+        .service
+        .read_chunk_state(&page())
+        .unwrap()
+        .fragment_bytes()
+        .is_empty());
+    assert!(node
+        .service
+        .prepare_journal_append(&page(), 8, b"x")
+        .unwrap()
+        .is_none());
+    node.service
+        .corrupt_chunk_payload_for_repair(&page())
+        .unwrap();
+    assert_eq!(
+        node.service.read_chunk(&page(), 0, 8).unwrap().data,
+        b"basetail"
+    );
 }

@@ -842,3 +842,89 @@ fn outcome_segments_disk_full_is_not_a_configured_capacity_refusal() {
     let log = SegmentedOutcomeLog::open(dir.path(), MIN_SEGMENT_BYTES).unwrap();
     assert_eq!(log.replay_after(None, &mut service(), 100).unwrap(), 1);
 }
+
+#[test]
+fn outcome_segments_cursor_captures_exact_cross_segment_bounds_without_later_appends() {
+    let _large = LARGE.lock().unwrap();
+    let dir = Directory::new();
+    let log = SegmentedOutcomeLog::open_inner(&dir.path(), MIN_SEGMENT_BYTES, 1).unwrap();
+    let mut positions = Vec::new();
+    for index in 0..10 {
+        positions.push(
+            log.append_page(&outcome(index, 3 * 1024 * 1024))
+                .unwrap()
+                .position,
+        );
+    }
+    let mut bounded = log
+        .metadata_cursor_between(&positions[2], &positions[8])
+        .unwrap();
+    let mut prefix = log.metadata_cursor_after(None).unwrap();
+    let later = log.append_page(&outcome(10, 4096)).unwrap().position;
+    let mut seen = Vec::new();
+    while let Some(record) = bounded.next_record().unwrap() {
+        seen.push(record.position);
+    }
+    assert_eq!(seen, positions[2..=8]);
+    assert!(bounded.next_record().unwrap().is_none());
+    let mut seen = Vec::new();
+    while let Some(record) = prefix.next_record().unwrap() {
+        seen.push(record.position);
+    }
+    assert_eq!(seen, positions);
+    let mut after = log.metadata_cursor_after(positions.last()).unwrap();
+    assert_eq!(after.next_record().unwrap().unwrap().position, later);
+    assert!(after.next_record().unwrap().is_none());
+    assert!(log
+        .metadata_cursor_between(&positions[8], &positions[2])
+        .is_err());
+    let mut invalid = positions[2].clone();
+    invalid.length += 4096;
+    assert!(log
+        .metadata_cursor_between(&invalid, &positions[8])
+        .is_err());
+}
+
+#[test]
+fn outcome_segments_cursor_can_read_checkpoint_fragments_interleaved_with_state_changes() {
+    let dir = Directory::new();
+    let log = SegmentedOutcomeLog::open(dir.path(), MIN_SEGMENT_BYTES).unwrap();
+    let a = crate::durable_payload::outcome_log::CheckpointFragment {
+        version: 1,
+        checkpoint_id: vec![12; 16],
+        kind: crate::durable_payload::outcome_log::CheckpointFragment::CATALOG,
+        ordinal: 0,
+        data: b"head".to_vec(),
+    };
+    let b = crate::durable_payload::outcome_log::CheckpointFragment {
+        ordinal: 1,
+        data: b"tail".to_vec(),
+        ..a.clone()
+    };
+    let first = log
+        .append_decided_batch(&[DecidedMutation::CheckpointFragment(&a)])
+        .unwrap()
+        .position;
+    log.append_page(&outcome(2, 4096)).unwrap();
+    let last = log
+        .append_decided_batch(&[DecidedMutation::CheckpointFragment(&b)])
+        .unwrap()
+        .position;
+    let mut cursor = log.metadata_cursor_between(&first, &last).unwrap();
+    log.append_page(&outcome(3, 4096)).unwrap();
+    let mut versions = Vec::new();
+    let mut data = Vec::new();
+    while let Some(record) = cursor.next_record().unwrap() {
+        versions.push(record.batch.version);
+        if record.batch.version == 2 {
+            for value in log.read_outcomes(&record.position).unwrap() {
+                match value {
+                    RecoveredMutation::CheckpointFragment(value) => data.extend(value.data),
+                    _ => panic!("expected checkpoint fragment"),
+                }
+            }
+        }
+    }
+    assert_eq!(versions, vec![2, 1, 2]);
+    assert_eq!(data, b"headtail");
+}
