@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-use super::{NodeReplica, ServerShutdown};
+use super::{NodeReplica, ReplicaHealth, ServerShutdown};
 use crate::cluster::{DataNodeSeed, MetaClientOptions, RemoteMetaClient};
 use std::{
     net::SocketAddr,
@@ -65,9 +65,9 @@ impl ReplicaHeartbeatOptions {
 
 #[cfg(feature = "chunk-consensus")]
 fn local_membership(
-    state: &NodeReplica,
+    applied: Option<&(crate::cluster::MembershipStatus, std::time::Instant)>,
 ) -> Result<crate::cluster::MembershipStatus, crate::ObjectError> {
-    let (status, observed) = state.applied_membership.as_ref().ok_or_else(|| {
+    let (status, observed) = applied.ok_or_else(|| {
         crate::ObjectError::PreconditionFailed("chunk membership has not applied".into())
     })?;
     if observed.elapsed() > Duration::from_secs(1) {
@@ -78,9 +78,17 @@ fn local_membership(
     Ok(status.clone())
 }
 
+/// Wall-clock milliseconds, so a failure episode in a log can be joined to other box-time logs.
+fn unix_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis())
+}
+
 pub(super) fn run(
     options: ReplicaHeartbeatOptions,
     replica: Arc<Mutex<NodeReplica>>,
+    health: Arc<ReplicaHealth>,
     stop: Arc<ServerShutdown>,
     #[cfg(feature = "chunk-consensus")] consensus: Option<Arc<super::consensus::ChunkConsensus>>,
 ) {
@@ -115,40 +123,37 @@ pub(super) fn run(
         let result = (|| -> Result<(), crate::ObjectError> {
             #[cfg(feature = "chunk-consensus")]
             let dynamic = consensus.as_ref().filter(|c| c.identity().version == 2);
-            let (used, capacity, online, membership) = {
-                let mut state = replica.try_lock().map_err(|error| match error {
-                    std::sync::TryLockError::WouldBlock => crate::ObjectError::PreconditionFailed(
-                        "replica health is busy applying state".into(),
-                    ),
-                    std::sync::TryLockError::Poisoned(_) => {
-                        crate::ObjectError::Corruption("replica health lock poisoned".into())
-                    }
-                })?;
+            // The report is read from the replica's health, not from the replica: its lock is
+            // held across every write's journal fsync, which is most of the time under load.
+            // The journal's own housekeeping (collecting a finished checkpoint) is still done
+            // here, but only when the lock happens to be free.
+            if let Ok(mut state) = replica.try_lock() {
                 if let Some(journal) = state.journal.as_mut() {
                     if journal.check_health().is_err() {
-                        state.failed = true;
+                        state.health.fail();
                     }
                 }
-                #[cfg(feature = "chunk-consensus")]
-                let membership = if let Some(consensus) = dynamic {
-                    if consensus.is_failed() || state.failed {
-                        return Err(crate::ObjectError::PreconditionFailed(
-                            "chunk consensus unavailable for health report".into(),
-                        ));
-                    }
-                    Some(local_membership(&state)?)
-                } else {
-                    None
-                };
-                #[cfg(not(feature = "chunk-consensus"))]
-                let membership: Option<crate::cluster::MembershipStatus> = None;
-                (
-                    state.used_bytes,
-                    state.service.capacity_bytes(),
-                    !state.failed && !state.maintenance,
-                    membership,
-                )
+            }
+            if health.journal_failed() {
+                health.fail();
+            }
+            #[cfg(feature = "chunk-consensus")]
+            let (used, membership) = if let Some(consensus) = dynamic {
+                if consensus.is_failed() || health.failed() {
+                    return Err(crate::ObjectError::PreconditionFailed(
+                        "chunk consensus unavailable for health report".into(),
+                    ));
+                }
+                let (used, applied) = health.used_and_membership();
+                (used, Some(local_membership(applied.as_ref())?))
+            } else {
+                (health.used_bytes(), None)
             };
+            #[cfg(not(feature = "chunk-consensus"))]
+            let (used, membership): (u64, Option<crate::cluster::MembershipStatus>) =
+                (health.used_bytes(), None);
+            let capacity = health.capacity_bytes();
+            let online = !health.failed() && !health.maintenance();
             if stop.is_stopped() {
                 return Ok(());
             }
@@ -210,11 +215,11 @@ pub(super) fn run(
         }
         match result {
             Err(error) if !reported_failure => {
-                eprintln!("chunk heartbeat for {} failed: {error}", options.node_id);
+                eprintln!("chunk heartbeat for {} failed: {error} (unix_ms={})", options.node_id, unix_ms());
                 reported_failure = true;
             }
             Ok(()) if reported_failure => {
-                eprintln!("chunk heartbeat for {} recovered", options.node_id);
+                eprintln!("chunk heartbeat for {} recovered (unix_ms={})", options.node_id, unix_ms());
                 reported_failure = false;
             }
             _ => {}
@@ -431,8 +436,7 @@ mod tests {
     #[test]
     fn fenced_report_uses_local_applied_identity_and_refuses_stale_observations() {
         let server = ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap();
-        let mut state = server.replica.lock().unwrap();
-        assert!(local_membership(&state).is_err());
+        assert!(local_membership(None).is_err());
         let status = crate::cluster::MembershipStatus {
             version: 1,
             node_id: 2,
@@ -442,11 +446,87 @@ mod tests {
             outgoing_voters: vec![],
             learners: vec![4],
         };
-        state.used_bytes = 123;
-        state.applied_membership = Some((status.clone(), std::time::Instant::now()));
-        assert_eq!(local_membership(&state).unwrap(), status);
-        state.applied_membership.as_mut().unwrap().1 -= Duration::from_secs(2);
-        assert!(local_membership(&state).is_err());
+        server.replica.lock().unwrap().used_bytes.set(123);
+        assert_eq!(server.health.used_and_membership().0, 123);
+        let mut applied = Some((status.clone(), std::time::Instant::now()));
+        assert_eq!(local_membership(applied.as_ref()).unwrap(), status);
+        applied.as_mut().unwrap().1 -= Duration::from_secs(2);
+        assert!(local_membership(applied.as_ref()).is_err());
+    }
+
+    /// A request thread can hold the replica lock for as long as a journal fsync takes, and under
+    /// a write load that is most of the time. The report must not depend on the lock: while one
+    /// thread holds it, usage and failure written under it reach the metaserver within the
+    /// interval.
+    #[test]
+    fn a_held_replica_lock_does_not_stop_the_report() {
+        let meta = MetaNodeServer::bind("127.0.0.1:0", MetaNodeOptions::default()).unwrap();
+        let mut chunk =
+            ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap();
+        let endpoint = chunk.local_addr().unwrap();
+        let metadata = meta.local_addr().unwrap();
+        meta.seed_data_roster(
+            &DataNodeSeed::parse_roster(&format!("chunk-1@{endpoint}@rack")).unwrap(),
+            1 << 28,
+        )
+        .unwrap();
+        chunk
+            .enable_heartbeats(ReplicaHeartbeatOptions {
+                placement_id: None,
+                tls: None,
+                expected_metadata_identity: None,
+                node_id: "chunk-1".into(),
+                advertised_endpoint: endpoint,
+                metadata_endpoints: vec![metadata],
+                interval: Duration::from_millis(100),
+            })
+            .unwrap();
+        let state = Arc::clone(&chunk.replica);
+        let meta_stop = meta.shutdown_handle();
+        let chunk_stop = chunk.shutdown_handle();
+        let meta_worker = std::thread::spawn(move || meta.serve().unwrap());
+        let chunk_worker = std::thread::spawn(move || chunk.serve().unwrap());
+        let mut client =
+            RemoteMetaClient::connect(&metadata.to_string(), &MetaClientOptions::default())
+                .unwrap();
+        let wait = |client: &mut RemoteMetaClient, online: bool, used: u64| {
+            let until = std::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                let node = &client.list_placement_nodes().unwrap()[0];
+                if node.online == online && node.used_bytes == used {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < until,
+                    "a report did not get through while the replica lock was held (online {online}, used {used})"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        wait(&mut client, true, 0);
+        let (acked_tx, acked_rx) = std::sync::mpsc::channel::<()>();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let mut guard = state.lock().unwrap();
+            guard.used_bytes.set(4096);
+            acked_tx.send(()).unwrap();
+            go_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            guard.health.fail();
+            acked_tx.send(()).unwrap();
+            go_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        });
+        acked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        wait(&mut client, true, 4096);
+        go_tx.send(()).unwrap();
+        acked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        wait(&mut client, false, 4096);
+        go_tx.send(()).unwrap();
+        holder.join().unwrap();
+        drop(client);
+        chunk_stop.stop();
+        chunk_worker.join().unwrap();
+        meta_stop.stop();
+        meta_worker.join().unwrap();
     }
 
     #[test]
@@ -561,8 +641,9 @@ mod tests {
         wait(&mut client, false, 1028);
         {
             let state = state.lock().unwrap();
-            assert!(state.failed);
-            assert_eq!(state.used_bytes, state.service.physical_bytes());
+            assert!(state.health.failed());
+            assert_eq!(state.used_bytes.get(), state.service.physical_bytes());
+            assert_eq!(state.health.used_bytes(), state.service.physical_bytes());
         }
         drop(data);
         drop(client);

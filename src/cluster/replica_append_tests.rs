@@ -23,18 +23,16 @@ impl Fixture {
         let mut service = MatrixReplicaService::new();
         service.set_keep_ec_sidecar(false);
         let journal = ReplicaJournal::open(&path, &mut service).unwrap();
+        let (used_bytes, health) = super::replica_health::test_parts();
         Self {
             node: Arc::new(Mutex::new(NodeReplica {
                 service,
                 journal: Some(Box::new(journal)),
-                used_bytes: 0,
+                used_bytes,
                 journal_checkpoint_after_bytes: 0,
                 staged: None,
-                maintenance: false,
                 max_pages: 10,
-                failed: false,
-                #[cfg(all(feature = "chunk-consensus", feature = "meta-server"))]
-                applied_membership: None,
+                health,
             })),
             directory,
             path,
@@ -138,7 +136,7 @@ fn journal_append_rpc_variants_keep_conditional_guards_and_accounting() {
             assert_eq!(fixture.length(), before);
         }
         let node = fixture.node.lock().unwrap();
-        assert_eq!(node.used_bytes, 8);
+        assert_eq!(node.used_bytes.get(), 8);
         assert_eq!(
             node.service.read_chunk(&page(), 0, 8).unwrap().data,
             b"basetail"
@@ -166,7 +164,7 @@ fn journal_append_persistence_failure_refuses_ack_and_recovers_only_prior_data()
             data: b"tail".to_vec()
         })
         .is_err());
-    assert!(fixture.node.lock().unwrap().failed);
+    assert!(fixture.node.lock().unwrap().health.failed());
     assert!(fixture.request(ReplicaRequest::Ping).is_err());
     assert!(fixture
         .request(ReplicaRequest::HeadChunk { page_id: page() })

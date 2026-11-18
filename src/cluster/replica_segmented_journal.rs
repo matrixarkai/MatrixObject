@@ -529,6 +529,9 @@ impl ReplicaJournalBackend for SegmentedReplicaJournal {
     fn check_health(&mut self) -> io::Result<()> {
         self.health()
     }
+    fn failure_handle(&self) -> Option<Arc<Mutex<Option<String>>>> {
+        Some(Arc::clone(&self.failure))
+    }
     fn append_owned(
         &mut self,
         outcome: PageOutcome,
