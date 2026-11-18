@@ -33,6 +33,7 @@ pub(super) fn to_object_error(error: LogError) -> ObjectError {
         LogError::Bounds(what) => ObjectError::InvalidArgument(format!("log chunk bound: {what}")),
         LogError::Corrupt(message) => ObjectError::Corruption(message),
         LogError::Io(error) => ObjectError::Corruption(format!("log chunk storage failed: {error}")),
+        LogError::Unavailable => ObjectError::Corruption("log chunk is unavailable after a failed write or sync; reopen to recover".into()),
     }
 }
 
