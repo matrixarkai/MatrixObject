@@ -3479,7 +3479,7 @@ fn a_log_object_costs_the_real_metadata_group_one_entry_per_switch_and_nothing_p
     }
     // across one boundary, then across three at once, then a small one: one entry per boundary
     assert_eq!(append(&mut object, &mut meta, 200_000, &mut expected, &mut total), 1);
-    assert_eq!(append(&mut object, &mut meta, 700_000, &mut expected, &mut total), 3);
+    assert_eq!(append(&mut object, &mut meta, 800_000, &mut expected, &mut total), 3);
     assert_eq!(append(&mut object, &mut meta, 1_000, &mut expected, &mut total), 0);
 
     // reads cost the metadata group nothing and see every byte, sealed chunks and live tail alike
