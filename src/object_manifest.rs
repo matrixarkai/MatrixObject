@@ -210,6 +210,19 @@ pub(crate) fn validate_calls() -> usize {
 pub(crate) fn reset_validate_calls() {
     VALIDATE_CALLS.with(|calls| calls.set(0));
 }
+#[cfg(all(test, feature = "metadata-consensus"))]
+thread_local! {
+    static RANGE_EXTENTS_CHECKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+/// Extents `validate_range_slice` looked at on this thread since the last reset (tests only).
+#[cfg(all(test, feature = "metadata-consensus"))]
+pub(crate) fn range_extents_checked() -> usize {
+    RANGE_EXTENTS_CHECKED.with(|checked| checked.get())
+}
+#[cfg(all(test, feature = "metadata-consensus"))]
+pub(crate) fn reset_range_extents_checked() {
+    RANGE_EXTENTS_CHECKED.with(|checked| checked.set(0));
+}
 impl ObjectManifest {
     pub fn object_id(&self) -> ObjectId {
         ObjectId::new(self.bucket.clone(), self.key.clone())
@@ -267,6 +280,75 @@ impl ObjectManifest {
         }
         if offset != self.length {
             return Err(invalid("object extents do not cover its length"));
+        }
+        Ok(())
+    }
+    /// Validate a reply that holds only the extents overlapping the object bytes
+    /// `offset..offset + length`, under a header that carries the object's own `length`.
+    ///
+    /// What can be checked from the slice is checked in full: the header, each extent's shape and
+    /// identity, that the extents are contiguous, that the first one holds `offset` and that the
+    /// last one reaches the end of the range (or of the object). What the other extents hold is
+    /// not seen, so this is NOT `validate`: the data each extent names still has to match its
+    /// published digest when it is read. A deleted object, an empty range and a range past the
+    /// end select nothing, and the reply must then carry no extents.
+    pub(crate) fn validate_range_slice(&self, offset: u64, length: u64) -> Result<(), ObjectError> {
+        crate::validate_bucket(&self.bucket)?;
+        crate::validate_key(&self.key)?;
+        if !known_format(self.format_version)
+            || self.generation == 0
+            || self.extents.len() > 4096
+            || self.encoded_len() > MAX_MANIFEST
+        {
+            return Err(invalid("invalid object manifest version, generation or size"));
+        }
+        if self.deleted && (self.length != 0 || !self.extents.is_empty()) {
+            return Err(invalid("deleted object manifest contains data"));
+        }
+        let end = offset.checked_add(length).filter(|end| *end <= self.length);
+        let Some(end) = end.filter(|_| !self.deleted && length != 0) else {
+            return if self.extents.is_empty() {
+                Ok(())
+            } else {
+                Err(invalid("a range reply carries extents for a range it cannot select"))
+            };
+        };
+        let Some(first) = self.extents.first() else {
+            return Err(invalid("a range reply carries no extent for a range inside the object"));
+        };
+        if first.object_offset > offset || first.object_offset.saturating_add(first.length) <= offset {
+            return Err(invalid("a range reply does not start at the range"));
+        }
+        let mut next = first.object_offset;
+        let mut pages = PageSet::with_capacity_and_hasher(self.extents.len(), Default::default());
+        let mut after_chunk = false;
+        for (position, extent) in self.extents.iter().enumerate() {
+            #[cfg(all(test, feature = "metadata-consensus"))]
+            RANGE_EXTENTS_CHECKED.with(|checked| checked.set(checked.get() + 1));
+            if !extent_order_ok(extent, after_chunk, position + 1 == self.extents.len()) {
+                return Err(invalid("invalid object extent ordering, identity or bounds"));
+            }
+            after_chunk |= extent.kind == EXTENT_KIND_LOG_CHUNK;
+            ChunkId::new(extent.volume_id, extent.chunk_id)?;
+            if extent.group.is_empty()
+                || extent.group.len() > 128
+                || !extent.group.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+                || extent.length == 0
+                || extent.write_sequence == 0
+                || !extent_shape_ok(self.format_version, extent)
+                || extent.object_offset != next
+                || !pages.insert((&extent.group, extent.volume_id, extent.chunk_id, extent.page_index))
+            {
+                return Err(invalid("invalid object extent ordering, identity or bounds"));
+            }
+            next = next
+                .checked_add(extent.length)
+                .ok_or_else(|| invalid("object length overflow"))?;
+        }
+        // The last extent is the one the range ends in: none past it, and no short of it.
+        let last_start = self.extents.last().map_or(0, |last| last.object_offset);
+        if next < end || next > self.length || last_start >= end {
+            return Err(invalid("a range reply does not end at the range"));
         }
         Ok(())
     }
@@ -1516,6 +1598,93 @@ mod tests {
             assert_eq!(*cached, StoredDigest::of(&truncated), "restore at {count}");
             check(&restored, &truncated, &rewritten, "restore");
         }
+    }
+    /// A range reply is a slice of the manifest. What a slice can prove is checked, in work that
+    /// follows the slice and not the object, and each planted defect is refused.
+    #[cfg(feature = "metadata-consensus")]
+    #[test]
+    fn a_range_slice_is_checked_for_what_it_can_prove() {
+        let whole = ObjectManifest {
+            format_version: 2,
+            bucket: "bucket".into(),
+            key: "object".into(),
+            generation: 1,
+            length: 40_000,
+            extents: (0..4000)
+                .map(|index| ObjectExtent {
+                    group: "group-0".into(),
+                    chunk_id: index + 1,
+                    object_offset: index * 10,
+                    length: 10,
+                    write_sequence: 1,
+                    data_sha256: vec![1; 32],
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let slice = |offset: u64, length: u64| ObjectManifest {
+            extents: whole
+                .extents
+                .iter()
+                .filter(|one| {
+                    // As the metaserver answers: nothing for an empty range or one past the end.
+                    length != 0
+                        && offset.saturating_add(length) <= whole.length
+                        && one.object_offset < offset.saturating_add(length)
+                        && one.object_offset + one.length > offset
+                })
+                .cloned()
+                .collect(),
+            ..whole.clone()
+        };
+        // Valid slices at the start, the middle, the end and for the whole object.
+        for (offset, length, extents) in [(0, 1, 1), (5, 10, 2), (2005, 10, 2), (39_990, 10, 1), (0, 40_000, 4000)] {
+            reset_validate_calls();
+            reset_range_extents_checked();
+            slice(offset, length).validate_range_slice(offset, length).unwrap();
+            assert_eq!(range_extents_checked(), extents, "{offset}+{length} looked at the slice only");
+            assert_eq!(validate_calls(), 0, "a slice is not validated as a whole manifest");
+        }
+        // Nothing is selected from an empty range or one past the end.
+        for (offset, length) in [(0, 0), (39_995, 10), (40_000, 1), (u64::MAX, 2)] {
+            slice(offset, length).validate_range_slice(offset, length).unwrap();
+        }
+        let (offset, length) = (2005, 10);
+        let good = slice(offset, length);
+        for defect in 0..17 {
+            let mut bad = good.clone();
+            match defect {
+                0 => bad.extents[1].object_offset += 1,
+                1 => {
+                    bad.extents.remove(0);
+                }
+                2 => bad.extents.insert(0, whole.extents[199].clone()),
+                3 => {
+                    bad.extents.pop();
+                }
+                4 => bad.extents.push(whole.extents[202].clone()),
+                5 => bad.extents[1].chunk_id = bad.extents[0].chunk_id,
+                6 => bad.extents[1].length = 0,
+                7 => bad.extents[1].group = "bad group".into(),
+                8 => bad.extents[1].write_sequence = 0,
+                9 => bad.generation = 0,
+                10 => bad.length = 2012,
+                11 => bad.deleted = true,
+                12 => bad.extents.clear(),
+                13 => bad.bucket = String::new(),
+                14 => bad.format_version = 99,
+                15 => bad.extents[0].data_sha256.clear(),
+                _ => bad.extents[1].kind = 7,
+            }
+            assert!(bad.validate_range_slice(offset, length).is_err(), "defect {defect} was accepted");
+        }
+        // Extents for a range that selects nothing are refused, and so are none for one that does.
+        assert!(slice(2005, 10).validate_range_slice(39_995, 10).is_err());
+        assert!(slice(2005, 10).validate_range_slice(2005, 0).is_err());
+        let deleted = ObjectManifest { deleted: true, length: 0, extents: Vec::new(), ..whole.clone() };
+        deleted.validate_range_slice(0, 1).unwrap();
+        assert!(ObjectManifest { extents: whole.extents[..1].to_vec(), ..deleted }.validate_range_slice(0, 1).is_err());
     }
     #[test]
     fn replaying_appends_reproduces_the_chain_the_running_catalog_carried_forward() {

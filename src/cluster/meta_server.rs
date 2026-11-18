@@ -1277,6 +1277,33 @@ pub(super) fn apply_with_groups(
         crate::cluster::message::check_reply_size(reply.payload_len(), limit)?;
         return Ok(reply);
     }
+    if let MetaRequest::ReadManifestRange { bucket, key, offset, length } = &request {
+        let (stored, digest) = service.object_manifests
+            .get_with_digest(&super::meta_message::object_id(bucket, key))?
+            .ok_or_else(|| ObjectError::NotFound("object manifest missing".into()))?;
+        // Nothing is selected from a deleted object, an empty range or one past the end; the
+        // reader says which of those it is from the header.
+        let end = offset.checked_add(*length).filter(|end| *end <= stored.length);
+        let extents = match end {
+            Some(end) if !stored.deleted && *length != 0 => stored.extents.overlapping(*offset, end),
+            _ => Vec::new(),
+        };
+        let manifest = crate::object_manifest::ObjectManifest {
+            format_version: stored.format_version, bucket: stored.bucket.clone(), key: stored.key.clone(),
+            generation: stored.generation, length: stored.length, extents, deleted: stored.deleted,
+        };
+        let routes = super::meta_message::manifest_route_names(&manifest, 8).iter()
+            .map(|id| groups.routing_view(id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut entry = super::ManifestRangeEntry { manifest, routes, manifest_sha256: digest.digest.clone(),
+            publication_fence: service.object_manifests.publication_fence() };
+        if entry.encoded_len() > limit.min(super::ManifestRangeEntry::MAX_BYTES) {
+            entry.routes.clear();
+        }
+        let reply = MetaReply::ManifestRange(entry);
+        crate::cluster::message::check_reply_size(reply.payload_len(), limit)?;
+        return Ok(reply);
+    }
     if let MetaRequest::ReadManifestRoutesBatch { objects } = &request {
         let mut entries = Vec::with_capacity(objects.len());
         for (bucket, key) in objects {
@@ -1437,6 +1464,9 @@ pub(super) fn apply_to_meta(
         )),
         MetaRequest::ReadManifestRoutesBatch { .. } => Err(ObjectError::PreconditionFailed(
             "manifest route batches require a chunk catalog".into(),
+        )),
+        MetaRequest::ReadManifestRange { .. } => Err(ObjectError::PreconditionFailed(
+            "manifest range reads require a chunk catalog".into(),
         )),
         MetaRequest::PlanObjectPlacementRoutes { .. } => Err(ObjectError::PreconditionFailed(
             "placement routes require the chunk catalog".into(),

@@ -750,6 +750,7 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::ReadManifestRoutes { .. }
         | MetaRequest::ReadManifestRoutesWide { .. }
         | MetaRequest::ReadManifestRoutesBatch { .. }
+        | MetaRequest::ReadManifestRange { .. }
         | MetaRequest::ListRootNodes
         | MetaRequest::ReadChunkGroup { .. }
         | MetaRequest::ReadChunkRoute { .. }
@@ -2494,6 +2495,7 @@ mod tests {
     include!("compact_append_command_tests.rs");
     include!("reservation_tests.rs");
     include!("append_plan_command_tests.rs");
+    include!("ranged_manifest_read_tests.rs");
 
     #[test]
     fn compact_read_session_batches_restore_shared_records_before_committing_removal_and_creation() {

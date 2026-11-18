@@ -1391,6 +1391,30 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
             "star", "first", offset, length, limit, &options.replica,
         ).is_err());
     }
+    // The ranged read through the metaserver's slice gives the same bytes, the same identity,
+    // the extents under the range and the same refusals as the whole-manifest read.
+    for (offset, length) in [(0, 0), (1, page_bytes + 1), (first_bytes.len(), 0), (0, 1),
+        (first_bytes.len() - 1, 1), (0, first_bytes.len())] {
+        let (slice, bytes) = client.read_object_range_partial(
+            "star", "first", offset as u64, length as u64, length, &options.replica,
+        ).unwrap();
+        assert_eq!(bytes, first_bytes[offset..offset + length]);
+        assert_eq!((slice.generation, slice.length), (first.generation, first.length));
+        let under: Vec<_> = first.extents.iter().filter(|extent| length != 0
+            && extent.object_offset < (offset + length) as u64
+            && extent.object_offset + extent.length > offset as u64).cloned().collect();
+        assert_eq!(slice.extents, under, "range {offset}+{length}");
+    }
+    for (offset, length, limit) in [(u64::MAX, 1, 1), (0, 2, 1), (first.length, 1, 1)] {
+        let whole = client.read_object_range("star", "first", offset, length, limit, &options.replica)
+            .unwrap_err();
+        let partial = client.read_object_range_partial("star", "first", offset, length, limit, &options.replica)
+            .unwrap_err();
+        assert_eq!(format!("{partial:?}"), format!("{whole:?}"));
+    }
+    assert!(client.read_object_range_partial("star", "absent", 0, 1, 1, &options.replica).is_err());
+    assert_eq!(client.read_object_range_partial("star", "append", 5, 2, 2, &options.replica)
+        .unwrap().1, [b'x', 0x7b]);
     assert_eq!(
         client
             .read_object("star", "first", first_bytes.len(), &options.replica)

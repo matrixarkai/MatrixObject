@@ -26,6 +26,25 @@ const EXTENT_FIELD_KEY: u8 = (6 << 3) | 2;
 #[cfg(test)]
 const DELETED_TRUE: [u8; 2] = [(7 << 3), 1];
 
+#[cfg(test)]
+thread_local! {
+    static STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+/// Extents looked at by a selection on this thread since the last reset (tests only).
+#[cfg(test)]
+pub(crate) fn selection_steps() -> usize {
+    STEPS.with(|steps| steps.get())
+}
+#[cfg(test)]
+pub(crate) fn reset_selection_steps() {
+    STEPS.with(|steps| steps.set(0));
+}
+/// Count one extent looked at by a selection (tests only).
+fn step() {
+    #[cfg(test)]
+    STEPS.with(|steps| steps.set(steps.get() + 1));
+}
+
 /// The bytes one extent takes as a repeated message field of the manifest.
 fn field_len(extent: &ObjectExtent) -> usize {
     let length = extent.encoded_len();
@@ -105,6 +124,41 @@ impl ExtentList {
 
     pub(crate) fn to_vec(&self) -> Vec<ObjectExtent> {
         self.iter().cloned().collect()
+    }
+
+    /// The extents that overlap the object bytes `start..end`, in order, copied.
+    ///
+    /// The list is contiguous from offset zero (a validated manifest), so the first extent that
+    /// ends after `start` is found by binary search: over the full chunks by their last extent,
+    /// then inside one chunk. Only the extents returned are visited after that, so the cost is
+    /// O(log chunks + log CHUNK + selected) however long the list is.
+    pub(crate) fn overlapping(&self, start: u64, end: u64) -> Vec<ObjectExtent> {
+        let mut selected = Vec::new();
+        if start >= end {
+            return selected;
+        }
+        for extent in self.iter_from(self.first_ending_after(start)) {
+            step();
+            if extent.object_offset >= end {
+                break;
+            }
+            selected.push(extent.clone());
+        }
+        selected
+    }
+
+    /// The index of the first extent whose end is past `start`, or the length when none is.
+    fn first_ending_after(&self, start: u64) -> usize {
+        let ends_by = |extent: &ObjectExtent| {
+            step();
+            extent.object_offset.saturating_add(extent.length) <= start
+        };
+        let index = self.sealed.partition_point(|chunk| chunk.extents.last().is_some_and(ends_by));
+        let (extents, base): (&[ObjectExtent], usize) = match self.sealed.get(index) {
+            Some(chunk) => (&chunk.extents, index * CHUNK),
+            None => (&self.tail, self.sealed.len() * CHUNK),
+        };
+        base + extents.partition_point(ends_by)
     }
 
     pub(crate) fn push(&mut self, extent: ObjectExtent) {
@@ -414,5 +468,74 @@ mod tests {
         let mut shorter = message;
         shorter.extents.pop();
         assert_ne!(one, StoredManifest::from_ref(&shorter));
+    }
+
+    /// Extents laid end to end from offset zero, as a validated manifest has them.
+    fn contiguous(count: usize, state: &mut u64) -> Vec<ObjectExtent> {
+        let mut offset = 0u64;
+        (0..count)
+            .map(|index| {
+                let mut one = extent(index, state);
+                one.length = 1 + next(state) % 1000;
+                one.object_offset = offset;
+                offset += one.length;
+                one
+            })
+            .collect()
+    }
+
+    fn brute(extents: &[ObjectExtent], start: u64, end: u64) -> Vec<ObjectExtent> {
+        extents
+            .iter()
+            .filter(|one| start < end && one.object_offset < end && one.object_offset + one.length > start)
+            .cloned()
+            .collect()
+    }
+
+    /// The binary search names the same extents as a scan, at every chunk boundary and for ranges
+    /// that start and end inside, on and past the edges of extents.
+    #[test]
+    fn the_selection_is_the_scan_at_every_boundary() {
+        let mut state = 11u64;
+        for count in [0, 1, 2, 63, 64, 65, 127, 128, 129, 500, 4096] {
+            let flat = contiguous(count, &mut state);
+            let list = ExtentList::from_vec(flat.clone());
+            let total = flat.last().map_or(0, |one| one.object_offset + one.length);
+            let mut probes = vec![0, 1, total / 2, total.saturating_sub(1), total, total + 1];
+            for one in flat.iter().step_by((count / 12).max(1)) {
+                probes.extend([
+                    one.object_offset,
+                    one.object_offset + 1,
+                    one.object_offset + one.length - 1,
+                    one.object_offset + one.length,
+                    one.object_offset + one.length + 1,
+                ]);
+            }
+            for &start in &probes {
+                for &end in &probes {
+                    assert_eq!(
+                        list.overlapping(start, end),
+                        brute(&flat, start, end),
+                        "count {count} range {start}..{end}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The work does not grow with the list: at 4000 extents a one-extent range looks at a
+    /// handful, where a scan looks at thousands.
+    #[test]
+    fn selecting_a_range_looks_at_a_logarithmic_number_of_extents() {
+        let mut state = 5u64;
+        let flat = contiguous(4000, &mut state);
+        let list = ExtentList::from_vec(flat.clone());
+        for index in [0, 1, 63, 64, 2000, 3935, 3999] {
+            let one = &flat[index];
+            reset_selection_steps();
+            let selected = list.overlapping(one.object_offset, one.object_offset + one.length);
+            assert_eq!(selected, vec![one.clone()]);
+            assert!(selection_steps() <= 20, "index {index} looked at {} extents", selection_steps());
+        }
     }
 }

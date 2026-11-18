@@ -180,6 +180,8 @@ pub struct RemoteMetaClient {
     wide_write_plan_reads: Option<bool>,
     wide_write_plan_limit: u64,
     wide_manifest_route_reads: Option<bool>,
+    /// Whether the metaserver answers the ranged manifest read; `None` until one was asked.
+    ranged_manifest_reads: Option<bool>,
     read_protection_fence: u64,
     manifest_digests: ManifestDigestMemo,
     /// Set for the next compact append: reserve the allocation for the one after it, with this
@@ -269,6 +271,7 @@ impl RemoteMetaClient {
             wide_write_plan_reads: None,
             wide_write_plan_limit: 32,
             wide_manifest_route_reads: None,
+            ranged_manifest_reads: None,
             read_protection_fence: 0,
             manifest_digests: ManifestDigestMemo::default(),
             reserve_next: None,
@@ -1168,6 +1171,62 @@ impl RemoteMetaClient {
         })
     }
 
+    /// `read_object_range` for a caller that needs the bytes and the object's identity, not its
+    /// extents. The metaserver sends only the extents under the range and the digest it already
+    /// holds, so what is decoded, checked and digested here does not grow with the object. The
+    /// manifest returned is that slice under the object's header (`length` and `generation` are
+    /// the object's, `extents` are only the ones read): it is not a whole manifest and must not
+    /// be validated, stored or digested as one. A metaserver that does not answer the ranged
+    /// read is asked for the whole manifest, as `read_object_range` does.
+    #[cfg(feature = "replica-server")]
+    pub fn read_object_range_partial(
+        &mut self,
+        bucket: &str,
+        key: &str,
+        offset: u64,
+        length: u64,
+        max_bytes: usize,
+        options: &super::ReplicaClientOptions,
+    ) -> Result<(crate::object_manifest::ObjectManifest, Vec<u8>), ObjectError> {
+        self.with_operation_deadline(options.deadline, |client| {
+            let mut bounded = options.clone();
+            bounded.deadline = client.operation_deadline();
+            let Some(entry) = client.read_manifest_range_routes(bucket, key, offset, length)? else {
+                let (manifest, routes) = client.read_manifest_routes(bucket, key)?;
+                return client.read_selected_object(
+                    manifest, routes, max_bytes, &bounded, Some((offset, length)),
+                );
+            };
+            client.read_selected_range(entry, max_bytes, &bounded, (offset, length))
+        })
+    }
+
+    /// The extents under a range, or `None` when the metaserver does not answer this request.
+    fn read_manifest_range_routes(
+        &mut self, bucket: &str, key: &str, offset: u64, length: u64,
+    ) -> Result<Option<super::ManifestRangeEntry>, ObjectError> {
+        if self.ranged_manifest_reads == Some(false) {
+            return Ok(None);
+        }
+        match self.call(MetaRequest::ReadManifestRange {
+            bucket: bucket.into(), key: key.into(), offset, length,
+        }) {
+            Ok(MetaReply::ManifestRange(entry))
+                if entry.manifest.bucket == bucket && entry.manifest.key == key => {
+                self.observe_read_protection(entry.publication_fence)?;
+                self.ranged_manifest_reads = Some(true);
+                Ok(Some(entry))
+            }
+            Ok(_) => Err(ObjectError::Corruption("unexpected manifest range reply".into())),
+            Err(ObjectError::PreconditionFailed(message))
+                if message.starts_with("the replica does not implement this request:") => {
+                self.ranged_manifest_reads = Some(false);
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Read up to 32 complete objects after one linearizable metadata confirmation.
     /// The sum of caller-provided byte limits is bounded at 64 MiB, and an error
     /// returns no partial result.
@@ -1615,13 +1674,27 @@ impl RemoteMetaClient {
     fn read_object_from_manifest_routes(
         &mut self,
         manifest: crate::object_manifest::ObjectManifest,
-        mut bundled_routes: Option<Vec<super::ChunkGroupRoute>>,
+        bundled_routes: Option<Vec<super::ChunkGroupRoute>>,
         max_bytes: usize,
         options: &super::ReplicaClientOptions,
         range: Option<(u64, u64)>,
     ) -> Result<(crate::object_manifest::ObjectManifest, Vec<u8>), ObjectError> {
         self.check_operation_deadline()?;
         manifest.validate()?;
+        self.read_validated_manifest_routes(manifest, bundled_routes, max_bytes, options, range)
+    }
+
+    /// Read from a manifest the caller has validated: in full, or, for a ranged read, as the
+    /// slice `validate_range_slice` accepted for `range` under a header with the object's length.
+    #[cfg(feature = "replica-server")]
+    fn read_validated_manifest_routes(
+        &mut self,
+        manifest: crate::object_manifest::ObjectManifest,
+        mut bundled_routes: Option<Vec<super::ChunkGroupRoute>>,
+        max_bytes: usize,
+        options: &super::ReplicaClientOptions,
+        range: Option<(u64, u64)>,
+    ) -> Result<(crate::object_manifest::ObjectManifest, Vec<u8>), ObjectError> {
         if manifest.deleted {
             return Err(ObjectError::NotFound("object is deleted".into()));
         }
@@ -2104,6 +2177,7 @@ impl RemoteMetaClient {
                 | MetaRequest::ReadManifestRoutes { .. }
                 | MetaRequest::ReadManifestRoutesWide { .. }
                 | MetaRequest::ReadManifestRoutesBatch { .. }
+                | MetaRequest::ReadManifestRange { .. }
                 | MetaRequest::PlanObjectWriteRoutes { .. }
                 | MetaRequest::PlanObjectWriteRoutesWide { .. }
                 | MetaRequest::PlanAppendRoutes(_)
@@ -2686,6 +2760,173 @@ mod operation_deadline_tests {
         assert_eq!(read, manifest);
         assert_eq!(bundled.unwrap(), routes);
         worker.join().unwrap();
+    }
+
+    /// A metaserver that does not know the ranged read is asked once; the client then goes
+    /// straight to the whole-manifest read.
+    #[test]
+    fn a_metaserver_without_the_ranged_read_is_asked_once() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let worker = std::thread::spawn(move || {
+            let (mut server, _) = listener.accept().unwrap();
+            server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut header = [0u8; HEADER_BYTES];
+            server.read_exact(&mut header).unwrap();
+            let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+            let mut payload = vec![0; length];
+            server.read_exact(&mut payload).unwrap();
+            let code = MetaRequestCode::from_u8(header[1]).unwrap();
+            assert!(matches!(
+                MetaRequest::decode(code, &payload).unwrap(),
+                MetaRequest::ReadManifestRange { offset: 5, length: 10, .. }
+            ));
+            server.write_all(&super::super::message::encode_failure(
+                StatusCode::UnknownRequest, "unsupported ranged manifest read",
+            )).unwrap();
+        });
+        let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+        assert!(client.read_manifest_range_routes("bucket", "key", 5, 10).unwrap().is_none());
+        assert_eq!(client.ranged_manifest_reads, Some(false));
+        // Not asked again: the server answered one request and is gone.
+        assert!(client.read_manifest_range_routes("bucket", "key", 5, 10).unwrap().is_none());
+        worker.join().unwrap();
+    }
+
+    /// A ranged read of a 4000-extent object decodes, checks and leases only what the reply
+    /// names: two extents are checked, no whole manifest is validated or digested, and the read
+    /// lease is opened on the digest the metaserver sent for the whole manifest.
+    #[cfg(all(feature = "replica-server", feature = "metadata-consensus"))]
+    #[test]
+    fn a_ranged_read_checks_two_extents_and_leases_the_digest_the_metaserver_sent() {
+        use crate::object_manifest::{ObjectExtent, ObjectManifest};
+        let whole = ObjectManifest {
+            format_version: 2,
+            bucket: "bucket".into(),
+            key: "key".into(),
+            generation: 7,
+            length: 40_000,
+            extents: (0..4000)
+                .map(|index| ObjectExtent {
+                    group: "group-0".into(),
+                    chunk_id: index + 1,
+                    object_offset: index * 10,
+                    length: 10,
+                    write_sequence: 1,
+                    data_sha256: vec![1; 32],
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        // The digest the metaserver holds for the whole manifest: not one this client can compute
+        // from the two extents it is sent.
+        let digest = crate::read_session_outcome::manifest_sha256(&whole).unwrap();
+        let entry = super::super::ManifestRangeEntry {
+            publication_fence: 3,
+            manifest: ObjectManifest { extents: whole.extents[1000..1002].to_vec(), ..whole.clone() },
+            manifest_sha256: digest.clone(),
+            routes: Vec::new(),
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let worker = std::thread::spawn(move || {
+            let (mut server, _) = listener.accept().unwrap();
+            server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut seen = Vec::new();
+            for index in 0..2 {
+                let mut header = [0u8; HEADER_BYTES];
+                server.read_exact(&mut header).unwrap();
+                let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                let mut payload = vec![0; length];
+                server.read_exact(&mut payload).unwrap();
+                let code = MetaRequestCode::from_u8(header[1]).unwrap();
+                let request = MetaRequest::decode(code, &payload).unwrap();
+                if index == 0 {
+                    assert!(matches!(
+                        request,
+                        MetaRequest::ReadManifestRange { offset: 10_005, length: 10, .. }
+                    ));
+                    server.write_all(&super::super::meta_message::encode_meta_reply(
+                        &MetaReply::ManifestRange(entry.clone()),
+                    )).unwrap();
+                } else {
+                    let MetaRequest::ManifestRetention(lease) = &request else { panic!("{request:?}") };
+                    seen.push((lease.action, lease.generation, lease.manifest_sha256.clone()));
+                    let reply = crate::manifest_retention::ManifestRetentionReply {
+                        version: 4,
+                        retention_id: 42,
+                        expires_at_ms: 2000,
+                        lease_ms: lease.ttl_ms,
+                        manifest_sha256: lease.manifest_sha256.clone(),
+                        ..Default::default()
+                    };
+                    server.write_all(&super::super::meta_message::encode_meta_reply(
+                        &MetaReply::ManifestRetention(reply),
+                    )).unwrap();
+                }
+            }
+            // The connection closes here, so the read of the data groups fails.
+            seen
+        });
+        let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+        crate::object_manifest::reset_validate_calls();
+        crate::object_manifest::reset_range_extents_checked();
+        let result = client.read_object_range_partial(
+            "bucket", "key", 10_005, 10, 1 << 20, &crate::cluster::ReplicaClientOptions::default(),
+        );
+        assert!(result.is_err(), "the data groups are not there to read from");
+        assert_eq!(crate::object_manifest::range_extents_checked(), 2);
+        assert_eq!(crate::object_manifest::validate_calls(), 0, "no whole manifest was validated");
+        assert_eq!(worker.join().unwrap(), vec![(8, 7, digest)]);
+    }
+
+    /// A range that selects nothing has nothing to protect: the reader names the refusal from
+    /// the header without opening a read lease, though the object is under read protection.
+    #[cfg(feature = "replica-server")]
+    #[test]
+    fn a_range_that_selects_nothing_opens_no_lease_and_is_refused_from_the_header() {
+        use crate::object_manifest::ObjectManifest;
+        let header = ObjectManifest {
+            format_version: 2,
+            bucket: "bucket".into(),
+            key: "key".into(),
+            generation: 7,
+            length: 40_000,
+            ..Default::default()
+        };
+        let entry = super::super::ManifestRangeEntry {
+            publication_fence: 3,
+            manifest: header,
+            manifest_sha256: vec![9; 32],
+            routes: Vec::new(),
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let worker = std::thread::spawn(move || {
+            let (mut server, _) = listener.accept().unwrap();
+            server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut header = [0u8; HEADER_BYTES];
+            server.read_exact(&mut header).unwrap();
+            let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+            let mut payload = vec![0; length];
+            server.read_exact(&mut payload).unwrap();
+            server.write_all(&super::super::meta_message::encode_meta_reply(
+                &MetaReply::ManifestRange(entry),
+            )).unwrap();
+            // Anything the client asks next is a request it should not have made.
+            let mut next = [0u8; 1];
+            server.read(&mut next).unwrap_or(0)
+        });
+        let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+        let error = client
+            .read_object_range_partial(
+                "bucket", "key", 39_995, 10, 1 << 20, &crate::cluster::ReplicaClientOptions::default(),
+            )
+            .unwrap_err();
+        assert!(matches!(error, ObjectError::InvalidArgument(_)), "{error:?}");
+        drop(client);
+        assert_eq!(worker.join().unwrap(), 0, "a request followed the range reply");
     }
 
     #[test]
