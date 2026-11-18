@@ -173,6 +173,7 @@ pub use peer_membership::{MembershipOperation, MembershipRequest, MembershipStat
 pub mod append_plan;
 #[cfg(feature = "meta-server")]
 pub mod gateway_calibration;
+pub mod gateway_detector;
 #[cfg(feature = "meta-server")]
 pub mod gateway_picker;
 #[cfg(feature = "meta-server")]
