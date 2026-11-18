@@ -613,6 +613,16 @@ jobs:
             grep -Fxq "test star_append_amplification::${test_name} ... ok" /tmp/star-append-cost.log
           done
 
+      - name: checkpoint buffering preserves bytes and propagates final flush failures
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib journal_checkpoint_buffer_ -- --test-threads=1 | tee /tmp/checkpoint-buffer.log
+          grep -q '^test result: ok. 3 passed; 0 failed;' /tmp/checkpoint-buffer.log
+          for test_name in journal_checkpoint_buffer_preserves_fragmented_bytes_and_checksum journal_checkpoint_buffer_final_write_and_flush_errors_propagate journal_checkpoint_buffer_rejects_a_changed_stream_length
+          do
+            grep -Fq "${test_name} ... ok" /tmp/checkpoint-buffer.log
+          done
+
       - name: standalone journal control validates bounded progress and publication
         run: |
           set -o pipefail

@@ -148,7 +148,7 @@ release measurement pairs 1, 16, and 64 MiB background payloads per data node,
 rotating layout order. Every read checks its complete payload; retained first
 and last written pages and cold pages are checked on every replica after restart.
 
-One release run in local WSL produced these append results. Each phase appends
+One release run at commit `aae965b1` in local WSL produced these append results. Each phase appends
 2 MiB of logical data, with three acknowledged copies. Kernel writes sum all
 three data processes through the completed final checkpoint.
 
@@ -166,3 +166,12 @@ size and no cross-host validation. Segmented latency and amplification still gro
 this run does not establish flat latency or a production throughput guarantee.
 All cached read phases recorded zero kernel write bytes. Safe reclamation and an
 incremental metadata checkpoint remain necessary before default activation.
+
+## Legacy checkpoint stream buffering
+
+The legacy checkpoint writer coalesces fragmented encoder reads in a fixed 64 KiB
+output buffer. It flushes that buffer before rewriting the checkpoint header,
+synchronizing the file, and atomically publishing it. Flush errors propagate to
+the replica's existing failure fence. This changes neither stored bytes nor the
+full-corpus payload rewrite; it targets small-write syscall overhead. The table
+above predates this buffering change.

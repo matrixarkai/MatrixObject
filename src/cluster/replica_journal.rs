@@ -647,11 +647,7 @@ impl ReplicaJournal {
             .open(&temporary)?;
         fs2::FileExt::try_lock_exclusive(&replacement)?;
         replacement.write_all(&[0; BASE_HEADER_LEN])?;
-        let mut output = Digest::new(&mut replacement);
-        if io::copy(&mut stream, &mut output)? != length {
-            return Err(invalid("replica checkpoint stream length changed"));
-        }
-        let checksum = output.hash;
+        let checksum = write_checkpoint_stream(&mut stream, length, &mut replacement)?;
         replacement.seek(SeekFrom::Start(0))?;
         replacement.write_all(&base_header(length, checksum))?;
         replacement.sync_all()?;
@@ -678,6 +674,31 @@ impl ReplicaJournal {
         ))
     }
 }
+
+// The encoder may yield individual metadata fields as short reads. Coalesce
+// those fragments without collecting the checkpoint, and flush before its header
+// is rewritten or its file is synchronized and published.
+#[cfg(unix)]
+fn write_checkpoint_stream(
+    stream: &mut impl Read,
+    length: u64,
+    target: &mut impl Write,
+) -> io::Result<u64> {
+    let mut buffered = std::io::BufWriter::with_capacity(64 * 1024, target);
+    let checksum = {
+        let mut output = Digest::new(&mut buffered);
+        if io::copy(stream, &mut output)? != length {
+            return Err(invalid("replica checkpoint stream length changed"));
+        }
+        output.hash
+    };
+    buffered.flush()?;
+    Ok(checksum)
+}
+
+#[cfg(all(test, unix))]
+#[path = "replica_checkpoint_stream_tests.rs"]
+mod checkpoint_stream_tests;
 
 const BASE_HEADER_LEN: usize = 32;
 fn sibling(path: &Path, suffix: &str) -> PathBuf {
