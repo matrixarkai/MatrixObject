@@ -839,6 +839,10 @@ mod append_outcome_tests;
 #[path = "log_op_tests.rs"]
 mod log_op_tests;
 
+#[cfg(all(test, unix))]
+#[path = "log_op_group_tests.rs"]
+mod log_op_group_tests;
+
 fn prepare_rpc_append(
     service: &MatrixReplicaService,
     request: &ReplicaRequest,
@@ -983,7 +987,7 @@ fn apply_locked(
         let store = guard.log_chunks.as_mut().ok_or_else(|| {
             ObjectError::PreconditionFailed("log chunks require durable replica storage".into())
         })?;
-        let reply = store.apply(op)?;
+        let reply = if sync_journal { store.apply(op)? } else { store.apply_deferred(op)? };
         crate::cluster::message::check_reply_size(prost::Message::encoded_len(&reply), max_payload_bytes)?;
         return Ok(ReplicaReply::LogOp(reply));
     }
