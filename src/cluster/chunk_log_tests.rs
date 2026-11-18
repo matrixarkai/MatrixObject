@@ -4,6 +4,7 @@
 //! reader talking to them over TCP.
 use super::*;
 use crate::cluster::{RemoteReplicaClient, ReplicaClientOptions, ReplicaNodeOptions, ReplicaNodeServer, StatusCode};
+use crate::ObjectError;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
