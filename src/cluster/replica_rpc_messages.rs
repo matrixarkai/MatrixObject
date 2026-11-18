@@ -297,6 +297,7 @@ pub enum ReplicaRequest {
         after: Option<PageId>,
         limit: u64,
     },
+    LogOp(super::log_op::LogOpRequest),
 }
 
 impl ReplicaRequest {
@@ -335,6 +336,7 @@ impl ReplicaRequest {
             ReplicaRequest::ReadBatchLimits => RequestCode::ReadBatchLimits,
             ReplicaRequest::GroupIdentity => RequestCode::GroupIdentity,
             ReplicaRequest::PageInventory { .. } => RequestCode::PageInventory,
+            ReplicaRequest::LogOp(_) => RequestCode::LogOp,
         }
     }
 
@@ -501,6 +503,7 @@ impl ReplicaRequest {
             | ReplicaRequest::WideConditionalWriteLimits
             | ReplicaRequest::ReadBatchLimits
             | ReplicaRequest::GroupIdentity => {}
+            ReplicaRequest::LogOp(op) => return op.encode_to_vec(),
             ReplicaRequest::PageInventory { after, limit } => {
                 put_u64(&mut out, u64::from(after.is_some()));
                 if let Some(id) = after {
@@ -656,6 +659,9 @@ impl ReplicaRequest {
                 expected_state_checksum: value.expected_state_checksum,
             });
         }
+        if code == RequestCode::LogOp {
+            return super::log_op::LogOpRequest::from_payload(payload).map(Self::LogOp);
+        }
         if code == RequestCode::ReadChunkBatch || code == RequestCode::DigestChunkBatch {
             if payload.len() > 1024 {
                 return Err(ObjectError::InvalidArgument("read batch request exceeds size bound".into()));
@@ -782,6 +788,7 @@ impl ReplicaRequest {
             RequestCode::ReadChunkStateRange => unreachable!(),
             RequestCode::ReadChunkBatch => unreachable!(),
             RequestCode::DigestChunkBatch => unreachable!(),
+            RequestCode::LogOp => unreachable!(),
             RequestCode::HeadChunkBatch => unreachable!(),
             RequestCode::WriteChunkIfSequence
             | RequestCode::WriteChunkIfSequenceDigest
@@ -909,6 +916,7 @@ pub enum ReplicaReply {
     },
     PageInventory(PageInventory),
     GroupIdentity(ChunkGroupIdentity),
+    LogOp(super::log_op::LogOpReply),
 }
 
 impl ReplicaReply {
@@ -919,6 +927,7 @@ impl ReplicaReply {
             Self::StateRange(value) => value.encoded_len(),
             Self::Applied | Self::NotLeader => 0,
             Self::Capabilities { .. } => 8,
+            Self::LogOp(reply) => reply.encoded_len(),
             Self::ConditionalWriteLimits {
                 max_writes,
                 max_payload_bytes,
@@ -1024,6 +1033,7 @@ impl ReplicaReply {
                 }
             }
             ReplicaReply::Heads(heads) => return encode_head_batch(heads).encode_to_vec(),
+            ReplicaReply::LogOp(reply) => return reply.encode_to_vec(),
             ReplicaReply::Pong { page_count } => put_u64(&mut out, *page_count),
             ReplicaReply::Capabilities {
                 state_conditional_write,
@@ -1114,6 +1124,9 @@ impl ReplicaReply {
                 ));
             }
             return Ok(ReplicaReply::GroupIdentity(identity));
+        }
+        if code == RequestCode::LogOp {
+            return super::log_op::LogOpReply::from_payload(payload).map(Self::LogOp);
         }
         if code == RequestCode::WriteChunkBatchIfSequenceDigest || code == RequestCode::DigestChunkBatch {
             if payload.len() > 1024 {
@@ -1257,6 +1270,7 @@ impl ReplicaReply {
             RequestCode::WriteChunkBatchIfSequenceDigest => unreachable!(),
             RequestCode::ReadChunkBatch => unreachable!(),
             RequestCode::DigestChunkBatch => unreachable!(),
+            RequestCode::LogOp => unreachable!(),
             RequestCode::HeadChunkBatch => unreachable!(),
             RequestCode::ConditionalWriteLimits => unreachable!(),
             RequestCode::WideConditionalWriteLimits => unreachable!(),

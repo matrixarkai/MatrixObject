@@ -111,7 +111,7 @@ fn shared_sync_preserves_order_batch_digests_refusals_and_recovery() {
     {
         let mut guard = fixture.node.lock().unwrap();
         assert_eq!(guard.journal.as_ref().unwrap().sync_count(), before + 1);
-        assert_eq!(guard.used_bytes, 19);
+        assert_eq!(guard.used_bytes.get(), 19);
         guard.journal = None;
     }
     let mut recovered = MatrixReplicaService::new();
@@ -152,7 +152,7 @@ fn shared_sync_failure_releases_no_successes_and_fences_later_reads() {
             Err(ObjectError::Corruption(_))
         ));
     }
-    assert!(fixture.node.lock().unwrap().failed);
+    assert!(fixture.node.lock().unwrap().health.failed());
     assert!(fixture.request(ReplicaRequest::Ping).is_err());
 }
 
@@ -177,7 +177,7 @@ fn shared_sync_append_failure_does_not_flush_or_ack_a_failed_group() {
             Err(ObjectError::Corruption(_))
         ));
     }
-    assert!(fixture.node.lock().unwrap().failed);
+    assert!(fixture.node.lock().unwrap().health.failed());
     assert_eq!(std::fs::read(&fixture.path).unwrap(), disk);
 }
 
@@ -310,7 +310,7 @@ fn shared_sync_failed_service_cannot_publish_a_checkpoint() {
         .write_chunk(page(), 4, b"unjournaled")
         .unwrap();
     guard.journal_checkpoint_after_bytes = 1;
-    guard.failed = true;
+    guard.health.fail();
     assert!(finish_deferred_journal(&mut guard).is_err());
     assert_eq!(guard.journal.as_ref().unwrap().sync_count(), before);
     drop(guard);
@@ -412,7 +412,7 @@ fn shared_sync_idle_path_refuses_failed_persistence() {
         committer.request(write(0, 4, b"tail", 1), 128),
         Err(ObjectError::Corruption(_))
     ));
-    assert!(fixture.node.lock().unwrap().failed);
+    assert!(fixture.node.lock().unwrap().health.failed());
     assert_eq!(committer.offered_requests.load(Ordering::Acquire), 0);
     assert!(fixture.request(ReplicaRequest::Ping).is_err());
     assert_eq!(std::fs::read(&fixture.path).unwrap(), disk);
@@ -444,7 +444,7 @@ fn shared_sync_stopped_worker_prevents_idle_writes() {
         committer.request(write(0, 4, b"tail", 1), 128),
         Err(ObjectError::Corruption(_))
     ));
-    assert!(fixture.node.lock().unwrap().failed);
+    assert!(fixture.node.lock().unwrap().health.failed());
     assert!(fixture.request(ReplicaRequest::Ping).is_err());
     assert_eq!(std::fs::read(&fixture.path).unwrap(), disk);
 }

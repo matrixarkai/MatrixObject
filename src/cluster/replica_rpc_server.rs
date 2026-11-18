@@ -44,6 +44,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::shutdown::ServerShutdown;
+#[path = "replica_health.rs"]
+mod replica_health;
+use replica_health::{ReplicaHealth, Used};
 
 use super::replica_journal::ReplicaJournal;
 use super::replica_journal_backend::ReplicaJournalBackend;
@@ -72,12 +75,14 @@ struct NodeReplica {
     journal: Option<Box<dyn ReplicaJournalBackend>>,
     journal_checkpoint_after_bytes: u64,
     staged: Option<super::state_install::StagedState>,
-    maintenance: bool,
     max_pages: usize,
-    used_bytes: u64,
-    #[cfg(all(feature = "chunk-consensus", feature = "meta-server"))]
-    applied_membership: Option<(crate::cluster::MembershipStatus, std::time::Instant)>,
-    failed: bool,
+    /// Every change is published to `health`, which the heartbeat reads without the lock.
+    used_bytes: Used,
+    /// What the heartbeat reports: failure, maintenance, capacity, usage and the applied
+    /// membership view. Written under this lock, read without it.
+    health: Arc<ReplicaHealth>,
+    /// Log chunk files, beside the journal. None for a node without durable storage.
+    log_chunks: Option<super::log_chunk_store::LogChunkStore>,
 }
 
 /// How a replica node is sized and bounded.
@@ -168,6 +173,9 @@ pub struct ReplicaNodeServer {
     listener: TcpListener,
     has_local_journal: bool,
     replica: Arc<Mutex<NodeReplica>>,
+    /// The heartbeat's view of `replica`, readable while a request holds the replica lock.
+    #[cfg_attr(not(feature = "meta-server"), allow(dead_code))]
+    health: Arc<ReplicaHealth>,
     options: ReplicaNodeOptions,
     counters: Arc<NodeCounters>,
     stop: Arc<ServerShutdown>,
@@ -305,21 +313,29 @@ impl ReplicaNodeServer {
         }
         let listener = TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
+        let health = ReplicaHealth::new(
+            options.maintenance,
+            service.capacity_bytes(),
+            service.physical_bytes(),
+        );
+        health.watch_journal(journal.as_ref().and_then(|journal| journal.failure_handle()));
         Ok(Self {
             listener,
             has_local_journal: path.is_some(),
             replica: Arc::new(Mutex::new(NodeReplica {
-                used_bytes: service.physical_bytes(),
+                used_bytes: Used::new(service.physical_bytes(), Arc::clone(&health)),
                 service,
                 journal,
                 journal_checkpoint_after_bytes: 0,
                 staged: None,
-                maintenance: options.maintenance,
                 max_pages: options.max_pages,
-                #[cfg(all(feature = "chunk-consensus", feature = "meta-server"))]
-                applied_membership: None,
-                failed: false,
+                health: Arc::clone(&health),
+                log_chunks: match path {
+                    Some(path) => Some(super::log_chunk_store::LogChunkStore::open(&path.parent().unwrap_or(std::path::Path::new(".")).join("logchunks"))?),
+                    None => None,
+                },
             })),
+            health,
             options,
             counters: Arc::new(NodeCounters::default()),
             stop: Arc::new(ServerShutdown::default()),
@@ -448,6 +464,7 @@ impl ReplicaNodeServer {
         #[cfg(feature = "meta-server")]
         if let Some(options) = self.heartbeat {
             let replica = Arc::clone(&self.replica);
+            let health = Arc::clone(&self.health);
             let stop = Arc::clone(&self.stop);
             #[cfg(feature = "chunk-consensus")]
             let consensus = self.consensus.clone();
@@ -455,6 +472,7 @@ impl ReplicaNodeServer {
                 heartbeat::run(
                     options,
                     replica,
+                    health,
                     stop,
                     #[cfg(feature = "chunk-consensus")]
                     consensus,
@@ -761,7 +779,7 @@ fn apply_batch_digests_locked(
 }
 
 fn finish_deferred_journal(guard: &mut NodeReplica) -> Result<(), ObjectError> {
-    if guard.failed {
+    if guard.health.failed() {
         return Err(ObjectError::Corruption(
             "replica failed before journal synchronization; restart required".into(),
         ));
@@ -770,7 +788,7 @@ fn finish_deferred_journal(guard: &mut NodeReplica) -> Result<(), ObjectError> {
         return Ok(());
     };
     if let Err(error) = journal.sync_deferred() {
-        guard.failed = true;
+        guard.health.fail();
         return Err(ObjectError::Corruption(format!(
             "replica outcome persistence failed: {error}"
         )));
@@ -780,7 +798,7 @@ fn finish_deferred_journal(guard: &mut NodeReplica) -> Result<(), ObjectError> {
             service, journal, ..
         } = guard;
         if let Err(error) = journal.as_mut().unwrap().checkpoint(service) {
-            guard.failed = true;
+            guard.health.fail();
             return Err(ObjectError::Corruption(format!(
                 "replica outcome persistence failed: {error}"
             )));
@@ -816,6 +834,10 @@ fn apply(
 #[cfg(all(test, unix))]
 #[path = "replica_append_tests.rs"]
 mod append_outcome_tests;
+
+#[cfg(all(test, unix))]
+#[path = "log_op_tests.rs"]
+mod log_op_tests;
 
 fn prepare_rpc_append(
     service: &MatrixReplicaService,
@@ -876,14 +898,14 @@ fn apply_locked(
     max_payload_bytes: usize,
     sync_journal: bool,
 ) -> Result<ReplicaReply, ObjectError> {
-    if guard.failed {
+    if guard.health.failed() {
         return Err(ObjectError::Corruption(
             "replica journal failed; restart and recover before serving requests".to_string(),
         ));
     }
     if let Some(journal) = guard.journal.as_mut() {
         if let Err(error) = journal.check_health() {
-            guard.failed = true;
+            guard.health.fail();
             return Err(ObjectError::Corruption(error.to_string()));
         }
     }
@@ -903,7 +925,7 @@ fn apply_locked(
         } {
             Ok(status) => status,
             Err(error) => {
-                guard.failed = true;
+                guard.health.fail();
                 return Err(ObjectError::Corruption(error.to_string()));
             }
         };
@@ -931,7 +953,7 @@ fn apply_locked(
                 return Ok(ReplicaReply::JournalStatus(status));
             }
             Err(error) => {
-                guard.failed = true;
+                guard.health.fail();
                 return Err(ObjectError::Corruption(error.to_string()));
             }
         }
@@ -939,7 +961,7 @@ fn apply_locked(
     if guard.staged.as_ref().is_some_and(|stage| stage.expired()) {
         guard.staged = None;
     }
-    if guard.maintenance
+    if guard.health.maintenance()
         && matches!(
             &request,
             ReplicaRequest::WriteChunk { .. }
@@ -953,6 +975,17 @@ fn apply_locked(
         return Err(ObjectError::PreconditionFailed(
             "replica maintenance mode refuses ordinary mutations".into(),
         ));
+    }
+    if let ReplicaRequest::LogOp(op) = &request {
+        if guard.health.maintenance() && op.is_mutation() {
+            return Err(ObjectError::PreconditionFailed("replica maintenance mode refuses ordinary mutations".into()));
+        }
+        let store = guard.log_chunks.as_mut().ok_or_else(|| {
+            ObjectError::PreconditionFailed("log chunks require durable replica storage".into())
+        })?;
+        let reply = store.apply(op)?;
+        crate::cluster::message::check_reply_size(prost::Message::encoded_len(&reply), max_payload_bytes)?;
+        return Ok(ReplicaReply::LogOp(reply));
     }
     if let ReplicaRequest::StateInstall(request) = request {
         return apply_state_install(guard, request);
@@ -972,7 +1005,7 @@ fn apply_locked(
         let contextual = guard.journal.as_ref().unwrap().requires_context();
         if contextual {
             if let Err(error) = outcome.apply(&mut guard.service) {
-                guard.failed = true;
+                guard.health.fail();
                 return Err(error);
             }
         }
@@ -988,13 +1021,13 @@ fn apply_locked(
         ) {
             Ok(outcome) => outcome,
             Err(error) => {
-                guard.failed = true;
+                guard.health.fail();
                 return Err(ObjectError::Corruption(error.to_string()));
             }
         };
         if !contextual {
             if let Err(error) = outcome.apply(&mut guard.service) {
-                guard.failed = true;
+                guard.health.fail();
                 return Err(error);
             }
         }
@@ -1009,7 +1042,7 @@ fn apply_locked(
                 service, journal, ..
             } = guard;
             if let Err(error) = journal.as_mut().unwrap().checkpoint(service) {
-                guard.failed = true;
+                guard.health.fail();
                 return Err(ObjectError::Corruption(error.to_string()));
             }
         }
@@ -1085,12 +1118,13 @@ fn apply_locked(
         let current_bytes = guard.service.page_physical_len(&page);
         match guard
             .used_bytes
+            .get()
             .checked_sub(previous_bytes)
             .and_then(|n| n.checked_add(current_bytes))
         {
-            Some(bytes) => guard.used_bytes = bytes,
+            Some(bytes) => guard.used_bytes.set(bytes),
             None => {
-                guard.failed = true;
+                guard.health.fail();
                 return Err(ObjectError::Corruption(
                     "replica usage accounting overflow".into(),
                 ));
@@ -1154,7 +1188,7 @@ fn apply_locked(
             Ok(())
         });
         if let Err(err) = persist {
-            guard.failed = true;
+            guard.health.fail();
             return Err(ObjectError::Corruption(format!(
                 "replica outcome persistence failed: {err}"
             )));
@@ -1223,6 +1257,7 @@ fn apply_state_install(
             }
             let used = node
                 .used_bytes
+                .get()
                 .checked_sub(node.service.page_physical_len(&page))
                 .and_then(|n| n.checked_add(head.data_length));
             if used.map_or(true, |n| n > node.service.capacity_bytes()) {
@@ -1266,13 +1301,14 @@ fn apply_state_install(
             // Publish the candidate in memory only after durable replacement succeeds.
             if let Some(journal) = node.journal.as_mut() {
                 if let Err(error) = journal.checkpoint_for_install(&candidate) {
-                    node.failed = true;
+                    node.health.fail();
                     return Err(ObjectError::Corruption(format!(
                         "install persistence failed; restart required: {error}"
                     )));
                 }
             }
-            node.used_bytes = candidate.physical_bytes();
+            let physical = candidate.physical_bytes();
+            node.used_bytes.set(physical);
             node.service = candidate;
         }
         _ => unreachable!(),
@@ -1325,6 +1361,9 @@ pub(super) fn apply_to_replica(
         ),
         ReplicaRequest::GroupIdentity => Err(ObjectError::PreconditionFailed(
             "standalone replica has no Raft group identity".into(),
+        )),
+        ReplicaRequest::LogOp(_) => Err(ObjectError::PreconditionFailed(
+            "log chunks require node request dispatch".into(),
         )),
         ReplicaRequest::WriteChunk {
             page_id,
@@ -1682,17 +1721,16 @@ mod journal_failure_tests {
         let path = directory.join("replica.wal");
         let mut service = MatrixReplicaService::new();
         let journal = ReplicaJournal::open(&path, &mut service).unwrap();
+        let (used_bytes, health) = replica_health::test_parts();
         let replica = Arc::new(Mutex::new(NodeReplica {
-            used_bytes: 0,
+            used_bytes,
             service,
             journal: Some(Box::new(journal)),
             journal_checkpoint_after_bytes: 0,
             staged: None,
-            maintenance: false,
             max_pages: 65_536,
-            #[cfg(all(feature = "chunk-consensus", feature = "meta-server"))]
-            applied_membership: None,
-            failed: false,
+            health,
+            log_chunks: None,
         }));
         let make_page = |index| PageId {
             chunk_id: ChunkId::new(7, 9).unwrap(),
@@ -1770,17 +1808,16 @@ mod journal_failure_tests {
         let path = directory.join("replica.wal");
         let mut service = MatrixReplicaService::new();
         let journal = ReplicaJournal::open(&path, &mut service).unwrap();
+        let (used_bytes, health) = replica_health::test_parts();
         let replica = Arc::new(Mutex::new(NodeReplica {
-            used_bytes: 0,
+            used_bytes,
             service,
             journal: Some(Box::new(journal)),
             journal_checkpoint_after_bytes: 0,
             staged: None,
-            maintenance: false,
             max_pages: 65_536,
-            #[cfg(all(feature = "chunk-consensus", feature = "meta-server"))]
-            applied_membership: None,
-            failed: false,
+            health,
+            log_chunks: None,
         }));
         let page = PageId {
             chunk_id: ChunkId::new(7, 10).unwrap(),
@@ -1834,17 +1871,16 @@ mod journal_failure_tests {
                 .as_nanos()
         ));
         std::fs::write(&path, []).unwrap();
+        let (used_bytes, health) = replica_health::test_parts();
         let replica = Arc::new(Mutex::new(NodeReplica {
-            used_bytes: 0,
+            used_bytes,
             service: MatrixReplicaService::new(),
             journal: Some(Box::new(ReplicaJournal::read_only_for_test(&path))),
             journal_checkpoint_after_bytes: 0,
             staged: None,
-            maintenance: false,
             max_pages: 65_536,
-            #[cfg(all(feature = "chunk-consensus", feature = "meta-server"))]
-            applied_membership: None,
-            failed: false,
+            health,
+            log_chunks: None,
         }));
         let page = PageId {
             chunk_id: ChunkId::new(1, 2).unwrap(),
@@ -1856,7 +1892,7 @@ mod journal_failure_tests {
             data: b"uncommitted".to_vec(),
         };
         assert!(apply(&replica, write.clone(), MAX_PAYLOAD_BYTES).is_err());
-        assert!(replica.lock().unwrap().failed);
+        assert!(replica.lock().unwrap().health.failed());
         for request in [
             write,
             ReplicaRequest::Ping,

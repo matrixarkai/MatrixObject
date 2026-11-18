@@ -364,8 +364,8 @@ impl ChunkConsensus {
                 #[cfg(feature = "meta-server")]
                 track_membership,
             ) {
-                if let Ok(mut node) = state.lock() {
-                    node.failed = true;
+                if let Ok(node) = state.lock() {
+                    node.health.fail();
                 }
                 worker_failed.store(true, Ordering::SeqCst);
                 eprintln!("chunk consensus stopped: {error}");
@@ -637,13 +637,15 @@ fn run(
                         outcome
                             .apply(&mut node.service, max_pages)
                             .map_err(|e| RaftError::Storage(e.to_string()))?;
-                        node.used_bytes = node
+                        let used = node
                             .used_bytes
+                            .get()
                             .checked_sub(before)
                             .and_then(|n| n.checked_add(node.service.page_physical_len(&page)))
                             .ok_or_else(|| {
                                 RaftError::Storage("chunk usage accounting overflow".into())
                             })?;
+                        node.used_bytes.set(used);
                         }
                     }
                 }
@@ -689,22 +691,9 @@ fn run(
         // heartbeat worker reads this view and usage under the same state lock.
         #[cfg(feature = "meta-server")]
         if track_membership {
-            match &mut node.applied_membership {
-                Some((status, refreshed))
-                    if status.term == peer.term()
-                        && status.applied_index == peer.applied_index() =>
-                {
-                    *refreshed = Instant::now();
-                }
-                _ => {
-                    let status = crate::cluster::MembershipStatus::from_peer(peer);
-                    node.applied_membership = if status.validate().is_ok() {
-                        Some((status, Instant::now()))
-                    } else {
-                        None
-                    };
-                }
-            }
+            node.health.observe_membership(peer.term(), peer.applied_index(), || {
+                crate::cluster::MembershipStatus::from_peer(peer)
+            });
         }
         recovered = true;
         if let Some((id, _)) = &pending_membership {
@@ -1004,13 +993,14 @@ fn restore_snapshot(
         return Err(storage("chunk checkpoint exceeds configured byte capacity"));
     }
     node.service = service;
-    node.used_bytes = used_bytes;
+    node.used_bytes.set(used_bytes);
     Ok(())
 }
 fn read_only(request: &ReplicaRequest) -> bool {
     match request {
         ReplicaRequest::ReadNamespaceFence { .. } => true,
         ReplicaRequest::FenceNamespace(_) | ReplicaRequest::JournalControl(_) => false,
+        ReplicaRequest::LogOp(op) => !op.is_mutation(),
         ReplicaRequest::Membership(command) => command.is_read(),
         ReplicaRequest::ReadChunk { .. }
         | ReplicaRequest::ReadChunkBatch { .. }
@@ -1139,17 +1129,16 @@ mod checkpoint_tests {
     fn node(capacity: u64, max_pages: usize) -> NodeReplica {
         let mut service = MatrixReplicaService::new();
         service.set_capacity_bytes(capacity).unwrap();
+        let (used_bytes, health) = super::super::replica_health::test_parts();
         NodeReplica {
             service,
             journal: None,
             journal_checkpoint_after_bytes: 0,
             staged: None,
-            maintenance: false,
             max_pages,
-            used_bytes: 0,
-            #[cfg(all(feature = "chunk-consensus", feature = "meta-server"))]
-            applied_membership: None,
-            failed: false,
+            used_bytes,
+            health,
+            log_chunks: None,
         }
     }
     #[test]
@@ -1197,7 +1186,7 @@ mod checkpoint_tests {
                 restored.service.export_snapshot().to_bytes().unwrap(),
                 snapshot
             );
-            assert_eq!(restored.used_bytes, 768);
+            assert_eq!(restored.used_bytes.get(), 768);
             for (capacity, pages) in [(4096, 4), (8192, 1)] {
                 let mut refused_node = node(capacity, pages);
                 let before = refused_node.service.export_snapshot().to_bytes().unwrap();
@@ -1206,7 +1195,7 @@ mod checkpoint_tests {
                     refused_node.service.export_snapshot().to_bytes().unwrap(),
                     before
                 );
-                assert_eq!(refused_node.used_bytes, 0);
+                assert_eq!(refused_node.used_bytes.get(), 0);
             }
         }
         let mut restored = node(8192, 4);
