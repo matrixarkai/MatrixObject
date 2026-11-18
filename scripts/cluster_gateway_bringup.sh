@@ -16,6 +16,7 @@
 #   GATEWAY_ENV   extra NAME=VALUE pairs for the gateway, space separated, e.g.
 #                 "MATRIXOBJECT_CLUSTER_COMPACT_APPEND=1"
 #   CHECKPOINT_BYTES  MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES for raft3 voters (default unset)
+#   CHUNK_HEARTBEAT_MS chunk server heartbeat interval (default 200 here, 3000 in the product)
 #   HEARTBEAT_TTL_MS  how long a chunk server stays healthy after its last heartbeat (default 15000, five
 #                     of the default 3000 ms intervals: a TTL under two intervals expires a node on one
 #                     late heartbeat and placement then refuses every write)
@@ -35,6 +36,12 @@ MAX_PAGES=${MAX_PAGES:-65536}
 PIDS="$RUN/pids"
 
 fail() { echo "STOP: $*" >&2; exit 1; }
+
+# a chunk server that is not heard from for HEARTBEAT_TTL_MS is placed out of every group: with a TTL under
+# three heartbeat intervals one heartbeat skipped under load takes a node out until the next one lands
+HB_INTERVAL_MS=${CHUNK_HEARTBEAT_MS:-200}
+TTL_MS=${HEARTBEAT_TTL_MS:-15000}
+[ "$TTL_MS" -ge $((3 * HB_INTERVAL_MS)) ] || { echo "STOP: HEARTBEAT_TTL_MS=$TTL_MS is under three chunk heartbeat intervals ($HB_INTERVAL_MS ms)" >&2; exit 1; }
 
 port_free() { ! ss -lnt 2>/dev/null | awk '{print $4}' | grep -q ":$1\$"; }
 
@@ -141,7 +148,7 @@ up() {
       MATRIXOBJECT_REPLICA_MAX_PAGES="$MAX_PAGES" \
       MATRIXOBJECT_CHUNK_NODE_ID="chunk-$i" \
       MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS="$META_EPS" \
-      MATRIXOBJECT_CHUNK_HEARTBEAT_MS=200 \
+      MATRIXOBJECT_CHUNK_HEARTBEAT_MS="$HB_INTERVAL_MS" \
       "$BIN/chunkserver"
   done
   for i in 1 2 3; do wait_line "$RUN/chunk$i.log" 20 || fail "chunkserver $i did not report listening; see $RUN/chunk$i.log"; done

@@ -1165,7 +1165,8 @@ fn closed_range(header: &str) -> Option<(u64, u64)> {
 fn lost_race(error: &ObjectError) -> bool {
     (matches!(error, ObjectError::PreconditionFailed(_))
         && !plane_unreachable(error)
-        && !placement_unavailable(error))
+        && !placement_unavailable(error)
+        && !leader_unavailable(error))
         || staged_state_mismatch(error)
 }
 
@@ -1174,6 +1175,13 @@ fn lost_race(error: &ObjectError) -> bool {
 /// client's request and nothing changed under it: it is the cluster being briefly unable, which
 /// clears when the next heartbeat lands, so it is a retryable 503, not a lost race to retry at
 /// once (which would only be refused again) and not a 412.
+/// No metadata leader admitted the request (an election, or a quorum that has not settled, as in
+/// the first seconds of a cluster): nothing changed under the client's request, and retrying it at
+/// once only meets the same answer. A retryable 503, like [`placement_unavailable`].
+fn leader_unavailable(error: &ObjectError) -> bool {
+    matches!(error, ObjectError::PreconditionFailed(message) if message.contains("was not admitted by a leader"))
+}
+
 fn placement_unavailable(error: &ObjectError) -> bool {
     matches!(error, ObjectError::PreconditionFailed(message) if message.contains("could not satisfy replica count"))
 }
@@ -1299,6 +1307,7 @@ fn error_response(error: ObjectError, resource: &str, missing_is_bucket: bool) -
         }
         _ if plane_unreachable(&error)
             || placement_unavailable(&error)
+            || leader_unavailable(&error)
             || staged_state_mismatch(&error)
             || consensus_unavailable(&error) =>
         {
@@ -1902,6 +1911,19 @@ mod tests {
         assert!(String::from_utf8_lossy(&response.body).contains("could not satisfy replica count"));
         assert_eq!(gateway.handle(&request("GET", "/b/wal", &[], b"")).body, b"abc", "nothing was written");
         // the client's retry at the same offset lands once the groups are healthy again
+        assert_eq!(append(&gateway, "wal", 3, b"de").status, 200);
+    }
+
+    #[test]
+    fn a_request_no_leader_admitted_is_a_503_and_not_a_lost_race() {
+        let error = ObjectError::PreconditionFailed("precondition failed: metadata request was not admitted by a leader".into());
+        assert!(!lost_race(&error));
+        let (gateway, armed) = timeout_gateway(error, false);
+        assert_eq!(append(&gateway, "wal", 0, b"abc").status, 200);
+        *armed.lock().unwrap() = true;
+        let response = append(&gateway, "wal", 3, b"de");
+        assert_eq!(response.status, 503, "{}", String::from_utf8_lossy(&response.body));
+        assert!(String::from_utf8_lossy(&response.body).contains("not admitted by a leader"));
         assert_eq!(append(&gateway, "wal", 3, b"de").status, 200);
     }
 
