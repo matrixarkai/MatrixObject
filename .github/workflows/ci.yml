@@ -2796,6 +2796,84 @@ jobs:
           cargo test --locked --lib cluster::chunk_log_tests::the_node_messages_the_client_classifies_are_the_ones_the_node_sends -- --exact --test-threads=1 2>&1 | tee /tmp/log-client.log
           grep -q '^running 1 test$' /tmp/log-client.log
           grep -q '^test result: ok. 1 passed' /tmp/log-client.log
+      - name: the log chunk verb round trips on the wire and an older replica would not know it
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::server::log_op_tests::the_verb_round_trips_on_the_wire_and_an_older_replica_would_not_know_it -- --exact --test-threads=1 2>&1 | tee /tmp/log-node.log
+          grep -q '^running 1 test$' /tmp/log-node.log
+          grep -q '^test result: ok. 1 passed' /tmp/log-node.log
+      - name: malformed log chunk operations are refused before they reach a chunk
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::server::log_op_tests::malformed_operations_are_refused_before_they_reach_a_chunk -- --exact --test-threads=1 2>&1 | tee /tmp/log-node.log
+          grep -q '^running 1 test$' /tmp/log-node.log
+          grep -q '^test result: ok. 1 passed' /tmp/log-node.log
+      - name: pipelined log appends in any order are acknowledged by contiguous length and survive a restart
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::server::log_op_tests::pipelined_appends_in_any_order_are_acknowledged_by_contiguous_length_and_survive_a_restart -- --exact --test-threads=1 2>&1 | tee /tmp/log-node.log
+          grep -q '^running 1 test$' /tmp/log-node.log
+          grep -q '^test result: ok. 1 passed' /tmp/log-node.log
+      - name: a stale log writer is refused, the new owner cuts, and a seal closes the chunk
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::server::log_op_tests::a_stale_writer_is_refused_the_new_owner_cuts_and_a_seal_closes_the_chunk -- --exact --test-threads=1 2>&1 | tee /tmp/log-node.log
+          grep -q '^running 1 test$' /tmp/log-node.log
+          grep -q '^test result: ok. 1 passed' /tmp/log-node.log
+      - name: a tail or read of a log chunk never held is empty and creates nothing
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::server::log_op_tests::a_tail_or_read_of_a_chunk_never_held_is_empty_and_creates_nothing -- --exact --test-threads=1 2>&1 | tee /tmp/log-node.log
+          grep -q '^running 1 test$' /tmp/log-node.log
+          grep -q '^test result: ok. 1 passed' /tmp/log-node.log
+      - name: log chunks need durable storage and maintenance mode allows only reads
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::server::log_op_tests::log_chunks_need_durable_storage_and_maintenance_mode_allows_only_reads -- --exact --test-threads=1 2>&1 | tee /tmp/log-node.log
+          grep -q '^running 1 test$' /tmp/log-node.log
+          grep -q '^test result: ok. 1 passed' /tmp/log-node.log
+      - name: many log chunks are independent and the open set is bounded
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::server::log_op_tests::many_chunks_are_independent_and_the_open_set_is_bounded -- --exact --test-threads=1 2>&1 | tee /tmp/log-node.log
+          grep -q '^running 1 test$' /tmp/log-node.log
+          grep -q '^test result: ok. 1 passed' /tmp/log-node.log
+      - name: a log chunk group commit syncs each dirty chunk once
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::server::log_op_group_tests::a_deferred_group_syncs_each_dirty_chunk_once_however_many_records_it_holds -- --exact --test-threads=1 2>&1 | tee /tmp/log-node.log
+          grep -q '^running 1 test$' /tmp/log-node.log
+          grep -q '^test result: ok. 1 passed' /tmp/log-node.log
+      - name: a log chunk read never returns a byte that no sync has covered
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::server::log_op_group_tests::a_read_never_returns_a_byte_that_no_sync_has_covered -- --exact --test-threads=1 2>&1 | tee /tmp/log-node.log
+          grep -q '^running 1 test$' /tmp/log-node.log
+          grep -q '^test result: ok. 1 passed' /tmp/log-node.log
+      - name: the group commit accepts log chunk mutations and refuses reads
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::server::log_op_group_tests::the_group_commit_accepts_log_mutations_and_refuses_reads_and_unsupported_requests -- --exact --test-threads=1 2>&1 | tee /tmp/log-node.log
+          grep -q '^running 1 test$' /tmp/log-node.log
+          grep -q '^test result: ok. 1 passed' /tmp/log-node.log
+      - name: concurrent log chunk writers through the committer reach exact durable lengths
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::server::log_op_group_tests::concurrent_writers_through_the_committer_all_reach_durable_and_exact_lengths -- --exact --test-threads=1 2>&1 | tee /tmp/log-node.log
+          grep -q '^running 1 test$' /tmp/log-node.log
+          grep -q '^test result: ok. 1 passed' /tmp/log-node.log
+      - name: a slow log chunk sync does not hold the replica lock
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::server::log_op_group_tests::a_slow_sync_does_not_hold_the_replica_lock_so_the_heartbeat_can_still_take_it -- --exact --test-threads=1 2>&1 | tee /tmp/log-node.log
+          grep -q '^running 1 test$' /tmp/log-node.log
+          grep -q '^test result: ok. 1 passed' /tmp/log-node.log
+      - name: a failed log chunk sync fails the node and no acknowledgement leaves it
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::server::log_op_group_tests::a_failed_sync_fails_the_node_and_no_acknowledgement_leaves_it -- --exact --test-threads=1 2>&1 | tee /tmp/log-node.log
+          grep -q '^running 1 test$' /tmp/log-node.log
+          grep -q '^test result: ok. 1 passed' /tmp/log-node.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail

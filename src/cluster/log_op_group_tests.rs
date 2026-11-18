@@ -146,8 +146,10 @@ fn concurrent_writers_through_the_committer_all_reach_durable_and_exact_lengths(
 static IN_SLOW_SYNC: AtomicBool = AtomicBool::new(false);
 fn slow_sync(file: &File) -> std::io::Result<()> {
     IN_SLOW_SYNC.store(true, AtomicOrdering::SeqCst);
-    std::thread::sleep(Duration::from_millis(200));
-    file.sync_data()
+    std::thread::sleep(Duration::from_millis(300));
+    let result = file.sync_data();
+    IN_SLOW_SYNC.store(false, AtomicOrdering::SeqCst);
+    result
 }
 
 #[test]
@@ -168,15 +170,20 @@ fn a_slow_sync_does_not_hold_the_replica_lock_so_the_heartbeat_can_still_take_it
         assert!(started.elapsed() < Duration::from_secs(10), "the sync never began");
         std::thread::sleep(Duration::from_millis(1));
     }
-    // the heartbeat's probe: it must find the lock free for the whole time the sync is held
-    let mut free = 0;
-    for _ in 0..20 {
+    // the heartbeat's probe: it must find the lock free for the whole time the sync is held.
+    // Only probes made while the sync is actually held count, so a slow runner that stalls
+    // this thread past the end of the sync can neither fail the test (a probe that lands on the
+    // committer's brief re-lock afterwards) nor pass it (too few probes).
+    let (mut probes, mut free) = (0, 0);
+    while IN_SLOW_SYNC.load(AtomicOrdering::SeqCst) && probes < 60 {
+        probes += 1;
         if replica.try_lock().is_ok() {
             free += 1;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(free, 20, "a held sync blocked the replica lock");
+    assert!(probes >= 5, "only {probes} probes fit inside the held sync");
+    assert_eq!(free, probes, "a held sync blocked the replica lock");
     let reply = match writer.join().unwrap().unwrap() {
         ReplicaReply::LogOp(reply) => reply,
         other => panic!("{other:?}"),
