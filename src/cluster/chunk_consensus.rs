@@ -1138,6 +1138,7 @@ mod checkpoint_tests {
             max_pages,
             used_bytes,
             health,
+            log_chunks: None,
         }
     }
     #[test]
