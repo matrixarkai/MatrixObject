@@ -288,6 +288,9 @@ pub struct MetaNodeServer {
     /// Answer unchanged chunk health reports without a log entry (see `report_suppress_window`).
     #[cfg(feature = "metadata-consensus")]
     suppress_unchanged_reports: bool,
+    /// Decide expiry from what the leader has heard (see `LeaderLiveness`); implies report suppression.
+    #[cfg(feature = "metadata-consensus")]
+    leader_liveness: bool,
 }
 
 impl MetaNodeServer {
@@ -348,6 +351,8 @@ impl MetaNodeServer {
             heartbeat_ttl_ms: None,
             #[cfg(feature = "metadata-consensus")]
             suppress_unchanged_reports: false,
+            #[cfg(feature = "metadata-consensus")]
+            leader_liveness: false,
         })
     }
 
@@ -370,6 +375,14 @@ impl MetaNodeServer {
     #[cfg(feature = "metadata-consensus")]
     pub fn suppress_unchanged_reports(&mut self, on: bool) {
         self.suppress_unchanged_reports = on;
+    }
+
+    /// With consensus, let the leader decide who is silent from what it has heard (kept in its
+    /// memory), so a node that reports on time costs no log entry however old its replicated stamp
+    /// is. Off by default. Call before `enable_raft`.
+    #[cfg(feature = "metadata-consensus")]
+    pub fn leader_liveness(&mut self, on: bool) {
+        self.leader_liveness = on;
     }
 
     /// Enable network consensus after seeding and before serving. Local snapshot
@@ -398,6 +411,7 @@ impl MetaNodeServer {
             Arc::clone(&self.stop),
             self.options.max_payload_bytes,
             suppress_ms,
+            self.leader_liveness,
         )?;
         super::api_tls::pin_file(&directory.join("api.transport"), self.options.tls.is_some())?;
         let node_count = consensus.node_count;
