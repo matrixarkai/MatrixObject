@@ -213,6 +213,7 @@ pub(crate) fn encode_conditional_write_batch_frame<'a>(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReplicaRequest {
+    JournalControl(super::replica_journal_control::ReplicaJournalControl),
     FenceNamespace(crate::chunk_namespace_fence::NamespaceFence),
     ReadNamespaceFence { namespace: crate::ChunkId },
     Membership(super::MembershipRequest),
@@ -301,6 +302,7 @@ pub enum ReplicaRequest {
 impl ReplicaRequest {
     pub fn code(&self) -> RequestCode {
         match self {
+            Self::JournalControl(_) => RequestCode::JournalControl,
             Self::FenceNamespace(_) => RequestCode::FenceNamespace,
             Self::ReadNamespaceFence { .. } => RequestCode::ReadNamespaceFence,
             ReplicaRequest::Membership(_) => RequestCode::Membership,
@@ -340,6 +342,7 @@ impl ReplicaRequest {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            Self::JournalControl(value) => return value.encode_to_vec(),
             Self::FenceNamespace(fence) => return fence.encode_to_vec(),
             Self::ReadNamespaceFence { namespace } => return crate::chunk_namespace_fence::NamespaceFenceQuery {
                 version: 1, volume_id: namespace.volume_id(), chunk_id: namespace.id()
@@ -516,6 +519,12 @@ impl ReplicaRequest {
     /// the wrong place -- a page address read one field short still parses into a valid
     /// `PageId`, naming a page nobody asked about.
     pub fn decode(code: RequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == RequestCode::JournalControl {
+            return Ok(Self::JournalControl(
+                super::replica_journal_control::ReplicaJournalControl::from_payload(payload)?,
+            ));
+        }
+
         if code == RequestCode::FenceNamespace {
             return Ok(Self::FenceNamespace(crate::chunk_namespace_fence::NamespaceFence::from_payload(payload)?));
         }
@@ -766,7 +775,9 @@ impl ReplicaRequest {
         }
         let mut cursor = Cursor::new(payload);
         let request = match code {
-            RequestCode::FenceNamespace | RequestCode::ReadNamespaceFence => unreachable!(),
+            RequestCode::JournalControl
+            | RequestCode::FenceNamespace
+            | RequestCode::ReadNamespaceFence => unreachable!(),
             RequestCode::Membership | RequestCode::StateInstall => unreachable!(),
             RequestCode::ReadChunkStateRange => unreachable!(),
             RequestCode::ReadChunkBatch => unreachable!(),
@@ -863,6 +874,7 @@ impl ReplicaRequest {
 /// A decoded reply, including a typed pre-admission refusal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReplicaReply {
+    JournalStatus(super::replica_journal_control::ReplicaJournalStatus),
     NamespaceFence(crate::chunk_namespace_fence::NamespaceFence),
     Membership(super::MembershipStatus),
     StateRange(super::state_transfer::ChunkStateRange),
@@ -902,6 +914,7 @@ pub enum ReplicaReply {
 impl ReplicaReply {
     pub(crate) fn payload_len(&self) -> usize {
         match self {
+            Self::JournalStatus(value) => value.encoded_len(),
             Self::NamespaceFence(fence) => fence.encoded_len(),
             Self::StateRange(value) => value.encoded_len(),
             Self::Applied | Self::NotLeader => 0,
@@ -961,6 +974,7 @@ impl ReplicaReply {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            Self::JournalStatus(value) => return value.encode_to_vec(),
             ReplicaReply::NamespaceFence(value) => return value.encode_to_vec(),
             ReplicaReply::StateRange(value) => return value.encode_to_vec(),
             ReplicaReply::Applied | ReplicaReply::NotLeader => {}
@@ -1054,6 +1068,12 @@ impl ReplicaReply {
     /// whose shape is read from the reply itself can be read as the wrong shape. The caller
     /// knows what it asked.
     pub fn decode(code: RequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == RequestCode::JournalControl {
+            return Ok(Self::JournalStatus(
+                super::replica_journal_control::ReplicaJournalStatus::from_payload(payload)?,
+            ));
+        }
+
         if matches!(code, RequestCode::FenceNamespace | RequestCode::ReadNamespaceFence) {
             return Ok(Self::NamespaceFence(crate::chunk_namespace_fence::NamespaceFence::from_payload(payload)?));
         }
@@ -1228,7 +1248,9 @@ impl ReplicaReply {
         }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
-            RequestCode::FenceNamespace | RequestCode::ReadNamespaceFence => unreachable!(),
+            RequestCode::JournalControl
+            | RequestCode::FenceNamespace
+            | RequestCode::ReadNamespaceFence => unreachable!(),
             RequestCode::Membership | RequestCode::StateInstall => unreachable!(),
             RequestCode::ReadChunkStateRange => unreachable!(),
             RequestCode::GroupIdentity => unreachable!(),

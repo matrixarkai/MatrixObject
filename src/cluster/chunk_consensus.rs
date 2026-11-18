@@ -392,6 +392,12 @@ impl ChunkConsensus {
         self.failed.load(Ordering::SeqCst)
     }
     pub(super) fn request(&self, request: ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
+        if matches!(request, ReplicaRequest::JournalControl(_)) {
+            return Err(ObjectError::PreconditionFailed(
+                "journal control requires standalone replica storage".into(),
+            ));
+        }
+
         let request = match request {
             ReplicaRequest::WriteChunkBatchIfSequence { writes } => {
                 return self.request_batch(writes)
@@ -1003,7 +1009,7 @@ fn restore_snapshot(
 fn read_only(request: &ReplicaRequest) -> bool {
     match request {
         ReplicaRequest::ReadNamespaceFence { .. } => true,
-        ReplicaRequest::FenceNamespace(_) => false,
+        ReplicaRequest::FenceNamespace(_) | ReplicaRequest::JournalControl(_) => false,
         ReplicaRequest::Membership(command) => command.is_read(),
         ReplicaRequest::ReadChunk { .. }
         | ReplicaRequest::ReadChunkBatch { .. }

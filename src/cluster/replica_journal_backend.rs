@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 use super::replica_journal::ReplicaJournal;
+use super::replica_journal_control::ReplicaJournalStatus;
 use crate::{
     chunk_namespace_fence::NamespaceFenceOutcome, outcome::PageOutcome, MatrixReplicaService,
     ReplicaServiceSnapshot,
 };
 use std::io;
 pub(super) trait ReplicaJournalBackend: Send {
+    fn status(&self) -> io::Result<ReplicaJournalStatus>;
     fn requires_context(&self) -> bool {
         false
     }
@@ -40,6 +42,20 @@ pub(super) trait ReplicaJournalBackend: Send {
     fn sync_count(&self) -> u64;
 }
 impl ReplicaJournalBackend for ReplicaJournal {
+    fn status(&self) -> io::Result<ReplicaJournalStatus> {
+        Ok(ReplicaJournalStatus {
+            version: 1,
+            journal_id: self.journal_id().to_vec(),
+            layout: ReplicaJournalStatus::LEGACY,
+            started_epoch: self.checkpoint_epoch(),
+            published_epoch: self.checkpoint_epoch(),
+            checkpoint_in_flight: false,
+            pending_records: 0,
+            bytes_since_checkpoint: self.checkpoint_bytes(),
+            journal_bytes: self.logical_length(),
+            segments: 1,
+        })
+    }
     fn append_owned(
         &mut self,
         outcome: PageOutcome,

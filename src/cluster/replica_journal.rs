@@ -20,6 +20,8 @@ const MAGIC_ZERO_TAIL: &[u8; 4] = b"MOZ2";
 const FRAME_END: u8 = 0xA5;
 
 pub(super) struct ReplicaJournal {
+    journal_id: [u8; 16],
+    checkpoint_epoch: u64,
     file: File,
     // Stable across atomic journal replacement; retain the journal lock too.
     _lock: Option<File>,
@@ -107,7 +109,25 @@ fn outcome_header(payload: &[u8], chain: bool) -> io::Result<[u8; HEADER_LEN]> {
     Ok(header)
 }
 
+fn new_journal_id() -> io::Result<[u8; 16]> {
+    let mut id = [0; 16];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut id)
+        .map_err(|_| invalid("journal identity generation failed"))?;
+    Ok(id)
+}
+
 impl ReplicaJournal {
+    pub(super) fn journal_id(&self) -> &[u8] {
+        &self.journal_id
+    }
+    pub(super) fn checkpoint_epoch(&self) -> u64 {
+        self.checkpoint_epoch
+    }
+
+    pub(super) fn checkpoint_bytes(&self) -> u64 {
+        self.bytes_since_checkpoint
+    }
+
     #[cfg(test)]
     pub(super) fn open(path: &Path, service: &mut MatrixReplicaService) -> io::Result<Self> {
         Self::open_with_limits(path, service, usize::MAX)
@@ -318,6 +338,8 @@ impl ReplicaJournal {
             file.seek(SeekFrom::End(0))?;
         }
         let mut journal = Self {
+            journal_id: new_journal_id()?,
+            checkpoint_epoch: 0,
             file,
             _lock: Some(lock),
             path,
@@ -607,6 +629,11 @@ impl ReplicaJournal {
 
     #[cfg(unix)]
     pub(super) fn checkpoint(&mut self, service: &MatrixReplicaService) -> io::Result<()> {
+        let epoch = self
+            .checkpoint_epoch
+            .checked_add(1)
+            .ok_or_else(|| invalid("checkpoint epoch overflow"))?;
+
         let mut stream = super::replica_image::capture(service.export_snapshot(), (1, 1))
             .map_err(invalid)?
             .ok_or_else(|| invalid("replica checkpoint exceeds stream bounds"))?;
@@ -639,6 +666,7 @@ impl ReplicaJournal {
         self.bytes_since_checkpoint = 0;
         File::open(self.path.parent().unwrap())?.sync_all()?;
         self.mark_initialized()?;
+        self.checkpoint_epoch = epoch;
         Ok(())
     }
 
@@ -754,6 +782,8 @@ impl<T: Write> Write for Digest<T> {
 impl ReplicaJournal {
     pub(super) fn read_only_for_test(path: &Path) -> Self {
         Self {
+            journal_id: new_journal_id().unwrap(),
+            checkpoint_epoch: 0,
             file: File::open(path).unwrap(),
             _lock: None,
             path: path.to_path_buf(),

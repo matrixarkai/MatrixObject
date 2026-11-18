@@ -94,3 +94,75 @@ The process test starts three metadata nodes and three chunk servers, confirms
 six distinct live PIDs with their own storage paths and established sockets, writes
 objects through Star replication, changes metadata leadership, appends data, kills
 and restarts all six processes, and reads every object from every data replica.
+
+## Standalone checkpoint control
+
+`RemoteReplicaClient::journal_status()` reports bounded journal progress without
+walking pages or reading payloads. `checkpoint_journal()` synchronizes preceding
+mutations and starts a checkpoint. Both commands address the connected standalone
+replica directly; they are refused on memory-only nodes and Raft groups. A busy
+checkpoint is refused without fencing an otherwise healthy node. I/O failures
+fence the node, including failures observed while polling background publication.
+
+The canonical binary protobuf control request is bounded to 32 bytes and its
+status reply to 256 bytes. Unknown actions, versions, duplicate fields, unknown
+fields, and noncanonical encodings are refused. Status includes a 16-byte journal
+identity, layout, started and published epochs, in-flight state, queued record
+count, uncheckpointed logical bytes, committed journal bytes, and segment count.
+Committed journal bytes exclude preallocated space and ancillary files; they are
+not a measurement of storage I/O. Legacy epochs and identity last until reopen;
+segmented identity and committed epochs survive restart.
+
+Quiesce writers, wait for any current checkpoint, request a checkpoint, then poll
+`status.checkpoint_is_published(&requested)` and `!status.checkpoint_in_flight`.
+The helper refuses a changed journal identity or layout. A quiescent completed
+barrier must also report zero pending records and zero checkpoint debt. A status
+observation can reap a completed worker but does not append journal records.
+
+## Corpus I/O measurement
+
+The paired local WSL measurement uses three metadata processes and three data
+processes, with three acknowledged copies and one-copy reads. Its timed requests
+use the data replica API directly; metadata publication QPS is outside that scope.
+Every phase drains warmup checkpoints before sampling data-node `/proc/PID/io`.
+Writes and appends then include completed automatic checkpoints plus a final
+explicit checkpoint. Request QPS and latency describe acknowledgment; cycle QPS
+and CPU include checkpoint drain. Read phases do not create extra checkpoints.
+
+The output includes kernel write bytes, cancelled write bytes, their signed
+difference, kernel read bytes, and all-file-descriptor write characters/calls.
+The latter include sockets. These Linux process counters are not Windows device
+I/O or allocation counts. All live payloads remain cached by the service. The
+1 MiB checkpoint threshold is a stress configuration, not a default change.
+One paired run is diagnostic evidence, not a sustained throughput guarantee.
+
+```sh
+cargo test --locked --all-features --lib -j1 journal_control_ -- --test-threads=1
+cargo test --locked --all-features --test network_metadata_consensus -j1 checkpoint_corpus_measurement_drains_both_layouts_and_recovers -- --test-threads=1
+cargo test --locked --release --all-features --test network_metadata_consensus -j1 measure_checkpoint_io_at_growing_corpora -- --ignored --nocapture --test-threads=1
+```
+
+The functional case covers both layouts and full process restart. The explicit
+release measurement pairs 1, 16, and 64 MiB background payloads per data node,
+16 clients, and 512 requests per phase, using the same foreground workload and
+rotating layout order. Every read checks its complete payload; retained first
+and last written pages and cold pages are checked on every replica after restart.
+
+One release run in local WSL produced these append results. Each phase appends
+2 MiB of logical data, with three acknowledged copies. Kernel writes sum all
+three data processes through the completed final checkpoint.
+
+| Background payload per replica | Layout | Append p99 | Cycle QPS | Kernel write bytes / logical byte |
+| --- | --- | ---: | ---: | ---: |
+| 1 MiB | legacy | 105 ms | 320 | 27.68 |
+| 1 MiB | segmented | 58 ms | 396 | 5.95 |
+| 16 MiB | legacy | 688 ms | 116 | 95.77 |
+| 16 MiB | segmented | 67 ms | 373 | 8.40 |
+| 64 MiB | legacy | 1919 ms | 58 | 313.57 |
+| 64 MiB | segmented | 157 ms | 193 | 16.47 |
+
+These are short stress phases on one machine, with layout order rotated by corpus
+size and no cross-host validation. Segmented latency and amplification still grow;
+this run does not establish flat latency or a production throughput guarantee.
+All cached read phases recorded zero kernel write bytes. Safe reclamation and an
+incremental metadata checkpoint remain necessary before default activation.

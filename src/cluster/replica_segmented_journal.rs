@@ -52,6 +52,7 @@ impl Pending {
     }
 }
 struct Completed {
+    epoch: u64,
     state: CheckpointState,
     covered_bytes: u64,
 }
@@ -65,6 +66,8 @@ pub(super) struct SegmentedReplicaJournal {
     pending_bytes: usize,
     context: Option<ReplicaServiceSnapshot>,
     revision: u64,
+    started_epoch: u64,
+    published_epoch: u64,
     bytes_since_checkpoint: u64,
     publication: Arc<Mutex<u64>>,
     failure: Arc<Mutex<Option<String>>>,
@@ -115,6 +118,8 @@ impl SegmentedReplicaJournal {
             pending_bytes: 0,
             context: None,
             revision: 0,
+            started_epoch: epoch,
+            published_epoch: epoch,
             bytes_since_checkpoint,
             publication: Arc::new(Mutex::new(epoch)),
             failure: Arc::new(Mutex::new(None)),
@@ -147,6 +152,7 @@ impl SegmentedReplicaJournal {
                 .map_err(|_| invalid("checkpoint worker panicked"))??
             {
                 Some(done) => {
+                    self.published_epoch = done.epoch;
                     self.state = Some(done.state);
                     self.bytes_since_checkpoint = self
                         .bytes_since_checkpoint
@@ -246,6 +252,7 @@ impl SegmentedReplicaJournal {
                 .ok_or_else(|| invalid("checkpoint epoch overflow"))?;
             *epoch
         };
+        self.started_epoch = epoch;
         self.retire_job();
         let mut state = CheckpointState::new(service.export_snapshot_unsealed_without_pages())?;
         let snapshot = service.export_snapshot_unsealed();
@@ -305,6 +312,7 @@ impl SegmentedReplicaJournal {
         }
         let commit = prepared.publish(&self.log)?;
         drop(publication);
+        self.published_epoch = epoch;
         self.cut = commit.through.clone();
         state.cut = commit.through;
         self.state = Some(state);
@@ -335,6 +343,7 @@ impl SegmentedReplicaJournal {
                 .ok_or_else(|| invalid("checkpoint epoch overflow"))?;
             *epoch
         };
+        self.started_epoch = epoch;
         self.job = Some(
             thread::Builder::new()
                 .name("replica-checkpoint".into())
@@ -374,6 +383,7 @@ impl SegmentedReplicaJournal {
                         prepared.publish(&log)?;
                         drop(guard);
                         Ok(Some(Completed {
+                            epoch,
                             state,
                             covered_bytes,
                         }))
@@ -394,6 +404,21 @@ impl SegmentedReplicaJournal {
     }
 }
 impl ReplicaJournalBackend for SegmentedReplicaJournal {
+    fn status(&self) -> io::Result<super::replica_journal_control::ReplicaJournalStatus> {
+        use super::replica_journal_control::ReplicaJournalStatus;
+        Ok(ReplicaJournalStatus {
+            version: 1,
+            layout: ReplicaJournalStatus::SEGMENTED,
+            journal_id: self.log.store_id().to_vec(),
+            started_epoch: self.started_epoch,
+            published_epoch: self.published_epoch,
+            checkpoint_in_flight: self.job.is_some(),
+            pending_records: self.pending.len() as u32,
+            bytes_since_checkpoint: self.bytes_since_checkpoint,
+            journal_bytes: self.log.logical_length()?,
+            segments: self.log.segment_count()? as u64,
+        })
+    }
     fn requires_context(&self) -> bool {
         true
     }

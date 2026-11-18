@@ -854,6 +854,47 @@ fn apply_locked(
             return Err(ObjectError::Corruption(error.to_string()));
         }
     }
+    if let ReplicaRequest::JournalControl(command) = request {
+        use super::replica_journal_control::{ReplicaJournalControl, ReplicaJournalStatus};
+        command.validate()?;
+        let NodeReplica {
+            journal, service, ..
+        } = guard;
+        let journal = journal.as_mut().ok_or_else(|| {
+            ObjectError::PreconditionFailed("replica has no standalone journal".into())
+        })?;
+        let status = match journal.status() {
+            Ok(status) => status,
+            Err(error) => {
+                guard.failed = true;
+                return Err(ObjectError::Corruption(error.to_string()));
+            }
+        };
+        if command.action == ReplicaJournalControl::CHECKPOINT && status.checkpoint_in_flight {
+            return Err(ObjectError::PreconditionFailed(
+                "replica checkpoint is already in flight".into(),
+            ));
+        }
+        let result = (|| -> std::io::Result<ReplicaJournalStatus> {
+            if command.action == ReplicaJournalControl::STATUS {
+                return Ok(status);
+            }
+            journal.sync_deferred()?;
+            journal.checkpoint(service)?;
+            journal.check_health()?;
+            journal.status()
+        })();
+        match result {
+            Ok(status) => {
+                status.validate()?;
+                return Ok(ReplicaReply::JournalStatus(status));
+            }
+            Err(error) => {
+                guard.failed = true;
+                return Err(ObjectError::Corruption(error.to_string()));
+            }
+        }
+    }
     if guard.staged.as_ref().is_some_and(|stage| stage.expired()) {
         guard.staged = None;
     }
@@ -1204,6 +1245,9 @@ pub(super) fn apply_to_replica(
     max_pages: usize,
 ) -> Result<ReplicaReply, ObjectError> {
     match request {
+        ReplicaRequest::JournalControl(_) => Err(ObjectError::PreconditionFailed(
+            "journal control requires standalone replica storage".into(),
+        )),
         ReplicaRequest::FenceNamespace(fence) => {
             let outcome =
                 crate::chunk_namespace_fence::NamespaceFenceOutcome::decide(guard, fence)?;
