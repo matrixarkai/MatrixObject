@@ -111,6 +111,8 @@ pub enum RequestCode {
     ReadNamespaceFence = 26,
     /// Inspect or explicitly checkpoint a standalone journal. Bounded protobuf.
     JournalControl = 27,
+    /// A log chunk operation: append, seal, truncate, tail or read. One verb, an operation field.
+    LogOp = 28,
 }
 
 impl RequestCode {
@@ -148,6 +150,7 @@ impl RequestCode {
             25 => Some(RequestCode::FenceNamespace),
             26 => Some(RequestCode::ReadNamespaceFence),
             27 => Some(RequestCode::JournalControl),
+            28 => Some(RequestCode::LogOp),
             _ => None,
         }
     }

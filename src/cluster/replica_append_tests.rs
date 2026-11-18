@@ -33,6 +33,7 @@ impl Fixture {
                 staged: None,
                 max_pages: 10,
                 health,
+                log_chunks: None,
             })),
             directory,
             path,

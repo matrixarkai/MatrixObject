@@ -239,6 +239,12 @@ mod replica_checkpoint_recovery;
 #[cfg(feature = "replica-server")]
 mod replica_checkpoint_spans;
 #[cfg(feature = "replica-server")]
+mod log_op;
+#[cfg(feature = "replica-server")]
+mod log_chunk_store;
+#[cfg(feature = "replica-server")]
+pub use log_op::{LogOpReply, LogOpRequest};
+#[cfg(feature = "replica-server")]
 mod replica_image;
 #[cfg(feature = "replica-server")]
 mod replica_journal;

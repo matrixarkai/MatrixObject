@@ -81,6 +81,8 @@ struct NodeReplica {
     /// What the heartbeat reports: failure, maintenance, capacity, usage and the applied
     /// membership view. Written under this lock, read without it.
     health: Arc<ReplicaHealth>,
+    /// Log chunk files, beside the journal. None for a node without durable storage.
+    log_chunks: Option<super::log_chunk_store::LogChunkStore>,
 }
 
 /// How a replica node is sized and bounded.
@@ -328,6 +330,10 @@ impl ReplicaNodeServer {
                 staged: None,
                 max_pages: options.max_pages,
                 health: Arc::clone(&health),
+                log_chunks: match path {
+                    Some(path) => Some(super::log_chunk_store::LogChunkStore::open(&path.parent().unwrap_or(std::path::Path::new(".")).join("logchunks"))?),
+                    None => None,
+                },
             })),
             health,
             options,
@@ -829,6 +835,10 @@ fn apply(
 #[path = "replica_append_tests.rs"]
 mod append_outcome_tests;
 
+#[cfg(all(test, unix))]
+#[path = "log_op_tests.rs"]
+mod log_op_tests;
+
 fn prepare_rpc_append(
     service: &MatrixReplicaService,
     request: &ReplicaRequest,
@@ -965,6 +975,17 @@ fn apply_locked(
         return Err(ObjectError::PreconditionFailed(
             "replica maintenance mode refuses ordinary mutations".into(),
         ));
+    }
+    if let ReplicaRequest::LogOp(op) = &request {
+        if guard.health.maintenance() && op.is_mutation() {
+            return Err(ObjectError::PreconditionFailed("replica maintenance mode refuses ordinary mutations".into()));
+        }
+        let store = guard.log_chunks.as_mut().ok_or_else(|| {
+            ObjectError::PreconditionFailed("log chunks require durable replica storage".into())
+        })?;
+        let reply = store.apply(op)?;
+        crate::cluster::message::check_reply_size(prost::Message::encoded_len(&reply), max_payload_bytes)?;
+        return Ok(ReplicaReply::LogOp(reply));
     }
     if let ReplicaRequest::StateInstall(request) = request {
         return apply_state_install(guard, request);
@@ -1341,6 +1362,9 @@ pub(super) fn apply_to_replica(
         ReplicaRequest::GroupIdentity => Err(ObjectError::PreconditionFailed(
             "standalone replica has no Raft group identity".into(),
         )),
+        ReplicaRequest::LogOp(_) => Err(ObjectError::PreconditionFailed(
+            "log chunks require node request dispatch".into(),
+        )),
         ReplicaRequest::WriteChunk {
             page_id,
             offset,
@@ -1706,6 +1730,7 @@ mod journal_failure_tests {
             staged: None,
             max_pages: 65_536,
             health,
+            log_chunks: None,
         }));
         let make_page = |index| PageId {
             chunk_id: ChunkId::new(7, 9).unwrap(),
@@ -1792,6 +1817,7 @@ mod journal_failure_tests {
             staged: None,
             max_pages: 65_536,
             health,
+            log_chunks: None,
         }));
         let page = PageId {
             chunk_id: ChunkId::new(7, 10).unwrap(),
@@ -1854,6 +1880,7 @@ mod journal_failure_tests {
             staged: None,
             max_pages: 65_536,
             health,
+            log_chunks: None,
         }));
         let page = PageId {
             chunk_id: ChunkId::new(1, 2).unwrap(),
