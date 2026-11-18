@@ -227,6 +227,8 @@ pub use meta_wire::{MetaRequestCode, META_CODE_BASE};
 #[cfg(feature = "replica-server")]
 mod replica_checkpoint_catalog;
 #[cfg(feature = "replica-server")]
+mod replica_checkpoint_index;
+#[cfg(feature = "replica-server")]
 mod replica_checkpoint_recovery;
 #[cfg(feature = "replica-server")]
 mod replica_checkpoint_spans;

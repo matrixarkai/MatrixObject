@@ -204,6 +204,7 @@ fn checkpoint_catalog_metadata_spans_fragments_and_skips_interleaved_writes() {
         .unwrap();
     writer.flush().unwrap();
     let commit = CheckpointCommit {
+        index_root: None,
         version: 1,
         log_id: log.store_id().to_vec(),
         checkpoint_id: id,
@@ -273,6 +274,7 @@ fn checkpoint_catalog_install_cut_cannot_skip_interleaved_logical_writes() {
     writer.row(1, &header, &mut Vec::new()).unwrap();
     writer.flush().unwrap();
     let bad = CheckpointCommit {
+        index_root: None,
         version: 1,
         log_id: log.store_id().to_vec(),
         checkpoint_id: writer.id,

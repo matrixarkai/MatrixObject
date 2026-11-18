@@ -4,7 +4,7 @@
 
 The standalone chunk server has an opt-in journal that separates immutable data
 from checkpoint metadata. A checkpoint worker reconstructs a private catalog from
-committed outcome metadata and streams a new catalog outside the replica mutex.
+committed outcome metadata and saves changed index paths outside the replica mutex.
 It does not capture the live page map or retain payload or receipt-map handles.
 Foreground writes therefore do not copy a page because a checkpoint owns its data.
 
@@ -42,12 +42,31 @@ fragments use version 2, and state transitions with replica metadata use version
 3. Ordinary replay refuses checkpoint storage records and refuses to discard a
 version 3 batch's replica context. Replica recovery uses the context-aware path.
 
-A checkpoint catalog contains typed page metadata, a dictionary of shared
-immutable payload descriptors, and ordered page spans. Zero-filled holes do not
-require payload extents. Catalog bytes stream into fragments of at most 1 MiB.
-The checkpoint becomes visible only when a small commit record is synchronized.
-Its identity, epoch, record boundaries, length, and SHA-256 bind the complete
-catalog. Interrupted preparation leaves the previous committed checkpoint valid.
+An indexed checkpoint contains immutable page metadata, shared payload
+descriptors, ordered page spans, and a balanced page-key tree. Zero-filled holes
+do not require payload extents. The worker tracks changed pages while replaying
+outcomes; it writes their metadata and affected tree paths, reusing unchanged
+records. Payload descriptors are shared across pages and checkpoints. Superseded
+descriptors leave the worker cache when no catalog page uses them.
+
+Index records use canonical binary protobuf with a 1 MiB body limit. Tree nodes
+and extent descriptors are bounded to 16 KiB. Up to 64 records share a storage
+batch; child nodes can precede their parents within the same synchronized batch.
+Pointers bind record position, decision, identity, ordinal, length, and SHA-256.
+Recovery checks key ordering, tree balance, subtree counts, and strictly earlier
+children, including same-batch ordering. Large page metadata streams through a
+single-page catalog instead of requiring an oversized tree node.
+
+Scalar metadata and namespace/receipt maps use a separate streamed catalog.
+The checkpoint becomes visible only when its small version-2 commit record is
+synchronized. It binds the tree root, metadata catalog, epoch, and replay cut.
+Interrupted preparation leaves the previous committed checkpoint valid.
+
+Version-1 checkpoint catalogs remain readable. Their next checkpoint builds the
+index once; subsequent checkpoints reuse it. After a version-2 commit is published,
+older binaries refuse that journal. Keep a compatible binary for restart: binary
+rollback requires an independently retained compatible deployment snapshot. The
+default journal layout and its stored format are unchanged.
 
 Background checkpoints retain their captured replay position. Recovery folds
 subsequent mutations as metadata and materializes only the resulting pages.
@@ -69,13 +88,15 @@ Checkpoints do not themselves establish membership or repair missing peer writes
 ## Current limits
 
 This is a test layout, not the default production layout. Old segments are retained;
-there is no reclamation or retention bound. Checkpoints still rewrite the complete
-metadata catalog, so metadata amplification and checkpoint CPU grow with the live
-catalog. Bulk installs currently synchronize individual payload fragments. Live
-payloads remain resident in the existing service, and startup materializes them.
+there is no reclamation or retention bound. Reused index and payload records may
+live in old segments, so the replay cut alone is not a safe deletion boundary.
+Changed-page work grows with its span count and tree path; scalar metadata and
+namespace/receipt maps still serialize completely. Bulk installs currently
+synchronize individual payload fragments. Live payloads remain resident in the
+existing service, and startup materializes them.
 
-Incremental metadata, safe segment reclamation, a bounded payload cache, and
-measurements under sustained corpus growth are required before default activation.
+Safe segment reclamation, a bounded payload cache, and measurements under
+sustained corpus growth are required before default activation.
 Local multi-process tests establish functional recovery, not multi-host performance,
 flat append latency, or a QPS improvement.
 
@@ -164,8 +185,10 @@ three data processes through the completed final checkpoint.
 These are short stress phases on one machine, with layout order rotated by corpus
 size and no cross-host validation. Segmented latency and amplification still grow;
 this run does not establish flat latency or a production throughput guarantee.
-All cached read phases recorded zero kernel write bytes. Safe reclamation and an
-incremental metadata checkpoint remain necessary before default activation.
+All cached read phases recorded zero kernel write bytes. This table predates the
+incremental index and does not measure its behavior. Safe reclamation, bounded
+payload caching, and sustained measurements remain necessary before default
+activation.
 
 ## Legacy checkpoint stream buffering
 

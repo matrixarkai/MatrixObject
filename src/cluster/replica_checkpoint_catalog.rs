@@ -107,6 +107,8 @@ pub(super) struct CheckpointCommit {
     pub through: Option<StoredOutcomePosition>,
     #[prost(bool, tag = "11")]
     pub install: bool,
+    #[prost(message, optional, tag = "12")]
+    pub index_root: Option<super::replica_checkpoint_index::IndexRoot>,
 }
 pub(super) struct PreparedCheckpoint {
     pub commit: CheckpointCommit,
@@ -115,8 +117,9 @@ pub(super) struct LoadedCheckpoint {
     pub header: CatalogHeader,
     pub catalog: PageCatalog,
     pub commit: CheckpointCommit,
+    pub index: Option<super::replica_checkpoint_index::IndexState>,
 }
-fn extent_key(extent: &PayloadExtent) -> io::Result<([u8; 16], u64)> {
+pub(super) fn extent_key(extent: &PayloadExtent) -> io::Result<([u8; 16], u64)> {
     let id = extent
         .store_id
         .as_slice()
@@ -201,6 +204,7 @@ impl CatalogWriter<'_> {
 }
 /// Runs outside the node mutex. It reads descriptors and metadata only; it does
 /// not hydrate page bytes. The caller owns the catalog exclusively until done.
+#[cfg(all(test, unix))]
 pub(super) fn prepare(
     log: &SegmentedOutcomeLog,
     catalog: &PageCatalog,
@@ -228,6 +232,47 @@ pub(super) fn prepare_checked(
     install: bool,
     check: &dyn Fn() -> io::Result<()>,
 ) -> io::Result<PreparedCheckpoint> {
+    prepare_iter_checked(
+        log,
+        catalog.pages.iter(),
+        catalog.pages.len(),
+        metadata,
+        captured_cut,
+        epoch,
+        install,
+        check,
+    )
+}
+
+pub(super) fn prepare_page_checked(
+    log: &SegmentedOutcomeLog,
+    id: &PageId,
+    page: &CatalogPage,
+    epoch: u64,
+    check: &dyn Fn() -> io::Result<()>,
+) -> io::Result<PreparedCheckpoint> {
+    prepare_iter_checked(
+        log,
+        std::iter::once((id, page)),
+        1,
+        Vec::new(),
+        None,
+        epoch,
+        false,
+        check,
+    )
+}
+
+fn prepare_iter_checked<'a>(
+    log: &SegmentedOutcomeLog,
+    pages: impl Iterator<Item = (&'a PageId, &'a CatalogPage)> + Clone,
+    page_count: usize,
+    metadata: Vec<u8>,
+    captured_cut: Option<StoredOutcomePosition>,
+    epoch: u64,
+    install: bool,
+    check: &dyn Fn() -> io::Result<()>,
+) -> io::Result<PreparedCheckpoint> {
     check()?;
     if epoch == 0 {
         return Err(invalid("zero checkpoint epoch"));
@@ -236,7 +281,7 @@ pub(super) fn prepare_checked(
         log.read_metadata(cut)?;
     }
     let mut extents = BTreeMap::new();
-    for page in catalog.pages.values() {
+    for (_, page) in pages.clone() {
         check()?;
         page.validate_spans()?;
         for span in &page.spans {
@@ -268,7 +313,7 @@ pub(super) fn prepare_checked(
         install,
         metadata,
         extent_count: extents.len() as u64,
-        page_count: catalog.pages.len() as u64,
+        page_count: page_count as u64,
     };
     let mut writer = CatalogWriter {
         log,
@@ -287,7 +332,7 @@ pub(super) fn prepare_checked(
         check()?;
         writer.row(2, extent.as_ref(), &mut scratch)?;
     }
-    for (id, page) in &catalog.pages {
+    for (id, page) in pages {
         check()?;
         if page_id(&page.metadata)? != *id {
             return Err(invalid("catalog page key mismatch"));
@@ -342,6 +387,7 @@ pub(super) fn prepare_checked(
             sha256: writer.hash.finish().as_ref().to_vec(),
             through,
             install,
+            index_root: None,
         },
     })
 }
@@ -362,7 +408,11 @@ impl PreparedCheckpoint {
     }
 }
 fn validate_commit(log: &SegmentedOutcomeLog, commit: &CheckpointCommit) -> io::Result<()> {
+    if commit.version == 2 {
+        return super::replica_checkpoint_index::validate_commit(log, commit);
+    }
     if commit.version != 1
+        || commit.index_root.is_some()
         || commit.log_id != log.store_id()
         || commit.checkpoint_id.len() != 16
         || commit.epoch == 0
@@ -391,7 +441,7 @@ fn validate_commit(log: &SegmentedOutcomeLog, commit: &CheckpointCommit) -> io::
     }
     Ok(())
 }
-fn page_id(metadata: &CatalogPageMetadata) -> io::Result<PageId> {
+pub(super) fn page_id(metadata: &CatalogPageMetadata) -> io::Result<PageId> {
     Ok(PageId {
         chunk_id: ChunkId::new(metadata.volume_id, metadata.chunk_id).map_err(invalid)?,
         page_index: metadata.page_index,
@@ -499,6 +549,9 @@ pub(super) fn load(
     commit: CheckpointCommit,
     max_pages: usize,
 ) -> io::Result<LoadedCheckpoint> {
+    if commit.version == 2 {
+        return super::replica_checkpoint_index::load(log, commit, max_pages);
+    }
     validate_commit(log, &commit)?;
     let mut reader = CatalogReader {
         log,
@@ -523,6 +576,7 @@ pub(super) fn load(
         || header.epoch != commit.epoch
         || header.install != commit.install
         || header.page_count > max_pages as u64
+        || (max_pages == 0 && header.extent_count != 0)
         || header.extent_count > commit.bytes
         || header.page_count > commit.bytes
         || (!header.install && header.captured_cut != commit.through)
@@ -600,6 +654,7 @@ pub(super) fn load(
         header,
         catalog,
         commit,
+        index: None,
     })
 }
 /// Discover commits with metadata reads only. An invalid newest published
