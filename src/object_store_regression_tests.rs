@@ -35370,7 +35370,7 @@ fn every_durable_format_constant_is_accounted_for() {
     );
     assert_eq!(
         found.len(),
-        154,
+        156,
         "the count is pinned as well, so a rename that happens to swap two names cannot pass"
     );
 }
