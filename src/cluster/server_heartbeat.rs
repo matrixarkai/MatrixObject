@@ -78,6 +78,36 @@ fn local_membership(
     Ok(status.clone())
 }
 
+/// How long the heartbeat waits for a busy replica between tries, and how many times it tries
+/// before it gives up on this interval. A request thread holds the replica for as long as one
+/// write takes to apply; the report needs the replica for a moment only, so a short wait gets it
+/// without a full heartbeat interval (3 s by default) being lost to one contended try.
+const BUSY_RETRY_STEP: Duration = Duration::from_millis(30);
+const BUSY_TRIES: usize = 5;
+
+/// The replica for a health report: waits in short steps while a request thread holds it, and
+/// gives up (reporting that it was busy) only after [`BUSY_TRIES`] tries, or at once when the
+/// server is stopping.
+fn lock_for_report<'a>(
+    replica: &'a Mutex<NodeReplica>,
+    stop: &ServerShutdown,
+) -> Result<std::sync::MutexGuard<'a, NodeReplica>, crate::ObjectError> {
+    for attempt in 0..BUSY_TRIES {
+        match replica.try_lock() {
+            Ok(state) => return Ok(state),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(crate::ObjectError::Corruption("replica health lock poisoned".into()))
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if attempt + 1 == BUSY_TRIES || stop.wait_for(BUSY_RETRY_STEP) {
+                    break;
+                }
+            }
+        }
+    }
+    Err(crate::ObjectError::PreconditionFailed("replica health is busy applying state".into()))
+}
+
 pub(super) fn run(
     options: ReplicaHeartbeatOptions,
     replica: Arc<Mutex<NodeReplica>>,
@@ -116,14 +146,7 @@ pub(super) fn run(
             #[cfg(feature = "chunk-consensus")]
             let dynamic = consensus.as_ref().filter(|c| c.identity().version == 2);
             let (used, capacity, online, membership) = {
-                let mut state = replica.try_lock().map_err(|error| match error {
-                    std::sync::TryLockError::WouldBlock => crate::ObjectError::PreconditionFailed(
-                        "replica health is busy applying state".into(),
-                    ),
-                    std::sync::TryLockError::Poisoned(_) => {
-                        crate::ObjectError::Corruption("replica health lock poisoned".into())
-                    }
-                })?;
+                let mut state = lock_for_report(&replica, &stop)?;
                 if let Some(journal) = state.journal.as_mut() {
                     if journal.check_health().is_err() {
                         state.failed = true;
@@ -447,6 +470,54 @@ mod tests {
         assert_eq!(local_membership(&state).unwrap(), status);
         state.applied_membership.as_mut().unwrap().1 -= Duration::from_secs(2);
         assert!(local_membership(&state).is_err());
+    }
+
+    #[test]
+    fn a_busy_replica_delays_the_report_by_the_wait_and_not_by_a_whole_interval() {
+        let meta = MetaNodeServer::bind("127.0.0.1:0", MetaNodeOptions::default()).unwrap();
+        let mut chunk = ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap();
+        let endpoint = chunk.local_addr().unwrap();
+        let metadata = meta.local_addr().unwrap();
+        meta.seed_data_roster(&DataNodeSeed::parse_roster(&format!("chunk-1@{endpoint}@rack")).unwrap(), 1 << 28)
+            .unwrap();
+        chunk
+            .enable_heartbeats(ReplicaHeartbeatOptions {
+                placement_id: None,
+                tls: None,
+                expected_metadata_identity: None,
+                node_id: "chunk-1".into(),
+                advertised_endpoint: endpoint,
+                metadata_endpoints: vec![metadata],
+                // a whole interval is far longer than the test waits
+                interval: Duration::from_secs(30),
+            })
+            .unwrap();
+        let state = chunk.replica.clone();
+        let chunk_stop = chunk.shutdown_handle();
+        let meta_stop = meta.shutdown_handle();
+        let meta_worker = std::thread::spawn(move || meta.serve().unwrap());
+        // the replica is busy when the first report is due, and for less than the tries cover
+        let guard = state.lock().unwrap();
+        let chunk_worker = std::thread::spawn(move || chunk.serve().unwrap());
+        let mut client = RemoteMetaClient::connect(&metadata.to_string(), &MetaClientOptions::default()).unwrap();
+        assert_eq!(client.list_placement_nodes().unwrap()[0].last_heartbeat_ms, 0);
+        std::thread::sleep(Duration::from_millis(60));
+        drop(guard);
+        let until = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if client.list_placement_nodes().unwrap()[0].last_heartbeat_ms != 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the report waited a whole interval for a replica that was busy for 60 ms"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        chunk_stop.stop();
+        meta_stop.stop();
+        chunk_worker.join().unwrap();
+        meta_worker.join().unwrap();
     }
 
     #[test]
