@@ -614,7 +614,11 @@ fn a_cached_append_plan_is_not_asked_for_again_until_an_append_fails() {
     }
     // the plan and the publication, then the publication alone, until the refused append; the
     // append after it plans again
-    assert_eq!(frames, vec![2, 1, 1, 1, u64::MAX, 2], "frames per append: {frames:?}");
+    assert_eq!(
+        frames,
+        vec![2, 1, 1, 1, u64::MAX, 2],
+        "frames per append: {frames:?}"
+    );
 }
 
 /// A cached plan is reused only within its lifetime: an append after it asks again.
@@ -832,10 +836,14 @@ fn segmented_star_replicas_keep_objects_through_metadata_failover_and_full_resta
     drop(keep_alive);
     fixture.restart();
     let mut client = fixture.client();
+    // Each restart may need another read barrier while leadership converges.
+    // One explicit deadline bounds the complete post-restart verification.
+    let mut read_options = options.replica.clone();
+    read_options.deadline = Some(Instant::now() + Duration::from_secs(30));
     for (key, manifest, bytes) in committed {
         assert_eq!(
             client
-                .read_object("append", &key, bytes.len(), &options.replica)
+                .read_object("append", &key, bytes.len(), &read_options)
                 .unwrap(),
             (manifest.clone(), bytes.clone())
         );
@@ -843,7 +851,7 @@ fn segmented_star_replicas_keep_objects_through_metadata_failover_and_full_resta
     }
     assert_eq!(
         client
-            .read_object("append", key, expected.len(), &options.replica)
+            .read_object("append", key, expected.len(), &read_options)
             .unwrap(),
         (manifest.clone(), expected.clone())
     );
