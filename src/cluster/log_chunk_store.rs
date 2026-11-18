@@ -101,8 +101,4 @@ impl LogChunkStore {
             },
         })
     }
-
-    pub fn open_chunks(&self) -> usize {
-        self.chunks.len()
-    }
 }
