@@ -196,9 +196,16 @@ impl LogChunkChange {
                 }
             }
             ACTION_SEAL_SWITCH => {
-                // the holder of a live lease switches chunks; the lease itself does not change
-                if self.lease_before.as_ref() != Some(after) || after.expires_at_ms <= self.now_ms {
-                    return Err(invalid("a chunk switch needs the live lease unchanged"));
+                // the holder of a live lease switches chunks. The switch is also a renewal: the holder
+                // and the epoch stay, and the expiry may move later (never earlier), within the bound
+                let before = self.lease_before.as_ref().ok_or_else(|| invalid("a chunk switch needs the live lease"))?;
+                if before.holder != after.holder
+                    || before.epoch != after.epoch
+                    || before.expires_at_ms <= self.now_ms
+                    || after.expires_at_ms < before.expires_at_ms
+                    || after.expires_at_ms - self.now_ms > MAX_LEASE_TTL_MS
+                {
+                    return Err(invalid("a chunk switch needs the live lease, which it may only extend"));
                 }
             }
             _ => return Err(invalid("unknown log chunk action")),

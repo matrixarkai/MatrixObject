@@ -111,6 +111,8 @@ pub enum MetaRequestCode {
     PlanAppendRoutes = 95,
     /// Declare, raise or read the cluster feature set.
     Features = 96,
+    /// Lease an object for log writing, switch it to its next chunk, renew leases in a batch.
+    LogChunk = 97,
     /// Read the extents of a manifest that overlap one byte range, its cached digest, and the
     /// routes of the groups those extents name, at one metadata barrier.
     ReadManifestRange = 100,
@@ -157,6 +159,7 @@ impl MetaRequestCode {
             94 => Some(MetaRequestCode::CopyManifest),
             95 => Some(MetaRequestCode::PlanAppendRoutes),
             96 => Some(MetaRequestCode::Features),
+            97 => Some(MetaRequestCode::LogChunk),
             100 => Some(MetaRequestCode::ReadManifestRange),
             _ => None,
         }
@@ -198,6 +201,7 @@ impl MetaRequestCode {
             MetaRequestCode::CopyManifest,
             MetaRequestCode::PlanAppendRoutes,
             MetaRequestCode::Features,
+            MetaRequestCode::LogChunk,
             MetaRequestCode::ReadManifestRange,
         ]
     }

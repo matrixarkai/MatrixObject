@@ -518,6 +518,14 @@ impl ManifestOutcome {
         value.validate()?;
         Ok(value)
     }
+    /// The decision of a publication that may carry a format 3 manifest. Only the commands of
+    /// `log_chunk_commands` call this, and they refuse unless the cluster has raised
+    /// `FEATURE_CHUNK_MANIFEST`; every other writer still goes through `decide`, which refuses.
+    pub(crate) fn decide_chunked(before: Option<ObjectManifest>, after: ObjectManifest) -> Result<Self, ObjectError> {
+        let value = Self { format_version: 1, before, after: Some(after) };
+        value.validate()?;
+        Ok(value)
+    }
     /// The decision of an append for a compact publication. Only what the append adds is
     /// validated in full (`validate_extension`); the prior manifest is bound by its digest, which
     /// the metaserver checks against the manifest it holds before it applies the append, so a

@@ -751,6 +751,7 @@ fn read_only(request: &MetaRequest) -> bool {
         MetaRequest::ManifestRetention(command) => command.is_read(),
         MetaRequest::Membership(command) => command.is_read(),
         MetaRequest::Features(command) => command.is_read(),
+        MetaRequest::LogChunk(command) => command.is_read(),
         MetaRequest::ReadManifest { .. }
         | MetaRequest::ReadManifestRoutes { .. }
         | MetaRequest::ReadManifestRoutesWide { .. }
@@ -1247,6 +1248,14 @@ fn prepare(
                     (outcome.to_payload()?, Some(MetaReply::Features(after)))
                 }
                 None => (Vec::new(), Some(super::features_commands::reply(&service.cluster_features))),
+            });
+        }
+    }
+    if let MetaRequest::LogChunk(command) = request {
+        if !command.is_read() {
+            return Ok(match super::log_chunk_commands::prepare(service, groups, command, super::staged_lease_sweeper::now_ms()?)? {
+                super::log_chunk_commands::Decision::Change(outcome, reply) => (outcome.to_payload()?, Some(reply)),
+                super::log_chunk_commands::Decision::Unchanged(reply) => (Vec::new(), Some(reply)),
             });
         }
     }
@@ -2761,6 +2770,7 @@ mod tests {
     include!("ranged_manifest_read_tests.rs");
     include!("feature_draft_tests.rs");
     include!("log_chunk_outcome_command_tests.rs");
+    include!("log_chunk_commands_tests.rs");
 
     #[test]
     fn compact_read_session_batches_restore_shared_records_before_committing_removal_and_creation() {
