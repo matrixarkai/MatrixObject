@@ -2021,9 +2021,9 @@ mod tests {
     }
     #[test]
     fn a_live_node_is_never_expired_while_its_reports_are_suppressed() {
-        // The expiry command re-derives who is silent from the REPLICATED stamp on every voter, so
-        // the suppression window must leave the stamp younger than the TTL for a node that reports
-        // on time. Reports every 4 s for two minutes, expiry checked every second.
+        // The leader decides who is silent from the REPLICATED stamp (followers only apply the
+        // outcome), so the suppression window must leave the stamp younger than the TTL for a
+        // node that reports on time. Reports every 4 s for two minutes, expiry checked every second.
         for ttl in [15_000u64, 60_000] {
             let (mut service, _groups) = fixture(2, 1);
             let window = report_suppress_window(ttl);
