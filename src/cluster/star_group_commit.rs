@@ -140,8 +140,8 @@ impl Committer {
     }
 
     fn stopped(&self, message: &str) -> ObjectError {
-        if let Ok(mut guard) = self.replica.lock() {
-            guard.failed = true;
+        if let Ok(guard) = self.replica.lock() {
+            guard.health.fail();
         }
         ObjectError::Corruption(message.into())
     }
@@ -238,7 +238,7 @@ fn commit_jobs(
             match outcome {
                 Ok(()) => None,
                 Err(error) => {
-                    guard.failed = true;
+                    guard.health.fail();
                     Some(error.to_string())
                 }
             }
@@ -262,7 +262,7 @@ fn finish_mutations(
     before: Option<u64>,
     sync: impl FnOnce(&mut NodeReplica) -> Result<(), ObjectError>,
 ) -> Result<(), ObjectError> {
-    if guard.failed {
+    if guard.health.failed() {
         return Err(ObjectError::Corruption(
             "replica failed before group synchronization".into(),
         ));
@@ -274,7 +274,7 @@ fn finish_mutations(
             .map(|journal| journal.logical_length())
     {
         if let Err(error) = sync(guard) {
-            guard.failed = true;
+            guard.health.fail();
             return Err(error);
         }
     }

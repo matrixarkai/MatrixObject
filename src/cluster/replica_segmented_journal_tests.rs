@@ -230,3 +230,15 @@ fn segmented_replica_batch_overflow_keeps_context_for_each_committed_group() {
     let _journal = SegmentedReplicaJournal::open(&dir.path(), &mut recovered, 128).unwrap();
     assert_eq!(recovered.export_snapshot(), expected);
 }
+/// The heartbeat reads a background failure through this handle, without the journal's owner.
+#[test]
+fn the_failure_handle_is_the_cell_the_journal_records_failure_in() {
+    let dir = Dir::new();
+    let mut service = service();
+    let journal = SegmentedReplicaJournal::open(&dir.path(), &mut service, 1024).unwrap();
+    let handle = ReplicaJournalBackend::failure_handle(&journal).unwrap();
+    assert!(Arc::ptr_eq(&handle, &journal.failure));
+    assert!(handle.lock().unwrap().is_none());
+    *journal.failure.lock().unwrap() = Some("worker failed".into());
+    assert!(handle.lock().unwrap().is_some());
+}

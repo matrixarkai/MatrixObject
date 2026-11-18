@@ -18,6 +18,11 @@ pub(super) trait ReplicaJournalBackend: Send {
     fn check_health(&mut self) -> io::Result<()> {
         Ok(())
     }
+    /// Where this journal records a failure of its background work, for a reader that must not
+    /// take the journal's lock. `None` when the journal has no background work.
+    fn failure_handle(&self) -> Option<std::sync::Arc<std::sync::Mutex<Option<String>>>> {
+        None
+    }
     fn append_owned(
         &mut self,
         outcome: PageOutcome,
