@@ -829,6 +829,8 @@ impl ClusterGateway {
         let resource = format!("/{bucket}/{key}");
         const ATTEMPTS: usize = 4;
         let mut last_staged_mismatch: Option<ObjectError> = None;
+        // The refusal that made the last attempt retry, so a gateway that gives up can say why.
+        let mut last_retried = String::new();
         for attempt in 0..ATTEMPTS {
             // A retry exists because the end moved, so it never trusts the cache.
             let cached = if attempt == 0 {
@@ -900,6 +902,7 @@ impl ClusterGateway {
                     // A refusal decided from the manifest this call read answers the client as
                     // it stands; only a lost publish race is worth another look.
                     if !decided && lost_race(&failure.error) {
+                        last_retried = failure.error.to_string();
                         if staged_state_mismatch(&failure.error) {
                             last_staged_mismatch = Some(failure.error);
                         }
@@ -908,6 +911,7 @@ impl ClusterGateway {
                     // A refusal decided from a REMEMBERED manifest may only mean the memory is
                     // stale (another gateway appended), so it is checked once against a read.
                     if decided && used_cache && lost_race(&failure.error) {
+                        last_retried = failure.error.to_string();
                         continue;
                     }
                     return error_response(failure.error, &resource, false);
@@ -921,7 +925,9 @@ impl ClusterGateway {
         }
         s3::error_response(
             s3::S3ErrorCode::PreconditionFailed,
-            "the object kept changing under this append; gave up after several attempts",
+            &format!(
+                "the object kept changing under this append; gave up after several attempts (the last refusal: {last_retried})"
+            ),
             &resource,
         )
     }
