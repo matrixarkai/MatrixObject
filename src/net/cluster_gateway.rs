@@ -461,7 +461,9 @@ impl ObjectPlane for SdkPlane {
         length: u64,
     ) -> Result<(ObjectManifest, Vec<u8>), ObjectError> {
         let replica = self.replica_options();
-        self.client.read_object_range(
+        // Only the object's generation and length are used from the manifest, so the metaserver
+        // is asked for the extents under the range and nothing else.
+        self.client.read_object_range_partial(
             bucket,
             key,
             offset,

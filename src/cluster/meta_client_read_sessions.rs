@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+/// A read lease to open: the generation of an object and the digest of its whole manifest.
+#[cfg(feature = "replica-server")]
+struct ReadLease {
+    bucket: String,
+    key: String,
+    generation: u64,
+    digest: Vec<u8>,
+}
+
 impl RemoteMetaClient {
     fn observe_read_protection(&mut self, fence: u64) -> Result<(), ObjectError> {
         if self.read_protection_fence != 0 && fence != self.read_protection_fence {
@@ -12,22 +21,17 @@ impl RemoteMetaClient {
         Ok(())
     }
 
+    /// Open a read lease on the generation and digest named, which the metaserver checks
+    /// against its current manifest.
     #[cfg(feature = "replica-server")]
-    fn open_selected_read_session(
-        &mut self,
-        manifest: &crate::object_manifest::ObjectManifest,
-        ttl_ms: u64,
-    ) -> Result<u64, ObjectError> {
-        // The manifest is validated in full before any page is read from it
-        // (`read_object_from_manifest_routes`), so it is not validated a second time here; the
-        // digest is the remembered one when this client last digested this very manifest.
-        let digest = self.manifest_digest(manifest)?;
+    fn open_leased_read_session(&mut self, lease: &ReadLease, ttl_ms: u64) -> Result<u64, ObjectError> {
+        let digest = lease.digest.clone();
         let reply = self.retention_call(crate::manifest_retention::ManifestRetentionRequest {
             version: 3,
             action: 8,
-            bucket: manifest.bucket.clone(),
-            key: manifest.key.clone(),
-            generation: manifest.generation,
+            bucket: lease.bucket.clone(),
+            key: lease.key.clone(),
+            generation: lease.generation,
             ttl_ms,
             manifest_sha256: digest.clone(),
             ..Default::default()
@@ -60,6 +64,43 @@ impl RemoteMetaClient {
         if self.read_protection_fence == 0 {
             return read(self, entries, options);
         }
+        let mut selected = std::collections::BTreeMap::new();
+        let mut leases = Vec::new();
+        for (manifest, _) in &entries {
+            let identity = (&manifest.bucket, &manifest.key);
+            if let Some(previous) = selected.insert(identity, manifest) {
+                if previous != manifest {
+                    return Err(ObjectError::Corruption(
+                        "batch selected different generations of one object".into(),
+                    ));
+                }
+                continue;
+            }
+            // The manifest was validated in full before this (`read_object_from_manifest_routes`),
+            // so it is not validated again; the digest is the remembered one when this client
+            // last digested this very manifest.
+            leases.push(ReadLease {
+                bucket: manifest.bucket.clone(),
+                key: manifest.key.clone(),
+                generation: manifest.generation,
+                digest: self.manifest_digest(manifest)?,
+            });
+        }
+        self.with_read_leases(&leases, options, |client, bounded| read(client, entries, bounded))
+    }
+
+    /// Hold a read lease on each of `leases` while `read` runs, and release them after. A
+    /// client with no read protection has nothing to hold and just reads.
+    #[cfg(feature = "replica-server")]
+    fn with_read_leases<T>(
+        &mut self,
+        leases: &[ReadLease],
+        options: &super::ReplicaClientOptions,
+        read: impl FnOnce(&mut Self, &super::ReplicaClientOptions) -> Result<T, ObjectError>,
+    ) -> Result<T, ObjectError> {
+        if self.read_protection_fence == 0 || leases.is_empty() {
+            return read(self, options);
+        }
         // Later grants cannot extend the first protected generation's window.
         const TTL_MS: u64 = 60_000;
         let deadline = Instant::now()
@@ -70,21 +111,11 @@ impl RemoteMetaClient {
             bounded.deadline = client.operation_deadline();
             let mut handles = Vec::new();
             let result = (|| {
-                let mut selected = std::collections::BTreeMap::new();
-                for (manifest, _) in &entries {
-                    let identity = (&manifest.bucket, &manifest.key);
-                    if let Some(previous) = selected.insert(identity, manifest) {
-                        if previous != manifest {
-                            return Err(ObjectError::Corruption(
-                                "batch selected different generations of one object".into(),
-                            ));
-                        }
-                        continue;
-                    }
-                    handles.push(client.open_selected_read_session(manifest, TTL_MS)?);
+                for lease in leases {
+                    handles.push(client.open_leased_read_session(lease, TTL_MS)?);
                 }
                 client.check_operation_deadline()?;
-                read(client, entries, &bounded)
+                read(client, &bounded)
             })();
             // Payload I/O has ended. Uncertain cleanup leaves bounded leases.
             for handle in handles {
@@ -94,6 +125,35 @@ impl RemoteMetaClient {
                 client.check_operation_deadline()?;
                 Ok(value)
             })
+        })
+    }
+
+    /// Read the bytes of `range` from the extents a ranged manifest reply carried, under a read
+    /// lease on the digest the metaserver named for the whole manifest.
+    #[cfg(feature = "replica-server")]
+    fn read_selected_range(
+        &mut self,
+        entry: super::ManifestRangeEntry,
+        max_bytes: usize,
+        options: &super::ReplicaClientOptions,
+        range: (u64, u64),
+    ) -> Result<(crate::object_manifest::ObjectManifest, Vec<u8>), ObjectError> {
+        self.check_operation_deadline()?;
+        entry.manifest.validate_range_slice(range.0, range.1)?;
+        let super::ManifestRangeEntry { manifest, manifest_sha256, routes, .. } = entry;
+        // With nothing selected there is nothing to read, so nothing to protect.
+        let leases = if manifest.extents.is_empty() {
+            Vec::new()
+        } else {
+            vec![ReadLease {
+                bucket: manifest.bucket.clone(),
+                key: manifest.key.clone(),
+                generation: manifest.generation,
+                digest: manifest_sha256,
+            }]
+        };
+        self.with_read_leases(&leases, options, |client, bounded| {
+            client.read_validated_manifest_routes(manifest, Some(routes), max_bytes, bounded, Some(range))
         })
     }
 
@@ -202,7 +262,14 @@ mod compact_selected_grants {
                 generation: 1,
                 ..Default::default()
             };
-            let result = client.open_selected_read_session(&manifest, 1000);
+            let digest = client.manifest_digest(&manifest).unwrap();
+            let lease = ReadLease {
+                bucket: manifest.bucket.clone(),
+                key: manifest.key.clone(),
+                generation: manifest.generation,
+                digest,
+            };
+            let result = client.open_leased_read_session(&lease, 1000);
             if mode == 0 {
                 assert_eq!(result.unwrap(), 42);
             } else {

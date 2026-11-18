@@ -237,6 +237,13 @@ pub enum MetaRequest {
     ReadManifestRoutesBatch {
         objects: Vec<(String, String)>,
     },
+    /// The extents overlapping `offset..offset + length`, the cached digest, and their routes.
+    ReadManifestRange {
+        bucket: String,
+        key: String,
+        offset: u64,
+        length: u64,
+    },
     PublishManifest {
         outcome: crate::object_manifest::ManifestOutcome,
         update_time_ms: u64,
@@ -321,6 +328,7 @@ impl MetaRequest {
             MetaRequest::ReadManifestRoutes { .. } => MetaRequestCode::ReadManifestRoutes,
             MetaRequest::ReadManifestRoutesWide { .. } => MetaRequestCode::ReadManifestRoutesWide,
             MetaRequest::ReadManifestRoutesBatch { .. } => MetaRequestCode::ReadManifestRoutesBatch,
+            MetaRequest::ReadManifestRange { .. } => MetaRequestCode::ReadManifestRange,
             MetaRequest::PublishManifest { .. } => MetaRequestCode::PublishManifest,
             MetaRequest::Membership(_) => MetaRequestCode::Membership,
             MetaRequest::ChunkCatalog(_) => MetaRequestCode::ChunkCatalog,
@@ -375,6 +383,10 @@ impl MetaRequest {
                     key: key.clone(),
                 }
                 .encode_to_vec();
+            }
+            MetaRequest::ReadManifestRange { bucket, key, offset, length } => {
+                return manifest_range_read::ManifestRangeRead::new(bucket, key, *offset, *length)
+                    .encode_to_vec();
             }
             MetaRequest::ReadManifestRoutesBatch { objects } => {
                 return super::conditional_requests::ManifestReads {
@@ -618,6 +630,12 @@ impl MetaRequest {
                 _ => Self::ReadManifest { bucket: value.bucket, key: value.key },
             });
         }
+        if code == MetaRequestCode::ReadManifestRange {
+            let value = manifest_range_read::ManifestRangeRead::decode(payload)?;
+            return Ok(Self::ReadManifestRange {
+                bucket: value.bucket, key: value.key, offset: value.offset, length: value.length,
+            });
+        }
         if code == MetaRequestCode::ReadManifestRoutesBatch {
             if payload.len() > 256 * 1024 {
                 return Err(ObjectError::Corruption(
@@ -706,6 +724,7 @@ impl MetaRequest {
             | MetaRequestCode::ReadManifestRoutes
             | MetaRequestCode::ReadManifestRoutesWide
             | MetaRequestCode::ReadManifestRoutesBatch
+            | MetaRequestCode::ReadManifestRange
             | MetaRequestCode::PublishManifest
             | MetaRequestCode::CommitObjectPlacementIfCurrent => unreachable!(),
             MetaRequestCode::ReadChunkGroup => MetaRequest::ReadChunkGroup {
@@ -773,6 +792,10 @@ impl MetaRequest {
 
 #[path = "manifest_route_encoding.rs"]
 mod manifest_route_encoding;
+
+#[path = "manifest_range_read.rs"]
+mod manifest_range_read;
+pub use manifest_range_read::ManifestRangeEntry;
 
 #[derive(Clone, PartialEq, Message)]
 struct ManifestRoutesPayload {
@@ -881,6 +904,8 @@ pub enum MetaReply {
     ManifestRoutesBatch {
         objects: Vec<ManifestRouteEntry>,
     },
+    /// The answer to a ranged manifest read.
+    ManifestRange(ManifestRangeEntry),
     PlanRoutes {
         plan: PlacementAssignment,
         routes: Vec<super::ChunkGroupRoute>,
@@ -952,6 +977,7 @@ impl MetaReply {
             Self::ManifestRoutes { manifest, routes, publication_fence } =>
                 manifest_route_encoding::single_len(manifest, routes, *publication_fence),
             Self::ManifestRoutesBatch { objects } => manifest_route_encoding::batch_len(objects),
+            Self::ManifestRange(entry) => entry.encoded_len(),
             Self::PlanRoutes { plan, routes } => PlanRoutesPayload {
                 version: 1, plan: Self::Plan(plan.clone()).encode_payload(), routes: routes.clone(),
             }.encoded_len(),
@@ -979,6 +1005,7 @@ impl MetaReply {
                 return manifest_route_encoding::encode_single(manifest, routes, *publication_fence),
             MetaReply::ManifestRoutesBatch { objects } =>
                 return manifest_route_encoding::encode_batch(objects),
+            MetaReply::ManifestRange(entry) => return entry.encode(),
             MetaReply::PlanRoutes { plan, routes } => return PlanRoutesPayload {
                 version: 1, plan: MetaReply::Plan(plan.clone()).encode_payload(), routes: routes.clone(),
             }.encode_to_vec(),
@@ -1091,6 +1118,9 @@ impl MetaReply {
                 routes: object.routes,
                 publication_fence: object.publication_fence,
             });
+        }
+        if code == MetaRequestCode::ReadManifestRange {
+            return Ok(Self::ManifestRange(manifest_range_read::ManifestRangeEntry::decode(payload)?));
         }
         if code == MetaRequestCode::ReadManifestRoutesBatch {
             if payload.len() > super::MAX_PAYLOAD_BYTES {
@@ -1226,6 +1256,7 @@ impl MetaReply {
             | MetaRequestCode::ReadManifestRoutes
             | MetaRequestCode::ReadManifestRoutesWide
             | MetaRequestCode::ReadManifestRoutesBatch
+            | MetaRequestCode::ReadManifestRange
             | MetaRequestCode::PublishManifest
             | MetaRequestCode::ReadChunkGroup
             | MetaRequestCode::PlanObjectPlacementRoutes
