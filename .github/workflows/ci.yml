@@ -589,6 +589,28 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus log_chunk_and_feature_commands_commit_through_the_real_leader_pipeline -- --exact | tee /tmp/log-chunk-commands.log
           grep -q 'test result: ok. 1 passed' /tmp/log-chunk-commands.log
 
+      - name: a log object appends without the metadata plane, moves on with one entry per chunk and reads back
+        run: |
+          set -o pipefail
+          # nested modules: each filter is the module and the test, which names exactly one test.
+          # The two tests that wait out a lease term are not pinned: they measure wall time.
+          for test in \
+            log_object::tests::appends_cross_chunks_and_read_back_byte_identical \
+            log_object::tests::no_metadata_command_is_sent_between_chunk_switches \
+            log_object::tests::a_reader_sees_exactly_the_acknowledged_bytes_while_the_writer_appends \
+            log_object::tests::a_new_writer_takes_over_at_the_tail_the_nodes_hold_and_the_old_one_is_fenced \
+            log_object::tests::a_node_that_was_down_is_caught_up_and_a_new_writer_starts_at_the_acknowledged_length \
+            log_object::tests::a_node_that_does_not_speak_log_chunks_stops_the_writer_before_anything_is_granted \
+            log_object::tests::an_object_at_its_cap_fills_its_open_chunk_and_refuses_the_append_that_does_not_fit \
+            log_object::tests::a_switch_that_never_reached_the_metadata_plane_is_finished_by_the_next_writer \
+            log_object::tests::the_error_mapping_names_what_the_metadata_plane_and_the_nodes_say
+          do
+            cargo test --locked --all-features --lib "$test" -- --test-threads=1 | tee /tmp/log-object.log
+            grep -q 'test result: ok. 1 passed' /tmp/log-object.log
+          done
+          cargo test --locked --all-features --test network_metadata_consensus a_log_object_costs_the_real_metadata_group_one_entry_per_switch_and_nothing_per_append -- --exact | tee /tmp/log-object.log
+          grep -q 'test result: ok. 1 passed' /tmp/log-object.log
+
       - name: fenced publication and atomic copy survive metadata recovery
         run: |
           set -o pipefail

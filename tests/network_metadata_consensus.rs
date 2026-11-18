@@ -3361,3 +3361,187 @@ fn log_chunk_and_feature_commands_commit_through_the_real_leader_pipeline() {
     assert!(client.read_cluster_features().unwrap().has(both));
     assert_eq!(client.read_log_chunk("bucket", "short").unwrap().lease.unwrap().holder, "gw-b");
 }
+
+/// A log object against the REAL metadata group (three voter processes, Raft) and three real chunk
+/// nodes. The metadata group's commit index is read before and after each step, so what the
+/// metadata plane is charged for is counted, not assumed: ONE entry for a grant, NOTHING for an
+/// append inside a chunk, exactly ONE per chunk boundary crossed, one per renewal (one for the
+/// leases of every object a writer holds), and nothing for a read. Every voter is then killed and
+/// restarted, and a second writer takes the object over: no acknowledged byte is lost.
+#[test]
+fn a_log_object_costs_the_real_metadata_group_one_entry_per_switch_and_nothing_per_append() {
+    use matrixobjectstore_rs::cluster::{
+        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, LogObject, LogObjectOptions, LogObjectReader,
+        MetaReply, ReplicaClientOptions, ReplicaNodeOptions, ReplicaNodeServer, ReplicaNodeShutdown,
+    };
+    use matrixobjectstore_rs::cluster_features::{FEATURE_CHUNK_MANIFEST, FEATURE_LOG_CHUNK_LEASES, SUPPORTED_FEATURES};
+    const CHUNK: u64 = 256 * 1024;
+    // three real chunk nodes, each with a durable journal
+    let root = std::env::temp_dir().join(format!("log-object-rig-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    struct Rig(Vec<ReplicaNodeShutdown>, Vec<Option<std::thread::JoinHandle<std::io::Result<()>>>>, PathBuf);
+    impl Drop for Rig {
+        fn drop(&mut self) {
+            for stop in &self.0 {
+                stop.stop();
+            }
+            for worker in self.1.iter_mut().filter_map(Option::take) {
+                let _ = worker.join();
+            }
+            let _ = std::fs::remove_dir_all(&self.2);
+        }
+    }
+    let mut rig = Rig(Vec::new(), Vec::new(), root.clone());
+    let mut addresses = Vec::new();
+    for node in 0..3 {
+        std::fs::create_dir_all(root.join(format!("n{node}"))).unwrap();
+        let server = ReplicaNodeServer::bind_with_journal(
+            "127.0.0.1:0",
+            ReplicaNodeOptions::default(),
+            &root.join(format!("n{node}")).join("journal"),
+        )
+        .unwrap();
+        addresses.push(server.local_addr().unwrap().to_string());
+        rig.0.push(server.shutdown_handle());
+        rig.1.push(Some(std::thread::spawn(move || server.serve())));
+    }
+    let config = ChunkGroupConfig {
+        placement_id: "group-a".into(),
+        failure_domain: "rack-a".into(),
+        identity: Some(ChunkGroupIdentity {
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
+            version: 1,
+            group_id: 1,
+            node_id: 1,
+            capacity_bytes: 1 << 40,
+            max_pages: 1 << 20,
+            voters: vec![1, 2, 3],
+            peer_endpoints: vec!["127.0.0.1:9101".into(), "127.0.0.1:9102".into(), "127.0.0.1:9103".into()],
+        }),
+        api_endpoints: addresses.clone(),
+        member_ids: vec!["member-a".into(), "member-b".into(), "member-c".into()],
+    };
+    let catalog = ChunkGroupCatalog::new(vec![config]).unwrap();
+    let mut group = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let leader = group.leader();
+    let mut meta = group.client(leader);
+    let commit_index = |client: &mut RemoteMetaClient| match client.probe().into_result().unwrap() {
+        MetaReply::Pong { commit_index, .. } => commit_index,
+        reply => panic!("unexpected metadata status: {reply:?}"),
+    };
+    let options = |holder: &str, ttl_ms: u64| {
+        let mut options = LogObjectOptions::new(holder, "group-a");
+        options.chunk_bytes = CHUNK;
+        options.ttl_ms = ttl_ms;
+        options.replica = ReplicaClientOptions { read_timeout: Duration::from_secs(10), connect_timeout: Duration::from_secs(2), ..Default::default() };
+        options
+    };
+    // nothing is enabled by default: the object cannot be opened, and nothing was written for it
+    let before = commit_index(&mut meta);
+    let mut early = LogObject::new("bucket", "wal-early", options("gw-a", 30_000));
+    assert!(early.open_for_append(&mut meta).is_err());
+    assert_eq!(commit_index(&mut meta), before);
+    // an operator declares and raises the two features
+    for voter in 1..=3u64 {
+        meta.declare_voter_features(voter, SUPPORTED_FEATURES).unwrap();
+    }
+    let both = FEATURE_CHUNK_MANIFEST | FEATURE_LOG_CHUNK_LEASES;
+    assert!(meta.raise_cluster_features(both, vec![1, 2, 3]).unwrap().has(both));
+
+    // the grant: ONE entry
+    let mut object = LogObject::new("bucket", "wal-0", options("gw-a", 30_000));
+    let before = commit_index(&mut meta);
+    assert_eq!(object.open_for_append(&mut meta).unwrap(), 0);
+    assert_eq!(commit_index(&mut meta) - before, 1, "a grant is one metadata entry");
+    // chunk index of the last byte written: the object moves on lazily, when the next byte needs room
+    let chunk_of = |total: u64| if total == 0 { 0 } else { (total - 1) / CHUNK };
+    let mut expected: Vec<u8> = Vec::new();
+    let mut total = 0u64;
+    let mut piece_seed = 0u8;
+    let mut append = |object: &mut LogObject, meta: &mut RemoteMetaClient, length: usize, expected: &mut Vec<u8>, total: &mut u64| -> u64 {
+        piece_seed = piece_seed.wrapping_add(1);
+        let piece: Vec<u8> = (0..length).map(|i| piece_seed.wrapping_add((i * 13) as u8)).collect();
+        let before = commit_index(meta);
+        let switches = chunk_of(*total + length as u64) - chunk_of(*total);
+        // a lease past half its term is renewed by the append that finds it so: one entry, counted
+        let renewal = u64::from(object.renew_due());
+        assert_eq!(object.append(meta, &piece).unwrap(), *total + length as u64);
+        let spent = commit_index(meta) - before;
+        assert_eq!(spent, switches + renewal, "an append of {length} bytes at {total} crosses {switches} chunk boundaries");
+        expected.extend_from_slice(&piece);
+        *total += length as u64;
+        spent
+    };
+    // inside one chunk: not one metadata entry for any of them
+    for _ in 0..4 {
+        assert_eq!(append(&mut object, &mut meta, 20_000, &mut expected, &mut total), 0);
+    }
+    // across one boundary, then across three at once, then a small one: one entry per boundary
+    assert_eq!(append(&mut object, &mut meta, 200_000, &mut expected, &mut total), 1);
+    assert_eq!(append(&mut object, &mut meta, 700_000, &mut expected, &mut total), 3);
+    assert_eq!(append(&mut object, &mut meta, 1_000, &mut expected, &mut total), 0);
+
+    // reads cost the metadata group nothing and see every byte, sealed chunks and live tail alike
+    let before = commit_index(&mut meta);
+    let mut reader = LogObjectReader::new("bucket", "wal-0", ReplicaClientOptions::default());
+    assert_eq!(reader.length(&mut meta).unwrap(), total);
+    assert_eq!(reader.read_range(&mut meta, 0, expected.len() + 10).unwrap(), expected);
+    assert_eq!(reader.read_range(&mut meta, CHUNK - 100, 300).unwrap(), expected[(CHUNK - 100) as usize..(CHUNK + 200) as usize]);
+    assert_eq!(commit_index(&mut meta), before, "reads are not metadata entries");
+
+    // renewal: a lease renews at half its term with ONE entry; a batch of three objects with ONE
+    let mut shorts: Vec<LogObject> = (0..3).map(|n| LogObject::new("bucket", &format!("wal-short-{n}"), options("gw-a", 2_000))).collect();
+    for object in shorts.iter_mut() {
+        object.open_for_append(&mut meta).unwrap();
+        object.append(&mut meta, &[1u8; 100]).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(1_100));
+    assert!(shorts.iter().all(|object| object.renew_due()));
+    let before = commit_index(&mut meta);
+    let mut handles: Vec<&mut LogObject> = shorts.iter_mut().collect();
+    let lost = matrixobjectstore_rs::cluster::renew_leases(&mut meta, "gw-a", 2_000, &mut handles).unwrap();
+    assert!(lost.is_empty());
+    assert_eq!(commit_index(&mut meta) - before, 1, "the leases of three objects are renewed by one entry");
+    std::thread::sleep(Duration::from_millis(1_100));
+    let before = commit_index(&mut meta);
+    shorts[0].append(&mut meta, &[2u8; 100]).unwrap();
+    assert_eq!(commit_index(&mut meta) - before, 1, "an object renews its own lease with one entry");
+
+    // a follower dies and comes back; then every voter is restarted
+    let follower = (leader + 1) % 3;
+    group.kill(follower);
+    assert_eq!(append(&mut object, &mut meta, 50_000, &mut expected, &mut total), 0, "a follower down changes nothing for an append");
+    group.start(follower);
+    for index in 0..3 {
+        group.kill(index);
+    }
+    for index in 0..3 {
+        group.start(index);
+    }
+    let leader = group.leader();
+    let mut meta = group.client(leader);
+    // a second writer takes the object over once the first writer's lease has run out: it starts
+    // at the length the nodes acknowledged
+    std::thread::sleep(Duration::from_secs(1));
+    let mut second = LogObject::new("bucket", "wal-0", options("gw-b", 30_000));
+    let mut attempts = 0;
+    let length = loop {
+        match second.open_for_append(&mut meta) {
+            Ok(length) => break length,
+            Err(error) => {
+                attempts += 1;
+                assert!(attempts < 120, "the object was never released: {error}");
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+    };
+    assert_eq!(length, total, "no acknowledged byte is lost and none is invented");
+    let tail: Vec<u8> = (0..70_000usize).map(|i| (i * 3) as u8).collect();
+    second.append(&mut meta, &tail).unwrap();
+    expected.extend_from_slice(&tail);
+    let mut reader = LogObjectReader::new("bucket", "wal-0", ReplicaClientOptions::default());
+    assert_eq!(reader.read_range(&mut meta, 0, expected.len() + 1).unwrap(), expected);
+    // the first writer is fenced: its next append is refused
+    assert!(object.append(&mut meta, b"late").is_err());
+}
