@@ -102,6 +102,19 @@ impl MetaCallOutcome {
     }
 }
 
+/// The data groups and routes the last compact append to one object was planned with.
+#[derive(Debug)]
+struct CachedAppendPlan {
+    bucket: String,
+    key: String,
+    group_count: u64,
+    /// The bytes per group the plan was made for: it serves any append of at most that many.
+    group_bytes: u64,
+    planned_at: Instant,
+    plan: PlacementAssignment,
+    routes: Vec<super::ChunkGroupRoute>,
+}
+
 /// The SHA-256 digest of the last manifest this client hashed, so that an append, which
 /// needs the digest of the manifest it extends and then of the one it produces, hashes each
 /// manifest once. A hit requires the same identity, generation, length, extent count, format
@@ -177,6 +190,10 @@ pub struct RemoteMetaClient {
     /// An allocation the caller vouches for: the metadata plane returned it for the next write
     /// moments ago, so that write does not read it back first. Used once.
     pub(super) confirmed_allocation: Option<u64>,
+    /// How long the data groups and routes planned for one object's compact append are reused by
+    /// the appends after it (zero: not at all), and the plan being reused.
+    append_plan_ttl: Duration,
+    append_plan: Option<CachedAppendPlan>,
     #[cfg(feature = "replica-server")]
     pub(super) object_connections: Vec<super::object_client::CachedGroupConnection>,
     #[cfg(feature = "replica-server")]
@@ -257,6 +274,8 @@ impl RemoteMetaClient {
             reserve_next: None,
             reservation: None,
             confirmed_allocation: None,
+            append_plan_ttl: Duration::ZERO,
+            append_plan: None,
             #[cfg(feature = "replica-server")]
             object_connections: Vec::new(),
             #[cfg(feature = "replica-server")]
@@ -846,6 +865,14 @@ impl RemoteMetaClient {
         if expected.deleted || expected.format_version != 2 {
             return Err(ObjectError::InvalidArgument("compact planning requires a live immutable manifest".into()));
         }
+        if let Some(cached) = &self.append_plan {
+            if cached.planned_at.elapsed() < self.append_plan_ttl
+                && cached.bucket == expected.bucket && cached.key == expected.key
+                && cached.group_count == group_count && group_bytes <= cached.group_bytes {
+                return Ok((cached.plan.clone(), cached.routes.clone()));
+            }
+        }
+        self.append_plan = None;
         let command = super::append_plan::AppendPlanRequest { version: 1,
             bucket: expected.bucket.clone(), key: expected.key.clone(), generation: expected.generation,
             manifest_sha256: self.manifest_digest(expected)?,
@@ -864,6 +891,12 @@ impl RemoteMetaClient {
                     for ids in plan.node_ids.chunks(32) { routes.extend(self.read_chunk_routes(ids)?); }
                     routes
                 } else { value.routes };
+                if !self.append_plan_ttl.is_zero() {
+                    self.append_plan = Some(CachedAppendPlan {
+                        bucket: command.bucket.clone(), key: command.key.clone(), group_count, group_bytes,
+                        planned_at: Instant::now(), plan: plan.clone(), routes: routes.clone(),
+                    });
+                }
                 Ok((plan, routes))
             }
             _ => Err(ObjectError::Corruption("unexpected compact append plan reply".into())),
@@ -1304,6 +1337,20 @@ impl RemoteMetaClient {
             return Err(ObjectError::Corruption("unexpected staged expiry reply".into()));
         }
         Ok(())
+    }
+
+    pub(super) fn drop_append_plan(&mut self) {
+        self.append_plan = None;
+    }
+
+    /// Reuse the data groups and routes planned for one object's compact append for the
+    /// appends to it in the next `ttl`, instead of asking the metadata plane for a plan before
+    /// every one (zero turns it off, the default). Only placement and routing are reused: the
+    /// prior manifest is still bound by generation and digest when the append is published, and
+    /// the plan is dropped when an append fails, or when it is older than `ttl`.
+    pub fn cache_append_plans(&mut self, ttl: Duration) {
+        self.append_plan_ttl = ttl;
+        self.append_plan = None;
     }
 
     /// Vouch for `allocation_id` for the next write that names it: the metadata plane returned
@@ -2163,6 +2210,10 @@ impl RemoteMetaClient {
 
     fn adopt_connection(&mut self, mut next: Self) {
         next.read_protection_fence = self.read_protection_fence;
+        // Settings and short-lived memory of the caller outlive the connection they ran on.
+        next.append_plan_ttl = self.append_plan_ttl;
+        next.append_plan = self.append_plan.take();
+        next.confirmed_allocation = self.confirmed_allocation.take();
         #[cfg(feature = "replica-server")]
         {
             // Cached data sockets are still checked against each fresh route.

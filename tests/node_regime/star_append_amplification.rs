@@ -512,6 +512,88 @@ fn a_confirmed_allocation_is_not_read_back_before_the_append() {
     );
 }
 
+/// With plans cached, an append to an object the client appended to a moment ago does not ask
+/// the metadata plane for a plan again: one metadata request fewer. A failed append drops the
+/// plan, and the next one asks again.
+#[test]
+fn a_cached_append_plan_is_not_asked_for_again_until_an_append_fails() {
+    let fixture = Fixture::new();
+    let mut client = fixture.client();
+    client.cache_append_plans(Duration::from_secs(60));
+    let options = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        replica: ReplicaClientOptions::default(),
+        ..Default::default()
+    };
+    let key = "planned";
+    let first = fixture.reserve(&mut client, key, None, 1, false);
+    let mut manifest = client
+        .write_staged_object(&first, None, &vec![1u8; 4096], &options)
+        .unwrap();
+    let mut frames = Vec::new();
+    for step in 0..6 {
+        fixture.settle();
+        let allocation = fixture.reserve(&mut client, key, Some(manifest.generation), 1, true);
+        fixture.settle();
+        let before = fixture.wire().frames;
+        client.confirm_staged_allocation(allocation.allocation_id);
+        if step == 4 {
+            // an append that is refused (it names the wrong generation) drops the plan
+            let mut wrong = manifest.clone();
+            wrong.generation += 1;
+            assert!(client
+                .append_staged_object_compact(&allocation, wrong, &vec![2u8; 4096], &options)
+                .is_err());
+            frames.push(u64::MAX);
+            continue;
+        }
+        manifest = client
+            .append_staged_object_compact(&allocation, manifest.clone(), &vec![2u8; 4096], &options)
+            .unwrap();
+        fixture.settle();
+        frames.push(fixture.wire().frames - before);
+    }
+    // the plan and the publication, then the publication alone, until the refused append; the
+    // append after it plans again
+    assert_eq!(frames, vec![2, 1, 1, 1, u64::MAX, 2], "frames per append: {frames:?}");
+}
+
+/// A cached plan is reused only within its lifetime: an append after it asks again.
+#[test]
+fn a_cached_append_plan_is_asked_for_again_once_it_is_old() {
+    let fixture = Fixture::new();
+    let mut client = fixture.client();
+    client.cache_append_plans(Duration::from_millis(2500));
+    let options = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        replica: ReplicaClientOptions::default(),
+        ..Default::default()
+    };
+    let key = "aged";
+    let first = fixture.reserve(&mut client, key, None, 1, false);
+    let mut manifest = client
+        .write_staged_object(&first, None, &vec![1u8; 4096], &options)
+        .unwrap();
+    let mut frames = Vec::new();
+    for pause_ms in [0u64, 0, 3000, 0] {
+        std::thread::sleep(Duration::from_millis(pause_ms));
+        fixture.settle();
+        let allocation = fixture.reserve(&mut client, key, Some(manifest.generation), 1, true);
+        fixture.settle();
+        let before = fixture.wire().frames;
+        client.confirm_staged_allocation(allocation.allocation_id);
+        manifest = client
+            .append_staged_object_compact(&allocation, manifest.clone(), &vec![2u8; 4096], &options)
+            .unwrap();
+        fixture.settle();
+        frames.push(fixture.wire().frames - before);
+    }
+    // planned, reused, expired and planned again, reused
+    assert_eq!(frames, vec![2, 1, 2, 1], "frames per append: {frames:?}");
+}
+
 #[test]
 fn compact_append_publishes_after_metadata_leader_loss_and_recovers() {
     let mut fixture = Fixture::new();

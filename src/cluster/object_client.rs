@@ -859,12 +859,17 @@ impl RemoteMetaClient {
         if !allocation.append || data.is_empty() {
             return Err(before(ObjectError::InvalidArgument("compact publication requires a nonempty staged append".into())));
         }
-        self.with_operation_deadline(options.replica.deadline, |client| {
+        let result = self.with_operation_deadline(options.replica.deadline, |client| {
             let mut bounded = options.clone();
             bounded.replica.deadline = client.operation_deadline();
             client.write_object_inner(&allocation.bucket, &allocation.key, Some(expected), data,
                 &bounded, true, Some(allocation), true, None)
-        })
+        });
+        if result.is_err() {
+            // a failed append may mean the planned groups are no longer the right ones
+            self.drop_append_plan();
+        }
+        result
     }
 
     /// `append_staged_object_compact` that also reserves the allocation for the next append in
