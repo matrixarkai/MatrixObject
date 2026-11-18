@@ -606,7 +606,8 @@ jobs:
             owned_append_keeps_data_writes_bounded_and_recovers_all_replicas \
             star_corpus_scale::star_corpus_workload_verifies_durable_reads_writes_and_appends \
             star_corpus_scale::checkpoint_interference::checkpoint_interference_preserves_three_durable_append_copies \
-            star_recovery_profiles::star_repair_and_append_work_across_local_recovery_profiles
+            star_recovery_profiles::star_repair_and_append_work_across_local_recovery_profiles \
+            segmented_star_replicas_keep_objects_through_metadata_failover_and_full_restart
           do
             grep -Fxq "test star_append_amplification::${test_name} ... ok" /tmp/star-append-cost.log
           done
@@ -656,6 +657,23 @@ jobs:
           do
             grep -Fq "${test_name} ... ok" /tmp/payload-allocations.log
           done
+
+      - name: immutable replica checkpoints preserve metadata and concurrent writes
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib replica_checkpoint_ -- --test-threads=1 | tee /tmp/replica-catalog.log
+          grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/replica-catalog.log
+          grep -Fq 'checkpoint_catalog_newest_corruption_is_refused_without_fallback_or_repair ... ok' /tmp/replica-catalog.log
+          grep -Fq 'checkpoint_recovery_scalar_capture_does_not_pin_live_payloads_or_receipt_maps ... ok' /tmp/replica-catalog.log
+          cargo test --locked --all-features --lib segmented_ -- --test-threads=1 | tee /tmp/replica-segmented.log
+          grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/replica-segmented.log
+          for test_name in segmented_replica_background_checkpoint_preserves_concurrent_grouped_tail segmented_replica_install_supersedes_background_checkpoint_and_keeps_new_tail segmented_replica_batch_overflow_keeps_context_for_each_committed_group segmented_journal_recovery_policy_is_applied_after_checkpoint_restore
+          do
+            grep -Fq "${test_name} ... ok" /tmp/replica-segmented.log
+          done
+          cargo test --locked --all-features --lib verified_metadata_reconnect_skips -- --test-threads=1 | tee /tmp/metadata-voter-probe.log
+          grep -q '^test result: ok. 1 passed; 0 failed;' /tmp/metadata-voter-probe.log
+          grep -Fq 'verified_metadata_reconnect_skips_typed_follower_without_skipping_ordinary_refusal ... ok' /tmp/metadata-voter-probe.log
 
       - name: shared Star journal sync preserves durability and bounded groups
         run: |

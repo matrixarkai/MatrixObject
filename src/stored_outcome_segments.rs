@@ -59,6 +59,91 @@ struct Writer {
     tail_hash: [u8; 32],
     active: Arc<DurableOutcomeLog>,
 }
+/// A committed metadata prefix captured without copying the segment index.
+/// Later appends and rollovers are excluded. Only one segment handle is pinned.
+pub struct StoredMetadataCursor<'a> {
+    owner: &'a SegmentedOutcomeLog,
+    number: u64,
+    offset: u64,
+    last_number: u64,
+    last_end: u64,
+    current: Option<(Arc<DurableOutcomeLog>, u64)>,
+}
+impl StoredMetadataCursor<'_> {
+    pub fn next_record(&mut self) -> io::Result<Option<StoredRecordMetadata>> {
+        self.owner.healthy()?;
+        loop {
+            if self.number == self.last_number && self.offset == self.last_end {
+                return Ok(None);
+            }
+            if self.current.is_none() {
+                let entry = self
+                    .owner
+                    .index
+                    .read()
+                    .map_err(|_| invalid("segment index is poisoned"))?
+                    .entries
+                    .get(&self.number)
+                    .cloned()
+                    .ok_or_else(|| invalid("captured segment is missing"))?;
+                let limit = if self.number == self.last_number {
+                    self.last_end
+                } else {
+                    entry.sealed_length
+                };
+                if limit < SECTOR_BYTES as u64
+                    || (entry.sealed_length != 0 && limit > entry.sealed_length)
+                {
+                    return Err(invalid("invalid captured segment boundary"));
+                }
+                let log = self.owner.handle(&entry.store_id)?;
+                if limit > log.length() {
+                    return Err(invalid("captured segment prefix is missing"));
+                }
+                self.current = Some((log, limit));
+            }
+            let limit = self.current.as_ref().unwrap().1;
+            if self.offset > limit {
+                return Err(invalid("cursor exceeds captured segment"));
+            }
+            if self.offset == limit {
+                self.number = self
+                    .owner
+                    .index
+                    .read()
+                    .map_err(|_| invalid("segment index is poisoned"))?
+                    .entries
+                    .range((
+                        std::ops::Bound::Excluded(self.number),
+                        std::ops::Bound::Included(self.last_number),
+                    ))
+                    .next()
+                    .map(|(number, _)| *number)
+                    .ok_or_else(|| invalid("captured segment successor is missing"))?;
+                self.offset = SECTOR_BYTES as u64;
+                self.current = None;
+                continue;
+            }
+            let record = self
+                .current
+                .as_ref()
+                .unwrap()
+                .0
+                .next_metadata(self.offset)?
+                .ok_or_else(|| invalid("captured record is missing"))?;
+            let end = self
+                .offset
+                .checked_add(record.position.length)
+                .ok_or_else(|| invalid("captured record end overflow"))?;
+            if end <= self.offset || end > limit {
+                return Err(invalid("record crosses captured replay cut"));
+            }
+            self.offset = end;
+            return Ok(Some(record));
+        }
+    }
+}
+
 struct Index {
     entries: BTreeMap<u64, SegmentEntry>,
     by_id: BTreeMap<Vec<u8>, u64>,
@@ -491,6 +576,22 @@ impl SegmentedOutcomeLog {
         sync: impl FnOnce(&File) -> io::Result<()>,
         publish: impl FnOnce(&Path, &ManifestAppend) -> io::Result<()>,
     ) -> io::Result<StoredRecordMetadata> {
+        self.append_with_metadata(mutations, None, sync, publish)
+    }
+    pub fn append_decided_batch_with_metadata(
+        &self,
+        mutations: &[DecidedMutation<'_>],
+        metadata: &[u8],
+    ) -> io::Result<StoredRecordMetadata> {
+        self.append_with_metadata(mutations, Some(metadata), File::sync_data, publish_rollover)
+    }
+    fn append_with_metadata(
+        &self,
+        mutations: &[DecidedMutation<'_>],
+        metadata: Option<&[u8]>,
+        sync: impl FnOnce(&File) -> io::Result<()>,
+        publish: impl FnOnce(&Path, &ManifestAppend) -> io::Result<()>,
+    ) -> io::Result<StoredRecordMetadata> {
         self.healthy()?;
         let mut writer = self
             .writer
@@ -500,7 +601,7 @@ impl SegmentedOutcomeLog {
         let mut sync = Some(sync);
         match writer
             .active
-            .append_with_sync(mutations, |f| sync.take().unwrap()(f))
+            .append_with_sync_metadata(mutations, metadata, |f| sync.take().unwrap()(f))
         {
             Ok(record) => return Ok(record),
             Err(error)
@@ -573,7 +674,7 @@ impl SegmentedOutcomeLog {
             drop(index);
             writer
                 .active
-                .append_with_sync(mutations, |f| sync.take().unwrap()(f))
+                .append_with_sync_metadata(mutations, metadata, |f| sync.take().unwrap()(f))
         })();
         if rollover.is_err() {
             self.failed.store(true, Ordering::Release);
@@ -630,6 +731,13 @@ impl SegmentedOutcomeLog {
     ) -> io::Result<Vec<RecoveredMutation>> {
         self.handle(&position.store_id)?.read_outcomes(position)
     }
+    pub fn read_outcomes_with_metadata(
+        &self,
+        position: &StoredOutcomePosition,
+    ) -> io::Result<(Vec<RecoveredMutation>, Vec<u8>)> {
+        self.handle(&position.store_id)?
+            .read_outcomes_with_metadata(position)
+    }
     pub fn read_payload_range(
         &self,
         extent: &PayloadExtent,
@@ -641,65 +749,143 @@ impl SegmentedOutcomeLog {
     }
     /// Walk a committed prefix captured at entry, excluding a supplied last-applied record.
     /// Metadata is checked; payload integrity is established only by read/replay.
-    pub fn scan_metadata_after(
+    pub fn metadata_cursor_after(
         &self,
         after: Option<&StoredOutcomePosition>,
-        mut visit: impl FnMut(&StoredRecordMetadata) -> io::Result<()>,
-    ) -> io::Result<()> {
+    ) -> io::Result<StoredMetadataCursor<'_>> {
         self.healthy()?;
-        let (entries, active_end) = {
+        let (first, last_number, last_end, start_number) = {
+            let index = self
+                .index
+                .read()
+                .map_err(|_| invalid("segment index is poisoned"))?;
+            let first = *index
+                .entries
+                .keys()
+                .next()
+                .ok_or_else(|| invalid("empty segment index"))?;
+            let last = *index
+                .entries
+                .keys()
+                .next_back()
+                .ok_or_else(|| invalid("empty segment index"))?;
+            let start = match after {
+                Some(position) => *index
+                    .by_id
+                    .get(&position.store_id)
+                    .ok_or_else(|| argument("replay position is outside this log"))?,
+                None => first,
+            };
+            (first, last, index.active.length(), start)
+        };
+        let offset = match after {
+            Some(position) => {
+                self.read_metadata(position)?;
+                position
+                    .offset
+                    .checked_add(position.length)
+                    .ok_or_else(|| argument("replay position overflow"))?
+            }
+            None => SECTOR_BYTES as u64,
+        };
+        if start_number < first
+            || start_number > last_number
+            || (start_number == last_number && offset > last_end)
+        {
+            return Err(argument("replay position is beyond the captured prefix"));
+        }
+        Ok(StoredMetadataCursor {
+            owner: self,
+            number: start_number,
+            offset,
+            last_number,
+            last_end,
+            current: None,
+        })
+    }
+
+    /// Capture records after a prior cut through an explicit committed cut.
+    pub fn metadata_cursor_after_through(
+        &self,
+        after: Option<&StoredOutcomePosition>,
+        through: &StoredOutcomePosition,
+    ) -> io::Result<StoredMetadataCursor<'_>> {
+        let mut cursor = self.metadata_cursor_after(after)?;
+        self.read_metadata(through)?;
+        let number = *self
+            .index
+            .read()
+            .map_err(|_| invalid("segment index is poisoned"))?
+            .by_id
+            .get(&through.store_id)
+            .ok_or_else(|| argument("end record is outside this log"))?;
+        let end = through
+            .offset
+            .checked_add(through.length)
+            .ok_or_else(|| argument("replay position overflow"))?;
+        if number < cursor.number
+            || (number == cursor.number && end < cursor.offset)
+            || number > cursor.last_number
+            || (number == cursor.last_number && end > cursor.last_end)
+        {
+            return Err(argument("metadata cut is outside the captured range"));
+        }
+        cursor.last_number = number;
+        cursor.last_end = end;
+        Ok(cursor)
+    }
+
+    /// Capture an inclusive, already committed record range. This permits a
+    /// streaming checkpoint reader to skip interleaved foreground decisions.
+    pub fn metadata_cursor_between(
+        &self,
+        first: &StoredOutcomePosition,
+        last: &StoredOutcomePosition,
+    ) -> io::Result<StoredMetadataCursor<'_>> {
+        self.healthy()?;
+        self.read_metadata(first)?;
+        self.read_metadata(last)?;
+        let (number, last_number) = {
             let index = self
                 .index
                 .read()
                 .map_err(|_| invalid("segment index is poisoned"))?;
             (
-                index.entries.values().cloned().collect::<Vec<_>>(),
-                index.active.length(),
+                *index
+                    .by_id
+                    .get(&first.store_id)
+                    .ok_or_else(|| argument("first record is outside this log"))?,
+                *index
+                    .by_id
+                    .get(&last.store_id)
+                    .ok_or_else(|| argument("last record is outside this log"))?,
             )
         };
-        let (start, offset) = if let Some(position) = after {
-            self.read_metadata(position)?;
-            let number = entries
-                .iter()
-                .position(|e| e.store_id == position.store_id)
-                .ok_or_else(|| argument("replay position is outside captured segments"))?;
-            (
-                number,
-                position
-                    .offset
-                    .checked_add(position.length)
-                    .ok_or_else(|| argument("replay position overflow"))?,
-            )
-        } else {
-            (0, SECTOR_BYTES as u64)
-        };
-        for (number, entry) in entries.iter().enumerate().skip(start) {
-            let log = self.handle(&entry.store_id)?;
-            let limit = if entry.sealed_length == 0 {
-                active_end
-            } else {
-                entry.sealed_length
-            };
-            let mut at = if number == start {
-                offset
-            } else {
-                SECTOR_BYTES as u64
-            };
-            if at > limit {
-                return Err(invalid("replay position exceeds committed cut"));
-            }
-            while at < limit {
-                let record = log
-                    .next_metadata(at)?
-                    .ok_or_else(|| invalid("committed segment prefix is missing"))?;
-                at = at
-                    .checked_add(record.position.length)
-                    .ok_or_else(|| invalid("record end overflow"))?;
-                if at > limit {
-                    return Err(invalid("record crosses captured replay cut"));
-                }
-                visit(&record)?;
-            }
+        let last_end = last
+            .offset
+            .checked_add(last.length)
+            .ok_or_else(|| argument("replay position overflow"))?;
+        if number > last_number || (number == last_number && first.offset > last.offset) {
+            return Err(argument("reversed metadata record range"));
+        }
+        Ok(StoredMetadataCursor {
+            owner: self,
+            number,
+            offset: first.offset,
+            last_number,
+            last_end,
+            current: None,
+        })
+    }
+
+    pub fn scan_metadata_after(
+        &self,
+        after: Option<&StoredOutcomePosition>,
+        mut visit: impl FnMut(&StoredRecordMetadata) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let mut cursor = self.metadata_cursor_after(after)?;
+        while let Some(record) = cursor.next_record()? {
+            visit(&record)?;
         }
         Ok(())
     }

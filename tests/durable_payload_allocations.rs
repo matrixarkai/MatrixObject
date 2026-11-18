@@ -261,6 +261,13 @@ fn outcome_segments_append_and_cached_reads_stay_bounded_across_rollovers() {
         log.read_payload_range(&extent, 0, 4096).unwrap();
         let mut value = small.clone();
         value.page_index = 2;
+        let (cursor, cursor_calls, cursor_bytes) = measured(|| log.metadata_cursor_after(None));
+        drop(cursor.unwrap());
+        assert_eq!(
+            (cursor_calls, cursor_bytes),
+            (0, 0),
+            "cursor capture copied the segment index"
+        );
         let before = log.segment_count().unwrap();
         let bytes = log.logical_length().unwrap();
         let (record, append_calls, append_bytes) = measured(|| log.append_page(&value));

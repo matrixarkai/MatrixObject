@@ -33,6 +33,8 @@ struct Fixture {
     chunk_endpoints: Vec<String>,
     group_id: u64,
     group_commit: bool,
+    segmented: bool,
+    checkpoint: Option<u64>,
     directory: Directory,
 }
 fn meta_options() -> MetaClientOptions {
@@ -64,9 +66,23 @@ fn start_chunk_with_checkpoint(
     group_commit: bool,
     checkpoint: Option<u64>,
 ) -> NodeProcess {
+    start_chunk_with_layout(endpoint, path, recovery, group_commit, checkpoint, false)
+}
+fn start_chunk_with_layout(
+    endpoint: &str,
+    path: &Path,
+    recovery: &str,
+    group_commit: bool,
+    checkpoint: Option<u64>,
+    segmented: bool,
+) -> NodeProcess {
     let interval = checkpoint.map(|value| value.to_string());
     let mut settings = vec![
         ("MATRIXOBJECT_REPLICA_ADDR", endpoint),
+        (
+            "MATRIXOBJECT_REPLICA_SEGMENTED_OUTCOMES",
+            if segmented { "true" } else { "false" },
+        ),
         ("MATRIXOBJECT_REPLICA_JOURNAL", path.to_str().unwrap()),
         ("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", "268435456"),
         ("MATRIXOBJECT_REPLICA_MAX_PAGES", "65536"),
@@ -91,15 +107,18 @@ fn start_chunk_with_checkpoint(
     )
 }
 
-#[path = "star_recovery_profiles.rs"]
-mod star_recovery_profiles;
 #[path = "star_corpus_scale.rs"]
 mod star_corpus_scale;
+#[path = "star_recovery_profiles.rs"]
+mod star_recovery_profiles;
 impl Fixture {
     fn new() -> Self {
         Self::with_group_commit(true)
     }
     fn with_group_commit(group_commit: bool) -> Self {
+        Self::with_storage(group_commit, false, None)
+    }
+    fn with_storage(group_commit: bool, segmented: bool, checkpoint: Option<u64>) -> Self {
         let directory =
             Directory(std::env::temp_dir().join(node_regime::run_token("star-append-cost")));
         std::fs::create_dir(&directory.0).unwrap();
@@ -108,10 +127,23 @@ impl Fixture {
             .collect::<Vec<_>>();
         let chunks = journals
             .iter()
-            .map(|path| start_chunk_with_policy("127.0.0.1:0", path, "peers", group_commit))
+            .map(|path| {
+                start_chunk_with_layout(
+                    "127.0.0.1:0",
+                    path,
+                    "peers",
+                    group_commit,
+                    checkpoint,
+                    segmented,
+                )
+            })
             .collect::<Vec<_>>();
-        assert!(chunks.iter().all(|node| node.startup_line.contains("local_recovery=peers")));
-        assert!(chunks.iter().all(|node| node.startup_line.contains(&format!("group_commit={group_commit}"))));
+        assert!(chunks
+            .iter()
+            .all(|node| node.startup_line.contains("local_recovery=peers")));
+        assert!(chunks.iter().all(|node| node
+            .startup_line
+            .contains(&format!("group_commit={group_commit}"))));
         let chunk_endpoints = chunks
             .iter()
             .map(|node| node.endpoint.clone())
@@ -163,6 +195,8 @@ impl Fixture {
             chunk_endpoints,
             group_id,
             group_commit,
+            segmented,
+            checkpoint,
             directory,
         };
         let mut client = fixture.client();
@@ -268,8 +302,17 @@ impl Fixture {
         }
         for id in 0..3 {
             self.metadata.start(id);
-            self.chunks[id] = start_chunk_with_policy(&self.chunk_endpoints[id], &self.journals[id], "peers", self.group_commit);
-            assert!(self.chunks[id].startup_line.contains(&format!("group_commit={}", self.group_commit)));
+            self.chunks[id] = start_chunk_with_layout(
+                &self.chunk_endpoints[id],
+                &self.journals[id],
+                "peers",
+                self.group_commit,
+                self.checkpoint,
+                self.segmented,
+            );
+            assert!(self.chunks[id]
+                .startup_line
+                .contains(&format!("group_commit={}", self.group_commit)));
         }
         self.metadata.leader();
     }
@@ -334,7 +377,8 @@ fn run(prefix_pages: &[usize], page_bytes: usize, compact: bool) {
             client.append_staged_object_compact(&allocation, base.clone(), &suffix, &options)
         } else {
             client.write_staged_object(&allocation, Some(base.clone()), &suffix, &options)
-        }.unwrap();
+        }
+        .unwrap();
         let elapsed = started.elapsed();
         fixture.settle();
         let wire = fixture.wire().since(before_wire);
@@ -356,14 +400,25 @@ fn run(prefix_pages: &[usize], page_bytes: usize, compact: bool) {
         if compact {
             request.version = 4;
             request.action = 11;
-            request.manifest_append = Some(matrixobjectstore_rs::manifest_append::ManifestAppend::decide(&outcome).unwrap());
+            request.manifest_append = Some(
+                matrixobjectstore_rs::manifest_append::ManifestAppend::decide(&outcome).unwrap(),
+            );
             request.outcome = None;
         }
         let publication_frame = 6 + request.encoded_len();
         if compact {
-            assert!(wire.requests < 1024, "compact append requests copied the prefix");
-            assert!(wire.replies < 2048, "compact append replies copied the prefix");
-            assert!(publication_frame < 256, "compact publication copied the prefix");
+            assert!(
+                wire.requests < 1024,
+                "compact append requests copied the prefix"
+            );
+            assert!(
+                wire.replies < 2048,
+                "compact append replies copied the prefix"
+            );
+            assert!(
+                publication_frame < 256,
+                "compact publication copied the prefix"
+            );
             assert!(wal < 6000, "compact WAL copied the prefix: {wal}");
         }
         assert!(wire.publications >= 1);
@@ -488,7 +543,10 @@ fn a_confirmed_allocation_is_not_read_back_before_the_append() {
         assert_eq!(after.length, manifest.length + 4096);
         manifest = after;
     }
-    assert_eq!(frames[0], frames[2], "unconfirmed appends differ: {frames:?}");
+    assert_eq!(
+        frames[0], frames[2],
+        "unconfirmed appends differ: {frames:?}"
+    );
     assert_eq!(frames[1], frames[3], "confirmed appends differ: {frames:?}");
     assert_eq!(
         frames[0],
@@ -556,7 +614,11 @@ fn a_cached_append_plan_is_not_asked_for_again_until_an_append_fails() {
     }
     // the plan and the publication, then the publication alone, until the refused append; the
     // append after it plans again
-    assert_eq!(frames, vec![2, 1, 1, 1, u64::MAX, 2], "frames per append: {frames:?}");
+    assert_eq!(
+        frames,
+        vec![2, 1, 1, 1, u64::MAX, 2],
+        "frames per append: {frames:?}"
+    );
 }
 
 /// A cached plan is reused only within its lifetime: an append after it asks again.
@@ -598,31 +660,57 @@ fn a_cached_append_plan_is_asked_for_again_once_it_is_old() {
 fn compact_append_publishes_after_metadata_leader_loss_and_recovers() {
     let mut fixture = Fixture::new();
     let mut client = fixture.client();
-    let options = ObjectWriteOptions { page_bytes: 128, ..Default::default() };
+    let options = ObjectWriteOptions {
+        page_bytes: 128,
+        ..Default::default()
+    };
     let allocation = fixture.reserve(&mut client, "failover", None, 1, false);
-    let base = client.write_staged_object(&allocation, None, b"prefix", &options).unwrap();
+    let base = client
+        .write_staged_object(&allocation, None, b"prefix", &options)
+        .unwrap();
     let allocation = fixture.reserve(&mut client, "failover", Some(base.generation), 1, true);
     let mut wrong = base.clone();
     wrong.extents[0].data_sha256[0] ^= 1;
     let data_before = fixture.data_journals();
-    assert!(matches!(client.append_staged_object_compact(&allocation, wrong, b"suffix", &options),
-        Err(matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication { .. })));
-    assert_eq!(fixture.data_journals(), data_before, "stale planning wrote data");
-    assert_eq!(client.read_staged_allocation(allocation.allocation_id).unwrap(), allocation);
+    assert!(matches!(
+        client.append_staged_object_compact(&allocation, wrong, b"suffix", &options),
+        Err(matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication { .. })
+    ));
+    assert_eq!(
+        fixture.data_journals(),
+        data_before,
+        "stale planning wrote data"
+    );
+    assert_eq!(
+        client
+            .read_staged_allocation(allocation.allocation_id)
+            .unwrap(),
+        allocation
+    );
     drop(client);
     let old_leader = fixture.metadata.leader();
     fixture.metadata.kill(old_leader);
     fixture.metadata.leader();
-    let after = fixture.client().append_staged_object_compact(&allocation, base, b"suffix", &options).unwrap();
+    let after = fixture
+        .client()
+        .append_staged_object_compact(&allocation, base, b"suffix", &options)
+        .unwrap();
     verify_replicas(&fixture, &after, b"prefixsuffix");
     let survivor = fixture.metadata.leader();
-    let other = (0..3).find(|id| *id != survivor && *id != old_leader).unwrap();
+    let other = (0..3)
+        .find(|id| *id != survivor && *id != old_leader)
+        .unwrap();
     fixture.metadata.kill(other);
     let mut minority = fixture.metadata.client(survivor);
     let until = Instant::now() + Duration::from_secs(10);
     loop {
-        if minority.plan_append_routes_compact(&after, 1, 1).is_err() { break; }
-        assert!(Instant::now() < until, "minority kept serving compact append plans");
+        if minority.plan_append_routes_compact(&after, 1, 1).is_err() {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "minority kept serving compact append plans"
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
     drop(minority);
@@ -630,8 +718,142 @@ fn compact_append_publishes_after_metadata_leader_loss_and_recovers() {
     fixture.metadata.start(old_leader);
     fixture.restart();
     let mut client = fixture.client();
-    assert_eq!(client.read_object("append", "failover", 128, &options.replica).unwrap(),
-        (after.clone(), b"prefixsuffix".to_vec()));
+    assert_eq!(
+        client
+            .read_object("append", "failover", 128, &options.replica)
+            .unwrap(),
+        (after.clone(), b"prefixsuffix".to_vec())
+    );
     verify_replicas(&fixture, &after, b"prefixsuffix");
-    assert!(client.read_staged_allocation(allocation.allocation_id).is_err());
+    assert!(client
+        .read_staged_allocation(allocation.allocation_id)
+        .is_err());
+}
+
+#[test]
+fn segmented_star_replicas_keep_objects_through_metadata_failover_and_full_restart() {
+    let mut fixture = Fixture::with_storage(true, true, Some(1024));
+    assert!(fixture
+        .chunks
+        .iter()
+        .all(|n| n.startup_line.contains("storage=segmented-outcomes")));
+    let options = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        ..Default::default()
+    };
+    let mut client = fixture.client();
+    let mut committed = Vec::new();
+    for n in 0..16 {
+        let key = format!("segmented-corpus-{n}");
+        let bytes = vec![n as u8 + 1; 16 * 1024];
+        let allocation = fixture.reserve(&mut client, &key, None, 4, false);
+        let manifest = client
+            .write_staged_object(&allocation, None, &bytes, &options)
+            .unwrap();
+        verify_replicas(&fixture, &manifest, &bytes);
+        committed.push((key, manifest, bytes));
+    }
+    let key = "segmented-hot";
+    let mut expected = vec![0x61; 8192];
+    let allocation = fixture.reserve(&mut client, key, None, 2, false);
+    let mut manifest = client
+        .write_staged_object(&allocation, None, &expected, &options)
+        .unwrap();
+    let mut keep_alive = Vec::new();
+    for (index, endpoint) in fixture.chunk_endpoints.iter().enumerate() {
+        let mut replica = RemoteReplicaClient::connect(endpoint, &options.replica).unwrap();
+        let extent = &manifest.extents[0];
+        let page = PageId {
+            chunk_id: ChunkId::new(extent.volume_id, extent.chunk_id).unwrap(),
+            page_index: extent.page_index,
+        };
+        replica.read_chunk(&page, 0, extent.length).unwrap();
+        keep_alive.push(replica);
+        assert!(processes::environ_carries(
+            fixture.chunks[index].pid,
+            "MATRIXOBJECT_REPLICA_JOURNAL",
+            fixture.journals[index].to_str().unwrap()
+        ));
+    }
+    // Keep each API connection open while sampling the process socket tables;
+    // Raft follower connections may otherwise close between the two readings.
+    let metadata_connections: Vec<_> = fixture
+        .metadata
+        .api_addresses
+        .iter()
+        .map(|address| TcpStream::connect(address).unwrap())
+        .collect();
+    let mut pids: Vec<_> = fixture.chunks.iter().map(|n| n.pid).collect();
+    for (index, node) in fixture.metadata.nodes.iter().enumerate() {
+        let node = node.as_ref().unwrap();
+        pids.push(node.pid);
+        assert!(processes::environ_carries(
+            node.pid,
+            "MATRIXOBJECT_METASERVER_RAFT_STATE_DIR",
+            fixture
+                .metadata
+                .root
+                .join(index.to_string())
+                .to_str()
+                .unwrap()
+        ));
+    }
+    let unique: std::collections::BTreeSet<_> = pids.iter().copied().collect();
+    assert_eq!(unique.len(), 6);
+    assert!(pids
+        .iter()
+        .all(|pid| *pid != std::process::id() && processes::is_live(*pid)));
+    let until = Instant::now() + Duration::from_secs(3);
+    while !pids
+        .iter()
+        .all(|pid| node_regime::sockets::has_established_socket(*pid))
+    {
+        assert!(
+            Instant::now() < until,
+            "node did not accept its API connection"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    node_regime::sockets::assert_established_two_ways(&pids);
+    drop(metadata_connections);
+    let leader = fixture.metadata.leader();
+    fixture.metadata.kill(leader);
+    fixture.metadata.leader();
+    drop(client);
+    let mut client = fixture.client();
+    for n in 0..16 {
+        let suffix = vec![n as u8 + 0x71; 4096];
+        let allocation = fixture.reserve(&mut client, key, Some(manifest.generation), 1, true);
+        manifest = client
+            .append_staged_object_compact(&allocation, manifest, &suffix, &options)
+            .unwrap();
+        expected.extend(suffix);
+    }
+    verify_replicas(&fixture, &manifest, &expected);
+    fixture.metadata.start(leader);
+    drop(client);
+    drop(keep_alive);
+    fixture.restart();
+    let mut client = fixture.client();
+    // Each restart may need another read barrier while leadership converges.
+    // One explicit deadline bounds the complete post-restart verification.
+    let mut read_options = options.replica.clone();
+    read_options.deadline = Some(Instant::now() + Duration::from_secs(30));
+    for (key, manifest, bytes) in committed {
+        assert_eq!(
+            client
+                .read_object("append", &key, bytes.len(), &read_options)
+                .unwrap(),
+            (manifest.clone(), bytes.clone())
+        );
+        verify_replicas(&fixture, &manifest, &bytes);
+    }
+    assert_eq!(
+        client
+            .read_object("append", key, expected.len(), &read_options)
+            .unwrap(),
+        (manifest.clone(), expected.clone())
+    );
+    verify_replicas(&fixture, &manifest, &expected);
 }

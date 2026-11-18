@@ -138,12 +138,12 @@
 // `decode_failure` beside the replica messages. A build with only the control plane needs
 // those five items and would otherwise need a second copy of them.
 mod conditional_requests;
-pub mod state_transfer;
-pub mod state_install;
 #[cfg(feature = "meta-server")]
 mod health_report;
 #[path = "replica_rpc_messages.rs"]
 pub mod message;
+pub mod state_install;
+pub mod state_transfer;
 #[path = "replica_wire_frames.rs"]
 pub mod wire;
 
@@ -170,25 +170,25 @@ mod meta_identity;
 mod peer_membership;
 pub use peer_membership::{MembershipOperation, MembershipRequest, MembershipStatus};
 #[cfg(feature = "meta-server")]
+pub mod append_plan;
+#[cfg(feature = "meta-server")]
 pub mod gateway_picker;
 #[cfg(feature = "meta-server")]
 pub mod gateway_roster;
 #[cfg(feature = "meta-server")]
+mod manifest_copy_commands;
+#[cfg(feature = "meta-server")]
 pub mod meta_message;
 #[cfg(feature = "meta-server")]
-pub mod append_plan;
-#[cfg(feature = "meta-server")]
 pub mod meta_server;
+#[cfg(feature = "meta-server")]
+pub mod meta_wire;
+#[cfg(feature = "meta-server")]
+mod read_session_commands;
 #[cfg(feature = "meta-server")]
 mod staged_allocation_commands;
 #[cfg(feature = "meta-server")]
 mod staged_lease_sweeper;
-#[cfg(feature = "meta-server")]
-mod read_session_commands;
-#[cfg(feature = "meta-server")]
-mod manifest_copy_commands;
-#[cfg(feature = "meta-server")]
-pub mod meta_wire;
 #[cfg(feature = "meta-server")]
 pub use meta_identity::MetaGroupIdentity;
 
@@ -202,7 +202,9 @@ pub use placement::{
     check_quorums, majority, InProcessReplicaSet, ReplicaFanout, ReplicaPlacement,
 };
 #[cfg(feature = "replica-server")]
-pub use replica_set::{PageRepairBatch, PageRepairEntry, PageRepairReport, PageRepairStatus, RemoteReplicaSet};
+pub use replica_set::{
+    PageRepairBatch, PageRepairEntry, PageRepairReport, PageRepairStatus, RemoteReplicaSet,
+};
 #[cfg(all(feature = "replica-server", feature = "meta-server"))]
 pub use server::ReplicaHeartbeatOptions;
 #[cfg(feature = "replica-server")]
@@ -223,15 +225,25 @@ pub use meta_server::{DataNodeSeed, MetaNodeOptions, MetaNodeServer, MetaNodeShu
 pub use meta_wire::{MetaRequestCode, META_CODE_BASE};
 
 #[cfg(feature = "replica-server")]
-mod replica_journal;
+mod replica_checkpoint_catalog;
+#[cfg(feature = "replica-server")]
+mod replica_checkpoint_recovery;
+#[cfg(feature = "replica-server")]
+mod replica_checkpoint_spans;
 #[cfg(feature = "replica-server")]
 mod replica_image;
+#[cfg(feature = "replica-server")]
+mod replica_journal;
+#[cfg(feature = "replica-server")]
+mod replica_journal_backend;
+#[cfg(feature = "replica-server")]
+mod replica_segmented_journal;
 
 #[path = "node_api_connections.rs"]
 mod connections;
-mod socket_readiness;
 #[cfg(any(feature = "replica-server", feature = "meta-server"))]
 mod shutdown;
+mod socket_readiness;
 
 #[cfg(feature = "meta-server")]
 mod meta_snapshot_file;
@@ -247,15 +259,17 @@ pub use meta_consensus::MetaRaftOptions;
 pub use server::ChunkRaftOptions;
 
 #[cfg(feature = "meta-server")]
-mod chunk_groups;
-#[cfg(feature = "meta-server")]
 mod chunk_group_route;
 #[cfg(feature = "meta-server")]
-pub use chunk_group_route::{ChunkGroupRoute, RouteBatch as ChunkRouteBatch, RoutePage as ChunkRoutePage};
+mod chunk_groups;
 #[cfg(feature = "meta-server")]
-mod chunk_catalog_outcome;
+pub use chunk_group_route::{
+    ChunkGroupRoute, RouteBatch as ChunkRouteBatch, RoutePage as ChunkRoutePage,
+};
 #[cfg(feature = "meta-server")]
 mod chunk_catalog_command;
+#[cfg(feature = "meta-server")]
+mod chunk_catalog_outcome;
 #[cfg(feature = "meta-server")]
 pub use chunk_catalog_command::ChunkCatalogCommand;
 #[cfg(feature = "meta-server")]
@@ -263,9 +277,9 @@ mod chunk_membership_health;
 #[cfg(feature = "meta-server")]
 pub use chunk_membership_health::ChunkMembershipHealth;
 mod chunk_membership_fence;
-pub use chunk_membership_fence::ChunkMembershipFence;
 #[cfg(feature = "meta-server")]
 pub use chunk_groups::{ChunkGroupCatalog, ChunkGroupConfig};
+pub use chunk_membership_fence::ChunkMembershipFence;
 
 #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
 mod consensus_checkpoint;
@@ -289,9 +303,9 @@ pub use append_failover::{
 };
 
 #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
-mod peer_receiver;
-#[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
 mod peer_delivery;
+#[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
+mod peer_receiver;
 
 mod consensus_errors;
 pub use consensus_errors::{consensus_unavailable, outcome_may_be_committed};
@@ -303,8 +317,8 @@ mod peer_tls;
 #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
 pub use peer_tls::PeerTlsOptions;
 
-mod tls_config;
 mod api_tls;
+mod tls_config;
 pub use api_tls::{ApiTlsConfig, ApiTlsOptions};
 
 mod wal_zero_fill;

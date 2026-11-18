@@ -95,7 +95,9 @@ pub(super) fn run(
         // A quorum report can wait behind an admitted metadata batch. Use the
         // interval as its budget, with a 500 ms floor and 1 s cap so shutdown
         // remains bounded while a metaserver holds a response.
-        read_timeout: options.interval.clamp(Duration::from_millis(500), Duration::from_secs(1)),
+        read_timeout: options
+            .interval
+            .clamp(Duration::from_millis(500), Duration::from_secs(1)),
         write_timeout: Duration::from_millis(100),
         ..Default::default()
     };
@@ -114,7 +116,7 @@ pub(super) fn run(
             #[cfg(feature = "chunk-consensus")]
             let dynamic = consensus.as_ref().filter(|c| c.identity().version == 2);
             let (used, capacity, online, membership) = {
-                let state = replica.try_lock().map_err(|error| match error {
+                let mut state = replica.try_lock().map_err(|error| match error {
                     std::sync::TryLockError::WouldBlock => crate::ObjectError::PreconditionFailed(
                         "replica health is busy applying state".into(),
                     ),
@@ -122,6 +124,11 @@ pub(super) fn run(
                         crate::ObjectError::Corruption("replica health lock poisoned".into())
                     }
                 })?;
+                if let Some(journal) = state.journal.as_mut() {
+                    if journal.check_health().is_err() {
+                        state.failed = true;
+                    }
+                }
                 #[cfg(feature = "chunk-consensus")]
                 let membership = if let Some(consensus) = dynamic {
                     if consensus.is_failed() || state.failed {
@@ -221,45 +228,54 @@ pub(super) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
     use crate::cluster::{
         MetaNodeOptions, MetaNodeServer, RemoteReplicaClient, ReplicaClientOptions,
         ReplicaNodeOptions, ReplicaNodeServer,
     };
     use crate::{ChunkId, PageId};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
 
     #[test]
     fn slow_metadata_reply_keeps_heartbeat_connection_open() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let mut chunk = ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap();
+        let mut chunk =
+            ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap();
         let endpoint = chunk.local_addr().unwrap();
-        chunk.enable_heartbeats(ReplicaHeartbeatOptions {
-            placement_id: None,
-            tls: None,
-            expected_metadata_identity: None,
-            node_id: "chunk-slow".into(),
-            advertised_endpoint: endpoint,
-            metadata_endpoints: vec![listener.local_addr().unwrap()],
-            interval: Duration::from_secs(2),
-        }).unwrap();
+        chunk
+            .enable_heartbeats(ReplicaHeartbeatOptions {
+                placement_id: None,
+                tls: None,
+                expected_metadata_identity: None,
+                node_id: "chunk-slow".into(),
+                advertised_endpoint: endpoint,
+                metadata_endpoints: vec![listener.local_addr().unwrap()],
+                interval: Duration::from_secs(2),
+            })
+            .unwrap();
         let stop = chunk.shutdown_handle();
         let worker = std::thread::spawn(move || chunk.serve().unwrap());
         let (mut socket, _) = listener.accept().unwrap();
-        socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         let mut header = [0; 6];
         socket.read_exact(&mut header).unwrap();
         let length = u32::from_be_bytes(header[2..6].try_into().unwrap()) as usize;
         let mut payload = vec![0; length];
         socket.read_exact(&mut payload).unwrap();
-        assert_eq!(header[1], crate::cluster::MetaRequestCode::ReportChunkNode as u8);
+        assert_eq!(
+            header[1],
+            crate::cluster::MetaRequestCode::ReportChunkNode as u8
+        );
         std::thread::sleep(Duration::from_millis(750));
         socket.set_nonblocking(true).unwrap();
         let mut byte = [0];
         let still_open = matches!(socket.peek(&mut byte), Err(error)
             if error.kind() == std::io::ErrorKind::WouldBlock);
         let _ = socket.write_all(&crate::cluster::message::encode_failure(
-            crate::cluster::StatusCode::PreconditionFailed, "test reply",
+            crate::cluster::StatusCode::PreconditionFailed,
+            "test reply",
         ));
         stop.stop();
         worker.join().unwrap();
@@ -387,8 +403,8 @@ mod tests {
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
             read_report(&mut second);
-            let reply = crate::cluster::MetaReply::PlacementNode(
-                crate::cluster::PlacementNodeSummary {
+            let reply =
+                crate::cluster::MetaReply::PlacementNode(crate::cluster::PlacementNodeSummary {
                     node_id: "chunk-reconnect".into(),
                     endpoint: endpoint.to_string(),
                     service_kind: "chunkserver".into(),
@@ -397,8 +413,7 @@ mod tests {
                     capacity_bytes: 1 << 30,
                     last_heartbeat_ms: 2,
                     ..Default::default()
-                },
-            );
+                });
             second
                 .write_all(&crate::cluster::meta_message::encode_meta_reply(&reply))
                 .unwrap();
@@ -539,8 +554,9 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("health-failed-journal-{}", std::process::id()));
         std::fs::write(&path, []).unwrap();
-        state.lock().unwrap().journal =
-            Some(crate::cluster::replica_journal::ReplicaJournal::read_only_for_test(&path));
+        state.lock().unwrap().journal = Some(Box::new(
+            crate::cluster::replica_journal::ReplicaJournal::read_only_for_test(&path),
+        ));
         assert!(data.write_chunk(page, 1027, b"d").is_err());
         wait(&mut client, false, 1028);
         {

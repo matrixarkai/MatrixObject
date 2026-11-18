@@ -556,8 +556,10 @@ fn stored_outcomes_binary_metadata_and_envelope_bytes_are_stable() {
             original_sha256: digest::digest(&digest::SHA256, &original).as_ref().to_vec(),
             original_length: original.len() as u32,
             namespace_fence: Some(fence),
+            checkpoint_fragment: None,
         }],
         payloads: Vec::new(),
+        replica_metadata: Vec::new(),
     }
     .encode_to_vec();
     assert_eq!(body,unhex("0801123222209e55fa24164376fa6ee06ba786e33aeb7dd3f3ce9089d8bfb2b289433258b1a52818320c08011a080801100118022001"));

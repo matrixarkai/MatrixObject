@@ -353,15 +353,19 @@ impl NamespaceFenceOutcome {
         }
         Ok(outcome)
     }
-    pub fn apply(&self, service: &mut MatrixReplicaService) -> Result<(), ObjectError> {
+    pub(crate) fn apply_to_catalog(
+        &self,
+        catalog: &mut NamespaceFenceCatalog,
+    ) -> Result<(), ObjectError> {
         let after = self.validate()?;
-        let bytes = service
-            .namespace_fences
-            .check(self.before_generation, after)?;
-        Arc::make_mut(&mut service.namespace_fences.entries)
-            .insert(after.namespace()?, Arc::new(after.clone()));
-        service.namespace_fences.bytes = bytes;
-        service.namespace_fences.revision += 1;
+        let bytes = catalog.check(self.before_generation, after)?;
+        Arc::make_mut(&mut catalog.entries).insert(after.namespace()?, Arc::new(after.clone()));
+        catalog.bytes = bytes;
+        catalog.revision += 1;
+        Ok(())
+    }
+    pub fn apply(&self, service: &mut MatrixReplicaService) -> Result<(), ObjectError> {
+        self.apply_to_catalog(&mut service.namespace_fences)?;
         service.mark_metadata_mutation();
         Ok(())
     }

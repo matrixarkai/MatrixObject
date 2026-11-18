@@ -161,7 +161,8 @@ fn shared_sync_append_failure_does_not_flush_or_ack_a_failed_group() {
     let fixture = Fixture::new();
     base(&fixture);
     let disk = std::fs::read(&fixture.path).unwrap();
-    fixture.node.lock().unwrap().journal = Some(ReplicaJournal::read_only_for_test(&fixture.path));
+    fixture.node.lock().unwrap().journal =
+        Some(Box::new(ReplicaJournal::read_only_for_test(&fixture.path)));
     let (first, first_reply) = job(write(0, 4, b"tail", 1), 128);
     let (second, second_reply) = job(write(1, 0, b"other", 0), 128);
     commit_jobs(
@@ -405,7 +406,8 @@ fn shared_sync_idle_path_refuses_failed_persistence() {
     base(&fixture);
     let disk = std::fs::read(&fixture.path).unwrap();
     let committer = Committer::start(Arc::clone(&fixture.node), MAX_PAYLOAD_BYTES).unwrap();
-    fixture.node.lock().unwrap().journal = Some(ReplicaJournal::read_only_for_test(&fixture.path));
+    fixture.node.lock().unwrap().journal =
+        Some(Box::new(ReplicaJournal::read_only_for_test(&fixture.path)));
     assert!(matches!(
         committer.request(write(0, 4, b"tail", 1), 128),
         Err(ObjectError::Corruption(_))
