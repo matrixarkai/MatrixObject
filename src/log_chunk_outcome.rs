@@ -95,6 +95,15 @@ impl WriterLeaseTable {
             expires_at_ms: lease.expires_at_ms,
         })
     }
+    /// Put back what `get` returned for this object: the lease, or none. Used to undo a draft.
+    pub fn restore(&mut self, bucket: &str, key: &str, lease: Option<&WriterLease>) {
+        match lease {
+            Some(lease) => self.set(bucket, key, lease),
+            None => {
+                self.leases.remove(&(bucket.to_string(), key.to_string()));
+            }
+        }
+    }
     pub fn set(&mut self, bucket: &str, key: &str, lease: &WriterLease) {
         self.leases.insert(
             (bucket.to_string(), key.to_string()),

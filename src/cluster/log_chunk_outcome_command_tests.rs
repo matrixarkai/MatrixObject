@@ -341,6 +341,55 @@ mod log_chunk_outcome_tests {
         assert!(outcome.to_payload().is_err(), "indexes are consecutive");
     }
 
+    /// Apply `outcome` through the draft the leader's pipeline uses, then drop it: the live state
+    /// must be exactly what it was, and the same outcome must then commit on it.
+    fn through_a_draft_then_committed(service: &mut MatrixMetaService, groups: &ChunkGroupCatalog, outcome: &PlacementOutcome) {
+        let id = crate::ObjectId::new("bucket".to_string(), "log".to_string());
+        let before = service.export_snapshot().to_bytes().unwrap();
+        let leases = service.writer_leases.clone();
+        let nodes = groups.affected_nodes(vec!["group-0".to_string()]);
+        {
+            let mut draft = PlacementDraft::with_records(service, nodes, vec![id]);
+            draft.leases = vec![(("bucket".to_string(), "log".to_string()), draft.service.writer_leases.get("bucket", "log"))];
+            outcome.apply(draft.service).unwrap();
+            assert_ne!(draft.service.writer_leases, leases, "the draft did apply the change");
+        }
+        assert_eq!(service.writer_leases, leases, "the lease table is restored");
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), before, "the whole state is restored");
+        commit(service, outcome).expect("the committed entry applies on the restored state");
+        assert_ne!(service.writer_leases, leases);
+    }
+
+    #[test]
+    fn a_version_15_outcome_applied_through_a_draft_leaves_nothing_behind_and_still_commits() {
+        // a first grant: the object had no lease and no manifest
+        let (mut service, groups) = fixture(1, 0);
+        let index = service.placement_commit_index + 1;
+        let first = PlacementOutcome::log_chunk_for_tests(
+            &service,
+            grant_change(&service, "gateway-a", NOW),
+            Some(publication(None, manifest(1, 0, vec![extent(7, 0, 0, EXTENT_FLAG_TAIL, index)]))),
+        )
+        .unwrap();
+        through_a_draft_then_committed(&mut service, &groups, &first);
+        // a second grant to the same holder: the lease changes from one to another
+        let again = PlacementOutcome::log_chunk_for_tests(&service, grant_change(&service, "gateway-a", NOW + 5), None).unwrap();
+        through_a_draft_then_committed(&mut service, &groups, &again);
+        // a switch: the manifest changes and the lease does not
+        let switch = switch_outcome(&service, 4096);
+        let leases = service.writer_leases.clone();
+        let before = service.export_snapshot().to_bytes().unwrap();
+        let id = crate::ObjectId::new("bucket".to_string(), "log".to_string());
+        {
+            let nodes = groups.affected_nodes(vec!["group-0".to_string()]);
+            let mut draft = PlacementDraft::with_records(&mut service, nodes, vec![id]);
+            switch.apply(draft.service).unwrap();
+        }
+        assert_eq!(service.writer_leases, leases);
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), before);
+        commit(&mut service, &switch).unwrap();
+    }
+
     fn contains(bytes: &[u8], needle: &[u8]) -> bool {
         bytes.windows(needle.len()).any(|window| window == needle)
     }

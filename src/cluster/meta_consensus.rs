@@ -1240,6 +1240,8 @@ struct PlacementDraft<'a> {
     /// The cluster feature set as it stood: a declaration or a raise prepared against the draft
     /// changes it, and the live service must not keep that before the entry commits.
     features: crate::cluster_features::ClusterFeatures,
+    /// The writer lease each named object held before the draft: `None` if it held none.
+    leases: Vec<((String, String), Option<crate::log_chunk_outcome::WriterLease>)>,
 }
 impl<'a> PlacementDraft<'a> {
     fn new(
@@ -1276,6 +1278,7 @@ impl<'a> PlacementDraft<'a> {
             staging_allocations: Vec::new(),
             publication_fence,
             features,
+            leases: Vec::new(),
         }
     }
 }
@@ -1304,6 +1307,9 @@ impl Drop for PlacementDraft<'_> {
             } else {
                 self.service.placements.remove(&id);
             }
+        }
+        for ((bucket, key), lease) in self.leases.drain(..) {
+            self.service.writer_leases.restore(&bucket, &key, lease.as_ref());
         }
         self.service.placement_commit_index = self.index;
         self.service.invalidate_snapshot_export_cache();
