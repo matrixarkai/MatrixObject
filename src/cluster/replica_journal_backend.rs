@@ -7,6 +7,9 @@ use crate::{
 };
 use std::io;
 pub(super) trait ReplicaJournalBackend: Send {
+    fn requires_context(&self) -> bool {
+        false
+    }
     fn capture_context(&self, _service: &MatrixReplicaService) -> Option<ReplicaServiceSnapshot> {
         None
     }
@@ -24,7 +27,7 @@ pub(super) trait ReplicaJournalBackend: Send {
         outcome: NamespaceFenceOutcome,
         context: Option<ReplicaServiceSnapshot>,
         sync: bool,
-    ) -> io::Result<()>;
+    ) -> io::Result<NamespaceFenceOutcome>;
     fn sync_deferred(&mut self) -> io::Result<()>;
     /// Changes for queued foreground mutations, never for checkpoint fragments.
     fn logical_length(&self) -> u64;
@@ -54,13 +57,12 @@ impl ReplicaJournalBackend for ReplicaJournal {
         outcome: NamespaceFenceOutcome,
         _context: Option<ReplicaServiceSnapshot>,
         sync: bool,
-    ) -> io::Result<()> {
+    ) -> io::Result<NamespaceFenceOutcome> {
         self.append_namespace_fence_deferred(&outcome)?;
         if sync {
-            self.sync_deferred()
-        } else {
-            Ok(())
+            self.sync_deferred()?;
         }
+        Ok(outcome)
     }
     fn sync_deferred(&mut self) -> io::Result<()> {
         ReplicaJournal::sync_deferred(self)

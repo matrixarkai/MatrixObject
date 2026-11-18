@@ -887,12 +887,7 @@ fn apply_locked(
                 "namespace fencing requires durable replica storage".into(),
             ));
         }
-        let contextual = guard
-            .journal
-            .as_ref()
-            .unwrap()
-            .capture_context(&guard.service)
-            .is_some();
+        let contextual = guard.journal.as_ref().unwrap().requires_context();
         if contextual {
             if let Err(error) = outcome.apply(&mut guard.service) {
                 guard.failed = true;
@@ -904,15 +899,17 @@ fn apply_locked(
             .as_ref()
             .unwrap()
             .capture_context(&guard.service);
-        let reply = outcome.after.clone().unwrap();
-        if let Err(error) = guard.journal.as_mut().unwrap().append_namespace_owned(
-            outcome.clone(),
+        let outcome = match guard.journal.as_mut().unwrap().append_namespace_owned(
+            outcome,
             context,
             sync_journal,
         ) {
-            guard.failed = true;
-            return Err(ObjectError::Corruption(error.to_string()));
-        }
+            Ok(outcome) => outcome,
+            Err(error) => {
+                guard.failed = true;
+                return Err(ObjectError::Corruption(error.to_string()));
+            }
+        };
         if !contextual {
             if let Err(error) = outcome.apply(&mut guard.service) {
                 guard.failed = true;
@@ -934,7 +931,7 @@ fn apply_locked(
                 return Err(ObjectError::Corruption(error.to_string()));
             }
         }
-        return Ok(ReplicaReply::NamespaceFence(reply));
+        return Ok(ReplicaReply::NamespaceFence(outcome.after.unwrap()));
     }
     if let ReplicaRequest::ReadChunkStateRange { length, .. } = &request {
         let size = usize::try_from(*length)

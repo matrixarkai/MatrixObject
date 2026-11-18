@@ -394,6 +394,9 @@ impl SegmentedReplicaJournal {
     }
 }
 impl ReplicaJournalBackend for SegmentedReplicaJournal {
+    fn requires_context(&self) -> bool {
+        true
+    }
     fn capture_context(&self, service: &MatrixReplicaService) -> Option<ReplicaServiceSnapshot> {
         Some(replica_checkpoint_recovery::capture_scalars(
             service,
@@ -416,8 +419,10 @@ impl ReplicaJournalBackend for SegmentedReplicaJournal {
         outcome: NamespaceFenceOutcome,
         context: Option<ReplicaServiceSnapshot>,
         sync: bool,
-    ) -> io::Result<()> {
-        self.enqueue(Pending::Namespace(outcome), context, sync)
+    ) -> io::Result<NamespaceFenceOutcome> {
+        let reply = outcome.clone();
+        self.enqueue(Pending::Namespace(outcome), context, sync)?;
+        Ok(reply)
     }
     fn sync_deferred(&mut self) -> io::Result<()> {
         self.flush()
