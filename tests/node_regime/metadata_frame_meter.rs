@@ -22,11 +22,14 @@ pub(super) struct Counts {
     pub publications: u64,
     /// Request frames, whatever their size.
     pub frames: u64,
+    /// Staged allocation requests (action 1), each one a metadata commit.
+    pub allocations: u64,
 }
 impl Counts {
     pub fn since(self, before: Self) -> Self {
         Self {
             frames: self.frames.checked_sub(before.frames).unwrap(),
+            allocations: self.allocations.checked_sub(before.allocations).unwrap(),
             requests: self.requests.checked_sub(before.requests).unwrap(),
             replies: self.replies.checked_sub(before.replies).unwrap(),
             publication_bytes: self
@@ -44,6 +47,7 @@ struct Counters {
     publication_bytes: AtomicU64,
     publications: AtomicU64,
     frames: AtomicU64,
+    allocations: AtomicU64,
     failed: AtomicBool,
 }
 pub(super) struct FrameMeter {
@@ -155,6 +159,9 @@ impl FrameMeter {
                                 if request[1] == MetaRequestCode::StagedAllocation as u8 {
                                     let command = StagedAllocationRequest::decode(&request[6..])
                                         .map_err(|_| io::ErrorKind::InvalidData)?;
+                                    if command.action == 1 {
+                                        counters.allocations.fetch_add(1, Ordering::SeqCst);
+                                    }
                                     if matches!(command.action, 4 | 11) {
                                         counters.publications.fetch_add(1, Ordering::SeqCst);
                                         counters
@@ -205,6 +212,7 @@ impl FrameMeter {
             publication_bytes: self.counters.publication_bytes.load(Ordering::SeqCst),
             publications: self.counters.publications.load(Ordering::SeqCst),
             frames: self.counters.frames.load(Ordering::SeqCst),
+            allocations: self.counters.allocations.load(Ordering::SeqCst),
         }
     }
 }
