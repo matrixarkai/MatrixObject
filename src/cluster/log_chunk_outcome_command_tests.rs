@@ -174,6 +174,13 @@ mod log_chunk_outcome_tests {
         let error = commit(&mut service, &decided).unwrap_err();
         assert!(matches!(error, ObjectError::Corruption(_)), "{error:?}");
         assert_eq!(service.export_snapshot().to_bytes().unwrap(), snapshot, "a refused entry changes nothing");
+        // at the right index, but decided from a lease that is not the one the table holds
+        let mut wrong = grant_change(&service, "gateway-a", NOW + 7);
+        let held = wrong.lease_before.clone().unwrap();
+        wrong.lease_before = Some(WriterLease { expires_at_ms: held.expires_at_ms + 1, ..held });
+        let outcome = PlacementOutcome::log_chunk_for_tests(&service, wrong, None).unwrap();
+        assert!(commit(&mut service, &outcome).is_err());
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), snapshot);
     }
 
     #[test]
