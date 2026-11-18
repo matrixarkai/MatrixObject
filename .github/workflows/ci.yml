@@ -571,6 +571,22 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus staged_lease_deadlines_and_renewals_survive_failover_restart_and_quorum_loss -- --exact | tee /tmp/staged-lease.log
           grep -q 'test result: ok. 1 passed' /tmp/staged-lease.log
 
+      - name: log chunk commands go through the leader draft, name their chunks once and need both features
+        run: |
+          set -o pipefail
+          for test in \
+            cluster::meta_consensus::tests::log_chunk_pipeline_tests::every_outcome_kind_survives_the_leaders_draft_and_the_commit_that_follows \
+            cluster::meta_consensus::tests::log_chunk_commands_tests::interleaved_grants_switches_sweeps_and_allocations_never_name_a_chunk_twice_and_ids_only_go_up \
+            cluster::meta_consensus::tests::log_chunk_commands_tests::a_page_and_a_grant_name_their_chunks_by_one_function_of_the_raft_index \
+            cluster::meta_consensus::tests::log_chunk_commands_tests::nothing_leases_or_emits_a_chunked_manifest_until_an_operator_raises_the_feature \
+            cluster::meta_consensus::tests::log_chunk_outcome_tests::malformed_lease_batches_are_refused_before_they_can_apply
+          do
+            cargo test --locked --all-features --lib "$test" -- --exact | tee /tmp/log-chunk-commands.log
+            grep -q 'test result: ok. 1 passed' /tmp/log-chunk-commands.log
+          done
+          cargo test --locked --all-features --test network_metadata_consensus log_chunk_and_feature_commands_commit_through_the_real_leader_pipeline -- --exact | tee /tmp/log-chunk-commands.log
+          grep -q 'test result: ok. 1 passed' /tmp/log-chunk-commands.log
+
       - name: fenced publication and atomic copy survive metadata recovery
         run: |
           set -o pipefail

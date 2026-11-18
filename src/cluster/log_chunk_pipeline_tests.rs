@@ -150,6 +150,17 @@ mod log_chunk_pipeline_tests {
             true,
         );
 
+        // a renewal alone: nothing else in the batch names those objects, so the draft saves their
+        // leases only because the renewal's own references were collected
+        run_batch(
+            "a renewal alone",
+            &mut leader,
+            &mut follower,
+            &groups,
+            vec![MetaRequest::LogChunk(LogChunkRequest::renew("gw-a", 90_000, vec![e1.clone(), e2.clone()]))],
+            true,
+        );
+
         // an expired lease is dropped by a sweep and taken over by another writer in one batch
         for service in [&mut leader, &mut follower] {
             service.writer_leases.set("bucket", "o2", &WriterLease { holder: "gw-a".into(), epoch: e2.epoch, expires_at_ms: 1 });
