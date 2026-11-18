@@ -367,3 +367,90 @@ registered, the metadata change log when no checkpoint is. A consumer that
 registers later and asks for a trimmed prefix is told to resync, which is the
 read path's existing contract after any compaction.
 
+
+## What a running cluster holds in memory, measured as process RSS
+
+The audit above counts the bytes the store knows about. A deployment is provisioned
+against what the processes occupy, and for a metaserver voter that is several times the
+counted figure. The figures below are `VmRSS` and `RssAnon` from `/proc/<pid>/status` of a
+three-voter, three-chunkserver cluster with the S3 door in front of it, objects written
+through the door with compact appends, at commit 6bbfab41. They come from a load rig, not
+from a test in the suite, so unlike the rest of this file there is no `cargo test` line
+that reproduces them; the method is stated so that they can be repeated.
+
+### A metaserver voter
+
+| what was written | RSS per voter |
+|---|---:|
+| idle | 7.3 MB |
+| 5,000 objects of one 4 KiB extent | 17.8 - 19.9 MB |
+| 10,000 | 28 - 31 MB |
+| 25,000 | 58 - 62 MB |
+| 50,000 | 109 - 115 MB |
+| 100,000 | 210 - 219 MB |
+
+That is **2.0 KB per object** of one extent, and it is linear over this range. Objects of two
+extents cost 3.0 - 3.2 KB each up to 50,000 objects. Growing 20 objects to 2,000, 10,000 and
+40,000 extents in total gave 9.4 - 10.8, 16.7 - 19.0 and 44.1 - 48.1 MB: **0.91 KB per extent**
+on a follower and 0.98 KB on the leader, which leaves about 1.1 KB per object that does not
+depend on its extents. The leader runs a few percent above the followers.
+
+Those figures are about six times the roughly 310 bytes per object the audit counts, because
+the audit leaves out node slack and allocator overhead (see above) and a Raft voter keeps
+state that a single-node store does not. This section measures the total and does not
+attribute the difference.
+
+The voter's write-ahead log is about 0.3 KB per object of one extent and 1.05 KB per object
+of two extents. Until the first checkpoint a restarting voter replays all of it: 0.2 s to
+listen with a 4.7 MB log, 1.0 s with 13.8 MB, 4.5 s with 55.6 MB (75 - 81 ms per MB). After a
+checkpoint it loads the snapshot instead: 1.0 s with a 61 MB directory.
+
+### Checkpoints and the allocator
+
+A checkpoint copies the catalog, and the process does not give that memory back. With the
+checkpoint trigger at 8 MiB, each checkpoint stepped a voter's RSS up by 10 - 27 MB
+(32 to 51, 30 to 42, 32 to 34 MB at the first; 60 to 87, 57 to 84, 60 to 80 MB at the second)
+and it stayed there. The peak during the run was 84 - 109 MB for a live footprint of about
+60 MB. Forty-five seconds after the writes stopped the voters held 83 - 90 MB; calling
+`malloc_trim(0)` in each (through a debugger) brought them to 56 - 63 MB, so 26 - 27 MB per
+voter, 30 %, was free heap that the allocator was keeping, not live data. At 100,000 objects
+of two extents the same effect showed as RSS 21 % above the linear trend after the first
+checkpoint. Setting `MALLOC_ARENA_MAX=2` and `MALLOC_TRIM_THRESHOLD_=131072` for the whole cluster did not help: the
+steps were as large (51 to 104 MB at the second checkpoint) and the idle RSS before a trim was as high or higher, while
+`malloc_trim(0)` still returned it (to 50 - 56 MB); the retained pages are fragmentation inside the arenas, which only an
+explicit trim gives back. Provision for the live footprint plus 30 - 50 MB for the checkpoint copy.
+
+### A chunkserver
+
+A chunkserver holds the payloads of its pages in memory, in anonymous heap. After writing
+1,000 objects of 1 MiB (1 GiB logical) a chunkserver had 1,039,504 kB of anonymous RSS and
+3.6 MB of file-backed RSS, in one anonymous mapping; its journal is not mapped into the
+process. So the payload is not page cache that the kernel can drop under pressure.
+
+| what was written | RSS per chunkserver |
+|---|---:|
+| idle | 3.8 MB |
+| 1,000 objects of 1 MiB | 1,039,504 kB anonymous (about 1.5 % over the payload) |
+| 5,000 / 10,000 / 25,000 / 50,000 / 100,000 objects of 4 KiB | 24.7 / 45 / 107 / 210 / 415 MB |
+| extents of 1 KiB (20 objects, 40,000 extents) | 1.18 KB per extent |
+
+Each replica holds a full copy of its group's pages, so a group of three replicas needs three
+times the payload across its chunkservers. Reading adds to it: reading back 200 of the 1 MiB
+objects (200 MiB) raised the anonymous RSS by 83 MB, which is the read cache
+(`chunk_read_cache_max_bytes_per_replica`, bound plus the overhead given above).
+
+The only bounds on payload memory today are admission limits: `MATRIXOBJECT_REPLICA_CAPACITY_BYTES`
+(default 256 MiB of page payload per replica, writes are refused beyond it) and
+`MATRIXOBJECT_REPLICA_MAX_PAGES` (default 65,536 page identities). Set the capacity to what the
+host can hold. `docs/chunk-consensus.md` and `docs/replica-segmented-journal.md` record the
+design: live payloads stay resident, and a bounded payload cache is required before a
+tiered store can be the default.
+
+### Sizing
+
+- A chunkserver needs about 1.02 times its capacity setting, plus its read cache bound times 1.056,
+  plus about 50 MB.
+- A metaserver voter needs about 7 MB, plus 1.1 KB per object, plus 0.95 KB per extent, plus
+  30 - 50 MB for a checkpoint copy.
+- 100,000 objects of 4 KiB with one extent each: about 415 MB per chunkserver and 210 - 220 MB per
+  voter; with two extents each, about 380 MB per voter after a checkpoint.
