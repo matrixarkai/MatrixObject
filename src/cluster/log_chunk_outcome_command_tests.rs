@@ -378,7 +378,7 @@ mod log_chunk_outcome_tests {
         // a first grant: the object had no lease and no manifest
         let (mut service, groups) = fixture(1, 0);
         let index = service.placement_commit_index + 1;
-        let first = PlacementOutcome::log_chunk_for_tests(
+        let first = PlacementOutcome::log_chunk_decision(
             &service,
             grant_change(&service, "gateway-a", NOW),
             Some(publication(None, manifest(1, 0, vec![extent(7, 0, 0, EXTENT_FLAG_TAIL, index)]))),
@@ -386,7 +386,7 @@ mod log_chunk_outcome_tests {
         .unwrap();
         through_a_draft_then_committed(&mut service, &groups, &first);
         // a second grant to the same holder: the lease changes from one to another
-        let again = PlacementOutcome::log_chunk_for_tests(&service, grant_change(&service, "gateway-a", NOW + 5), None).unwrap();
+        let again = PlacementOutcome::log_chunk_decision(&service, grant_change(&service, "gateway-a", NOW + 5), None).unwrap();
         through_a_draft_then_committed(&mut service, &groups, &again);
         // a switch: the manifest changes and the lease does not
         let switch = switch_outcome(&service, 4096);
