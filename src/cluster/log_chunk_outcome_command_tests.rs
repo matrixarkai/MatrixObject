@@ -420,6 +420,28 @@ mod log_chunk_outcome_tests {
     }
 
     #[test]
+    fn a_changed_lease_alone_changes_the_snapshot_checksum() {
+        let (mut service, _groups) = fixture(1, 0);
+        first_grant(&mut service, "gateway-a");
+        let snapshot = service.export_snapshot();
+        let base = snapshot.checksum_material_hash();
+        assert_eq!(base, snapshot.checksum);
+        let held = service.writer_leases.get("bucket", "log").unwrap();
+        for changed in [
+            WriterLease { holder: "gateway-b".into(), ..held.clone() },
+            WriterLease { epoch: held.epoch + 1, ..held.clone() },
+            WriterLease { expires_at_ms: held.expires_at_ms + 1, ..held.clone() },
+        ] {
+            let mut other = snapshot.clone();
+            other.writer_leases.set("bucket", "log", &changed);
+            assert_ne!(other.checksum_material_hash(), base, "{changed:?}");
+        }
+        let mut none = snapshot.clone();
+        none.writer_leases = Default::default();
+        assert_ne!(none.checksum_material_hash(), base, "no lease at all");
+    }
+
+    #[test]
     fn an_empty_entry_is_valid_only_as_the_last_log_chunk_entry_still_being_written() {
         let ok = manifest(1, 0, vec![extent(7, 0, 0, EXTENT_FLAG_TAIL, 3)]);
         ok.validate().unwrap();
