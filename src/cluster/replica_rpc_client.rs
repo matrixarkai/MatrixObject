@@ -1463,6 +1463,37 @@ impl RemoteReplicaClient {
         }
     }
 
+    /// Inspect bounded standalone journal progress without reading payloads.
+    pub fn journal_status(
+        &mut self,
+    ) -> Result<super::replica_journal_control::ReplicaJournalStatus, ObjectError> {
+        self.journal_control(super::replica_journal_control::ReplicaJournalControl::STATUS)
+    }
+    /// Start a checkpoint after prior mutations have synchronized. A busy checkpoint
+    /// is refused; after success, poll status until the returned epoch is published.
+    /// Use `checkpoint_is_published` to verify both epoch and journal identity.
+    /// Quiesce writers when a checkpoint must cover an entire measured interval.
+    pub fn checkpoint_journal(
+        &mut self,
+    ) -> Result<super::replica_journal_control::ReplicaJournalStatus, ObjectError> {
+        self.journal_control(super::replica_journal_control::ReplicaJournalControl::CHECKPOINT)
+    }
+    fn journal_control(
+        &mut self,
+        action: u32,
+    ) -> Result<super::replica_journal_control::ReplicaJournalStatus, ObjectError> {
+        let request =
+            ReplicaRequest::JournalControl(super::replica_journal_control::ReplicaJournalControl {
+                version: 1,
+                action,
+            });
+        // Maintenance is local to the connected replica; never route it to a voter.
+        match self.call_one(&request)? {
+            ReplicaReply::JournalStatus(status) => Ok(status),
+            other => Err(unexpected_reply("standalone journal status", &other)),
+        }
+    }
+
     /// Close a namespace or retire a subset of its pinned immutable pages.
     /// Inspect the fence after an uncertain reply before attempting another transition.
     pub fn fence_namespace(&mut self, fence: crate::chunk_namespace_fence::NamespaceFence)

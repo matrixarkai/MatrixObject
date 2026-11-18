@@ -605,11 +605,32 @@ jobs:
             compact_owned_append_keeps_publication_bounded_and_recovers_all_replicas \
             owned_append_keeps_data_writes_bounded_and_recovers_all_replicas \
             star_corpus_scale::star_corpus_workload_verifies_durable_reads_writes_and_appends \
+            star_corpus_scale::checkpoint_corpus_measurement::checkpoint_corpus_measurement_drains_both_layouts_and_recovers \
             star_corpus_scale::checkpoint_interference::checkpoint_interference_preserves_three_durable_append_copies \
             star_recovery_profiles::star_repair_and_append_work_across_local_recovery_profiles \
             segmented_star_replicas_keep_objects_through_metadata_failover_and_full_restart
           do
             grep -Fxq "test star_append_amplification::${test_name} ... ok" /tmp/star-append-cost.log
+          done
+
+      - name: checkpoint buffering preserves bytes and propagates final flush failures
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib journal_checkpoint_buffer_ -- --test-threads=1 | tee /tmp/checkpoint-buffer.log
+          grep -q '^test result: ok. 3 passed; 0 failed;' /tmp/checkpoint-buffer.log
+          for test_name in journal_checkpoint_buffer_preserves_fragmented_bytes_and_checksum journal_checkpoint_buffer_final_write_and_flush_errors_propagate journal_checkpoint_buffer_rejects_a_changed_stream_length
+          do
+            grep -Fq "${test_name} ... ok" /tmp/checkpoint-buffer.log
+          done
+
+      - name: standalone journal control validates bounded progress and publication
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib journal_control_ -- --test-threads=1 | tee /tmp/journal-control.log
+          grep -q '^test result: ok. 3 passed; 0 failed;' /tmp/journal-control.log
+          for test_name in journal_control_codecs_are_canonical_bounded_and_versioned journal_control_tcp_checkpoint_reports_published_epoch_and_recovers_tail journal_control_memory_refusal_does_not_fence_ordinary_requests
+          do
+            grep -Fq "${test_name} ... ok" /tmp/journal-control.log
           done
 
       - name: journaled append decisions preserve binary outcomes and recovery

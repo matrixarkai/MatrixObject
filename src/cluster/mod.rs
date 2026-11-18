@@ -236,6 +236,7 @@ mod replica_image;
 mod replica_journal;
 #[cfg(feature = "replica-server")]
 mod replica_journal_backend;
+pub mod replica_journal_control;
 #[cfg(feature = "replica-server")]
 mod replica_segmented_journal;
 

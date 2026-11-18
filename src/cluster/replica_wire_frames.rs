@@ -109,6 +109,8 @@ pub enum RequestCode {
     DigestChunkBatch = 24,
     FenceNamespace = 25,
     ReadNamespaceFence = 26,
+    /// Inspect or explicitly checkpoint a standalone journal. Bounded protobuf.
+    JournalControl = 27,
 }
 
 impl RequestCode {
@@ -145,6 +147,7 @@ impl RequestCode {
             24 => Some(RequestCode::DigestChunkBatch),
             25 => Some(RequestCode::FenceNamespace),
             26 => Some(RequestCode::ReadNamespaceFence),
+            27 => Some(RequestCode::JournalControl),
             _ => None,
         }
     }

@@ -20,6 +20,8 @@ const MAGIC_ZERO_TAIL: &[u8; 4] = b"MOZ2";
 const FRAME_END: u8 = 0xA5;
 
 pub(super) struct ReplicaJournal {
+    journal_id: [u8; 16],
+    checkpoint_epoch: u64,
     file: File,
     // Stable across atomic journal replacement; retain the journal lock too.
     _lock: Option<File>,
@@ -107,7 +109,25 @@ fn outcome_header(payload: &[u8], chain: bool) -> io::Result<[u8; HEADER_LEN]> {
     Ok(header)
 }
 
+fn new_journal_id() -> io::Result<[u8; 16]> {
+    let mut id = [0; 16];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut id)
+        .map_err(|_| invalid("journal identity generation failed"))?;
+    Ok(id)
+}
+
 impl ReplicaJournal {
+    pub(super) fn journal_id(&self) -> &[u8] {
+        &self.journal_id
+    }
+    pub(super) fn checkpoint_epoch(&self) -> u64 {
+        self.checkpoint_epoch
+    }
+
+    pub(super) fn checkpoint_bytes(&self) -> u64 {
+        self.bytes_since_checkpoint
+    }
+
     #[cfg(test)]
     pub(super) fn open(path: &Path, service: &mut MatrixReplicaService) -> io::Result<Self> {
         Self::open_with_limits(path, service, usize::MAX)
@@ -318,6 +338,8 @@ impl ReplicaJournal {
             file.seek(SeekFrom::End(0))?;
         }
         let mut journal = Self {
+            journal_id: new_journal_id()?,
+            checkpoint_epoch: 0,
             file,
             _lock: Some(lock),
             path,
@@ -607,6 +629,11 @@ impl ReplicaJournal {
 
     #[cfg(unix)]
     pub(super) fn checkpoint(&mut self, service: &MatrixReplicaService) -> io::Result<()> {
+        let epoch = self
+            .checkpoint_epoch
+            .checked_add(1)
+            .ok_or_else(|| invalid("checkpoint epoch overflow"))?;
+
         let mut stream = super::replica_image::capture(service.export_snapshot(), (1, 1))
             .map_err(invalid)?
             .ok_or_else(|| invalid("replica checkpoint exceeds stream bounds"))?;
@@ -620,11 +647,7 @@ impl ReplicaJournal {
             .open(&temporary)?;
         fs2::FileExt::try_lock_exclusive(&replacement)?;
         replacement.write_all(&[0; BASE_HEADER_LEN])?;
-        let mut output = Digest::new(&mut replacement);
-        if io::copy(&mut stream, &mut output)? != length {
-            return Err(invalid("replica checkpoint stream length changed"));
-        }
-        let checksum = output.hash;
+        let checksum = write_checkpoint_stream(&mut stream, length, &mut replacement)?;
         replacement.seek(SeekFrom::Start(0))?;
         replacement.write_all(&base_header(length, checksum))?;
         replacement.sync_all()?;
@@ -639,6 +662,7 @@ impl ReplicaJournal {
         self.bytes_since_checkpoint = 0;
         File::open(self.path.parent().unwrap())?.sync_all()?;
         self.mark_initialized()?;
+        self.checkpoint_epoch = epoch;
         Ok(())
     }
 
@@ -650,6 +674,31 @@ impl ReplicaJournal {
         ))
     }
 }
+
+// The encoder may yield individual metadata fields as short reads. Coalesce
+// those fragments without collecting the checkpoint, and flush before its header
+// is rewritten or its file is synchronized and published.
+#[cfg(unix)]
+fn write_checkpoint_stream(
+    stream: &mut impl Read,
+    length: u64,
+    target: &mut impl Write,
+) -> io::Result<u64> {
+    let mut buffered = std::io::BufWriter::with_capacity(64 * 1024, target);
+    let checksum = {
+        let mut output = Digest::new(&mut buffered);
+        if io::copy(stream, &mut output)? != length {
+            return Err(invalid("replica checkpoint stream length changed"));
+        }
+        output.hash
+    };
+    buffered.flush()?;
+    Ok(checksum)
+}
+
+#[cfg(all(test, unix))]
+#[path = "replica_checkpoint_stream_tests.rs"]
+mod checkpoint_stream_tests;
 
 const BASE_HEADER_LEN: usize = 32;
 fn sibling(path: &Path, suffix: &str) -> PathBuf {
@@ -754,6 +803,8 @@ impl<T: Write> Write for Digest<T> {
 impl ReplicaJournal {
     pub(super) fn read_only_for_test(path: &Path) -> Self {
         Self {
+            journal_id: new_journal_id().unwrap(),
+            checkpoint_epoch: 0,
             file: File::open(path).unwrap(),
             _lock: None,
             path: path.to_path_buf(),

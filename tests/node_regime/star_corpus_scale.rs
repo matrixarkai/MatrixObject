@@ -68,6 +68,18 @@ fn phase(
     id: u64,
     operation: Operation,
 ) -> Vec<(PageId, usize)> {
+    measured_phase(fixture, corpus, clients, operations, id, operation, false)
+}
+
+fn measured_phase(
+    fixture: &Fixture,
+    corpus: usize,
+    clients: usize,
+    operations: usize,
+    id: u64,
+    operation: Operation,
+    checkpoint_io: bool,
+) -> Vec<(PageId, usize)> {
     // Each appender owns one page. Its starting size and operation count are the
     // same at every corpus size; unrelated pages are the independent variable.
     let mut setup = replicas(&fixture.chunk_endpoints);
@@ -164,7 +176,15 @@ fn phase(
         })
         .collect::<Vec<_>>();
     assert!(counts.windows(2).all(|pair| pair[0] == pair[1]));
-    let before = fixture.data_journals().iter().sum::<u64>();
+    if checkpoint_io {
+        checkpoint_corpus_measurement::barrier(fixture);
+    }
+    let io_before = checkpoint_io.then(|| checkpoint_corpus_measurement::io_counts(fixture));
+    let before = if checkpoint_io {
+        0
+    } else {
+        fixture.data_journals().iter().sum::<u64>()
+    };
     let cpu = cpu_ticks(fixture);
     let load = host_load();
     let began = Instant::now();
@@ -175,13 +195,22 @@ fn phase(
         done_rx.recv_timeout(Duration::from_secs(120)).unwrap();
     }
     let elapsed = began.elapsed();
+    if checkpoint_io && !matches!(operation, Operation::Read) {
+        checkpoint_corpus_measurement::barrier(fixture);
+    }
+    let cycle = began.elapsed();
     let ticks = cpu_ticks(fixture).checked_sub(cpu).unwrap();
-    let journal = fixture
-        .data_journals()
-        .iter()
-        .sum::<u64>()
-        .checked_sub(before)
-        .unwrap();
+    let io_after = checkpoint_io.then(|| checkpoint_corpus_measurement::io_counts(fixture));
+    let journal = if checkpoint_io {
+        0
+    } else {
+        fixture
+            .data_journals()
+            .iter()
+            .sum::<u64>()
+            .checked_sub(before)
+            .unwrap()
+    };
     for finish in finishers {
         finish.send(()).unwrap();
     }
@@ -194,6 +223,13 @@ fn phase(
     }
     samples.sort_unstable();
     assert_eq!(samples.len(), clients * operations);
+    if let (Some(before), Some(after)) = (io_before, io_after) {
+        checkpoint_corpus_measurement::report(
+            fixture, corpus, clients, operation, &samples, elapsed, cycle, ticks, before, after,
+            &load,
+        );
+        return written;
+    }
     if matches!(operation, Operation::Read) {
         assert_eq!(journal, 0);
     } else {
@@ -239,11 +275,32 @@ fn run_workload(
     group_commit: bool,
     operations_to_measure: &[Operation],
 ) {
+    run_storage_workload(
+        corpora,
+        concurrency,
+        operations,
+        group_commit,
+        operations_to_measure,
+        None,
+    );
+}
+
+fn run_storage_workload(
+    corpora: &[usize],
+    concurrency: &[usize],
+    operations: usize,
+    group_commit: bool,
+    operations_to_measure: &[Operation],
+    segmented: Option<bool>,
+) {
     for &corpus in corpora {
         assert!((1..=32768).contains(&corpus));
         // Matching phases have exactly the same prior benchmark traffic at
         // every background size. Earlier corpus cases cannot contaminate them.
-        let mut fixture = Fixture::with_group_commit(group_commit);
+        let mut fixture = match segmented {
+            Some(enabled) => Fixture::with_storage(group_commit, enabled, Some(1024 * 1024)),
+            None => Fixture::with_group_commit(group_commit),
+        };
         let mut seeded = 0;
         let mut id = 10;
         let mut verify = Vec::new();
@@ -266,7 +323,11 @@ fn run_workload(
             assert!((1..=8192).contains(&operations));
             for &operation in operations_to_measure {
                 assert!(matches!(operation, Operation::Read) || operations <= 128);
-                let written = phase(&fixture, corpus, clients, operations, id, operation);
+                let written = if segmented.is_some() {
+                    measured_phase(&fixture, corpus, clients, operations, id, operation, true)
+                } else {
+                    phase(&fixture, corpus, clients, operations, id, operation)
+                };
                 // Bound retained verification metadata to first/last acknowledged
                 // pages per phase; all foreground reads verify their full payload.
                 if let Some(first) = written.first() {
@@ -385,3 +446,6 @@ fn measure_star_sustained_reads_with_shared_sync() {
 
 #[path = "star_checkpoint_interference.rs"]
 mod checkpoint_interference;
+
+#[path = "checkpoint_corpus_measurement.rs"]
+mod checkpoint_corpus_measurement;

@@ -929,6 +929,37 @@ fn segmented_star_replicas_keep_objects_through_metadata_failover_and_full_resta
         expected.extend(suffix);
     }
     verify_replicas(&fixture, &manifest, &expected);
+    let mut journal_ids = std::collections::BTreeSet::new();
+    for endpoint in &fixture.chunk_endpoints {
+        let mut node = RemoteReplicaClient::connect(endpoint, &options.replica).unwrap();
+        let until = Instant::now() + Duration::from_secs(30);
+        while node.journal_status().unwrap().checkpoint_in_flight {
+            assert!(Instant::now() < until, "automatic checkpoint did not drain");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let checkpoint = node.checkpoint_journal().unwrap();
+        assert!(journal_ids.insert(checkpoint.journal_id.clone()));
+        loop {
+            let status = node.journal_status().unwrap();
+            if status.checkpoint_is_published(&checkpoint).unwrap() && !status.checkpoint_in_flight
+            {
+                assert_eq!(status.pending_records, 0);
+                assert_eq!(status.bytes_since_checkpoint, 0);
+                // Observation itself must not append maintenance records.
+                assert_eq!(
+                    node.journal_status().unwrap().journal_bytes,
+                    status.journal_bytes
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "requested checkpoint did not publish"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    assert_eq!(journal_ids.len(), 3);
     fixture.metadata.start(leader);
     drop(client);
     drop(keep_alive);
