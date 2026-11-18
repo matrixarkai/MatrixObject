@@ -2132,27 +2132,28 @@ impl RemoteMetaClient {
                     match Self::connect(endpoint, &options) {
                         Ok(mut next) => {
                             if let Some(expected) = &self.group_identity {
-                                match next.call_one(&MetaRequest::GroupIdentity) {
-                                    MetaCallOutcome::Answered(MetaReply::GroupIdentity(actual))
-                                        if expected.same_group(&actual) =>
-                                    {
-                                        next.group_identity = Some(expected.clone())
+                                match next.exchange(&MetaRequest::GroupIdentity, MetaRequestCode::GroupIdentity) {
+                                    Ok(Ok(MetaReply::GroupIdentity(actual))) if expected.same_group(&actual) => {
+                                        next.group_identity = Some(expected.clone());
                                     }
-                                    MetaCallOutcome::Answered(_) => {
-                                        return (
-                                            MetaCallOutcome::Refused(ObjectError::PreconditionFailed(
-                                                "metadata voter configuration does not match catalog"
-                                                    .into(),
-                                            )),
-                                            unadmitted,
-                                        )
+                                    Ok(Ok(MetaReply::NotLeader)) => {
+                                        // No application request was sent. A follower's typed
+                                        // refusal does not end the search for a verified leader.
+                                        last = not_leader();
+                                        refusals += 1;
+                                        continue;
                                     }
-                                    MetaCallOutcome::Unreachable(error) => {
+                                    Ok(Ok(_)) => {
+                                        return (MetaCallOutcome::Refused(ObjectError::PreconditionFailed(
+                                            "metadata voter configuration does not match catalog".into(),
+                                        )), unadmitted);
+                                    }
+                                    Err(error) => {
                                         last = MetaCallOutcome::Unreachable(error);
                                         unreachable += 1;
                                         continue;
                                     }
-                                    outcome => return (outcome, unadmitted),
+                                    Ok(Err(error)) => return (MetaCallOutcome::Refused(error), unadmitted),
                                 }
                             }
                             next.catalog = Some((endpoints.clone(), options.clone()));
@@ -3239,3 +3240,7 @@ mod digest_memo_tests {
         assert_eq!(memo.lookup(&other[0]).map(|stored| stored.digest), Some(digest(&other[0])));
     }
 }
+
+#[cfg(test)]
+#[path = "metadata_voter_probe_tests.rs"]
+mod metadata_voter_probe_tests;

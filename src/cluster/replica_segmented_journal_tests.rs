@@ -91,6 +91,10 @@ fn segmented_replica_group_syncs_once_and_reopens_exact_state() {
     let mut recovered = MatrixReplicaService::new();
     let journal = SegmentedReplicaJournal::open(&dir.path(), &mut recovered, 1024).unwrap();
     assert_eq!(recovered.export_snapshot(), expected);
+    assert!(
+        journal.checkpoint_due(1024),
+        "recovery must retain uncheckpointed mutation debt"
+    );
     drop(journal);
 }
 #[test]

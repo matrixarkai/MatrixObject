@@ -85,13 +85,13 @@ impl SegmentedReplicaJournal {
         }
         let log = Arc::new(SegmentedOutcomeLog::open(path, DEFAULT_CAPACITY_BYTES)?);
         let loaded = replica_checkpoint_catalog::latest(&log, max_pages)?;
-        let (state, epoch) = match loaded {
+        let (state, epoch, bytes_since_checkpoint) = match loaded {
             Some(loaded) => {
                 let epoch = loaded.header.epoch;
                 let mut state = CheckpointState::from_checkpoint(loaded)?;
-                state.fold_available(&log, max_pages)?;
+                let bytes = state.fold_available(&log, max_pages)?;
                 state.restore(&log, service)?;
-                (Some(state), epoch)
+                (Some(state), epoch, bytes)
             }
             None => {
                 let mut cursor = log.metadata_cursor_after(None)?;
@@ -102,7 +102,7 @@ impl SegmentedReplicaJournal {
                         ));
                     }
                 }
-                (None, 0)
+                (None, 0, 0)
             }
         };
         let cut = state.as_ref().and_then(|s| s.cut.clone());
@@ -115,7 +115,7 @@ impl SegmentedReplicaJournal {
             pending_bytes: 0,
             context: None,
             revision: 0,
-            bytes_since_checkpoint: 0,
+            bytes_since_checkpoint,
             publication: Arc::new(Mutex::new(epoch)),
             failure: Arc::new(Mutex::new(None)),
             job: None,

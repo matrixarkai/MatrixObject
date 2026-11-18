@@ -32,7 +32,8 @@ Segments default to 64 MiB. A foreground group contains at most 64 decisions and
 8 MiB of encoded outcomes. No batching delay is added. Its payload, decisions,
 and scalar replica metadata share one data synchronization before acknowledgment.
 A larger group is split, retaining the exact scalar context of each sub-group.
-Checkpoint fragments do not count as queued foreground mutations.
+Checkpoint fragments do not count as queued foreground mutations. Recovery retains
+the uncheckpointed mutation bytes when calculating the next checkpoint threshold.
 
 ## Publication and recovery
 

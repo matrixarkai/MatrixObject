@@ -137,12 +137,18 @@ impl CheckpointState {
         &mut self,
         log: &SegmentedOutcomeLog,
         max_pages: usize,
-    ) -> io::Result<()> {
+    ) -> io::Result<u64> {
         let mut cursor = log.metadata_cursor_after(self.cut.as_ref())?;
+        let mut bytes = 0u64;
         while let Some(record) = cursor.next_record()? {
             self.fold_record(&record, max_pages)?;
+            if record.batch.version != 2 {
+                bytes = bytes
+                    .checked_add(record.position.length)
+                    .ok_or_else(|| invalid("checkpoint accounting overflow"))?;
+            }
         }
-        Ok(())
+        Ok(bytes)
     }
     /// Non-journaled service counters/modes are captured at checkpoint start.
     /// Keep the independently replayed maps, rather than pinning live maps.
