@@ -295,13 +295,17 @@ impl SegmentedReplicaJournal {
                 .pages
                 .insert(id.clone(), CatalogPage { metadata, spans });
         }
-        let prepared = replica_checkpoint_catalog::prepare(
+        let metadata = state.metadata_bytes()?;
+        let prepared = super::replica_checkpoint_index::prepare(
             &self.log,
             &state.catalog,
-            state.metadata_bytes()?,
+            &mut state.index,
+            &mut state.dirty_pages,
+            metadata,
             self.cut.clone(),
             epoch,
             true,
+            &|| Ok(()),
         )?;
         let publication = self
             .publication
@@ -365,10 +369,13 @@ impl SegmentedReplicaJournal {
                             state.fold_through(&log, cut, max_pages)?;
                         }
                         state.set_scalars(scalars)?;
-                        let prepared = replica_checkpoint_catalog::prepare_checked(
+                        let metadata = state.metadata_bytes()?;
+                        let prepared = super::replica_checkpoint_index::prepare(
                             &log,
                             &state.catalog,
-                            state.metadata_bytes()?,
+                            &mut state.index,
+                            &mut state.dirty_pages,
+                            metadata,
                             cut,
                             epoch,
                             false,

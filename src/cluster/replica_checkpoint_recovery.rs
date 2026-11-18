@@ -8,7 +8,7 @@ use crate::durable_payload::{
     outcome_segments::SegmentedOutcomeLog,
 };
 use crate::{MatrixReplicaService, ReplicaServiceSnapshot};
-use std::{io, sync::Arc};
+use std::{collections::BTreeSet, io, sync::Arc};
 fn invalid(error: impl ToString) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
@@ -58,6 +58,8 @@ pub(super) struct CheckpointState {
     pub catalog: PageCatalog,
     pub metadata: ReplicaServiceSnapshot,
     pub cut: Option<StoredOutcomePosition>,
+    pub index: Option<super::replica_checkpoint_index::IndexState>,
+    pub dirty_pages: BTreeSet<crate::PageId>,
 }
 impl CheckpointState {
     pub fn new(metadata: ReplicaServiceSnapshot) -> io::Result<Self> {
@@ -73,6 +75,8 @@ impl CheckpointState {
             catalog: PageCatalog::default(),
             metadata,
             cut: None,
+            index: None,
+            dirty_pages: BTreeSet::new(),
         })
     }
     pub fn from_checkpoint(loaded: LoadedCheckpoint) -> io::Result<Self> {
@@ -85,6 +89,8 @@ impl CheckpointState {
             catalog: loaded.catalog,
             metadata,
             cut: loaded.commit.through,
+            index: loaded.index,
+            dirty_pages: BTreeSet::new(),
         })
     }
     pub fn fold_record(
@@ -104,7 +110,26 @@ impl CheckpointState {
         if !scalars.pages.is_empty() || has_maps(&scalars) {
             return Err(invalid("replica scalar context contains maps"));
         }
+        let mut old_extents = BTreeSet::new();
+        for decision in &record.batch.decisions {
+            if let Some(page) = &decision.page {
+                let id = page.page_id().map_err(invalid)?;
+                if self.index.is_some() {
+                    if let Some(old) = self.catalog.pages.get(&id) {
+                        for span in &old.spans {
+                            old_extents.insert(super::replica_checkpoint_catalog::extent_key(
+                                &span.extent,
+                            )?);
+                        }
+                    }
+                }
+                self.dirty_pages.insert(id);
+            }
+        }
         self.catalog.fold(record)?;
+        if let Some(index) = &mut self.index {
+            index.prune(&old_extents);
+        }
         if self.catalog.pages.len() > max_pages {
             return Err(invalid("replica page count exceeds configured limit"));
         }
