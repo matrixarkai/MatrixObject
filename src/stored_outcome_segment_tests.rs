@@ -66,6 +66,48 @@ fn full(log: &SegmentedOutcomeLog) -> Vec<StoredOutcomePosition> {
         .collect()
 }
 #[test]
+fn outcome_segments_checkpoint_cut_orders_owned_positions_and_refuses_invalid_bounds() {
+    let _large = LARGE.lock().unwrap_or_else(|error| error.into_inner());
+    let dir = Directory::new();
+    let log = SegmentedOutcomeLog::open(dir.path(), MIN_SEGMENT_BYTES).unwrap();
+    let mut positions = full(&log);
+    positions.push(
+        log.append_page(&outcome(7, 3 * 1024 * 1024))
+            .unwrap()
+            .position,
+    );
+    let first = positions.first().unwrap();
+    let last = positions.last().unwrap();
+    assert_ne!(first.store_id, last.store_id);
+    assert_eq!(log.checkpoint_cut(None, None).unwrap(), None);
+    assert_eq!(
+        log.checkpoint_cut(Some(first), None).unwrap().as_ref(),
+        Some(first)
+    );
+    for (a, b) in [(first, last), (last, first), (last, last)] {
+        assert_eq!(
+            log.checkpoint_cut(Some(a), Some(b)).unwrap().as_ref(),
+            Some(last)
+        );
+    }
+    for change in 0..6 {
+        let mut invalid = last.clone();
+        match change {
+            0 => invalid.version = 2,
+            1 => invalid.store_id[0] ^= 1,
+            2 => invalid.offset += 1,
+            3 => invalid.length = 0,
+            4 => invalid.offset += invalid.length,
+            _ => invalid.offset = u64::MAX,
+        }
+        assert!(log.checkpoint_cut(Some(first), Some(&invalid)).is_err());
+    }
+    let mut conflicting = first.clone();
+    conflicting.length += SECTOR_BYTES as u64;
+    assert!(log.checkpoint_cut(Some(first), Some(&conflicting)).is_err());
+    log.append_page(&outcome(8, 1)).unwrap();
+}
+#[test]
 fn outcome_segments_one_sync_preserves_positions_and_binary_metadata() {
     let dir = Directory::new();
     let log = SegmentedOutcomeLog::open(dir.path(), MIN_SEGMENT_BYTES).unwrap();

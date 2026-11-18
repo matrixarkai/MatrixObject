@@ -186,6 +186,12 @@ impl SegmentedReplicaJournal {
             {
                 Some(done) => {
                     self.published_epoch = done.epoch;
+                    // Without a newer durable mutation, the captured physical
+                    // boundary supersedes the previous foreground position,
+                    // whose segment may now have been retired.
+                    if self.bytes_since_checkpoint == done.covered_bytes {
+                        self.cut = done.state.cut.clone();
+                    }
                     self.state = Some(done.state);
                     self.bytes_since_checkpoint = self
                         .bytes_since_checkpoint
@@ -391,10 +397,15 @@ impl SegmentedReplicaJournal {
         if self.job.is_some() {
             return Ok(());
         }
+        let cut = self.log.checkpoint_cut(
+            self.cut.as_ref(),
+            self.state
+                .as_ref()
+                .and_then(|state| state.publication.as_ref().map(|(_, position)| position)),
+        )?;
         let Some(mut state) = self.state.take() else {
             return Err(invalid("checkpoint worker state missing"));
         };
-        let cut = self.cut.clone();
         let scalars = replica_checkpoint_recovery::capture_scalars(service, &self.empty);
         let covered_bytes = self.bytes_since_checkpoint;
         let log = self.log.clone();

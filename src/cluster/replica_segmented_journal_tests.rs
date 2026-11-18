@@ -10,6 +10,114 @@ use std::{
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn segmented_checkpoint_advances_storage_cut_and_reclaims_quiet_history() {
+    let dir = Dir::new();
+    let mut live = service();
+    let mut journal = SegmentedReplicaJournal::open_with_settings(
+        &dir.path(),
+        &mut live,
+        1024,
+        crate::durable_payload::outcome_segments::MIN_SEGMENT_BYTES,
+        2,
+    )
+    .unwrap();
+    append(&mut journal, &mut live, 100, 0, b"cold", true);
+    let log = journal.log.clone();
+    let reader = log.metadata_cursor_after(None).unwrap();
+    let fragment = CheckpointFragment {
+        version: 1,
+        checkpoint_id: log.store_id().to_vec(),
+        kind: CheckpointFragment::PAYLOAD,
+        ordinal: 0,
+        data: vec![0x93; CheckpointFragment::MAX_DATA_BYTES],
+    };
+    let mut fence_position = None;
+    for _ in 0..64 {
+        if log.retained_segment_count().unwrap() == 2 && fence_position.is_none() {
+            let fence = crate::chunk_namespace_fence::NamespaceFence {
+                version: 1,
+                volume_id: 1,
+                chunk_id: 999,
+                generation: 1,
+                pages: Vec::new(),
+            };
+            let outcome = NamespaceFenceOutcome::decide(&live, fence).unwrap();
+            outcome.apply(&mut live).unwrap();
+            let context = journal.capture_context(&live);
+            journal
+                .append_namespace_owned(outcome, context, true)
+                .unwrap();
+            fence_position = journal.cut.clone();
+        }
+        if log.retained_segment_count().unwrap() >= 3 {
+            break;
+        }
+        log.append_decided_batch(&[DecidedMutation::CheckpointFragment(&fragment)])
+            .unwrap();
+    }
+    let fence_position = fence_position.expect("a metadata-only mutation in the middle segment");
+    assert_eq!(log.retained_segment_count().unwrap(), 3);
+    journal.checkpoint(&live).unwrap();
+    finish(&mut journal);
+    assert_eq!(log.retained_segment_count().unwrap(), 3);
+    let first_root = journal
+        .state
+        .as_ref()
+        .unwrap()
+        .publication
+        .as_ref()
+        .unwrap()
+        .1
+        .clone();
+    drop(reader);
+    let expected = live.export_snapshot();
+    journal.checkpoint_requested(&live).unwrap();
+    finish(&mut journal);
+    assert_eq!(
+        journal.state.as_ref().unwrap().cut.as_ref(),
+        Some(&first_root)
+    );
+    assert!(
+        log.retained_segment_count().unwrap() < 3,
+        "a quiet checkpoint must retire storage-only history before its captured root"
+    );
+    assert!(
+        log.read_metadata(&fence_position).is_err(),
+        "the old mutation record must be retired"
+    );
+    journal.checkpoint_requested(&live).unwrap();
+    finish(&mut journal);
+    assert_eq!(live.export_snapshot(), expected);
+    drop(journal);
+    drop(log);
+    let mut restored = service();
+    let mut journal = SegmentedReplicaJournal::open_with_settings(
+        &dir.path(),
+        &mut restored,
+        1024,
+        crate::durable_payload::outcome_segments::MIN_SEGMENT_BYTES,
+        2,
+    )
+    .unwrap();
+    assert_eq!(restored.export_snapshot(), expected);
+    append(&mut journal, &mut restored, 100, 4, b"-tail", true);
+    journal.checkpoint_requested(&restored).unwrap();
+    finish(&mut journal);
+    let expected = restored.export_snapshot();
+    drop(journal);
+    let mut restored = service();
+    let _journal = SegmentedReplicaJournal::open_with_settings(
+        &dir.path(),
+        &mut restored,
+        1024,
+        crate::durable_payload::outcome_segments::MIN_SEGMENT_BYTES,
+        2,
+    )
+    .unwrap();
+    assert_eq!(restored.export_snapshot(), expected);
+}
+
+#[test]
 fn segmented_replica_retirement_preserves_cold_payloads_and_reopens_overwritten_pages() {
     let dir = Dir::new();
     let mut live = service();

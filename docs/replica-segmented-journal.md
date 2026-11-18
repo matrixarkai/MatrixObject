@@ -75,7 +75,14 @@ default journal layout and its stored format are unchanged.
 
 Background checkpoints retain their captured replay position. Recovery folds
 subsequent mutations as metadata and materializes only the resulting pages.
-It verifies the newest published checkpoint; corruption is refused rather than
+The captured position is the later of the last durable mutation and the previous
+published checkpoint. The worker folds through that boundary before publication,
+including any intervening mutations. This lets repeated quiet checkpoints advance
+past obsolete storage-only records. Boundary capture uses the in-memory segment
+order and performs no file reads or catalog traversal under the replica mutex.
+A completed worker advances the cached boundary only when no newer durable
+mutation has arrived; otherwise the newer mutation remains the next replay cut.
+Recovery verifies the newest published checkpoint; corruption is refused rather than
 silently falling back to an older checkpoint. File identity, exclusive ownership,
 segment bounds, payload sector digests, and resulting page checksums are checked.
 

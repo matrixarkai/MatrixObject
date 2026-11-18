@@ -173,7 +173,7 @@ struct ManifestAppend {
 /// appends synchronize the selected segment once. Rollover also synchronizes a
 /// new empty segment and persists a fixed-size chained manifest record before
 /// any mutation is written there. Old positions remain valid across rollover.
-/// This does not reclaim files or replace the server's journal/checkpoint path.
+/// Checkpoint-aware replica backends can retire unreachable sealed files.
 pub struct SegmentedOutcomeLog {
     path: PathBuf,
     _anchor: PayloadExtentStore,
@@ -832,6 +832,60 @@ impl SegmentedOutcomeLog {
         self.handle(&extent.store_id)?
             .read_payload_range(extent, offset, length)
     }
+    /// Choose a boundary from already validated journal positions without file
+    /// I/O. The checkpoint worker verifies record contents while folding through
+    /// the chosen cut. Segment numbers, rather than random identities, order it.
+    pub(crate) fn checkpoint_cut(
+        &self,
+        mutation: Option<&StoredOutcomePosition>,
+        publication: Option<&StoredOutcomePosition>,
+    ) -> io::Result<Option<StoredOutcomePosition>> {
+        self.healthy()?;
+        let index = self
+            .index
+            .read()
+            .map_err(|_| invalid("segment index is poisoned"))?;
+        let mut latest: Option<&StoredOutcomePosition> = None;
+        let mut latest_key = None;
+        for position in [mutation, publication].into_iter().flatten() {
+            let number = *index
+                .by_id
+                .get(&position.store_id)
+                .ok_or_else(|| invalid("checkpoint cut is not owned"))?;
+            let entry = &index.entries[&number];
+            let limit = if entry.sealed_length == 0 {
+                index.active.length()
+            } else {
+                entry.sealed_length
+            };
+            let end = position
+                .offset
+                .checked_add(position.length)
+                .ok_or_else(|| invalid("checkpoint cut overflows"))?;
+            if position.version != 1
+                || position.store_id.len() != 16
+                || position.offset < SECTOR_BYTES as u64
+                || position.offset % SECTOR_BYTES as u64 != 0
+                || position.length == 0
+                || position.length % SECTOR_BYTES as u64 != 0
+                || end > limit
+            {
+                return Err(invalid("checkpoint cut is outside committed records"));
+            }
+            let key = (number, position.offset);
+            if latest_key == Some(key)
+                && latest.is_some_and(|previous| previous.length != position.length)
+            {
+                return Err(invalid("checkpoint cuts disagree on record length"));
+            }
+            if latest_key.map_or(true, |previous| key > previous) {
+                latest_key = Some(key);
+                latest = Some(position);
+            }
+        }
+        Ok(latest.cloned())
+    }
+
     /// Walk a committed prefix captured at entry, excluding a supplied last-applied record.
     /// Metadata is checked; payload integrity is established only by read/replay.
     pub fn metadata_cursor_after(

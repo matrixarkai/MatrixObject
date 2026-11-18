@@ -651,6 +651,7 @@ jobs:
           set -euo pipefail
           cargo test --locked --all-features --lib durable_payload -- --test-threads=1 | tee /tmp/payload-unit.log
           grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/payload-unit.log
+          grep -Fq 'outcome_segments_checkpoint_cut_orders_owned_positions_and_refuses_invalid_bounds ... ok' /tmp/payload-unit.log
           for test_name in outcome_segments_retention_keeps_shared_payloads_skips_deleted_numbers_and_rolls_over outcome_segments_retention_reader_pins_refuse_publication_without_fencing outcome_segments_retention_interrupted_preparation_and_rollover_leave_old_manifest outcome_segments_retention_uncertain_publication_fences_and_restarts_before_cleanup outcome_segments_retention_retries_marker_only_cleanup_and_quarantines_foreign_identity
           do
             grep -Fq "${test_name} ... ok" /tmp/payload-unit.log
@@ -694,6 +695,7 @@ jobs:
           grep -Fq 'checkpoint_index_retention_preserves_every_duplicate_extent_record_after_reload ... ok' /tmp/replica-catalog.log
           cargo test --locked --all-features --lib segmented_ -- --test-threads=1 | tee /tmp/replica-segmented.log
           grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/replica-segmented.log
+          grep -Fq 'segmented_checkpoint_advances_storage_cut_and_reclaims_quiet_history ... ok' /tmp/replica-segmented.log
           for test_name in segmented_replica_background_checkpoint_preserves_concurrent_grouped_tail segmented_replica_install_supersedes_background_checkpoint_and_keeps_new_tail segmented_replica_batch_overflow_keeps_context_for_each_committed_group segmented_journal_recovery_policy_is_applied_after_checkpoint_restore segmented_replica_retirement_preserves_cold_payloads_and_reopens_overwritten_pages
           do
             grep -Fq "${test_name} ... ok" /tmp/replica-segmented.log
