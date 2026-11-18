@@ -358,6 +358,16 @@ impl LogChunk {
     pub fn durable_length(&self) -> u64 {
         self.durable_length
     }
+    /// A second handle on the file and the length it covers right now: syncing the handle makes at
+    /// least that many bytes durable, and needs neither the chunk nor any lock that guards it.
+    pub fn sync_handle(&self) -> io::Result<(File, u64)> {
+        Ok((self.file.try_clone()?, self.length()))
+    }
+    /// Record that a sync of a handle taken when the chunk was `length` long has finished. A
+    /// truncate in between can only have lowered the length, so the value is clamped to it.
+    pub fn note_durable(&mut self, length: u64) {
+        self.durable_length = self.durable_length.max(length.min(self.length()));
+    }
     pub fn epoch(&self) -> u64 {
         self.epoch
     }

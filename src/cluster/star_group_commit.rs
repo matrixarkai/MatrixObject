@@ -50,7 +50,39 @@ pub(super) fn eligible(request: &ReplicaRequest) -> bool {
             | ReplicaRequest::DiscardChunk { .. }
             | ReplicaRequest::DiscardChunkIfSequence { .. }
             | ReplicaRequest::FenceNamespace(_)
-    )
+    ) || matches!(request, ReplicaRequest::LogOp(op) if op.is_mutation())
+}
+
+/// Hand out handles for the chunks this group dirtied. Called with the replica lock held.
+fn take_log_syncs(guard: &mut NodeReplica) -> Result<Vec<crate::cluster::log_chunk_store::PendingSync>, ObjectError> {
+    match guard.log_chunks.as_mut() {
+        Some(store) if store.has_dirty() => store.take_pending_syncs(),
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// Make the handles durable with the replica lock RELEASED (a slow sync must not make the heartbeat
+/// skip its beat), then take the lock only to note the lengths, or to fail the node.
+fn finish_log_syncs(replica: &Mutex<NodeReplica>, pending: Vec<crate::cluster::log_chunk_store::PendingSync>) -> Result<(), ObjectError> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let outcome = crate::cluster::log_chunk_store::sync_pending(&pending);
+    let Ok(mut guard) = replica.lock() else {
+        return Err(ObjectError::Corruption("replica state lock is poisoned".into()));
+    };
+    match outcome {
+        Ok(()) => {
+            if let Some(store) = guard.log_chunks.as_mut() {
+                store.note_synced(&pending);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            guard.health.fail();
+            Err(error)
+        }
+    }
 }
 
 fn mutation_count(request: &ReplicaRequest) -> usize {
@@ -111,6 +143,9 @@ impl Committer {
                             .map(|journal| journal.logical_length());
                         let result = apply_queued(&mut guard, request, self.max_payload_bytes);
                         finish_mutations(&mut guard, before, finish_deferred_journal)?;
+                        let pending = take_log_syncs(&mut guard)?;
+                        drop(guard);
+                        finish_log_syncs(&self.replica, pending)?;
                         return result;
                     }
                 }
@@ -221,7 +256,7 @@ fn commit_jobs(
     max_payload_bytes: usize,
     sync: impl FnOnce(&mut NodeReplica) -> Result<(), ObjectError>,
 ) {
-    let failure = match replica.lock() {
+    let (mut failure, pending) = match replica.lock() {
         Ok(mut guard) => {
             let before = guard
                 .journal
@@ -234,17 +269,22 @@ fn commit_jobs(
                     max_payload_bytes,
                 ));
             }
-            let outcome = finish_mutations(&mut guard, before, sync);
+            let outcome = finish_mutations(&mut guard, before, sync).and_then(|()| take_log_syncs(&mut guard));
             match outcome {
-                Ok(()) => None,
+                Ok(pending) => (None, pending),
                 Err(error) => {
                     guard.health.fail();
-                    Some(error.to_string())
+                    (Some(error.to_string()), Vec::new())
                 }
             }
         }
-        Err(_) => Some("replica state lock is poisoned".into()),
+        Err(_) => (Some("replica state lock is poisoned".to_string()), Vec::new()),
     };
+    if failure.is_none() {
+        if let Err(error) = finish_log_syncs(replica, pending) {
+            failure = Some(error.to_string());
+        }
+    }
     // Keep the service lock across mutation and durable sync. Direct readers and
     // repair cannot observe this group's state before its persistence completes.
     // Even an independent refusal is conservatively uncertain on group failure.
