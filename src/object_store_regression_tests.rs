@@ -35205,6 +35205,8 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRSMETA18",
         "MOSRSMETA19",
         "MOSRSMETA20",
+        "MOSRSMETA21",
+        "MOSRSFEATURES1",
         "MOSRSMANIFEST1",
         "MOSRSMODULESTATUS32",
         "MOSRSOBJECTREADY77",
@@ -36759,7 +36761,11 @@ fn the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_
          snapshot written before it unreadable"
     );
     assert!(
-        magic_rejected("MOSRSMETA21"),
+        !magic_rejected("MOSRSMETA21"),
+        "the snapshot that carries the cluster feature set must be accepted"
+    );
+    assert!(
+        magic_rejected("MOSRSMETA22"),
         "a version after this one must be refused, or a field this build does not know would be \
          read as one of its own"
     );
