@@ -106,6 +106,7 @@ impl LogChunkStore {
     }
 
     /// Chunks open now.
+    #[cfg(test)]
     pub fn open_chunks(&self) -> usize {
         self.chunks.len()
     }
@@ -114,6 +115,7 @@ impl LogChunkStore {
         self.chunks.values().filter(|chunk| chunk.sealed().is_none()).count()
     }
     /// Bytes of sealed-chunk records held for reads. Never above the cache bound.
+    #[cfg(test)]
     pub fn cache_bytes(&self) -> usize {
         self.cache.bytes()
     }

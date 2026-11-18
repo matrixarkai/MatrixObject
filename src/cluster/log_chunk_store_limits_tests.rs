@@ -29,7 +29,7 @@ fn seal(store: &mut LogChunkStore, chunk: u64) {
     store.apply(&LogOpRequest::seal(1, chunk, 1, 1, false)).unwrap();
 }
 fn read(store: &mut LogChunkStore, chunk: u64, offset: u64, length: usize) -> Result<Vec<u8>, ObjectError> {
-    store.apply(&LogOpRequest::read(1, chunk, 1, offset, length)).map(|reply| reply.data)
+    store.apply(&LogOpRequest::read(1, chunk, 1, offset, length as u32)).map(|reply| reply.data)
 }
 fn refused_for_the_tail_budget(error: &ObjectError) -> bool {
     matches!(error, ObjectError::PreconditionFailed(message) if message == TAIL_BUDGET_MESSAGE)
