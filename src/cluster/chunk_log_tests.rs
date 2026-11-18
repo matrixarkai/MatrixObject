@@ -338,6 +338,26 @@ fn opening_a_chunk_cuts_off_bytes_beyond_the_quorum() {
 }
 
 #[test]
+fn opening_a_chunk_fences_every_node_including_one_that_holds_exactly_the_quorum() {
+    let (_dir, nodes) = cluster();
+    let eps = endpoints(&nodes);
+    let mut old = writer(&eps, 1);
+    let data = bytes(1, 10_000);
+    old.append(&data).unwrap();
+    until_all_hold(&mut old, &nodes, data.len() as u64);
+    // every node holds exactly the quorum length, so opening has no byte to cut anywhere: the
+    // truncate it sends is what carries the new epoch to each node
+    let _new = writer(&eps, 2);
+    for node in &nodes {
+        let mut direct = RemoteReplicaClient::connect(&node.addr, &ReplicaClientOptions::default()).unwrap();
+        let late = direct.log_call(LogOpRequest::append(V, C, 1, 1, data.len() as u64, bytes(2, 100)));
+        assert_eq!(late.unwrap_err(), LogCallError::StaleEpoch { current: 2 }, "a late append from the replaced writer was accepted");
+        assert_eq!(node.tail().length, data.len() as u64);
+    }
+    assert_eq!(old.append(&bytes(3, 10)).unwrap_err(), ChunkLogError::StaleEpoch { current: 2 });
+}
+
+#[test]
 fn a_refused_request_in_a_pipeline_leaves_the_rest_answered() {
     let (_dir, nodes) = cluster();
     let mut client = RemoteReplicaClient::connect(&nodes[0].addr, &ReplicaClientOptions::default()).unwrap();

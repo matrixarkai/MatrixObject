@@ -2874,6 +2874,12 @@ jobs:
           cargo test --locked --lib cluster::server::log_op_group_tests::a_failed_sync_fails_the_node_and_no_acknowledgement_leaves_it -- --exact --test-threads=1 2>&1 | tee /tmp/log-node.log
           grep -q '^running 1 test$' /tmp/log-node.log
           grep -q '^test result: ok. 1 passed' /tmp/log-node.log
+      - name: opening a log chunk fences every node, including one that holds exactly the quorum
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::chunk_log_tests::opening_a_chunk_fences_every_node_including_one_that_holds_exactly_the_quorum -- --exact --test-threads=1 2>&1 | tee /tmp/log-client.log
+          grep -q '^running 1 test$' /tmp/log-client.log
+          grep -q '^test result: ok. 1 passed' /tmp/log-client.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail

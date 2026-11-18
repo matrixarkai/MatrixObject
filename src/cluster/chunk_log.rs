@@ -232,14 +232,30 @@ impl ChunkLogWriter {
             if !member.known {
                 continue;
             }
-            if member.applied > next {
-                let reply = member
+            // Every node that holds the quorum length or more is cut back to it AT THIS EPOCH,
+            // also when it already holds exactly that: the truncate is what fences an older
+            // writer on that node. Without it a late append from the writer this one replaced
+            // would still be accepted until the new writer happened to write.
+            if member.applied >= next {
+                let answer = member
                     .client
                     .as_mut()
                     .expect("a node that answered a tail has a connection")
-                    .log_truncate(volume, chunk, generation, epoch, next)?;
-                member.applied = reply.length;
-                member.durable = reply.durable_length;
+                    .log_truncate(volume, chunk, generation, epoch, next);
+                match answer {
+                    Ok(reply) => {
+                        member.applied = reply.length;
+                        member.durable = reply.durable_length;
+                    }
+                    // a node that went away between its tail and its truncate is behind, as far as
+                    // this writer can tell: repair's job
+                    Err(LogCallError::Transport(_)) => {
+                        member.client = None;
+                        member.given_up = true;
+                        continue;
+                    }
+                    Err(other) => return Err(other.into()),
+                }
             }
             // Behind the quorum and nothing to catch it up from: repair's job, not the writer's.
             if member.applied < next {
@@ -452,25 +468,54 @@ impl ChunkLogWriter {
     /// Seal the chunk on every node that is reachable. Two must seal for the chunk to count as
     /// sealed; the rest are repaired later.
     pub fn seal(&mut self, with_sha256: bool) -> Result<u64, ChunkLogError> {
+        Ok(self.seal_footer(with_sha256)?.length)
+    }
+
+    /// Seal the chunk and return its footer: the length, the CRC-32C and (when asked for) the
+    /// SHA-256 of the sealed bytes, as the nodes computed them. The footer is what the metadata
+    /// plane records when the object moves to its next chunk. Every node that sealed holds the
+    /// same bytes, so a node that answers with a different footer is refused.
+    pub fn seal_footer(&mut self, with_sha256: bool) -> Result<SealedFooter, ChunkLogError> {
         let end = self.settle()?;
         let mut sealed = 0;
+        let mut footer: Option<SealedFooter> = None;
         for index in 0..self.members.len() {
             self.collect_finished()?;
             let member = &mut self.members[index];
             let Some(client) = member.client.as_mut() else { continue };
             match client.log_seal(self.volume, self.chunk, self.generation, self.epoch, with_sha256) {
-                Ok(reply) if reply.length == end => sealed += 1,
+                Ok(reply) if reply.length == end => {
+                    let seen = SealedFooter { length: reply.length, crc: reply.crc, sha256: reply.sha256 };
+                    match &footer {
+                        None => footer = Some(seen),
+                        Some(first) if *first == seen => {}
+                        Some(_) => {
+                            return Err(ChunkLogError::Refused(ObjectError::Corruption(
+                                "the nodes sealed the chunk with different footers".into(),
+                            )))
+                        }
+                    }
+                    sealed += 1;
+                }
                 Ok(_) => {}
                 Err(LogCallError::Transport(_)) => member.client = None,
                 Err(LogCallError::Refused(_)) => {}
                 Err(other) => return Err(other.into()),
             }
         }
-        if sealed < LOG_QUORUM {
-            return Err(ChunkLogError::NoQuorum { wanted: end, durable: sealed as u64 });
+        match footer {
+            Some(footer) if sealed >= LOG_QUORUM => Ok(footer),
+            _ => Err(ChunkLogError::NoQuorum { wanted: end, durable: sealed as u64 }),
         }
-        Ok(end)
     }
+}
+
+/// The footer of a sealed chunk: its length, CRC-32C and, if it was sealed with a digest, SHA-256.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SealedFooter {
+    pub length: u64,
+    pub crc: u32,
+    pub sha256: Vec<u8>,
 }
 
 /// Reads a log chunk from its nodes, never above the quorum-durable length.
