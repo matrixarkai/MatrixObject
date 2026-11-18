@@ -8,14 +8,19 @@ pub(super) fn barrier(fixture: &Fixture) {
         let mut client =
             RemoteReplicaClient::connect(endpoint, &ReplicaClientOptions::default()).unwrap();
         let deadline = Instant::now() + Duration::from_secs(120);
-        while client.journal_status().unwrap().checkpoint_in_flight {
+        while {
+            let status = client.journal_maintenance_status().unwrap();
+            status.checkpoint_in_flight
+                || status.retirement_in_flight
+                || status.retired_segments != 0
+        } {
             assert!(Instant::now() < deadline, "checkpoint did not finish");
             std::thread::sleep(Duration::from_millis(5));
         }
-        let requested = client.checkpoint_journal().unwrap();
+        let requested = client.checkpoint_journal_with_maintenance().unwrap();
         loop {
-            let status = client.journal_status().unwrap();
-            if status.checkpoint_is_published(&requested).unwrap() && !status.checkpoint_in_flight {
+            let status = client.journal_maintenance_status().unwrap();
+            if status.maintenance_is_complete(&requested).unwrap() {
                 assert_eq!(status.pending_records, 0);
                 assert_eq!(status.bytes_since_checkpoint, 0);
                 break;

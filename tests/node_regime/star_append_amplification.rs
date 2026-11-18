@@ -35,6 +35,7 @@ struct Fixture {
     group_commit: bool,
     segmented: bool,
     checkpoint: Option<u64>,
+    retention: Option<(u64, usize)>,
     directory: Directory,
 }
 fn meta_options() -> MetaClientOptions {
@@ -76,6 +77,27 @@ fn start_chunk_with_layout(
     checkpoint: Option<u64>,
     segmented: bool,
 ) -> NodeProcess {
+    start_chunk_with_retention(
+        endpoint,
+        path,
+        recovery,
+        group_commit,
+        checkpoint,
+        segmented,
+        None,
+    )
+}
+fn start_chunk_with_retention(
+    endpoint: &str,
+    path: &Path,
+    recovery: &str,
+    group_commit: bool,
+    checkpoint: Option<u64>,
+    segmented: bool,
+    retention: Option<(u64, usize)>,
+) -> NodeProcess {
+    let segment_bytes = retention.map(|r| r.0.to_string());
+    let retirement_threshold = retention.map(|r| r.1.to_string());
     let interval = checkpoint.map(|value| value.to_string());
     let mut settings = vec![
         ("MATRIXOBJECT_REPLICA_ADDR", endpoint),
@@ -97,12 +119,20 @@ fn start_chunk_with_layout(
     if let Some(interval) = &interval {
         settings.push(("MATRIXOBJECT_REPLICA_CHECKPOINT_BYTES", interval));
     }
+    if let Some(value) = &segment_bytes {
+        settings.push(("MATRIXOBJECT_REPLICA_SEGMENT_BYTES", value));
+    }
+    if let Some(value) = &retirement_threshold {
+        settings.push(("MATRIXOBJECT_REPLICA_RETENTION_SEGMENTS", value));
+    }
     processes::start_without_env(
         env!("CARGO_BIN_EXE_chunkserver"),
         &settings,
         &[
             "MATRIXOBJECT_REPLICA_CHECKPOINT_BYTES",
             "MATRIXOBJECT_WAL_ZERO_FILL_BYTES",
+            "MATRIXOBJECT_REPLICA_SEGMENT_BYTES",
+            "MATRIXOBJECT_REPLICA_RETENTION_SEGMENTS",
         ],
     )
 }
@@ -119,6 +149,14 @@ impl Fixture {
         Self::with_storage(group_commit, false, None)
     }
     fn with_storage(group_commit: bool, segmented: bool, checkpoint: Option<u64>) -> Self {
+        Self::with_retention(group_commit, segmented, checkpoint, None)
+    }
+    fn with_retention(
+        group_commit: bool,
+        segmented: bool,
+        checkpoint: Option<u64>,
+        retention: Option<(u64, usize)>,
+    ) -> Self {
         let directory =
             Directory(std::env::temp_dir().join(node_regime::run_token("star-append-cost")));
         std::fs::create_dir(&directory.0).unwrap();
@@ -128,13 +166,14 @@ impl Fixture {
         let chunks = journals
             .iter()
             .map(|path| {
-                start_chunk_with_layout(
+                start_chunk_with_retention(
                     "127.0.0.1:0",
                     path,
                     "peers",
                     group_commit,
                     checkpoint,
                     segmented,
+                    retention,
                 )
             })
             .collect::<Vec<_>>();
@@ -197,6 +236,7 @@ impl Fixture {
             group_commit,
             segmented,
             checkpoint,
+            retention,
             directory,
         };
         let mut client = fixture.client();
@@ -303,13 +343,14 @@ impl Fixture {
         }
         for id in 0..3 {
             self.metadata.start(id);
-            self.chunks[id] = start_chunk_with_layout(
+            self.chunks[id] = start_chunk_with_retention(
                 &self.chunk_endpoints[id],
                 &self.journals[id],
                 "peers",
                 self.group_commit,
                 self.checkpoint,
                 self.segmented,
+                self.retention,
             );
             assert!(self.chunks[id]
                 .startup_line
@@ -986,3 +1027,6 @@ fn segmented_star_replicas_keep_objects_through_metadata_failover_and_full_resta
     );
     verify_replicas(&fixture, &manifest, &expected);
 }
+
+#[path = "replica_segment_retirement.rs"]
+mod replica_segment_retirement;

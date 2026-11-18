@@ -1467,7 +1467,10 @@ impl RemoteReplicaClient {
     pub fn journal_status(
         &mut self,
     ) -> Result<super::replica_journal_control::ReplicaJournalStatus, ObjectError> {
-        self.journal_control(super::replica_journal_control::ReplicaJournalControl::STATUS)
+        self.journal_control(
+            super::replica_journal_control::ReplicaJournalControl::STATUS,
+            1,
+        )
     }
     /// Start a checkpoint after prior mutations have synchronized. A busy checkpoint
     /// is refused; after success, poll status until the returned epoch is published.
@@ -1476,20 +1479,42 @@ impl RemoteReplicaClient {
     pub fn checkpoint_journal(
         &mut self,
     ) -> Result<super::replica_journal_control::ReplicaJournalStatus, ObjectError> {
-        self.journal_control(super::replica_journal_control::ReplicaJournalControl::CHECKPOINT)
+        self.journal_control(
+            super::replica_journal_control::ReplicaJournalControl::CHECKPOINT,
+            1,
+        )
+    }
+    /// Observe retirement debt as well as checkpoint progress. Requires a version-2 node.
+    pub fn journal_maintenance_status(
+        &mut self,
+    ) -> Result<super::replica_journal_control::ReplicaJournalStatus, ObjectError> {
+        self.journal_control(
+            super::replica_journal_control::ReplicaJournalControl::STATUS,
+            2,
+        )
+    }
+    /// Start a checkpoint and request version-2 progress for a complete maintenance barrier.
+    pub fn checkpoint_journal_with_maintenance(
+        &mut self,
+    ) -> Result<super::replica_journal_control::ReplicaJournalStatus, ObjectError> {
+        self.journal_control(
+            super::replica_journal_control::ReplicaJournalControl::CHECKPOINT,
+            2,
+        )
     }
     fn journal_control(
         &mut self,
         action: u32,
+        version: u32,
     ) -> Result<super::replica_journal_control::ReplicaJournalStatus, ObjectError> {
         let request =
             ReplicaRequest::JournalControl(super::replica_journal_control::ReplicaJournalControl {
-                version: 1,
+                version,
                 action,
             });
         // Maintenance is local to the connected replica; never route it to a voter.
         match self.call_one(&request)? {
-            ReplicaReply::JournalStatus(status) => Ok(status),
+            ReplicaReply::JournalStatus(status) if status.version == version => Ok(status),
             other => Err(unexpected_reply("standalone journal status", &other)),
         }
     }

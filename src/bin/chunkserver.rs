@@ -88,7 +88,8 @@ fn main() {
     use std::io::Write;
 
     use matrixobjectstore_rs::cluster::{
-        ReplicaNodeOptions, ReplicaNodeServer, MAX_PAYLOAD_BYTES, PROTOCOL_STAMP,
+        ReplicaNodeOptions, ReplicaNodeServer, ReplicaSegmentedJournalOptions, MAX_PAYLOAD_BYTES,
+        PROTOCOL_STAMP,
     };
 
     fn env_string(name: &str, default: &str) -> String {
@@ -190,6 +191,24 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if !segmented
+        && [
+            "MATRIXOBJECT_REPLICA_SEGMENT_BYTES",
+            "MATRIXOBJECT_REPLICA_RETENTION_SEGMENTS",
+        ]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
+    {
+        eprintln!("segment sizing and retention require segmented outcome storage");
+        std::process::exit(2);
+    }
+    let journal_options = ReplicaSegmentedJournalOptions {
+        segment_capacity_bytes: env_usize(
+            "MATRIXOBJECT_REPLICA_SEGMENT_BYTES",
+            matrixobjectstore_rs::durable_payload::DEFAULT_CAPACITY_BYTES as usize,
+        ) as u64,
+        retention_segment_threshold: env_usize("MATRIXOBJECT_REPLICA_RETENTION_SEGMENTS", 16),
+    };
     if segmented && (journal.is_none() || raft_peers.is_some() || wal_zero_fill.is_some()) {
         eprintln!(
             "segmented outcomes require a standalone journal without zero-filled frames or Raft"
@@ -229,10 +248,11 @@ fn main() {
     let bound_server = match journal {
         Some(path) => {
             if segmented {
-                ReplicaNodeServer::bind_with_segmented_journal(
+                ReplicaNodeServer::bind_with_segmented_journal_options(
                     &addr,
                     options,
                     std::path::Path::new(&path),
+                    journal_options,
                 )
             } else {
                 ReplicaNodeServer::bind_with_journal(&addr, options, std::path::Path::new(&path))

@@ -212,7 +212,9 @@ pub use replica_set::{
 #[cfg(all(feature = "replica-server", feature = "meta-server"))]
 pub use server::ReplicaHeartbeatOptions;
 #[cfg(feature = "replica-server")]
-pub use server::{ReplicaNodeOptions, ReplicaNodeServer, ReplicaNodeShutdown};
+pub use server::{
+    ReplicaNodeOptions, ReplicaNodeServer, ReplicaNodeShutdown, ReplicaSegmentedJournalOptions,
+};
 
 #[cfg(feature = "meta-server")]
 pub use directory::{ControlPlaneStatus, MetaDirectory};

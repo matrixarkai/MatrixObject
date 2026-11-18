@@ -406,6 +406,7 @@ fn outcome_segments_manifest_encoding_and_identity_are_stable() {
     let dir = Directory::new();
     let path = dir.0.join("manifest");
     let manifest = SegmentManifest {
+        retired: Vec::new(),
         version: 1,
         store_id: (0..16).collect(),
         capacity: MIN_SEGMENT_BYTES,
@@ -683,6 +684,7 @@ fn outcome_segments_chained_links_reject_damage_and_reordering() {
     let dir = Directory::new();
     let path = dir.0.join("manifest");
     let manifest = SegmentManifest {
+        retired: Vec::new(),
         version: 1,
         store_id: (0..16).collect(),
         capacity: MIN_SEGMENT_BYTES,

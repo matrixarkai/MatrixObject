@@ -1,11 +1,13 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright 2026 MatrixArkAI -->
 # Managed outcome segments
 
 SegmentedOutcomeLog manages the immutable files used by
 [stored outcome records](stored-outcome-records.md). It preserves physical record
 positions across file rollover and bounds the cache of sealed file readers.
-The running chunkserver still uses its existing journal and full-image
-checkpoints. This API supplies rollover needed by its future journal/catalog
-integration; it does not change live server routing.
+The standalone chunkserver can opt into this manager and its incremental checkpoint
+index through the [replica journal configuration](replica-segmented-journal.md).
+The existing journal remains the default.
 
 ## Capacity and durable ordering
 
@@ -78,7 +80,32 @@ validated before scanning or replaying later records. Metadata inspection checks
 record integrity; read_outcomes and replay_after additionally verify payloads
 and logical outcome digests. Startup state must be discarded on replay error.
 
-## Recovery and remaining integration
+## Sparse manifests and retirement
+
+A checkpoint may retain a sparse ordered set of segment numbers. Retirement
+publishes an `MOSEGM02` envelope with canonical version-2 binary protobuf, binding
+the retained set and a disjoint list of retired sealed files to the same anchor.
+The body and total manifest remain bounded by the 256-MiB decode limit. Sparse
+numbers remain stable; rollover appends the existing `MOSEGL01` record using the
+last retained number plus one. Version-1 manifests and their bytes are unchanged
+until a retirement publication; older binaries refuse a version-2 manifest.
+
+The authoritative replacement is synchronized before any unlink. Managed reader
+pins prevent publication while physical reads or cursors are active. A prepared
+replacement rechecks the rollover counter before publication. Cancellations and
+busy readers preserve the previous manifest; uncertain publication errors fence
+the writer until recovery. The replica checkpoint protects its own publication
+epoch while installing the replacement.
+
+Cleanup verifies each retired file and stable identity marker against its recorded
+identity and length, takes exclusive ownership, removes data before its marker,
+and synchronizes the directory. Missing or foreign ownership evidence is
+quarantined instead of deleting an unknown file. Marker-only interrupted cleanup
+can resume. Pending debt survives restart and counts toward managed storage status.
+Cleanup processes at most 64 candidates per call. A final equivalent manifest
+removes cleared debt without changing live record positions.
+
+## Recovery
 
 Published missing or mismatched segment files and identity markers are refused
 without recreating them. Sealed files are opened read-only and their tails are

@@ -28,7 +28,12 @@ by changing this setting: each reader refuses the other layout. There is no
 in-place migration. Zero-filled journal frames and chunk Raft configuration
 cannot be combined with this setting.
 
-Segments default to 64 MiB. A foreground group contains at most 64 decisions and
+Segments default to 64 MiB. `MATRIXOBJECT_REPLICA_SEGMENT_BYTES` accepts sector-aligned
+capacities from 24 through 512 MiB; the capacity must stay the same on restart.
+`MATRIXOBJECT_REPLICA_RETENTION_SEGMENTS` accepts 2 through 1,000,000 and defaults
+to 16. Both options require the segmented standalone journal. The API equivalent
+is `bind_with_segmented_journal_options` with `ReplicaSegmentedJournalOptions`.
+A foreground group contains at most 64 decisions and
 8 MiB of encoded outcomes. No batching delay is added. Its payload, decisions,
 and scalar replica metadata share one data synchronization before acknowledgment.
 A larger group is split, retaining the exact scalar context of each sub-group.
@@ -85,17 +90,50 @@ Deployment recovery policy is applied after journal restore. A peer-recovery nod
 keeps no local recovery sidecar; a node configured for local recovery rebuilds it.
 Checkpoints do not themselves establish membership or repair missing peer writes.
 
+## Segment retirement
+
+After a published checkpoint reaches the configured segment threshold, a worker
+traces the current index, catalog fragments, every page's extent-metadata records,
+and shared payload spans. It preserves these segments and the replay tail. The
+replay cut alone is insufficient: an unchanged cold page can use much older data.
+The next discovery threshold doubles from the retained count, with the configured
+minimum and a one-million-segment ceiling. Busy readers and concurrent rollover
+defer collection for 30 seconds; an explicit checkpoint allows a fresh attempt.
+
+The manager publishes and synchronizes a version-2 sparse segment manifest before
+unlinking any file. An interruption therefore leaves either the previous live set
+or a durable list of retired files. Cleanup verifies identities and exclusive
+ownership, processes at most 64 candidates per call, and synchronizes the directory
+before clearing debt. Foreign identities remain quarantined. Recovery retries
+cleanup; subsequent replica health checks continue it in a background worker.
+Reader pins and superseded checkpoint workers keep discovery from removing records
+they might still access. Discovery and unlinking run outside the replica mutex.
+
+The `MOSEGM02` manifest requires a compatible binary after first publication.
+Version-1 manifests remain readable and retain their existing encoding until
+retirement. There is no automatic binary downgrade or journal-layout migration.
+
+Existing `journal_status` and `checkpoint_journal` calls retain version-1 wire
+behavior. `journal_maintenance_status` and `checkpoint_journal_with_maintenance`
+explicitly request version 2, adding retired-file counts, committed retired bytes,
+and cleanup progress. `maintenance_is_complete` waits for its checkpoint, queued
+mutations, and already scheduled retirement work. For an I/O measurement, stop
+writers, drain existing checkpoint and retirement work, request a final checkpoint,
+then wait for this predicate on every data replica. Status reads do not append
+journal records. A maintenance barrier does not guarantee compaction or deletion
+of partly live segments, nor force collection through pinned readers.
+
 ## Current limits
 
-This is a test layout, not the default production layout. Old segments are retained;
-there is no reclamation or retention bound. Reused index and payload records may
-live in old segments, so the replay cut alone is not a safe deletion boundary.
+This is a test layout, not the default production layout. Only wholly unneeded
+segments are reclaimed. Partly live segments are not compacted, so this does not
+establish a strict retained-byte or space-amplification bound.
 Changed-page work grows with its span count and tree path; scalar metadata and
 namespace/receipt maps still serialize completely. Bulk installs currently
 synchronize individual payload fragments. Live payloads remain resident in the
 existing service, and startup materializes them.
 
-Safe segment reclamation, a bounded payload cache, and measurements under
+A bounded payload cache, partly live segment compaction, and measurements under
 sustained corpus growth are required before default activation.
 Local multi-process tests establish functional recovery, not multi-host performance,
 flat append latency, or a QPS improvement.

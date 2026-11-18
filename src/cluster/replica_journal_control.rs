@@ -17,7 +17,9 @@ impl ReplicaJournalControl {
     pub const STATUS: u32 = 1;
     pub const CHECKPOINT: u32 = 2;
     pub fn validate(&self) -> Result<(), ObjectError> {
-        if self.version != 1 || !matches!(self.action, Self::STATUS | Self::CHECKPOINT) {
+        if ![1, 2].contains(&self.version)
+            || !matches!(self.action, Self::STATUS | Self::CHECKPOINT)
+        {
             return Err(invalid());
         }
         Ok(())
@@ -56,6 +58,15 @@ pub struct ReplicaJournalStatus {
     pub journal_bytes: u64,
     #[prost(uint64, tag = "9")]
     pub segments: u64,
+    /// Managed retired files still awaiting verified cleanup; version 2 only.
+    #[prost(uint64, tag = "11")]
+    pub retired_segments: u64,
+    /// Committed record bytes associated with pending retirement; version 2 only.
+    #[prost(uint64, tag = "12")]
+    pub retired_journal_bytes: u64,
+    /// Physical cleanup or retirement-manifest publication remains pending.
+    #[prost(bool, tag = "13")]
+    pub retirement_in_flight: bool,
 }
 impl ReplicaJournalStatus {
     /// Compare a checkpoint reply with a later observation of the same journal.
@@ -71,10 +82,37 @@ impl ReplicaJournalStatus {
         Ok(requested.started_epoch > 0 && self.published_epoch >= requested.started_epoch)
     }
 
+    /// A version-2 observation covers the target checkpoint and all retirement debt.
+    /// Writers must be quiescent when this is used as an I/O measurement barrier.
+    pub fn maintenance_is_complete(&self, requested: &Self) -> Result<bool, ObjectError> {
+        let published = self.checkpoint_is_published(requested)?;
+        if self.version != 2 || requested.version != 2 {
+            return Err(ObjectError::PreconditionFailed(
+                "full maintenance status requires version 2".into(),
+            ));
+        }
+        Ok(published
+            && !self.checkpoint_in_flight
+            && self.pending_records == 0
+            && self.bytes_since_checkpoint == 0
+            && self.retired_segments == 0
+            && !self.retirement_in_flight)
+    }
+
     pub const LEGACY: u32 = 1;
     pub const SEGMENTED: u32 = 2;
     pub fn validate(&self) -> Result<(), ObjectError> {
-        if self.version != 1
+        if ![1, 2].contains(&self.version)
+            || (self.version == 1
+                && (self.retired_segments != 0
+                    || self.retired_journal_bytes != 0
+                    || self.retirement_in_flight))
+            || self.retired_segments >= self.segments
+            || self.retired_journal_bytes > self.journal_bytes
+            || (self.retired_segments == 0 && self.retired_journal_bytes != 0)
+            || (self.retired_segments != 0 && self.retired_journal_bytes == 0)
+            || (self.layout == Self::LEGACY
+                && (self.retired_segments != 0 || self.retirement_in_flight))
             || self.journal_id.len() != 16
             || !matches!(self.layout, Self::LEGACY | Self::SEGMENTED)
             || self.published_epoch > self.started_epoch
@@ -108,6 +146,80 @@ impl ReplicaJournalStatus {
 mod tests {
     use super::*;
     #[test]
+    fn journal_control_maintenance_status_tracks_cleanup_without_changing_v1() {
+        let complete = ReplicaJournalStatus {
+            journal_id: vec![9; 16],
+            version: 2,
+            layout: 2,
+            started_epoch: 7,
+            published_epoch: 7,
+            journal_bytes: 8192,
+            segments: 2,
+            ..Default::default()
+        };
+        let requested = complete.clone();
+        assert!(complete.maintenance_is_complete(&requested).unwrap());
+        for action in [
+            ReplicaJournalControl::STATUS,
+            ReplicaJournalControl::CHECKPOINT,
+        ] {
+            let request = ReplicaJournalControl { version: 2, action };
+            assert_eq!(
+                ReplicaJournalControl::from_payload(&request.encode_to_vec()).unwrap(),
+                request
+            );
+        }
+        let mut pending = complete.clone();
+        pending.retired_segments = 1;
+        pending.retired_journal_bytes = 4096;
+        assert!(!pending.maintenance_is_complete(&requested).unwrap());
+        assert_eq!(
+            ReplicaJournalStatus::from_payload(&pending.encode_to_vec()).unwrap(),
+            pending
+        );
+        let mut snapshot = complete.clone();
+        snapshot.retirement_in_flight = true;
+        assert!(!snapshot.maintenance_is_complete(&requested).unwrap());
+        for change in 0..6 {
+            let mut bad = pending.clone();
+            match change {
+                0 => bad.version = 1,
+                1 => bad.retired_segments = bad.segments,
+                2 => bad.retired_journal_bytes = bad.journal_bytes + 1,
+                3 => bad.retired_journal_bytes = 0,
+                4 => bad.retired_segments = 0,
+                _ => {
+                    bad.layout = 1;
+                    bad.segments = 1;
+                }
+            }
+            assert!(ReplicaJournalStatus::from_payload(&bad.encode_to_vec()).is_err());
+        }
+        for suffix in [vec![88, 1], vec![112, 1]] {
+            let mut bytes = pending.encode_to_vec();
+            bytes.extend(suffix);
+            assert!(ReplicaJournalStatus::from_payload(&bytes).is_err());
+        }
+        let mut largest = pending;
+        largest.started_epoch = u64::MAX;
+        largest.published_epoch = u64::MAX;
+        largest.journal_bytes = u64::MAX;
+        largest.segments = u64::MAX;
+        largest.retired_segments = u64::MAX - 1;
+        largest.retired_journal_bytes = u64::MAX;
+        largest.bytes_since_checkpoint = u64::MAX;
+        assert!(largest.encode_to_vec().len() < 256);
+        assert_eq!(
+            ReplicaJournalStatus::from_payload(&largest.encode_to_vec()).unwrap(),
+            largest
+        );
+        let mut legacy_wire = complete;
+        legacy_wire.version = 1;
+        assert!(legacy_wire.maintenance_is_complete(&requested).is_err());
+        assert!(requested.maintenance_is_complete(&legacy_wire).is_err());
+        assert!(ReplicaJournalStatus::from_payload(&legacy_wire.encode_to_vec()).is_ok());
+    }
+    #[test]
     fn journal_control_codecs_are_canonical_bounded_and_versioned() {
         for (action, bytes) in [
             (ReplicaJournalControl::STATUS, vec![8, 1, 16, 1]),
@@ -125,7 +237,7 @@ mod tests {
         }
         for bytes in [
             vec![],
-            vec![8, 2, 16, 1],
+            vec![8, 3, 16, 1],
             vec![8, 1, 16, 3],
             vec![8, 0x81, 0, 16, 1],
             vec![0; 33],
@@ -144,6 +256,7 @@ mod tests {
             bytes_since_checkpoint: 8192,
             journal_bytes: 65536,
             segments: 2,
+            ..Default::default()
         };
         let bytes = status.encode_to_vec();
         assert!(bytes.len() < 256);
@@ -151,7 +264,7 @@ mod tests {
         for change in 0..7 {
             let mut bad = status.clone();
             match change {
-                0 => bad.version = 2,
+                0 => bad.version = 3,
                 1 => bad.layout = 3,
                 2 => bad.published_epoch = 3,
                 3 => bad.pending_records = 65,

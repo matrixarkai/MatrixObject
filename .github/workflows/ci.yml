@@ -608,7 +608,8 @@ jobs:
             star_corpus_scale::checkpoint_corpus_measurement::checkpoint_corpus_measurement_drains_both_layouts_and_recovers \
             star_corpus_scale::checkpoint_interference::checkpoint_interference_preserves_three_durable_append_copies \
             star_recovery_profiles::star_repair_and_append_work_across_local_recovery_profiles \
-            segmented_star_replicas_keep_objects_through_metadata_failover_and_full_restart
+            segmented_star_replicas_keep_objects_through_metadata_failover_and_full_restart \
+            replica_segment_retirement::segmented_star_retirement_reclaims_files_preserves_cold_objects_and_recovers_all_processes
           do
             grep -Fxq "test star_append_amplification::${test_name} ... ok" /tmp/star-append-cost.log
           done
@@ -627,8 +628,8 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --all-features --lib journal_control_ -- --test-threads=1 | tee /tmp/journal-control.log
-          grep -q '^test result: ok. 3 passed; 0 failed;' /tmp/journal-control.log
-          for test_name in journal_control_codecs_are_canonical_bounded_and_versioned journal_control_tcp_checkpoint_reports_published_epoch_and_recovers_tail journal_control_memory_refusal_does_not_fence_ordinary_requests
+          grep -q '^test result: ok. 5 passed; 0 failed;' /tmp/journal-control.log
+          for test_name in journal_control_codecs_are_canonical_bounded_and_versioned journal_control_tcp_checkpoint_reports_published_epoch_and_recovers_tail journal_control_memory_refusal_does_not_fence_ordinary_requests journal_control_maintenance_status_tracks_cleanup_without_changing_v1 journal_control_tcp_negotiates_maintenance_without_mutating_status_reads
           do
             grep -Fq "${test_name} ... ok" /tmp/journal-control.log
           done
@@ -650,6 +651,10 @@ jobs:
           set -euo pipefail
           cargo test --locked --all-features --lib durable_payload -- --test-threads=1 | tee /tmp/payload-unit.log
           grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/payload-unit.log
+          for test_name in outcome_segments_retention_keeps_shared_payloads_skips_deleted_numbers_and_rolls_over outcome_segments_retention_reader_pins_refuse_publication_without_fencing outcome_segments_retention_interrupted_preparation_and_rollover_leave_old_manifest outcome_segments_retention_uncertain_publication_fences_and_restarts_before_cleanup outcome_segments_retention_retries_marker_only_cleanup_and_quarantines_foreign_identity
+          do
+            grep -Fq "${test_name} ... ok" /tmp/payload-unit.log
+          done
           for test_name in durable_payload_binary_header_and_descriptor_bytes_are_stable durable_payload_sync_and_write_failures_return_no_descriptors_and_fence durable_payload_verified_read_does_not_wait_for_writer_sync stored_outcomes_share_one_sync_and_recover_identical_binary_decisions stored_outcomes_preserve_namespace_fences_in_order stored_outcomes_binary_metadata_and_envelope_bytes_are_stable stored_outcomes_control_records_bind_file_identity_and_absolute_position outcome_segments_rollover_replays_in_order_and_retains_old_ranges outcome_segments_cache_is_bounded_and_evicted_readers_keep_shared_locks outcome_segments_disk_full_is_not_a_configured_capacity_refusal
           do
             grep -Fq "${test_name} ... ok" /tmp/payload-unit.log
@@ -686,9 +691,10 @@ jobs:
           grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/replica-catalog.log
           grep -Fq 'checkpoint_catalog_newest_corruption_is_refused_without_fallback_or_repair ... ok' /tmp/replica-catalog.log
           grep -Fq 'checkpoint_recovery_scalar_capture_does_not_pin_live_payloads_or_receipt_maps ... ok' /tmp/replica-catalog.log
+          grep -Fq 'checkpoint_index_retention_preserves_every_duplicate_extent_record_after_reload ... ok' /tmp/replica-catalog.log
           cargo test --locked --all-features --lib segmented_ -- --test-threads=1 | tee /tmp/replica-segmented.log
           grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/replica-segmented.log
-          for test_name in segmented_replica_background_checkpoint_preserves_concurrent_grouped_tail segmented_replica_install_supersedes_background_checkpoint_and_keeps_new_tail segmented_replica_batch_overflow_keeps_context_for_each_committed_group segmented_journal_recovery_policy_is_applied_after_checkpoint_restore
+          for test_name in segmented_replica_background_checkpoint_preserves_concurrent_grouped_tail segmented_replica_install_supersedes_background_checkpoint_and_keeps_new_tail segmented_replica_batch_overflow_keeps_context_for_each_committed_group segmented_journal_recovery_policy_is_applied_after_checkpoint_restore segmented_replica_retirement_preserves_cold_payloads_and_reopens_overwritten_pages
           do
             grep -Fq "${test_name} ... ok" /tmp/replica-segmented.log
           done

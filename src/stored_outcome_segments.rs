@@ -18,7 +18,7 @@ use std::{
     io::{self, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex, RwLock,
     },
 };
@@ -30,6 +30,7 @@ const MAX_MANIFEST_BYTES: usize = 256 * 1024 * 1024;
 const LINK_BYTES: usize = 128;
 const LINK_MAGIC: &[u8; 8] = b"MOSEGL01";
 const MAGIC: &[u8; 8] = b"MOSEGM01";
+const RETAINED_MAGIC: &[u8; 8] = b"MOSEGM02";
 const ENVELOPE: usize = 44;
 
 #[derive(Clone, PartialEq, Message)]
@@ -52,6 +53,8 @@ struct SegmentManifest {
     capacity: u64,
     #[prost(message, repeated, tag = "4")]
     entries: Vec<SegmentEntry>,
+    #[prost(message, repeated, tag = "5")]
+    retired: Vec<SegmentEntry>,
 }
 struct Writer {
     count: u64,
@@ -62,6 +65,7 @@ struct Writer {
 /// A committed metadata prefix captured without copying the segment index.
 /// Later appends and rollovers are excluded. Only one segment handle is pinned.
 pub struct StoredMetadataCursor<'a> {
+    _pin: retention::ReadPin<'a>,
     owner: &'a SegmentedOutcomeLog,
     number: u64,
     offset: u64,
@@ -149,6 +153,9 @@ struct Index {
     by_id: BTreeMap<Vec<u8>, u64>,
     active: Arc<DurableOutcomeLog>,
     sealed_bytes: u64,
+    retired: BTreeMap<u64, SegmentEntry>,
+    retired_bytes: u64,
+    retirement_changed: bool,
     cache: VecDeque<(u64, Arc<DurableOutcomeLog>)>,
 }
 struct ManifestLog {
@@ -174,6 +181,9 @@ pub struct SegmentedOutcomeLog {
     index: RwLock<Index>,
     failed: AtomicBool,
     cache_limit: usize,
+    reader_gate: Mutex<()>,
+    readers: AtomicUsize,
+    collection: Mutex<()>,
 }
 fn sibling(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
@@ -194,32 +204,55 @@ fn canonical_path(path: &Path) -> io::Result<PathBuf> {
     Ok(std::fs::canonicalize(parent)?.join(name))
 }
 fn validate(manifest: &SegmentManifest, id: &[u8], capacity: u64) -> io::Result<()> {
-    if manifest.version != 1
+    if ![1, 2].contains(&manifest.version)
         || manifest.store_id != id
         || manifest.capacity != capacity
         || manifest.entries.is_empty()
         || manifest.entries.len() > MAX_SEGMENTS
+        || manifest.retired.len() > MAX_SEGMENTS
+        || (manifest.version == 1 && !manifest.retired.is_empty())
     {
         return Err(invalid("invalid segment manifest identity or bounds"));
     }
-    let mut seen = HashSet::with_capacity(manifest.entries.len());
-    for (number, entry) in manifest.entries.iter().enumerate() {
-        if entry.number != number as u64
+    let mut seen = HashSet::with_capacity(manifest.entries.len() + manifest.retired.len());
+    let sealed = |entry: &SegmentEntry| {
+        entry.sealed_length > SECTOR_BYTES as u64
+            && entry.sealed_length <= capacity + SECTOR_BYTES as u64
+            && entry.sealed_length % SECTOR_BYTES as u64 == 0
+    };
+    let mut previous = None;
+    let mut numbers = HashSet::with_capacity(manifest.entries.len());
+    for (at, entry) in manifest.entries.iter().enumerate() {
+        if (manifest.version == 1 && entry.number != at as u64)
+            || previous.is_some_and(|n| n >= entry.number)
             || entry.store_id.len() != 16
             || !seen.insert(&entry.store_id)
-            || (number + 1 == manifest.entries.len() && entry.sealed_length != 0)
-            || (number + 1 < manifest.entries.len()
-                && (entry.sealed_length <= SECTOR_BYTES as u64
-                    || entry.sealed_length > capacity + SECTOR_BYTES as u64
-                    || entry.sealed_length % SECTOR_BYTES as u64 != 0))
+            || (at + 1 == manifest.entries.len() && entry.sealed_length != 0)
+            || (at + 1 < manifest.entries.len() && !sealed(entry))
         {
             return Err(invalid("invalid segment manifest entry"));
         }
+        previous = Some(entry.number);
+        numbers.insert(entry.number);
+    }
+    let last = manifest.entries.last().unwrap().number;
+    let mut previous = None;
+    for entry in &manifest.retired {
+        if previous.is_some_and(|n| n >= entry.number)
+            || entry.number >= last
+            || numbers.contains(&entry.number)
+            || entry.store_id.len() != 16
+            || !seen.insert(&entry.store_id)
+            || !sealed(entry)
+        {
+            return Err(invalid("invalid retired segment entry"));
+        }
+        previous = Some(entry.number);
     }
     Ok(())
 }
 fn preflight(mut bytes: &[u8]) -> io::Result<()> {
-    let mut entries = 0;
+    let mut entries = [0usize; 2];
     while !bytes.is_empty() {
         let key = prost::encoding::decode_varint(&mut bytes)
             .map_err(|_| invalid("invalid segment manifest field"))?;
@@ -228,7 +261,7 @@ fn preflight(mut bytes: &[u8]) -> io::Result<()> {
                 prost::encoding::decode_varint(&mut bytes)
                     .map_err(|_| invalid("invalid segment manifest scalar"))?;
             }
-            (field @ (2 | 4), 2) => {
+            (field @ (2 | 4 | 5), 2) => {
                 let length = usize::try_from(
                     prost::encoding::decode_varint(&mut bytes)
                         .map_err(|_| invalid("invalid segment manifest length"))?,
@@ -236,13 +269,13 @@ fn preflight(mut bytes: &[u8]) -> io::Result<()> {
                 .map_err(|_| invalid("segment manifest length overflow"))?;
                 if length > bytes.len()
                     || (field == 2 && length != 16)
-                    || (field == 4 && length > 64)
+                    || (field >= 4 && length > 64)
                 {
                     return Err(invalid("segment manifest field exceeds bounds"));
                 }
-                if field == 4 {
-                    entries += 1;
-                    if entries > MAX_SEGMENTS {
+                if field >= 4 {
+                    entries[(field - 4) as usize] += 1;
+                    if entries[(field - 4) as usize] > MAX_SEGMENTS {
                         return Err(invalid("too many segments"));
                     }
                 }
@@ -301,7 +334,12 @@ fn read_manifest(
     read_at(&file, &mut header, 0)?;
     let size = u32::from_be_bytes(header[8..12].try_into().unwrap()) as usize;
     let initial = ENVELOPE + size;
-    if &header[..8] != MAGIC || size > 1024 || initial as u64 > length {
+    let retained = &header[..8] == RETAINED_MAGIC;
+    if (!retained && &header[..8] != MAGIC)
+        || (!retained && size > 1024)
+        || size > MAX_MANIFEST_BYTES - ENVELOPE
+        || initial as u64 > length
+    {
         return Err(invalid("segment manifest envelope damaged"));
     }
     let mut body = vec![0; size];
@@ -312,7 +350,10 @@ fn read_manifest(
     preflight(&body)?;
     let mut manifest = SegmentManifest::decode(body.as_slice())
         .map_err(|_| invalid("invalid segment manifest protobuf"))?;
-    if manifest.encode_to_vec() != body || manifest.entries.len() != 1 {
+    if manifest.encode_to_vec() != body
+        || manifest.version != if retained { 2 } else { 1 }
+        || (!retained && manifest.entries.len() != 1)
+    {
         return Err(invalid("noncanonical initial segment manifest"));
     }
     validate(&manifest, id, capacity)?;
@@ -327,7 +368,14 @@ fn read_manifest(
             if tail[..n] != LINK_MAGIC[..n] {
                 return Err(invalid("unknown segment manifest tail"));
             }
-            repair_manifest_tail(&file, at, anchor, manifest.entries.len() as u64, capacity)?;
+            let next = manifest
+                .entries
+                .last()
+                .unwrap()
+                .number
+                .checked_add(1)
+                .ok_or_else(|| invalid("segment number overflow"))?;
+            repair_manifest_tail(&file, at, anchor, next, capacity)?;
             break;
         }
         let mut record = [0; LINK_BYTES];
@@ -335,7 +383,7 @@ fn read_manifest(
         let number = u64::from_be_bytes(record[8..16].try_into().unwrap());
         let sealed = u64::from_be_bytes(record[48..56].try_into().unwrap());
         if &record[..8] != LINK_MAGIC
-            || number != manifest.entries.len() as u64
+            || Some(number) != manifest.entries.last().unwrap().number.checked_add(1)
             || &record[16..32] != id
             || record[56..88] != hash
             || digest::digest(&digest::SHA256, &record[..88]).as_ref() != &record[88..120]
@@ -457,6 +505,7 @@ impl SegmentedOutcomeLog {
                 version: 1,
                 store_id: anchor.id.clone(),
                 capacity,
+                retired: Vec::new(),
                 entries: vec![SegmentEntry {
                     number: 0,
                     store_id: first.store_id().to_vec(),
@@ -468,7 +517,14 @@ impl SegmentedOutcomeLog {
         }
         let recovered = read_manifest(&manifest_path, anchor.store_id(), capacity, Some(&path))?;
         let manifest = recovered.metadata;
-        let unlisted = segment_path(&path, manifest.entries.len() as u64);
+        let count = manifest
+            .entries
+            .last()
+            .unwrap()
+            .number
+            .checked_add(1)
+            .ok_or_else(|| invalid("segment number overflow"))?;
+        let unlisted = segment_path(&path, count);
         if unlisted.try_exists()? || super::sibling(&unlisted).try_exists()? {
             unpublished_segment(&unlisted, capacity)?;
         }
@@ -504,13 +560,22 @@ impl SegmentedOutcomeLog {
             .filter(|e| e.sealed_length != 0)
             .map(|e| e.sealed_length - SECTOR_BYTES as u64)
             .sum();
-        let count = manifest.entries.len() as u64;
+        let retired_bytes = manifest
+            .retired
+            .iter()
+            .map(|e| e.sealed_length - SECTOR_BYTES as u64)
+            .sum();
+        let retired = manifest
+            .retired
+            .into_iter()
+            .map(|e| (e.number, e))
+            .collect();
         let entries = manifest
             .entries
             .into_iter()
             .map(|e| (e.number, e))
             .collect();
-        Ok(Self {
+        let log = Self {
             path,
             _anchor: anchor,
             writer: Mutex::new(Writer {
@@ -524,11 +589,19 @@ impl SegmentedOutcomeLog {
                 by_id,
                 active,
                 sealed_bytes,
+                retired,
+                retired_bytes,
+                retirement_changed: false,
                 cache: VecDeque::new(),
             }),
             failed: AtomicBool::new(false),
             cache_limit,
-        })
+            reader_gate: Mutex::new(()),
+            readers: AtomicUsize::new(0),
+            collection: Mutex::new(()),
+        };
+        log.cleanup_retired()?;
+        Ok(log)
     }
     fn healthy(&self) -> io::Result<()> {
         if self.failed.load(Ordering::Acquire)
@@ -549,16 +622,15 @@ impl SegmentedOutcomeLog {
             .index
             .read()
             .map_err(|_| invalid("segment index is poisoned"))?;
-        Ok(index.sealed_bytes + index.active.length() - SECTOR_BYTES as u64)
+        Ok(index.sealed_bytes + index.retired_bytes + index.active.length() - SECTOR_BYTES as u64)
     }
     pub fn segment_count(&self) -> io::Result<usize> {
         self.healthy()?;
-        Ok(self
+        let index = self
             .index
             .read()
-            .map_err(|_| invalid("segment index is poisoned"))?
-            .entries
-            .len())
+            .map_err(|_| invalid("segment index is poisoned"))?;
+        Ok(index.entries.len() + index.retired.len())
     }
     pub fn append_page(&self, outcome: &PageOutcome) -> io::Result<StoredRecordMetadata> {
         self.append_decided_batch(&[DecidedMutation::Page(outcome)])
@@ -615,13 +687,22 @@ impl SegmentedOutcomeLog {
                 return Err(error);
             }
         }
-        if writer.count >= MAX_SEGMENTS as u64
+        if self
+            .index
+            .read()
+            .map_err(|_| invalid("segment index is poisoned"))?
+            .entries
+            .len()
+            >= MAX_SEGMENTS
             || writer.manifest_length + LINK_BYTES as u64 > MAX_MANIFEST_BYTES as u64
         {
             return Err(io::Error::other("segment count limit reached"));
         }
         let rollover = (|| {
             let number = writer.count;
+            let next = number
+                .checked_add(1)
+                .ok_or_else(|| invalid("segment number overflow"))?;
             let active =
                 unpublished_segment(&segment_path(&self.path, number), self._anchor.capacity)?;
             if self
@@ -668,7 +749,7 @@ impl SegmentedOutcomeLog {
             );
             index.active = Arc::clone(&active);
             writer.active = active;
-            writer.count += 1;
+            writer.count = next;
             writer.manifest_length += LINK_BYTES as u64;
             writer.tail_hash = hash.as_ref().try_into().unwrap();
             drop(index);
@@ -723,18 +804,21 @@ impl SegmentedOutcomeLog {
         &self,
         position: &StoredOutcomePosition,
     ) -> io::Result<StoredRecordMetadata> {
+        let _pin = self.pin()?;
         self.handle(&position.store_id)?.read_metadata(position)
     }
     pub fn read_outcomes(
         &self,
         position: &StoredOutcomePosition,
     ) -> io::Result<Vec<RecoveredMutation>> {
+        let _pin = self.pin()?;
         self.handle(&position.store_id)?.read_outcomes(position)
     }
     pub fn read_outcomes_with_metadata(
         &self,
         position: &StoredOutcomePosition,
     ) -> io::Result<(Vec<RecoveredMutation>, Vec<u8>)> {
+        let _pin = self.pin()?;
         self.handle(&position.store_id)?
             .read_outcomes_with_metadata(position)
     }
@@ -744,6 +828,7 @@ impl SegmentedOutcomeLog {
         offset: u64,
         length: u64,
     ) -> io::Result<Vec<u8>> {
+        let _pin = self.pin()?;
         self.handle(&extent.store_id)?
             .read_payload_range(extent, offset, length)
     }
@@ -753,7 +838,7 @@ impl SegmentedOutcomeLog {
         &self,
         after: Option<&StoredOutcomePosition>,
     ) -> io::Result<StoredMetadataCursor<'_>> {
-        self.healthy()?;
+        let pin = self.pin()?;
         let (first, last_number, last_end, start_number) = {
             let index = self
                 .index
@@ -795,6 +880,7 @@ impl SegmentedOutcomeLog {
             return Err(argument("replay position is beyond the captured prefix"));
         }
         Ok(StoredMetadataCursor {
+            _pin: pin,
             owner: self,
             number: start_number,
             offset,
@@ -842,7 +928,7 @@ impl SegmentedOutcomeLog {
         first: &StoredOutcomePosition,
         last: &StoredOutcomePosition,
     ) -> io::Result<StoredMetadataCursor<'_>> {
-        self.healthy()?;
+        let pin = self.pin()?;
         self.read_metadata(first)?;
         self.read_metadata(last)?;
         let (number, last_number) = {
@@ -869,6 +955,7 @@ impl SegmentedOutcomeLog {
             return Err(argument("reversed metadata record range"));
         }
         Ok(StoredMetadataCursor {
+            _pin: pin,
             owner: self,
             number,
             offset: first.offset,
@@ -912,3 +999,6 @@ impl SegmentedOutcomeLog {
 #[cfg(all(test, unix))]
 #[path = "stored_outcome_segment_tests.rs"]
 mod tests;
+
+#[path = "stored_outcome_retention.rs"]
+mod retention;

@@ -146,6 +146,23 @@ struct NodeCounters {
     failures: AtomicU64,
 }
 
+/// Physical segment sizing and amortized background retirement for the opt-in journal.
+#[derive(Debug, Clone, Copy)]
+pub struct ReplicaSegmentedJournalOptions {
+    /// Sector-aligned payload capacity from 24 through 512 MiB.
+    pub segment_capacity_bytes: u64,
+    /// Minimum retained segment count that starts background discovery.
+    pub retention_segment_threshold: usize,
+}
+impl Default for ReplicaSegmentedJournalOptions {
+    fn default() -> Self {
+        Self {
+            segment_capacity_bytes: crate::durable_payload::DEFAULT_CAPACITY_BYTES,
+            retention_segment_threshold: 16,
+        }
+    }
+}
+
 /// A bound listener and the one replica behind it.
 pub struct ReplicaNodeServer {
     listener: TcpListener,
@@ -163,7 +180,7 @@ pub struct ReplicaNodeServer {
 impl ReplicaNodeServer {
     /// Bind `addr` and serve a fresh in-memory replica.
     pub fn bind(addr: &str, options: ReplicaNodeOptions) -> std::io::Result<Self> {
-        Self::bind_storage_layout(addr, options, None, false)
+        Self::bind_storage_layout(addr, options, None, None)
     }
 
     /// Replay a locked journal and sync every successful mutation before replying.
@@ -174,15 +191,29 @@ impl ReplicaNodeServer {
         options: ReplicaNodeOptions,
         path: &std::path::Path,
     ) -> std::io::Result<Self> {
-        Self::bind_storage_layout(addr, options, Some(path), false)
+        Self::bind_storage_layout(addr, options, Some(path), None)
     }
 
     /// Use immutable outcome segments and asynchronous metadata-only checkpoints.
-    /// This opt-in layout requires its own fresh path; it retains all segments.
+    /// This opt-in layout requires its own fresh path. Checkpoint maintenance retires unreachable sealed segments.
     pub fn bind_with_segmented_journal(
         addr: &str,
         options: ReplicaNodeOptions,
         path: &std::path::Path,
+    ) -> std::io::Result<Self> {
+        Self::bind_with_segmented_journal_options(
+            addr,
+            options,
+            path,
+            ReplicaSegmentedJournalOptions::default(),
+        )
+    }
+    /// Use explicit segment capacity and the minimum collection trigger.
+    pub fn bind_with_segmented_journal_options(
+        addr: &str,
+        options: ReplicaNodeOptions,
+        path: &std::path::Path,
+        journal: ReplicaSegmentedJournalOptions,
     ) -> std::io::Result<Self> {
         if options.wal_zero_fill_bytes.is_some() {
             return Err(std::io::Error::new(
@@ -190,7 +221,7 @@ impl ReplicaNodeServer {
                 "segmented outcomes cannot use zero-filled journal frames",
             ));
         }
-        Self::bind_storage_layout(addr, options, Some(path), true)
+        Self::bind_storage_layout(addr, options, Some(path), Some(journal))
     }
 
     /// Compact a standalone journal after this many new outcome bytes. Unix only.
@@ -220,7 +251,7 @@ impl ReplicaNodeServer {
         addr: &str,
         options: ReplicaNodeOptions,
         path: Option<&std::path::Path>,
-        segmented: bool,
+        segmented: Option<ReplicaSegmentedJournalOptions>,
     ) -> std::io::Result<Self> {
         crate::cluster::message::validate_payload_limit(options.max_payload_bytes)?;
         if options.capacity_bytes == 0 || options.max_pages == 0 {
@@ -244,11 +275,13 @@ impl ReplicaNodeServer {
             })?;
         let journal: Option<Box<dyn ReplicaJournalBackend>> = path
             .map(|path| -> std::io::Result<Box<dyn ReplicaJournalBackend>> {
-                if segmented {
-                    Ok(Box::new(SegmentedReplicaJournal::open(
+                if let Some(journal) = segmented {
+                    Ok(Box::new(SegmentedReplicaJournal::open_with_settings(
                         path,
                         &mut service,
                         options.max_pages,
+                        journal.segment_capacity_bytes,
+                        journal.retention_segment_threshold,
                     )?))
                 } else {
                     Ok(Box::new(ReplicaJournal::open_with_options(
@@ -863,7 +896,11 @@ fn apply_locked(
         let journal = journal.as_mut().ok_or_else(|| {
             ObjectError::PreconditionFailed("replica has no standalone journal".into())
         })?;
-        let status = match journal.status() {
+        let status = match if command.version == 2 {
+            journal.maintenance_status()
+        } else {
+            journal.status()
+        } {
             Ok(status) => status,
             Err(error) => {
                 guard.failed = true;
@@ -880,9 +917,13 @@ fn apply_locked(
                 return Ok(status);
             }
             journal.sync_deferred()?;
-            journal.checkpoint(service)?;
+            journal.checkpoint_requested(service)?;
             journal.check_health()?;
-            journal.status()
+            if command.version == 2 {
+                journal.maintenance_status()
+            } else {
+                journal.status()
+            }
         })();
         match result {
             Ok(status) => {
