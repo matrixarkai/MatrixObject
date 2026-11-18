@@ -54,7 +54,7 @@ pub(super) fn eligible(request: &ReplicaRequest) -> bool {
 }
 
 /// Hand out handles for the chunks this group dirtied. Called with the replica lock held.
-fn take_log_syncs(guard: &mut NodeReplica) -> Result<Vec<super::log_chunk_store::PendingSync>, ObjectError> {
+fn take_log_syncs(guard: &mut NodeReplica) -> Result<Vec<crate::cluster::log_chunk_store::PendingSync>, ObjectError> {
     match guard.log_chunks.as_mut() {
         Some(store) if store.has_dirty() => store.take_pending_syncs(),
         _ => Ok(Vec::new()),
@@ -63,11 +63,11 @@ fn take_log_syncs(guard: &mut NodeReplica) -> Result<Vec<super::log_chunk_store:
 
 /// Make the handles durable with the replica lock RELEASED (a slow sync must not make the heartbeat
 /// skip its beat), then take the lock only to note the lengths, or to fail the node.
-fn finish_log_syncs(replica: &Mutex<NodeReplica>, pending: Vec<super::log_chunk_store::PendingSync>) -> Result<(), ObjectError> {
+fn finish_log_syncs(replica: &Mutex<NodeReplica>, pending: Vec<crate::cluster::log_chunk_store::PendingSync>) -> Result<(), ObjectError> {
     if pending.is_empty() {
         return Ok(());
     }
-    let outcome = super::log_chunk_store::sync_pending(&pending);
+    let outcome = crate::cluster::log_chunk_store::sync_pending(&pending);
     let Ok(mut guard) = replica.lock() else {
         return Err(ObjectError::Corruption("replica state lock is poisoned".into()));
     };
