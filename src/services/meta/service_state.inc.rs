@@ -30,6 +30,7 @@ pub struct MatrixMetaService {
     leader_lease_receipts: BTreeMap<String, PlacementLeaderLeaseReceipt>,
     placement_coordinator_config: MetadataCoordinatorConfig,
     pub(crate) placement_commit_index: u64,
+    pub(crate) cluster_features: crate::cluster_features::ClusterFeatures,
     placement_snapshot_export_cache: RefCell<Option<PlacementSnapshotExportCache>>,
     root_state_fingerprint_cache: RefCell<Option<String>>,
     /// Ordered by each record's own key, which the record already holds -- see

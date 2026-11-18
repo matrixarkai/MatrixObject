@@ -181,6 +181,18 @@ impl MetaSnapshot {
             digest = fnv1a64_resumed(digest, &material);
             digest = fnv1a64_resumed(digest, &bytes);
         }
+        if !self.cluster_features.is_default() {
+            // Covered only when present, so every snapshot that predates it keeps its checksum.
+            material.clear();
+            append_string(&mut material, "MOSRSFEATURES1");
+            append_u64(&mut material, self.cluster_features.raised);
+            append_u64(&mut material, self.cluster_features.declared.len() as u64);
+            for (voter, bits) in &self.cluster_features.declared {
+                append_u64(&mut material, *voter);
+                append_u64(&mut material, *bits);
+            }
+            digest = fnv1a64_resumed(digest, &material);
+        }
         let mut checksum = String::with_capacity(24);
         append_etag_of_digest(&mut checksum, digest);
         checksum

@@ -28,7 +28,13 @@ impl MetaSnapshot {
                 .placements
                 .values()
                 .any(|placement| !placement.group_bytes.is_empty());
-            let version = if has_group_bytes {
+            // Version 21 is only written when the feature set is not empty, and carries the
+            // group-bytes roster shape, a presence flag for the manifest catalog, and the set.
+            let has_features = !self.cluster_features.is_default();
+            let has_group_bytes = has_group_bytes || has_features;
+            let version = if has_features {
+                "MOSRSMETA21"
+            } else if has_group_bytes {
                 "MOSRSMETA20"
             } else if self.object_manifests.is_empty() {
                 "MOSRSMETA18"
@@ -206,6 +212,11 @@ impl MetaSnapshot {
                 has_group_bytes,
                 &mut emit_body,
             )?;
+            if has_features {
+                append_u64(&mut out, u64::from(!self.object_manifests.is_empty()));
+                emit_body(&out)?;
+                out.clear();
+            }
             if !self.object_manifests.is_empty() {
                 // Catalog mutation enforces its checkpoint bound.
                 let bytes = self.object_manifests.to_bytes().expect("valid manifest catalog");
@@ -213,6 +224,16 @@ impl MetaSnapshot {
                 emit_body(&out)?;
                 out.clear();
                 emit_body(&bytes)?;
+            }
+            if has_features {
+                append_u64(&mut out, self.cluster_features.raised);
+                append_u64(&mut out, self.cluster_features.declared.len() as u64);
+                for (voter, bits) in &self.cluster_features.declared {
+                    append_u64(&mut out, *voter);
+                    append_u64(&mut out, *bits);
+                }
+                emit_body(&out)?;
+                out.clear();
             }
             append_string(&mut out, &self.checksum);
             emit_body(&out)?;

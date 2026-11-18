@@ -40,6 +40,7 @@ impl MatrixMetaService {
         self.admission_policy = snapshot.admission_policy;
         self.qos_config = snapshot.qos_config;
         self.qos_state = snapshot.qos_state;
+        self.cluster_features = snapshot.cluster_features;
         self.trim_meta_retention();
         Ok(())
     }

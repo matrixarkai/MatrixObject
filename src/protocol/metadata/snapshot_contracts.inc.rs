@@ -44,6 +44,8 @@ pub struct MetaSnapshot {
     pub placement_leader_lease_receipts: BTreeMap<String, PlacementLeaderLeaseReceipt>,
     pub placement_coordinator_config: MetadataCoordinatorConfig,
     pub placement_commit_index: u64,
+    /// Empty on every snapshot written before the cluster feature set existed.
+    pub cluster_features: crate::cluster_features::ClusterFeatures,
     pub checksum: String,
 }
 
