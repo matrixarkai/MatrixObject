@@ -49,6 +49,19 @@ ownership alone does not establish whether a prior publication committed.
 Use the exact candidate and current manifest to resolve visibility, and retain
 the original uncertainty when another generation has replaced it.
 
+`confirm_staged_allocation(id)` vouches for one allocation id for the next write that names it,
+so that write does not read the allocation back from the metadata plane before it writes pages
+(one round trip fewer). Use it only for an allocation the metadata plane returned moments ago and
+within its lease, as the gateway does for the reservation in the publishing reply of the append
+before. It is used once and names one id. Publication still checks the allocation, so an
+allocation that is no longer the live one (expired, aborted, consumed) is refused there, after the
+pages were written instead of before: those pages are abandoned. **Abandoned pages are not
+reclaimed automatically**: leased allocations expire and their record is removed, but no process
+frees pages written under them (the same holds for any append that loses a publication race).
+The bound is the pages of one append per refused publication, so a stale allocation costs at most
+one append's pages; the gateway uses a reservation only within half its lease, which keeps the
+case to an allocation another writer aborted or consumed.
+
 `read_staged_allocation(id)` inspects a reservation;
 `list_staged_allocations(after, limit)` enumerates up to 32 IDs per page. These
 are quorum-confirmed reads. An uncertain allocation response may leave an active
