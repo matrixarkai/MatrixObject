@@ -1055,7 +1055,13 @@ impl PlacementOutcome {
             change.check_leases(&service.writer_leases)?;
             if self.manifest.is_none() {
                 let open = service.object_manifests.get(&ObjectId::new(change.bucket.clone(), change.key.clone()))
-                    .is_some_and(|stored| !stored.deleted && stored.extents.last().is_some_and(crate::log_chunk_outcome::is_open_tail));
+                    .is_some_and(|stored| {
+                        // `ExtentList::last` exists only in tests; read the final entry through `iter_from`
+                        let count = stored.extents.len();
+                        !stored.deleted
+                            && count > 0
+                            && stored.extents.iter_from(count - 1).next().is_some_and(crate::log_chunk_outcome::is_open_tail)
+                    });
                 if !open {
                     return Err(invalid("a grant that changes no manifest needs a chunk being written"));
                 }
