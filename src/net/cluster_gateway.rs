@@ -885,11 +885,10 @@ impl ClusterGateway {
         if sha256.len() != 32 {
             return Err(ObjectError::InvalidArgument("an append resolve needs a 32 byte SHA-256".into()));
         }
-        let slot = (bucket.to_string(), key.to_string());
         for _ in 0..RESOLVE_ROUNDS {
             // What this gateway remembers of the object may predate the fence.
             if let Ok(mut cache) = self.manifests.lock() {
-                cache.remove(&slot);
+                cache.remove(bucket, key);
             }
             let manifest = match self.with_plane(|plane| plane.read_manifest(bucket, key)) {
                 Ok(manifest) => Some(manifest),
@@ -912,7 +911,7 @@ impl ClusterGateway {
             match fenced {
                 Ok(()) => {
                     if let Ok(mut cache) = self.manifests.lock() {
-                        cache.remove(&slot);
+                        cache.remove(bucket, key);
                     }
                     return Ok(AppendResolution::Absent);
                 }
