@@ -142,6 +142,34 @@ fn body(reader: &mut io::Take<&mut dyn Read>, tag: u8) -> Result<Vec<u8>, RaftEr
     reader.read_exact(&mut bytes).map_err(storage)?;
     Ok(bytes)
 }
+/// How many times a finished checkpoint capture handed its freed heap back; the test reads it.
+static HEAP_RELEASES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Give the heap a capture freed back to the OS.
+///
+/// A checkpoint copies the catalog and frees the copy when the capture ends, but glibc keeps the
+/// freed pages mapped: on a metadata voter 26 - 27 MB (30 %) of its resident memory, 45 s after the
+/// writes stopped, was free heap (`malloc_trim(0)` returned it), and every checkpoint stepped the
+/// process up by 10 - 27 MB that never came back. It is called on the capture worker, so the request
+/// loop does not wait for it.
+pub(super) fn release_freed_heap() {
+    HEAP_RELEASES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(all(
+        target_os = "linux",
+        target_env = "gnu",
+        any(feature = "meta-server", feature = "replica-server")
+    ))]
+    // SAFETY: `malloc_trim` takes no pointer, locks each arena it walks, and may be called from any
+    // thread at any time.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+#[cfg(test)]
+fn heap_releases() -> u64 {
+    HEAP_RELEASES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 type CaptureWorker = std::thread::JoinHandle<
     Result<Option<(matrixraft::peer_runtime::PreparedCheckpoint, u64)>, RaftError>,
 >;
@@ -254,9 +282,12 @@ impl Policy {
                 let Some((mut reader, length)) = capture()? else {
                     return Ok(None);
                 };
-                ticket
+                let captured = ticket
                     .capture(&mut reader, length)
-                    .map(|prepared| Some((prepared, length)))
+                    .map(|prepared| Some((prepared, length)));
+                drop(reader);
+                release_freed_heap();
+                captured
             })
             .map_err(storage)?;
         self.worker = Some((worker, size));
@@ -323,6 +354,7 @@ mod tests {
             );
             assert!(admission_policy.due(&peer).unwrap().is_none());
             let mut policy = Policy::new(kind, 1024).unwrap();
+            let releases_before = heap_releases();
             let (started_tx, started_rx) = mpsc::channel();
             let (resume_tx, resume_rx) = mpsc::channel();
             let term = peer.term();
@@ -362,6 +394,10 @@ mod tests {
                 })
                 .unwrap();
             assert!(policy.worker.is_none());
+            assert!(
+                heap_releases() > releases_before,
+                "a finished checkpoint capture must hand its freed heap back"
+            );
             assert!(policy.checkpoint < later);
             assert!(policy.next_interval >= 4096);
             drop(policy);
