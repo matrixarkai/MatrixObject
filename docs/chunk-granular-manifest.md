@@ -16,7 +16,7 @@ takes the object, at each chunk boundary, and when a lease is renewed.
 
 This page describes the model, the formats, the replica verb, the metadata
 commands, the feature gate and the operator procedure. It also states which parts
-are in the main tree today, which are in review or not yet opened for review, and
+are in the main tree today, which are in review, and
 what has not been measured.
 
 ## What is in the tree and what is not
@@ -32,8 +32,8 @@ what has not been measured.
 | Metadata readers: outcome version 15, snapshot version 22, and the writer lease table restore in the proposal draft | In the tree |
 | Sealed chunk reads from disk through a bounded cache, with a handle limit and an open tail budget | In the tree |
 | Leader commands (grant, switch, renew, sweep), batched renewal (outcome version 16) and the feature gate wiring (feature bit 4) | In the tree, behind the two cluster features |
-| Replica client and quorum log writer and reader | In review (draft) |
-| Log object API (open, append, read, take over) | Written, stacked on the leader commands and the replica client; not yet opened for review |
+| Replica client and quorum log writer and reader | In the tree |
+| Log object API (open, append, read, take over) | In review (draft) |
 | End-to-end latency and metadata cost at multi-gigabyte object sizes | Not measured yet |
 
 With neither cluster feature raised, a grant or a switch is refused ("chunk-granular
@@ -145,6 +145,53 @@ applied but not yet covered by a sync is invisible. A failed sync fails the node
 and no acknowledgement leaves it. A seal still syncs under the lock, once per
 64 MiB chunk. A caller that bypasses the group commit syncs under the lock on
 every call, so log appends must be sent through it.
+
+## The replica client
+
+A log chunk lives on three nodes. The client side has a writer, which appends to
+the three nodes of one chunk, and a reader.
+
+**Writing.** A writer holding the chunk's epoch sends every record to all three
+nodes. A record is acknowledged to the caller once two nodes report it durable.
+Each node reports where the bytes landed (its applied and durable lengths), so the
+writer never guesses: a node that lost an offset, answered late or came back after
+a restart is brought up from the bytes the writer still holds, starting at the
+length that node reports. The writer sends records of at most 1 MiB and keeps up
+to 32 MiB of bytes a node may still need. A node further behind than that cannot
+be caught up from the writer and is given up on.
+
+**The quorum-durable length.** It is the second largest durable length among the
+three nodes. Every acknowledged byte lies below it, and a reader never goes above
+it: a byte held by one node only has not been acknowledged and may be discarded.
+
+**Sealing.** A seal is final, so a node is sealed only once it holds every byte the
+writer has. The writer first waits for the nodes that lag to be given the bytes
+they lack, bounded by the connection's read timeout, and then seals only the nodes
+that hold exactly the chunk's length. A node whose appends are still in flight is
+not sealed at the shorter length it happens to hold. The footer (length, CRC-32C
+and, when asked for, SHA-256) is returned only when at least two nodes sealed and
+all of them report the same footer; otherwise the seal fails with an error.
+
+- A node that answers a seal with a length other than the one it was asked to hold
+  has sealed something wrong, and that cannot be undone. That is an error: no
+  footer is returned, the writer is finished, and the chunk must not be recorded as
+  sealed.
+- A node that is down, or that does not catch up within the read timeout, is not
+  sealed. It is left open and is under-replicated, and a reader falls back to the
+  nodes that sealed. Repair of log chunks is a separate path and is not
+  implemented (see the limits below).
+
+**Reading.** The reader asks each node for its durable length and its writer epoch.
+A node whose epoch is below the highest any node reports takes no part in the
+quorum length and serves no read: it missed a change of writer, so what it holds
+past the point the new writer started from may be bytes that were never
+acknowledged and that the new writer's bytes replaced elsewhere. With fewer than
+two nodes at the highest epoch the read fails. A read ends at the quorum-durable
+length. It is served in pieces of at most 1 MiB, and a piece is accepted only when
+a node returns exactly the bytes asked for; if a node returns fewer, the reader
+tries the next, and if no node can serve the piece the read fails with an error
+instead of returning less. When every node answers the unknown-verb status, the
+reader reports that the nodes do not speak log chunks.
 
 ## The metadata commands
 
@@ -288,5 +335,8 @@ through an 8 MiB cache peaked at 13,632,156 bytes.
   refuses a 4,097th entry. Both are errors the caller must handle.
 - Quorum writes acknowledge at two of three replicas. A third replica that falls
   behind must catch up or be replaced before it serves a write again.
+- A chunk can be left unsealed on a lagging node: a node that is down or does not
+  catch up when the chunk is sealed stays open and under-replicated, and there is
+  no automatic repair for log chunks yet.
 - Format 3 objects cannot be read by older builds, and a raised feature cannot be
   lowered. See the irreversibility statement above.
