@@ -202,13 +202,14 @@ answers from committed state. Of the bits in use, bit 2 (chunk manifest) and bit
 (log chunk leases) belong to this feature, and bit 3 is the read grace feature of
 the gateway side. Bits 8 to 15 are held for other records.
 
-The leader does not know what each chunk server supports. The writer probes the
-replica verb on the three nodes before it asks for a grant, and a node that does
-not speak log chunks stops the writer before any metadata command is sent.
+The leader does not know what each chunk server supports. A writer must probe the
+replica verb on the three nodes before it asks for a grant, so that a node that
+does not speak log chunks stops it before any metadata command is sent. The log
+object writer that does this is written and is not in the tree yet.
 
 ### Irreversibility
 
-**IRREVERSIBLE ONCE ENABLED. Merging this change is reversible: nothing emits a version 15 or 16 outcome or a format 3 manifest until an operator raises BOTH cluster features (chunk manifest, bit 2, and log chunk leases, bit 4) with the explicit raise command, and nothing raises them by default. After they are raised and the first log chunk grant commits: (a) the metadata Raft log and snapshots contain outcome versions 15 and 16, snapshot version 22 and objects with manifest format 3 and log chunk extents; a build that lacks these readers FAILS to apply those entries (strict canonical re-encode, no skip), so no metadata voter can be run on an older build afterwards and an older gateway or client cannot read those objects; (b) a raised feature bit is never lowered: no command un-raises it; (c) an object written as log chunks stays chunked: going back to page extents means rewriting the object. Raising the features on a cluster that is not private is an explicit operator decision.**
+**With neither bit raised, the running system writes nothing in the new format: no version 15 or 16 outcome, no snapshot version 22 and no format 3 manifest is produced, and nothing already written is changed. The code that reads and applies those records is merged and inert until a raise. Nothing raises the bits by default; only the explicit raise command does, and a grant or a switch needs BOTH the chunk manifest bit (bit 2) and the log chunk leases bit (bit 4). The raise command is accepted only for bits that every voter the caller names has declared; it does not check the gateways, the clients or the chunk servers, so before a raise every metadata voter, gateway and client that will read these objects must run a build that reads them, and the chunk servers must answer the log chunk verb. RAISING BOTH BITS IS THE IRREVERSIBLE STEP, and a raise cannot be rolled back. Once both bits are raised and the first log chunk grant commits: (a) the metadata Raft log and its snapshots contain outcome versions 15 and 16, snapshot version 22 and objects with manifest format 3 and log chunk extents; a build that lacks these readers FAILS to apply those entries (strict canonical re-encode, no skip), so no metadata voter can be run on an older build afterwards and an older gateway or client cannot read those objects; (b) a raised feature bit is never lowered: no command un-raises it; (c) an object written as log chunks stays chunked: going back to page extents means rewriting the object. Raising the features on a cluster that is not a private test cluster is an explicit decision of that cluster's owner or operator.**
 
 ## Operator procedure
 
