@@ -1192,6 +1192,18 @@ jobs:
             grep -q 'test result: ok. 1 passed' /tmp/append-resolve.log
           done
 
+      - name: forgetting never-reused keys keeps the catalog bounded and deterministic
+        run: |
+          set -o pipefail
+          for name in \
+            forget_prefix_keeps_the_catalog_bounded_across_rollovers \
+            forget_prefix_survives_a_leader_kill_and_a_total_restart; do
+            cargo test --locked --all-features --test network_metadata_consensus "$name" -- --exact --nocapture | tee /tmp/forget-prefix.log
+            grep -q 'test result: ok. 1 passed' /tmp/forget-prefix.log
+          done
+          cargo test --locked --all-features --lib forget_prefix_tests -- --nocapture | tee /tmp/forget-prefix-lib.log
+          grep -q 'test result: ok. 5 passed' /tmp/forget-prefix-lib.log
+
       - name: live peer partitions preserve objects and recover
         run: |
           set -o pipefail

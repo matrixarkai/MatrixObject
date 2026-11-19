@@ -1100,6 +1100,7 @@ pub(super) fn decide_allocation(
             features: None,
             log_chunk: None,
             lease_batch: None,
+            forget: false,
     };
     outcome.to_payload()?;
     Ok((outcome, reply))

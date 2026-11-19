@@ -35,12 +35,15 @@ pub const FEATURE_READ_GRACE: u64 = 1 << 3;
 /// reads all of them; the log chunk commands need this bit AND `FEATURE_CHUNK_MANIFEST`. Bit 3 is
 /// taken by the gateway side, and bits 8 through 15 are held for it.
 pub const FEATURE_LOG_CHUNK_LEASES: u64 = 1 << 4;
+/// A delete under a configured never-reused prefix may drop its tombstone: the leader's decision rides in
+/// the placement outcome (`forget`). NEVER RAISED BY DEFAULT or by bringup; see `placement_outcome`.
+pub const FEATURE_FORGET_PREFIX: u64 = 1 << 5;
 /// Bits 8 through 15 are held for the gateway recovery records.
 pub const FEATURE_GATEWAY_RESERVED_MASK: u64 = 0xff << 8;
 /// Every bit this build knows how to read.
 pub const SUPPORTED_FEATURES: u64 =
     FEATURE_COMPACT_APPEND | FEATURE_RESERVE_NEXT | FEATURE_CHUNK_MANIFEST | FEATURE_READ_GRACE
-        | FEATURE_LOG_CHUNK_LEASES
+        | FEATURE_LOG_CHUNK_LEASES | FEATURE_FORGET_PREFIX
         | FEATURE_GATEWAY_RESERVED_MASK;
 
 /// Most voters a declaration table holds.

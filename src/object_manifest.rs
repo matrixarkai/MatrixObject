@@ -48,6 +48,50 @@ thread_local! {
     static TEST_ADMISSION_CAP: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
+/// Keys under these prefixes ("bucket/key-prefix") are declared NEVER REUSED: nobody creates a key twice, and
+/// no create of one can arrive late (after its delete). Only for those keys may a delete drop its tombstone
+/// (`placement_outcome`, `forget`), and only when the cluster has raised `FEATURE_FORGET_PREFIX`. Empty by
+/// default: nothing is ever forgotten. Per metaserver process and read ONLY where the leader decides a delete,
+/// never at apply or restore, so voters configured differently cannot diverge.
+static FORGET_PREFIXES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+thread_local! {
+    static TEST_FORGET_PREFIXES: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Set the never-reused prefixes of this process.
+pub fn set_forget_prefixes(prefixes: Vec<String>) {
+    *FORGET_PREFIXES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = prefixes;
+}
+
+/// Whether `bucket`/`key` lies under a configured never-reused prefix.
+pub fn forget_prefix_matches(bucket: &str, key: &str) -> bool {
+    let name = format!("{bucket}/{key}");
+    #[cfg(test)]
+    {
+        if let Some(found) = TEST_FORGET_PREFIXES.with(|cell| {
+            cell.borrow().as_ref().map(|prefixes| prefixes.iter().any(|prefix| name.starts_with(prefix.as_str())))
+        }) {
+            return found;
+        }
+    }
+    FORGET_PREFIXES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .any(|prefix| name.starts_with(prefix.as_str()))
+}
+
+/// Run `body` with this thread's never-reused prefixes set to `prefixes` (tests only).
+#[cfg(test)]
+pub(crate) fn with_forget_prefixes<T>(prefixes: &[&str], body: impl FnOnce() -> T) -> T {
+    let before = TEST_FORGET_PREFIXES.with(|cell| cell.replace(Some(prefixes.iter().map(|p| p.to_string()).collect())));
+    let result = body();
+    TEST_FORGET_PREFIXES.with(|cell| *cell.borrow_mut() = before);
+    result
+}
+
 /// Set the admission limit of this process; returns the value in force (clamped into `1..=MAX_OBJECTS`).
 pub fn set_admission_cap(cap: usize) -> usize {
     let cap = cap.clamp(1, MAX_OBJECTS);
@@ -1238,6 +1282,31 @@ impl ManifestCatalog {
     }
     pub fn len(&self) -> usize {
         self.objects.len()
+    }
+
+    /// Whether a retained manifest (which includes every read session and lease) or a staged allocation names
+    /// `id`. The leader will not forget a key while anything in state still names it. It cannot see a client's
+    /// or a gateway's cache: for those the never-reused contract is what protects the key.
+    pub(crate) fn names_key(&self, id: &ObjectId) -> bool {
+        self.retained.values().any(|record| {
+            record
+                .manifest
+                .as_ref()
+                .is_some_and(|manifest| manifest.bucket == id.bucket.as_str() && manifest.key == id.key.as_str())
+        }) || self
+            .staged
+            .values()
+            .any(|staged| staged.bucket == id.bucket.as_str() && staged.key == id.key.as_str())
+    }
+
+    /// Drop the entry of `id` the way `restore_entry_arc` does when it removes one: `revision` is the sum of
+    /// the generations of the entries present (it is rebuilt that way on restore), so removing an entry
+    /// subtracts its generation, and `body_bytes` drops by its encoded size.
+    pub(crate) fn forget_entry(&mut self, id: &ObjectId) {
+        if let Some(entry) = self.objects.remove(id) {
+            self.revision -= u128::from(entry.manifest.generation);
+            self.body_bytes -= entry.encoded_bytes;
+        }
     }
 
     /// Includes tombstones so a recreation must name the deleted generation.
