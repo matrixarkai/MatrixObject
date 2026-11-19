@@ -29,10 +29,10 @@ what has not been measured.
 | Cluster feature set; declare, raise and read commands | In the tree |
 | Replica verb `LogOp` (code 28) and the per-node chunk store | In the tree |
 | Group commit for log chunk writes, with the sync outside the replica lock | In the tree |
-| Metadata readers: outcome version 15, snapshot version 22, and the writer lease table restore in the proposal draft | In review |
-| Leader commands (grant, switch, renew, sweep), batched renewal (outcome version 16) and the feature gate wiring (feature bit 4) | In review (draft), stacked on the metadata readers |
+| Metadata readers: outcome version 15, snapshot version 22, and the writer lease table restore in the proposal draft | In the tree |
+| Sealed chunk reads from disk through a bounded cache, with a handle limit and an open tail budget | In the tree |
+| Leader commands (grant, switch, renew, sweep), batched renewal (outcome version 16) and the feature gate wiring (feature bit 4) | In review |
 | Replica client and quorum log writer and reader | In review (draft) |
-| Sealed chunk reads from disk through a bounded cache | In review (draft) |
 | Log object API (open, append, read, take over) | Written, stacked on the leader commands and the replica client; not yet opened for review |
 | End-to-end latency and metadata cost at multi-gigabyte object sizes | Not measured yet |
 
@@ -116,8 +116,8 @@ Requests are strict: the version, the operation, the epoch (zero is refused for
 writes), the data size (at most 4 MiB) and the identity are all validated before a
 request reaches a chunk. A node without durable storage refuses log chunk
 operations. In maintenance mode a node refuses appends, seals and truncates and
-still answers tails and reads. In the current tree a node keeps at most 256 chunks
-open and refuses to open another.
+still answers tails and reads. A node keeps at most 256 sealed chunk files open
+and at most 64 open tails (both configurable); see the memory model below.
 
 Appends may arrive in any order within a bounded window (16 records or 16 MiB
 waiting for an earlier one). The reply reports the contiguous length applied and
@@ -143,7 +143,10 @@ every call, so log appends must be sent through it.
 
 ## The metadata commands
 
-These commands are in review and are not in the main tree yet. They are
+The grant and switch outcome (version 15), the snapshot that holds the writer
+lease table (version 22) and the restore of that table when the leader discards a
+draft are in the tree. The leader commands that produce them, batched renewal and
+sweep (version 16) and the feature gate wiring are in review. All of them are
 behind the feature gate described below.
 
 - **Grant** takes the writer lease of an object and, if no chunk is open, adds one
@@ -180,13 +183,15 @@ Two cluster features gate everything that writes a log chunk manifest:
 
 - **Chunk manifest** (bit 2): manifests whose extents name log chunks.
 - **Log chunk leases** (bit 4): outcome versions 15 and 16 and the lease commands.
+  The leader commands change in review defines this bit.
 
 Each metadata voter declares the feature bits its build can read. The group raises
 a bit only through an explicit raise command, and the leader accepts it only when
 every voter the caller names has declared every bit being raised. A raised bit is
 never lowered. An entry that is already committed is always applied: a node that
 cannot read it fails loudly instead of skipping it. Both bits are required for a
-grant or a switch; one is not enough. Bits 8 to 15 are held for other records.
+grant or a switch; one is not enough. Bit 3 is the read grace feature of the
+gateway side and bit 4 is the one above. Bits 8 to 15 are held for other records.
 
 The leader does not know what each chunk server supports. The writer probes the
 replica verb on the three nodes before it asks for a grant, and a node that does
@@ -225,28 +230,33 @@ There is no command to lower a bit or to convert a log object back to pages.
 
 ## Memory model
 
-In the current tree a chunk server holds an opened chunk entirely in memory: the
-whole file, up to 64 MiB, is read when the chunk is opened. A node may keep 256
-chunks open and refuses to open more. That is the same resident model as page
-payloads, so it does not yet allow a corpus larger than memory.
+A chunk server keeps memory flat in the size of what it stores. Chunks that can
+still change and chunks that are sealed are treated differently:
 
-The change that is in review, and not yet in the tree, makes memory flat in corpus
-size:
+- **Open tails are resident.** A chunk that can still change keeps all its bytes
+  in memory, up to 64 MiB, and answers reads from memory. A node holds at most 64
+  open tails by default. Past that budget, opening one more tail is refused with a
+  retryable error ("too many log chunk tails are open on this replica; retry"). A
+  tail is never closed to make room, and it frees its slot when it is sealed.
+- **Sealed chunks are read from their file.** A sealed chunk keeps no payload in
+  memory. Opening one verifies its checksum chain by reading the file in 256 KiB
+  pieces, so the open needs no buffer the size of the chunk. A read takes whole
+  records from the file, checks each record against the checksum written with it,
+  and keeps the record in a cache shared by every chunk on the node and bounded in
+  bytes (64 MiB by default). A sealed file never changes, so a cache entry never
+  goes stale and dropping one only costs reading and checking the record again.
+- **Sealed chunk files are limited apart from tails.** A node keeps at most 256
+  sealed chunk files open. Past that, the least recently used sealed chunk is
+  closed and reopened when something reads it again, and nothing is refused. A
+  chunk with a sync still to come is never closed.
 
-- Only the open tail chunk of an object keeps its bytes in memory. A sealed chunk
-  keeps no payload. Opening it verifies the checksum chain by streaming, and
-  reads come from the file through a node-wide cache bounded in bytes (64 MiB by
-  default), with the checksum of each record verified when it is read.
-- The limit of 256 open chunks becomes a least-recently-used set of file handles:
-  a sealed chunk's handle may be closed and reopened. An open tail, or a chunk
-  with a sync still to come, is never closed.
-- Open tails have their own budget (64 by default). Past it a new tail is refused
-  with a retryable error, and nothing is closed to make room. Memory is then
-  bounded by the tails times 64 MiB plus the cache.
+The open tails and the record cache together bound the heap. The three limits
+(sealed files open, open tails, cache bytes) are set when the store is opened.
+Appends and the replica group commit behave as described above.
 
-Measured by tests of that change: the peak heap while opening a sealed 64 MiB
-chunk fell from 71,303,204 bytes to 524,924 bytes, and reading all 64 MiB through
-an 8 MiB cache peaked at 13,632,156 bytes.
+Measured by tests of the sealed read change: the peak heap while opening a sealed
+64 MiB chunk fell from 71,303,204 bytes to 524,924 bytes, and reading all 64 MiB
+through an 8 MiB cache peaked at 13,632,156 bytes.
 
 ## Limits and what is not measured
 
