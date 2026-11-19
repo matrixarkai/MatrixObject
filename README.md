@@ -77,6 +77,7 @@ before interpreting storage amplification. The guides below describe these paths
 | Understand publication and reads | [Object manifests](docs/object-manifests.md) and [authenticated reads](docs/authenticated-object-reads.md) |
 | Understand metadata clone and rollback costs | [Immutable catalog sharing](docs/manifest-catalog-sharing.md) |
 | Protect reads across overwrite or delete | [Read-session leases](docs/read-session-leases.md) |
+| Stop deleted never-reused keys from filling the catalog | [Forgetting tombstones](docs/forget-prefix.md) |
 | Append without sending the stored prefix again | [Compact append planning](docs/compact-append-planning.md) and [publication](docs/compact-staged-append.md) |
 | Append to a very large log without a metadata write per append | [Chunk-granular manifests and log objects](docs/chunk-granular-manifest.md) |
 | Size repair and append work | [Repair worker](docs/star-repair-worker.md) and [append amplification](docs/star-append-amplification.md) |
