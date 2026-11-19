@@ -594,6 +594,46 @@ fn staged_allocations_survive_failover_and_restart_and_fence_aborted_publication
     assert!(client.abort_staged_allocation(records[2].allocation_id).is_err());
 }
 
+/// A feature declaration is a proposal like any other: it must be admitted through the real leader
+/// pipeline of a three-voter group without stopping the leader's consensus worker, and what it
+/// decides must survive a leader loss and a total restart. (The leader once prepared the outcome
+/// against a draft that did not restore the feature set, found the live set changed when the entry
+/// committed, and stopped: the group had no leader after the first declaration.)
+#[test]
+fn cluster_features_are_declared_and_raised_through_the_leader_and_survive_failover_and_restart() {
+    const COMPACT_APPEND: u64 = 1;
+    const RESERVE_NEXT: u64 = 2; // reserve-next: any second bit this build supports
+    let mut group = Group::new();
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    assert!(client.read_cluster_features().unwrap().is_default());
+    for voter in 1..=3 {
+        let features = client.declare_voter_features(voter, COMPACT_APPEND | RESERVE_NEXT).unwrap();
+        assert_eq!(features.declared.get(&voter), Some(&(COMPACT_APPEND | RESERVE_NEXT)));
+    }
+    // a repeated declaration proposes nothing and answers with the set
+    client.declare_voter_features(1, COMPACT_APPEND | RESERVE_NEXT).unwrap();
+    assert!(client.raise_cluster_features(1 << 2, vec![1, 2, 3]).is_err(), "a bit no voter declared is not raised");
+    let raised = client.raise_cluster_features(COMPACT_APPEND | RESERVE_NEXT, vec![1, 2, 3]).unwrap();
+    assert_eq!(raised.raised, COMPACT_APPEND | RESERVE_NEXT);
+    // the leader still leads and still commits
+    assert_eq!(group.leader(), leader, "a declaration or a raise changed the leader");
+    client.allocate_object_pages(1).unwrap();
+    assert_eq!(client.read_cluster_features().unwrap().raised, COMPACT_APPEND | RESERVE_NEXT);
+    // leader loss: the set is the same on the new leader
+    group.kill(leader);
+    let mut client = group.client(group.leader());
+    assert_eq!(client.read_cluster_features().unwrap().raised, COMPACT_APPEND | RESERVE_NEXT);
+    client.allocate_object_pages(1).unwrap();
+    // total restart: replay reaches the same set
+    for index in 0..3 { if group.nodes[index].is_some() { group.kill(index); } }
+    for index in 0..3 { group.start(index); }
+    let mut client = group.client(group.leader());
+    let features = client.read_cluster_features().unwrap();
+    assert_eq!(features.raised, COMPACT_APPEND | RESERVE_NEXT);
+    assert_eq!(features.declared.len(), 3);
+}
+
 #[test]
 fn publication_fence_and_atomic_copy_survive_checkpoint_restart_and_quorum_loss() {
     use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};

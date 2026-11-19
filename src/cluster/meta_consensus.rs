@@ -1237,6 +1237,9 @@ struct PlacementDraft<'a> {
     retention_deadlines: Vec<(u64, u64)>,
     staging_allocations: Vec<(u64, Option<crate::staged_allocation::StagedAllocation>)>,
     publication_fence: u64,
+    /// The cluster feature set as it stood: a declaration or a raise prepared against the draft
+    /// changes it, and the live service must not keep that before the entry commits.
+    features: crate::cluster_features::ClusterFeatures,
 }
 impl<'a> PlacementDraft<'a> {
     fn new(
@@ -1262,6 +1265,7 @@ impl<'a> PlacementDraft<'a> {
             .collect();
         let index = service.placement_commit_index;
         let publication_fence = service.object_manifests.publication_fence();
+        let features = service.cluster_features.clone();
         Self {
             service,
             nodes,
@@ -1271,11 +1275,13 @@ impl<'a> PlacementDraft<'a> {
             retention_deadlines: Vec::new(),
             staging_allocations: Vec::new(),
             publication_fence,
+            features,
         }
     }
 }
 impl Drop for PlacementDraft<'_> {
     fn drop(&mut self) {
+        self.service.cluster_features = std::mem::take(&mut self.features);
         self.service.object_manifests.restore_publication_fence(self.publication_fence);
         for (id, previous) in self.staging_allocations.drain(..) {
             self.service.object_manifests.restore_staging(id, previous);
@@ -2496,6 +2502,7 @@ mod tests {
     include!("reservation_tests.rs");
     include!("append_plan_command_tests.rs");
     include!("ranged_manifest_read_tests.rs");
+    include!("feature_draft_tests.rs");
 
     #[test]
     fn compact_read_session_batches_restore_shared_records_before_committing_removal_and_creation() {

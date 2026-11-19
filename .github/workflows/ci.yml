@@ -577,6 +577,16 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus publication_fence_and_atomic_copy_survive_checkpoint_restart_and_quorum_loss -- --exact | tee /tmp/publication-admission.log
           grep -q 'test result: ok. 1 passed' /tmp/publication-admission.log
 
+      - name: a feature declaration does not stop the leader and the set survives recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::a_feature_outcome_applied_to_the_draft_is_undone_with_it -- --exact | tee /tmp/feature-draft.log
+          grep -q '^running 1 test$' /tmp/feature-draft.log
+          grep -q 'test result: ok. 1 passed' /tmp/feature-draft.log
+          cargo test --locked --all-features --test network_metadata_consensus cluster_features_are_declared_and_raised_through_the_leader_and_survive_failover_and_restart -- --exact | tee /tmp/feature-raise.log
+          grep -q '^running 1 test$' /tmp/feature-raise.log
+          grep -q 'test result: ok. 1 passed' /tmp/feature-raise.log
+
       - name: automatic staged cleanup stays bounded and survives durable restart
         run: |
           set -o pipefail
