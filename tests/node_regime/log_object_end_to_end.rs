@@ -597,7 +597,7 @@ fn measure_page_path_growth_baseline() {
     let base = std::env::temp_dir();
     let run = Directory(base.join(node_regime::run_token("e2e-page-path")));
     std::fs::create_dir(&run.0).unwrap();
-    let mut chunks = Chunks::start_all(&run.0);
+    let chunks = Chunks::start_all(&run.0);
     let members: Vec<String> = (0..3).map(|id| format!("log-member-{id}")).collect();
     let catalog = catalog(&chunks.addresses, true, &members);
     let group = Group::configured_with_timeout(None, None, Some(catalog.to_bytes().unwrap()), 0, false, 5000);
