@@ -3443,14 +3443,18 @@ fn a_restarted_follower_catches_up_while_the_leader_keeps_a_reporting_node_onlin
         std::thread::sleep(Duration::from_millis(500));
     }
     assert!(restarted);
-    // The restarted follower converges on the same log position as the others.
+    // The restarted follower converges on the leader's log position. A follower cannot answer a membership
+    // read (only a leader admits it), so the leader's applied index is asked through the routing client and
+    // the follower's committed index is read from its own log file.
+    let target = applied_index(&mut client);
+    let wal = group.root.join(follower.to_string()).join("metadata.peer.wal");
     let until = Instant::now() + Duration::from_secs(15);
     loop {
-        let indexes: Vec<u64> = (0..3).map(|i| applied_index(&mut group.client(i))).collect();
-        if indexes.iter().all(|index| *index == indexes[0]) {
+        let held = node_regime::checkpoints::committed_index(&wal);
+        if held + 2 >= target {
             break;
         }
-        assert!(Instant::now() < until, "voters did not converge: {indexes:?}");
+        assert!(Instant::now() < until, "the restarted follower holds {held}, the leader has applied {target}");
         std::thread::sleep(Duration::from_millis(300));
     }
 }
