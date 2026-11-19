@@ -550,3 +550,6 @@ fn the_error_mapping_names_what_the_metadata_plane_and_the_nodes_say() {
     assert_eq!(from_chunk(ChunkLogError::NotSpoken), LogObjectError::NotSpoken);
     assert!(matches!(from_chunk(ChunkLogError::Sealed), LogObjectError::Chunk(ChunkLogError::Sealed)));
 }
+
+#[path = "log_object_probes.rs"]
+mod probes;
