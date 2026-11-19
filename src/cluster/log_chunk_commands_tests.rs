@@ -484,4 +484,177 @@ mod log_chunk_commands_tests {
         let sealed = keys.iter().filter_map(|key| stored(&service, key)).map(|m| m.extents.iter().filter(|e| e.flags & EXTENT_FLAG_SEALED != 0).count()).sum::<usize>();
         assert!(sealed > 20, "the run sealed {sealed} chunks");
     }
+
+    // ---- an object is a page object or a log object, never both ----
+
+    /// What a refused command must leave exactly as it found it: the snapshot bytes, and a dump of the
+    /// manifests, placements, leases and index.
+    fn state_of(service: &MatrixMetaService) -> (Vec<u8>, String) {
+        (
+            service.export_snapshot().to_bytes().unwrap(),
+            format!(
+                "{:?}|{:?}|{:?}|{}",
+                service.object_manifests, service.placements, service.writer_leases, service.placement_commit_index
+            ),
+        )
+    }
+    fn page_extent(chunk: u64, offset: u64, length: u64) -> crate::object_manifest::ObjectExtent {
+        crate::object_manifest::ObjectExtent {
+            group: "group-0".into(),
+            chunk_id: chunk,
+            object_offset: offset,
+            length,
+            write_sequence: 1,
+            data_sha256: vec![1; 32],
+            ..Default::default()
+        }
+    }
+    fn publish_manifest_of(service: &mut MatrixMetaService, outcome: crate::object_manifest::ManifestOutcome) {
+        PlacementOutcome::publish_manifest(service, outcome, 0).unwrap().apply(service).unwrap();
+    }
+    /// An object a page writer made: one page extent, format 2.
+    fn publish_page_object(service: &mut MatrixMetaService, key: &str) {
+        let manifest = ObjectManifest {
+            format_version: 2,
+            bucket: "bucket".into(),
+            key: key.into(),
+            generation: 1,
+            length: 10,
+            extents: vec![page_extent(500, 0, 10)],
+            ..Default::default()
+        };
+        publish_manifest_of(service, crate::object_manifest::ManifestOutcome::decide(None, manifest).unwrap());
+    }
+    fn not_a_log_object(error: &ObjectError) -> bool {
+        matches!(error, ObjectError::PreconditionFailed(message) if message.contains("not a log object"))
+    }
+
+    #[test]
+    fn a_grant_refuses_an_object_that_holds_page_extents_and_changes_nothing_while_new_and_log_objects_still_work() {
+        let (mut service, groups) = fixture(1, 0);
+        raise(&mut service);
+        publish_page_object(&mut service, "pages");
+        let before = state_of(&service);
+        let request = LogChunkRequest::grant("bucket", "pages", "gw-a", TTL, "group-0");
+        let error = run(&mut service, &groups, request.clone(), NOW).unwrap_err();
+        assert!(not_a_log_object(&error), "{error:?}");
+        assert_eq!(state_of(&service), before, "a refused grant changes nothing: manifest, placement, lease and index");
+        assert!(service.writer_leases.get("bucket", "pages").is_none());
+        // asking again is refused the same way: nothing was left half done
+        assert!(not_a_log_object(&run(&mut service, &groups, request, NOW + 1).unwrap_err()));
+        assert_eq!(state_of(&service), before);
+        // the converse: a new object, and then a log object whose holder asks again, work as they did
+        let created = grant(&mut service, &groups, "fresh", "gw-a", NOW);
+        assert!(created.open.is_some() && created.lease.is_some());
+        let (again, committed) =
+            run(&mut service, &groups, LogChunkRequest::grant("bucket", "fresh", "gw-a", TTL, "group-0"), NOW + 5).unwrap();
+        assert!(!committed);
+        assert_eq!(again.open, created.open);
+        // a log object whose lease ran out is granted again to another writer: still a log object
+        let taken = grant(&mut service, &groups, "fresh", "gw-b", NOW + TTL + 1);
+        assert_eq!(taken.lease.unwrap().holder, "gw-b");
+        assert_eq!(taken.open, created.open, "the chunk that was open stays open");
+    }
+
+    #[test]
+    fn a_switch_refuses_an_object_that_holds_page_extents_and_changes_nothing() {
+        let (mut service, groups) = fixture(1, 0);
+        raise(&mut service);
+        // a manifest that mixes the kinds: a page extent, then a log chunk still being written
+        let tail = crate::object_manifest::ObjectExtent {
+            group: "group-0".into(),
+            volume_id: 1,
+            chunk_id: 900,
+            object_offset: 10,
+            length: 0,
+            write_sequence: 2,
+            kind: crate::object_manifest::EXTENT_KIND_LOG_CHUNK,
+            flags: EXTENT_FLAG_TAIL,
+            ..Default::default()
+        };
+        let mixed = ObjectManifest {
+            format_version: 3,
+            bucket: "bucket".into(),
+            key: "mixed".into(),
+            generation: 1,
+            length: 10,
+            extents: vec![page_extent(500, 0, 10), tail],
+            ..Default::default()
+        };
+        publish_manifest_of(&mut service, crate::object_manifest::ManifestOutcome::decide_chunked(None, mixed).unwrap());
+        service.writer_leases.set("bucket", "mixed", &WriterLease { holder: "gw-a".into(), epoch: 1, expires_at_ms: NOW + TTL });
+        let before = state_of(&service);
+        let request = LogChunkRequest::switch("bucket", "mixed", "gw-a", 1, "group-0", 4096, 9, Vec::new());
+        let error = run(&mut service, &groups, request, NOW + 1).unwrap_err();
+        assert!(not_a_log_object(&error), "{error:?}");
+        assert_eq!(state_of(&service), before, "a refused switch changes nothing");
+    }
+
+    #[test]
+    fn a_renewal_and_a_sweep_naming_a_page_object_find_no_lease_and_change_nothing() {
+        let (mut service, groups) = fixture(1, 0);
+        raise(&mut service);
+        publish_page_object(&mut service, "pages");
+        let before = state_of(&service);
+        let (renewed, committed) =
+            run(&mut service, &groups, LogChunkRequest::renew("gw-a", TTL, vec![lref("pages", 3)]), NOW).unwrap();
+        assert!(!committed);
+        assert_eq!((renewed.renewed, renewed.lost), (0, vec![lref("pages", 3)]));
+        let (swept, committed) = run(&mut service, &groups, LogChunkRequest::sweep(vec![lref("pages", 3)]), NOW + TTL).unwrap();
+        assert!(!committed);
+        assert_eq!(swept.dropped, 0);
+        assert_eq!(state_of(&service), before);
+    }
+
+    #[test]
+    fn an_ordinary_page_publication_never_writes_a_chunked_manifest_or_appends_pages_to_one() {
+        use crate::object_manifest::ManifestOutcome;
+        let (mut service, groups) = fixture(1, 0);
+        raise(&mut service);
+        grant(&mut service, &groups, "log", "gw-a", NOW);
+        let log = stored(&service, "log").unwrap();
+        assert_eq!(log.format_version, 3);
+        let before = state_of(&service);
+        // the general publication path refuses a chunked manifest, whoever asks
+        let next = ObjectManifest { generation: log.generation + 1, ..log.clone() };
+        assert!(ManifestOutcome::decide(Some(log.clone()), next).is_err());
+        // a page append to a log object: refused as chunked, and the page extent would follow a chunk
+        let mut appended = ObjectManifest { generation: log.generation + 1, length: log.length + 10, ..log.clone() };
+        appended.extents.push(page_extent(501, log.length, 10));
+        assert!(ManifestOutcome::decide_append(log.clone(), appended.clone()).is_err());
+        // an earlier format cannot hold the chunk extents at all
+        let earlier = ObjectManifest { format_version: 2, ..appended };
+        assert!(ManifestOutcome::decide(Some(log), earlier).is_err());
+        assert_eq!(state_of(&service), before);
+    }
+
+    #[test]
+    fn a_deleted_log_object_is_created_again_with_a_later_generation_a_new_lease_and_a_new_chunk() {
+        use crate::object_manifest::ManifestOutcome;
+        let (mut service, groups) = fixture(1, 0);
+        raise(&mut service);
+        let first = grant(&mut service, &groups, "log", "gw-a", NOW);
+        let (first_lease, first_chunk) = (first.lease.unwrap(), first.open.unwrap());
+        let log = stored(&service, "log").unwrap();
+        // the object is deleted: a tombstone, as the page path writes one
+        let tombstone = ObjectManifest {
+            format_version: 2,
+            bucket: "bucket".into(),
+            key: "log".into(),
+            generation: log.generation + 1,
+            deleted: true,
+            ..Default::default()
+        };
+        publish_manifest_of(&mut service, ManifestOutcome::decide(Some(log), tombstone.clone()).unwrap());
+        // the same key is created again: the grant must build on the tombstone, not on nothing
+        let second = grant(&mut service, &groups, "log", "gw-a", NOW + 10);
+        let (second_lease, second_chunk) = (second.lease.unwrap(), second.open.unwrap());
+        let recreated = stored(&service, "log").unwrap();
+        assert!(!recreated.deleted);
+        assert_eq!(recreated.generation, tombstone.generation + 1, "the generation goes on from the tombstone");
+        assert_eq!((recreated.length, recreated.extents.len()), (0, 1), "none of the old object's chunks survive");
+        assert!(second_lease.epoch > first_lease.epoch, "a later epoch: the old writer is fenced");
+        assert_ne!((second_chunk.volume_id, second_chunk.chunk_id), (first_chunk.volume_id, first_chunk.chunk_id));
+        assert_eq!(recreated.extents[0].chunk_id, second_chunk.chunk_id);
+    }
 }

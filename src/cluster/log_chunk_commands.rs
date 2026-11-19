@@ -329,6 +329,16 @@ fn require_feature(service: &MatrixMetaService) -> Result<(), ObjectError> {
     Ok(())
 }
 
+/// An object is a page object or a log object, fixed when it is created: a log chunk is never added
+/// after page extents, and nothing converts one kind into the other. An object that holds no extent
+/// yet has not chosen. Refused before any state is decided, so a refusal changes nothing.
+fn require_log_object(manifest: Option<&ObjectManifest>) -> Result<(), ObjectError> {
+    if manifest.is_some_and(|manifest| manifest.extents.iter().any(|extent| extent.kind != EXTENT_KIND_LOG_CHUNK)) {
+        return Err(refused("the object is not a log object: it holds page extents, and an object keeps the kind it was created with"));
+    }
+    Ok(())
+}
+
 fn new_tail(group: &str, index: u64, offset: u64) -> ObjectExtent {
     let (volume_id, chunk_id) = chunk_identity(index);
     ObjectExtent {
@@ -383,6 +393,14 @@ fn grant(
     let index = next_index(service)?;
     let held = service.writer_leases.get(&request.bucket, &request.key);
     let before = stored_manifest(service, &request.bucket, &request.key);
+    require_log_object(before.as_ref())?;
+    // a deleted key keeps its tombstone: the object created again builds on it (its generation goes on
+    // from the tombstone's) and is published against it, not against nothing
+    let tombstone = service
+        .object_manifests
+        .get(&ObjectId::new(request.bucket.clone(), request.key.clone()))
+        .filter(|stored| stored.deleted)
+        .map(|stored| stored.to_manifest());
     let open = before.as_ref().is_some_and(|manifest| manifest.extents.last().is_some_and(crate::log_chunk_outcome::is_open_tail));
     if let Some(lease) = &held {
         if lease.holder != request.holder && lease.expires_at_ms > now_ms {
@@ -426,9 +444,9 @@ fn grant(
             ..Default::default()
         });
         after.format_version = MANIFEST_FORMAT_CHUNKED;
-        after.generation = before.as_ref().map_or(1, |prior| prior.generation + 1);
+        after.generation = before.as_ref().or(tombstone.as_ref()).map_or(1, |prior| prior.generation + 1);
         after.extents.push(tail);
-        Some(ManifestOutcome::decide_chunked(before.clone(), after)?)
+        Some(ManifestOutcome::decide_chunked(before.clone().or(tombstone), after)?)
     };
     let outcome = PlacementOutcome::log_chunk_decision(service, change, manifest)?;
     let published = match &outcome.manifest {
@@ -454,6 +472,7 @@ fn switch(
     let prior = stored_manifest(service, &request.bucket, &request.key)
         .filter(|manifest| manifest.format_version == MANIFEST_FORMAT_CHUNKED)
         .ok_or_else(|| refused("the object has no chunk being written"))?;
+    require_log_object(Some(&prior))?;
     let open = prior
         .extents
         .last()

@@ -581,6 +581,11 @@ jobs:
             log_chunk_commands_tests::interleaved_grants_switches_sweeps_and_allocations_never_name_a_chunk_twice_and_ids_only_go_up \
             log_chunk_commands_tests::a_page_and_a_grant_name_their_chunks_by_one_function_of_the_raft_index \
             log_chunk_commands_tests::nothing_leases_or_emits_a_chunked_manifest_until_an_operator_raises_the_feature \
+            log_chunk_commands_tests::a_grant_refuses_an_object_that_holds_page_extents_and_changes_nothing_while_new_and_log_objects_still_work \
+            log_chunk_commands_tests::a_switch_refuses_an_object_that_holds_page_extents_and_changes_nothing \
+            log_chunk_commands_tests::a_renewal_and_a_sweep_naming_a_page_object_find_no_lease_and_change_nothing \
+            log_chunk_commands_tests::an_ordinary_page_publication_never_writes_a_chunked_manifest_or_appends_pages_to_one \
+            log_chunk_commands_tests::a_deleted_log_object_is_created_again_with_a_later_generation_a_new_lease_and_a_new_chunk \
             log_chunk_outcome_tests::malformed_lease_batches_are_refused_before_they_can_apply
           do
             cargo test --locked --all-features --lib "$test" | tee /tmp/log-chunk-commands.log
