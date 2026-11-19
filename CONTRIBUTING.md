@@ -75,10 +75,10 @@ The **network chunk consensus** job runs identity, routing, process, recovery, c
 capacity, shutdown, and metadata-health tests with the chunk consensus feature. The coupled
 quorum test additionally enables metadata consensus and starts three voters for each service.
 
-Across these jobs, the workflow explicitly names 266 individual tests. It also
+Across these jobs, the workflow explicitly names 289 individual tests. It also
 runs grouped library filters and integration targets.
 
-**CI does not run the suite.** It compiles everything and runs those 266 guards plus grouped tests and integration targets. A green
+**CI does not run the suite.** It compiles everything and runs those 289 guards plus grouped tests and integration targets. A green
 tick means the tree builds and those guards hold; it does not mean the suite passed. Run
 `tools/suite_gate.sh` yourself.
 
