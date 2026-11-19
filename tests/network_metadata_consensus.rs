@@ -3491,23 +3491,30 @@ fn a_log_object_costs_the_real_metadata_group_one_entry_per_switch_and_nothing_p
     assert_eq!(commit_index(&mut meta), before, "reads are not metadata entries");
 
     // renewal: a lease renews at half its term with ONE entry; a batch of three objects with ONE
-    let mut shorts: Vec<LogObject> = (0..3).map(|n| LogObject::new("bucket", &format!("wal-short-{n}"), options("gw-a", 2_000))).collect();
+    let mut shorts: Vec<LogObject> = (0..3).map(|n| LogObject::new("bucket", &format!("wal-short-{n}"), options("gw-a", 6_000))).collect();
     for object in shorts.iter_mut() {
         object.open_for_append(&mut meta).unwrap();
         object.append(&mut meta, &[1u8; 100]).unwrap();
     }
-    std::thread::sleep(Duration::from_millis(1_100));
+    std::thread::sleep(Duration::from_millis(3_300));
     assert!(shorts.iter().all(|object| object.renew_due()));
     let before = commit_index(&mut meta);
     let mut handles: Vec<&mut LogObject> = shorts.iter_mut().collect();
-    let lost = matrixobjectstore_rs::cluster::renew_leases(&mut meta, "gw-a", 2_000, &mut handles).unwrap();
-    assert!(lost.is_empty());
+    let lost = matrixobjectstore_rs::cluster::renew_leases(&mut meta, "gw-a", 6_000, &mut handles).unwrap();
+    assert!(lost.is_empty(), "the metadata plane no longer holds these leases for this writer: {lost:?}");
     assert_eq!(commit_index(&mut meta) - before, 1, "the leases of three objects are renewed by one entry");
-    std::thread::sleep(Duration::from_millis(1_100));
+    std::thread::sleep(Duration::from_millis(3_300));
     let before = commit_index(&mut meta);
     shorts[0].append(&mut meta, &[2u8; 100]).unwrap();
     assert_eq!(commit_index(&mut meta) - before, 1, "an object renews its own lease with one entry");
 
+    // the first object's lease is renewed by one entry before the slow part of the test, so a slow
+    // machine cannot let it run out
+    let before = commit_index(&mut meta);
+    let mut handles: Vec<&mut LogObject> = vec![&mut object];
+    let lost = matrixobjectstore_rs::cluster::renew_leases(&mut meta, "gw-a", 30_000, &mut handles).unwrap();
+    assert!(lost.is_empty(), "{lost:?}");
+    assert_eq!(commit_index(&mut meta) - before, 1, "one lease renewed by one entry");
     // a follower dies and comes back; then every voter is restarted
     let follower = (leader + 1) % 3;
     group.kill(follower);

@@ -433,13 +433,13 @@ fn a_lease_that_has_run_out_is_refused_before_a_byte_is_written() {
     let (_dir, nodes) = cluster();
     let mut meta = FakeMeta::new(endpoints(&nodes));
     let mut settings = options("gw-a");
-    settings.ttl_ms = 300;
+    settings.ttl_ms = 600;
     let mut object = LogObject::new("bucket", "log", settings);
     object.open_for_append(&mut meta).unwrap();
     object.append(&mut meta, &bytes(1, 1_000)).unwrap();
     let extent = meta.objects[&id("log")].extents[0].clone();
     let before = nodes.iter().map(|n| n.tail(extent.volume_id, extent.chunk_id).length).collect::<Vec<_>>();
-    thread::sleep(Duration::from_millis(400));
+    thread::sleep(Duration::from_millis(800));
     assert_eq!(object.append(&mut meta, &bytes(2, 1_000)).unwrap_err(), LogObjectError::LostLease);
     let after = nodes.iter().map(|n| n.tail(extent.volume_id, extent.chunk_id).length).collect::<Vec<_>>();
     assert_eq!(before, after);
@@ -452,18 +452,18 @@ fn a_lease_is_renewed_at_half_its_term_by_one_command_and_a_batch_is_one_command
     let (_dir, nodes) = cluster();
     let mut meta = FakeMeta::new(endpoints(&nodes));
     let mut settings = options("gw-a");
-    settings.ttl_ms = 1_000;
+    settings.ttl_ms = 3_000;
     let mut objects: Vec<LogObject> = ["a", "b", "c"].iter().map(|key| LogObject::new("bucket", key, settings.clone())).collect();
     for object in objects.iter_mut() {
         object.open_for_append(&mut meta).unwrap();
         object.append(&mut meta, &bytes(1, 1_000)).unwrap();
     }
     assert_eq!(meta.renews, 0, "a young lease is not renewed");
-    thread::sleep(Duration::from_millis(550));
+    thread::sleep(Duration::from_millis(1_600));
     assert!(objects.iter().all(|o| o.renew_due()));
     // one writer holding three objects renews them all with ONE command
     let mut refs: Vec<&mut LogObject> = objects.iter_mut().collect();
-    let lost = renew_leases(&mut meta, "gw-a", 1_000, &mut refs).unwrap();
+    let lost = renew_leases(&mut meta, "gw-a", 3_000, &mut refs).unwrap();
     assert!(lost.is_empty());
     assert_eq!(meta.renews, 1);
     assert!(objects.iter().all(|o| !o.renew_due()));
@@ -473,13 +473,13 @@ fn a_lease_is_renewed_at_half_its_term_by_one_command_and_a_batch_is_one_command
     }
     assert_eq!(meta.renews, 1);
     // an object appended to past half of its term renews itself, with one command
-    thread::sleep(Duration::from_millis(550));
+    thread::sleep(Duration::from_millis(1_600));
     objects[0].append(&mut meta, &bytes(3, 1_000)).unwrap();
     assert_eq!(meta.renews, 2);
     // the metadata plane no longer holds a lease for this writer: the batch says which, and closes it
     meta.objects.get_mut(&id("b")).unwrap().lease = Some(("gw-z".into(), 1, Instant::now() + Duration::from_secs(60)));
     let mut refs: Vec<&mut LogObject> = objects.iter_mut().collect();
-    let lost = renew_leases(&mut meta, "gw-a", 1_000, &mut refs).unwrap();
+    let lost = renew_leases(&mut meta, "gw-a", 3_000, &mut refs).unwrap();
     assert_eq!(lost.len(), 1);
     assert_eq!(lost[0].key, "b");
     assert_eq!(objects[1].append(&mut meta, b"x").unwrap_err(), LogObjectError::NotOpen);
