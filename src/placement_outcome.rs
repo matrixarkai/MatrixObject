@@ -209,6 +209,9 @@ pub struct PlacementOutcome {
     /// Version 14 only: a change of the cluster feature set and nothing else.
     #[prost(message, optional, tag = "16")]
     pub features: Option<FeaturesChange>,
+    /// Version 15 only: a writer lease grant or a chunk switch, with the manifest change it makes.
+    #[prost(message, optional, tag = "17")]
+    pub log_chunk: Option<crate::log_chunk_outcome::LogChunkChange>,
 }
 fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
@@ -352,6 +355,38 @@ impl PlacementOutcome {
                 || self.read_session_open.is_some() || self.read_session_removal.is_some()
                 || !self.nodes.is_empty() || !self.placements.is_empty() {
                 return Err(invalid("a feature outcome changes unrelated state"));
+            }
+            return Ok(());
+        }
+        if self.log_chunk.is_some() || self.version == 15 {
+            let change = self.log_chunk.as_ref().filter(|_| self.version == 15)
+                .ok_or_else(|| invalid("a log chunk outcome is version 15 and carries its change"))?;
+            change.validate(self.before_index, self.after_index)?;
+            if self.retention.is_some() || self.staging.is_some() || self.retention_deadline.is_some()
+                || self.copy_source.is_some() || self.publication_fence.is_some() || self.manifest_append.is_some()
+                || self.reserved.is_some() || self.read_session_open.is_some() || self.read_session_removal.is_some()
+                || self.features.is_some() {
+                return Err(invalid("a log chunk outcome changes unrelated state"));
+            }
+            match &self.manifest {
+                Some(manifest) => {
+                    if !manifest_validated {
+                        manifest.validate()?;
+                    }
+                    let after = manifest.after.as_ref().ok_or_else(|| invalid("a log chunk outcome lacks its manifest"))?;
+                    if !change.changes_manifest_for(manifest.before.as_ref()) {
+                        return Err(invalid("a chunk is already open: a grant then changes no manifest"));
+                    }
+                    change.check_manifest(self.after_index, manifest.before.as_ref(), after)?;
+                    if self.placements.len() != 1 || !placement_binds_manifest(&self.placements[0], manifest, manifest_validated) {
+                        return Err(invalid("log chunk placement binding mismatch"));
+                    }
+                }
+                None => {
+                    if change.action != crate::log_chunk_outcome::ACTION_GRANT || !self.nodes.is_empty() || !self.placements.is_empty() {
+                        return Err(invalid("only a grant to an open chunk changes no manifest, and it changes no placement"));
+                    }
+                }
             }
             return Ok(());
         }
@@ -599,6 +634,7 @@ impl PlacementOutcome {
             manifest_append: Some(append),
             reserved: None,
             features: None,
+            log_chunk: None,
         };
         outcome.validate_manifest_binding()?;
         outcome.validate_append_publication(service, true, before_manifest, after_manifest)?;
@@ -691,6 +727,7 @@ impl PlacementOutcome {
             manifest_append: None,
             reserved: None,
             features: None,
+            log_chunk: None,
         };
         outcome.validate_manifest_binding()?;
         outcome.validate_publication(service, true)?;
@@ -873,6 +910,7 @@ impl PlacementOutcome {
             manifest_append: None,
             reserved: None,
             features: None,
+            log_chunk: None,
         })
     }
     pub fn finish(mut self, service: &MatrixMetaService) -> Result<Self, ObjectError> {
@@ -907,6 +945,47 @@ impl PlacementOutcome {
         self.placements.retain(|c| c.before != c.after);
         self.to_payload()?;
         Ok(self)
+    }
+    /// The version 15 outcome for `change`, with the manifest change `manifest` makes. Tests only:
+    /// nothing in a build decides one yet.
+    #[cfg(all(test, feature = "metadata-consensus"))]
+    pub(crate) fn log_chunk_for_tests(
+        service: &MatrixMetaService,
+        change: crate::log_chunk_outcome::LogChunkChange,
+        manifest: Option<ManifestOutcome>,
+    ) -> Result<Self, ObjectError> {
+        let (placements, nodes) = match &manifest {
+            Some(outcome) => {
+                let after = outcome.after.as_ref().unwrap();
+                let before = service.placements.get(&after.object_id()).map(PlacementValue::from_value);
+                let node_ids = manifest_groups(after);
+                let group_bytes = manifest_group_bytes(after, &node_ids);
+                let placement = PlacementValue {
+                    bucket: after.bucket.clone(),
+                    key: after.key.clone(),
+                    version: after.generation,
+                    length: after.length,
+                    group_bytes,
+                    node_ids,
+                    update_time_ms: 0,
+                };
+                let nodes = Self::capacity_changes(service, &before, &placement)?;
+                (vec![PlacementChange { before, after: Some(placement) }], nodes)
+            }
+            None => (Vec::new(), Vec::new()),
+        };
+        let outcome = Self {
+            version: 15,
+            before_index: service.placement_commit_index,
+            after_index: service.placement_commit_index + 1,
+            nodes,
+            placements,
+            manifest,
+            log_chunk: Some(change),
+            ..Default::default()
+        };
+        outcome.to_payload()?;
+        Ok(outcome)
     }
     /// The outcome that records one voter's declaration or raises bits: `after` is the whole
     /// set the service will hold. The caller has decided the change is allowed.
@@ -968,6 +1047,31 @@ impl PlacementOutcome {
             }
             service.cluster_features = change.after.as_ref().unwrap().to_features()?;
             service.placement_commit_index = self.after_index;
+            service.invalidate_snapshot_export_cache();
+            return Ok(());
+        }
+        if let Some(change) = &self.log_chunk {
+            // checked against exactly the state it was decided from; never skipped
+            change.check_leases(&service.writer_leases)?;
+            if self.manifest.is_none() {
+                let open = service.object_manifests.get(&ObjectId::new(change.bucket.clone(), change.key.clone()))
+                    .is_some_and(|stored| {
+                        // `ExtentList::last` exists only in tests; read the final entry through `iter_from`
+                        let count = stored.extents.len();
+                        !stored.deleted
+                            && count > 0
+                            && stored.extents.iter_from(count - 1).next().is_some_and(crate::log_chunk_outcome::is_open_tail)
+                    });
+                if !open {
+                    return Err(invalid("a grant that changes no manifest needs a chunk being written"));
+                }
+            }
+            let published = match &self.manifest {
+                Some(manifest) => Published::Outcome(manifest),
+                None => Published::None,
+            };
+            self.apply_checked(service, published)?;
+            change.apply_leases(&mut service.writer_leases);
             service.invalidate_snapshot_export_cache();
             return Ok(());
         }

@@ -30,9 +30,14 @@ impl MetaSnapshot {
                 .any(|placement| !placement.group_bytes.is_empty());
             // Version 21 is only written when the feature set is not empty, and carries the
             // group-bytes roster shape, a presence flag for the manifest catalog, and the set.
-            let has_features = !self.cluster_features.is_default();
+            let has_leases = !self.writer_leases.is_empty();
+            // Version 22 is only written while a writer lease exists; it carries everything
+            // version 21 does, the feature set included even when empty.
+            let has_features = !self.cluster_features.is_default() || has_leases;
             let has_group_bytes = has_group_bytes || has_features;
-            let version = if has_features {
+            let version = if has_leases {
+                "MOSRSMETA22"
+            } else if has_features {
                 "MOSRSMETA21"
             } else if has_group_bytes {
                 "MOSRSMETA20"
@@ -231,6 +236,18 @@ impl MetaSnapshot {
                 for (voter, bits) in &self.cluster_features.declared {
                     append_u64(&mut out, *voter);
                     append_u64(&mut out, *bits);
+                }
+                emit_body(&out)?;
+                out.clear();
+            }
+            if has_leases {
+                append_u64(&mut out, self.writer_leases.len() as u64);
+                for (bucket, key, lease) in self.writer_leases.iter() {
+                    append_string(&mut out, bucket);
+                    append_string(&mut out, key);
+                    append_string(&mut out, &lease.holder);
+                    append_u64(&mut out, lease.epoch);
+                    append_u64(&mut out, lease.expires_at_ms);
                 }
                 emit_body(&out)?;
                 out.clear();

@@ -14,6 +14,7 @@ impl MatrixMetaService {
             },
             placement_commit_index: 1,
             cluster_features: Default::default(),
+            writer_leases: Default::default(),
             placement_snapshot_export_cache: RefCell::new(None),
             root_state_fingerprint_cache: RefCell::new(None),
             records: BTreeSet::new(),

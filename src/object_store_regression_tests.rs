@@ -35206,7 +35206,9 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRSMETA19",
         "MOSRSMETA20",
         "MOSRSMETA21",
+        "MOSRSMETA22",
         "MOSRSFEATURES1",
+        "MOSRSLEASES1",
         "MOSRSMANIFEST1",
         "MOSRSMODULESTATUS32",
         "MOSRSOBJECTREADY77",
@@ -35370,7 +35372,7 @@ fn every_durable_format_constant_is_accounted_for() {
     );
     assert_eq!(
         found.len(),
-        156,
+        158,
         "the count is pinned as well, so a rename that happens to swap two names cannot pass"
     );
 }
@@ -36765,7 +36767,11 @@ fn the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_
         "the snapshot that carries the cluster feature set must be accepted"
     );
     assert!(
-        magic_rejected("MOSRSMETA22"),
+        !magic_rejected("MOSRSMETA22"),
+        "the snapshot that carries writer leases must be accepted"
+    );
+    assert!(
+        magic_rejected("MOSRSMETA23"),
         "a version after this one must be refused, or a field this build does not know would be \
          read as one of its own"
     );

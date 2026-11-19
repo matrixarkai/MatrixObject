@@ -169,6 +169,11 @@ fn refuse_unemitted_format(manifest: &ObjectManifest) -> Result<(), ObjectError>
     }
     Ok(())
 }
+/// A log chunk that has just been granted holds no byte yet: its entry is the last one, still
+/// being written (`EXTENT_FLAG_TAIL`), and its length is zero. Nothing else may be empty.
+fn empty_tail_extent(extent: &ObjectExtent) -> bool {
+    extent.kind == EXTENT_KIND_LOG_CHUNK && extent.flags & EXTENT_FLAG_TAIL != 0 && extent.length == 0
+}
 /// The ordering rules between extents: page extents come first, then log chunks, and only the
 /// last extent may be unsealed. `after_chunk` is whether a log chunk precedes this extent.
 fn extent_order_ok(extent: &ObjectExtent, after_chunk: bool, is_last: bool) -> bool {
@@ -259,7 +264,7 @@ impl ObjectManifest {
                     .group
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-                || extent.length == 0
+                || (extent.length == 0 && !empty_tail_extent(extent))
                 || extent.write_sequence == 0
                 || !extent_shape_ok(self.format_version, extent)
                 || extent.object_offset != offset
@@ -333,7 +338,7 @@ impl ObjectManifest {
             if extent.group.is_empty()
                 || extent.group.len() > 128
                 || !extent.group.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-                || extent.length == 0
+                || (extent.length == 0 && !empty_tail_extent(extent))
                 || extent.write_sequence == 0
                 || !extent_shape_ok(self.format_version, extent)
                 || extent.object_offset != next
@@ -394,7 +399,7 @@ impl ObjectManifest {
                     .group
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-                || extent.length == 0
+                || (extent.length == 0 && !empty_tail_extent(extent))
                 || extent.write_sequence == 0
                 || !extent_shape_ok(self.format_version, extent)
                 || extent.object_offset != offset
@@ -675,7 +680,7 @@ impl crate::extent_list::StoredManifest {
                     .group
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-                || extent.length == 0
+                || (extent.length == 0 && !empty_tail_extent(extent))
                 || extent.write_sequence == 0
                 || !extent_shape_ok(self.format_version, extent)
                 || extent.object_offset != offset

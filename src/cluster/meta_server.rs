@@ -1078,6 +1078,7 @@ pub(super) fn decide_allocation(
             manifest_append: None,
             reserved: None,
             features: None,
+            log_chunk: None,
     };
     outcome.to_payload()?;
     Ok((outcome, reply))

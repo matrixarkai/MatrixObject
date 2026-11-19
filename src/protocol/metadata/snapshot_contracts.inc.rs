@@ -46,6 +46,8 @@ pub struct MetaSnapshot {
     pub placement_commit_index: u64,
     /// Empty on every snapshot written before the cluster feature set existed.
     pub cluster_features: crate::cluster_features::ClusterFeatures,
+    /// Empty on every snapshot written before writer leases existed.
+    pub writer_leases: crate::log_chunk_outcome::WriterLeaseTable,
     pub checksum: String,
 }
 

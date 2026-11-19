@@ -3,6 +3,7 @@
 impl MetaSnapshot {
     pub fn validate(&self) -> Result<(), ObjectError> {
         self.cluster_features.validate()?;
+        self.writer_leases.validate()?;
         if self.next_commit_index == 0 {
             return Err(ObjectError::Corruption(
                 "metadata snapshot next commit index is invalid".to_string(),

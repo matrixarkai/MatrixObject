@@ -126,7 +126,21 @@ fn log_chunk_extent_shape_rules() {
             }),
         ),
         ("too long", Box::new(|e| e.length = 512 * 1024 * 1024 + 1)),
-        ("empty", Box::new(|e| e.length = 0)),
+        // only a chunk still being written may be empty (a grant that holds no byte yet)
+        (
+            "empty and sealed",
+            Box::new(|e| {
+                e.length = 0;
+                e.flags = EXTENT_FLAG_SEALED
+            }),
+        ),
+        (
+            "empty and neither sealed nor tail",
+            Box::new(|e| {
+                e.length = 0;
+                e.flags = 0
+            }),
+        ),
     ];
     for (name, change) in bad {
         let mut e = chunk(0, 1, 100, EXTENT_FLAG_TAIL);
@@ -135,6 +149,7 @@ fn log_chunk_extent_shape_rules() {
         assert!(m.validate().is_err(), "{name} must be refused");
     }
     manifest(3, vec![chunk(0, 1, 512 * 1024 * 1024, EXTENT_FLAG_SEALED)]).validate().unwrap();
+    manifest(3, vec![chunk(0, 1, 0, EXTENT_FLAG_TAIL)]).validate().unwrap();
 }
 
 #[test]
