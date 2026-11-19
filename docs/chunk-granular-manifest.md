@@ -30,7 +30,7 @@ what has not been measured.
 | Replica verb `LogOp` (code 28) and the per-node chunk store | In the tree |
 | Group commit for log chunk writes, with the sync outside the replica lock | In the tree |
 | Metadata readers: outcome version 15, snapshot version 22, and the writer lease table restore in the proposal draft | In review |
-| Leader commands (grant, switch, renew, sweep), batched renewal (outcome version 16) and the feature gate wiring (feature bit 4) | In review, stacked on the metadata readers |
+| Leader commands (grant, switch, renew, sweep), batched renewal (outcome version 16) and the feature gate wiring (feature bit 4) | In review (draft), stacked on the metadata readers |
 | Replica client and quorum log writer and reader | In review (draft) |
 | Sealed chunk reads from disk through a bounded cache | In review (draft) |
 | Log object API (open, append, read, take over) | Written, stacked on the leader commands and the replica client; not yet opened for review |
