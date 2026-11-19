@@ -26,11 +26,16 @@ pub const FEATURE_COMPACT_APPEND: u64 = 1 << 0;
 pub const FEATURE_RESERVE_NEXT: u64 = 1 << 1;
 /// Manifests whose extents name log chunks (manifest format 3).
 pub const FEATURE_CHUNK_MANIFEST: u64 = 1 << 2;
+/// A fenced read that finishes within half the reclaim grace window needs no read lease: whatever
+/// reclaims pages frees a superseded generation only a grace window after it was superseded (see
+/// docs/read-session-leases.md). Declared by a voter whose reclamation, if any, keeps that rule.
+pub const FEATURE_READ_GRACE: u64 = 1 << 3;
 /// Bits 8 through 15 are held for the gateway recovery records.
 pub const FEATURE_GATEWAY_RESERVED_MASK: u64 = 0xff << 8;
 /// Every bit this build knows how to read.
 pub const SUPPORTED_FEATURES: u64 =
-    FEATURE_COMPACT_APPEND | FEATURE_RESERVE_NEXT | FEATURE_CHUNK_MANIFEST | FEATURE_GATEWAY_RESERVED_MASK;
+    FEATURE_COMPACT_APPEND | FEATURE_RESERVE_NEXT | FEATURE_CHUNK_MANIFEST | FEATURE_READ_GRACE
+        | FEATURE_GATEWAY_RESERVED_MASK;
 
 /// Most voters a declaration table holds.
 pub const MAX_DECLARED_VOTERS: usize = 1024;

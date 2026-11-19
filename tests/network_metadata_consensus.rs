@@ -1453,6 +1453,23 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
         assert_eq!(format!("{partial:?}"), format!("{whole:?}"));
     }
     assert!(client.read_object_range_partial("star", "absent", 0, 1, 1, &options.replica).is_err());
+    // A page freed and reused under a reader (what a reclaimer would do once the grace window had
+    // passed): the extent no longer matches its manifest, so the read fails and returns neither the
+    // old bytes nor the new ones.
+    let reused = client.write_object("star", "reused", None, b"original bytes", &options).unwrap();
+    let extent = &reused.extents[0];
+    let reused_page = PageId {
+        chunk_id: ChunkId::new(extent.volume_id, extent.chunk_id).unwrap(),
+        page_index: extent.page_index,
+    };
+    for endpoint in &endpoints {
+        let mut replica = RemoteReplicaClient::connect(endpoint, &options.replica).unwrap();
+        replica.write_chunk(reused_page.clone(), extent.page_offset, b"FOREIGN BYTES").unwrap();
+    }
+    let partial = client.read_object_range_partial("star", "reused", 0, 14, 14, &options.replica);
+    assert!(partial.is_err(), "a read of a reused page must fail, got {partial:?}");
+    let whole = client.read_object_range("star", "reused", 0, 14, 14, &options.replica);
+    assert!(whole.is_err(), "a read of a reused page must fail, got {whole:?}");
     assert_eq!(client.read_object_range_partial("star", "append", 5, 2, 2, &options.replica)
         .unwrap().1, [b'x', 0x7b]);
     assert_eq!(
@@ -1479,7 +1496,7 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
         }
         after = repaired.resume_after;
     }
-    assert_eq!(repaired_pages, first.extents.len() + appended.extents.len());
+    assert_eq!(repaired_pages, first.extents.len() + appended.extents.len() + reused.extents.len());
 
     let extent = &first.extents[0];
     let page = PageId {

@@ -587,6 +587,15 @@ jobs:
           grep -q '^running 1 test$' /tmp/feature-raise.log
           grep -q 'test result: ok. 1 passed' /tmp/feature-raise.log
 
+      - name: shared read leases and lease-free short reads
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_client::shared_read_leases -- --test-threads=1 | tee /tmp/read-leases.log
+          grep -q '^running 15 tests$' /tmp/read-leases.log
+          grep -q 'test result: ok. 15 passed' /tmp/read-leases.log
+          cargo test --locked --all-features --lib cluster::features_commands::tests::the_read_grace_bit_is_known_and_is_raised_like_the_others -- --exact | tee /tmp/read-grace-bit.log
+          grep -q 'test result: ok. 1 passed' /tmp/read-grace-bit.log
+
       - name: automatic staged cleanup stays bounded and survives durable restart
         run: |
           set -o pipefail

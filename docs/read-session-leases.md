@@ -84,6 +84,75 @@ hashing and initial manifest transfer remain. Measure concurrent-reader admissio
 CPU, latency and total transferred bytes before increasing limits. Batched grant
 admission and reduced catalog work remain performance follow-ups.
 
+## Lease-free short reads and the reclaim grace window
+
+A fenced catalog makes every ordinary read hold a lease, which costs two durable metadata
+writes per read (an open and a release, each a quorum commit). That is the price of a protection
+nothing yet needs, because physical reclamation is disabled. The cluster feature
+`FEATURE_READ_GRACE` (bit 3, declared by each voter and raised by an operator through the
+existing feature mechanism, like the other bits) replaces it for short reads with a rule the
+future reclaimer must keep.
+
+### The rule
+
+Let `T` be the reclaim grace window, 60 s (`READ_GRACE`).
+
+1. **Reclaimer.** Whatever frees the pages of a generation of an object (a later generation, a
+   deletion, or a copy no manifest names) frees them only when `now >= eligible_at`, where
+   `eligible_at = commit time of the transition that superseded or deleted the generation + T`.
+   `eligible_at` is part of the committed decision, not read from a clock when the decision is
+   applied, so replay after an outage, a leader change or a restart reclaims nothing earlier than
+   the schedule the first application made. A generation named by an explicit retained handle or
+   an open session is not eligible while that lease is live, exactly as now. The first reclaimer
+   must also keep the existing conditions (no manifest names the pages, no staged ownership
+   covers them, the inventory and ownership records agree); the grace is an extra condition, not a
+   replacement.
+2. **Reader.** With the feature raised, a read whose operation deadline is no later than `T / 2`
+   (`SHORT_READ`, 30 s) after it starts takes no lease. It must finish within `T / 2` of the moment
+   it began to learn the manifest, measured on the reader's monotonic clock (the half leaves room
+   for clock rate error and for the time between a supersession and its commit). A read that runs
+   past that fails with a retryable error and returns no bytes. A read with no deadline, or a later
+   one (a whole large object, a batch), takes a lease as before.
+3. **Integrity.** An extent of a format 2 or later manifest carries a published SHA-256, which
+   the data reader checks on every page it reads, together with the extent's length and
+   `write_sequence`. The sequence does NOT tell a reused page from the original: a page's counter
+   restarts at zero when its state is dropped, and compact-append extents all carry sequence 1.
+   The digest is what does, so only reads of generations whose extents all carry one go without a
+   lease (a format 1 generation keeps its lease). A page freed and reused for other data therefore
+   makes a late read fail with corruption ("object extent does not match manifest"); it cannot
+   return the other data. A lease-free read that fails with corruption is retried once after reading the
+   manifest again (the new attempt names the current generation); real corruption fails again.
+   The grace makes this rare; the integrity check makes it safe.
+4. **Compatibility.** No voter may declare the feature unless its reclaimer, or the absence of
+   one, keeps rule 1. A client takes no lease only when the cluster has raised the bit (it reads
+   the feature set and believes a yes permanently, a no for 30 s), so a mixed or older cluster
+   keeps taking leases. Raised bits are never lowered.
+
+### What the first reclaimer must do
+
+- Record `eligible_at` in the same committed outcome that supersedes or deletes a generation, or
+  in a committed marking decision that is later than it, and never derive eligibility from the
+  wall clock at apply time.
+- Honour the lease table first (explicit handles and sessions), then the grace, then the existing
+  ownership checks, and free nothing on a failure of any of them.
+- Not shorten `T` while the feature is raised. A longer `T` is safe at once; a shorter one only
+  after `T_old` has passed with the shorter value in force for new supersessions.
+- Treat a page that is reused after its grace as lost to a late lease-free reader (the reader gets
+  corruption, retries, and reads the new generation), and test that case.
+- Keep the explicit lease path working for long reads, batches and operator tools.
+
+### What the client does today
+
+`with_read_leases` asks for the feature set once (and again after 30 s while the answer is no),
+and takes no lease for a short read when the bit is raised. A read that overruns half the window
+fails with `PreconditionFailed` ("a read ran past half the reclaim grace window; retry it"). The
+gateway's read deadline is its operation timeout, so its reads are short reads. A gateway also keeps
+a small cache of the leases it opens (, 16 by default, shared by its connections):
+a read of a generation and digest it already holds a lease for, with at least 5 s of the 60 left,
+reuses it, and a lease in use is never released for another read. The feature is raised with
+ for each voter, then
+.
+
 ## Bounded cleanup and recovery
 
 Sessions and permanent handles share the 128-handle and 64-MiB catalog body

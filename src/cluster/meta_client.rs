@@ -185,6 +185,11 @@ pub struct RemoteMetaClient {
     read_protection_fence: u64,
     /// Read leases shared by every connection of one gateway, when it keeps any.
     read_lease_cache: Option<std::sync::Arc<ReadLeaseCache>>,
+    /// Whether the cluster has raised the read grace feature, and when that was last asked. Once
+    /// raised it stays raised; an answer of no (or an error) is asked again after a while.
+    read_grace: Option<(bool, Instant)>,
+    /// How long a read may run and still go without a read lease (half the grace window).
+    short_read: Duration,
     manifest_digests: ManifestDigestMemo,
     /// Set for the next compact append: reserve the allocation for the one after it, with this
     /// many pages and lease.
@@ -276,6 +281,8 @@ impl RemoteMetaClient {
             ranged_manifest_reads: None,
             read_protection_fence: 0,
             read_lease_cache: None,
+            read_grace: None,
+            short_read: SHORT_READ,
             manifest_digests: ManifestDigestMemo::default(),
             reserve_next: None,
             reservation: None,
@@ -1147,7 +1154,7 @@ impl RemoteMetaClient {
         self.with_operation_deadline(options.deadline, |client| {
             let mut bounded = options.clone();
             bounded.deadline = client.operation_deadline();
-            client.read_object_inner(bucket, key, max_bytes, &bounded)
+            client.retry_stale_read(|client| client.read_object_inner(bucket, key, max_bytes, &bounded))
         })
     }
 
@@ -1167,10 +1174,12 @@ impl RemoteMetaClient {
         self.with_operation_deadline(options.deadline, |client| {
             let mut bounded = options.clone();
             bounded.deadline = client.operation_deadline();
-            let (manifest, routes) = client.read_manifest_routes(bucket, key)?;
-            client.read_selected_object(
-                manifest, routes, max_bytes, &bounded, Some((offset, length)),
-            )
+            client.retry_stale_read(|client| {
+                let (manifest, routes) = client.read_manifest_routes(bucket, key)?;
+                client.read_selected_object(
+                    manifest, routes, max_bytes, &bounded, Some((offset, length)),
+                )
+            })
         })
     }
 
@@ -1194,13 +1203,15 @@ impl RemoteMetaClient {
         self.with_operation_deadline(options.deadline, |client| {
             let mut bounded = options.clone();
             bounded.deadline = client.operation_deadline();
-            let Some(entry) = client.read_manifest_range_routes(bucket, key, offset, length)? else {
-                let (manifest, routes) = client.read_manifest_routes(bucket, key)?;
-                return client.read_selected_object(
-                    manifest, routes, max_bytes, &bounded, Some((offset, length)),
-                );
-            };
-            client.read_selected_range(entry, max_bytes, &bounded, (offset, length))
+            client.retry_stale_read(|client| {
+                let Some(entry) = client.read_manifest_range_routes(bucket, key, offset, length)? else {
+                    let (manifest, routes) = client.read_manifest_routes(bucket, key)?;
+                    return client.read_selected_object(
+                        manifest, routes, max_bytes, &bounded, Some((offset, length)),
+                    );
+                };
+                client.read_selected_range(entry, max_bytes, &bounded, (offset, length))
+            })
         })
     }
 
@@ -2308,6 +2319,8 @@ impl RemoteMetaClient {
     fn adopt_connection(&mut self, mut next: Self) {
         next.read_protection_fence = self.read_protection_fence;
         next.read_lease_cache = self.read_lease_cache.take();
+        next.read_grace = self.read_grace.take();
+        next.short_read = self.short_read;
         // Settings and short-lived memory of the caller outlive the connection they ran on.
         next.append_plan_ttl = self.append_plan_ttl;
         next.append_plan = self.append_plan.take();
@@ -2838,7 +2851,8 @@ mod operation_deadline_tests {
             let (mut server, _) = listener.accept().unwrap();
             server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
             let mut seen = Vec::new();
-            for index in 0..2 {
+            let mut index = 0;
+            while index < 2 {
                 let mut header = [0u8; HEADER_BYTES];
                 server.read_exact(&mut header).unwrap();
                 let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
@@ -2846,7 +2860,15 @@ mod operation_deadline_tests {
                 server.read_exact(&mut payload).unwrap();
                 let code = MetaRequestCode::from_u8(header[1]).unwrap();
                 let request = MetaRequest::decode(code, &payload).unwrap();
-                if index == 0 {
+                if let MetaRequest::Features(_) = request {
+                    // The client asks once whether reads may go without a lease: not raised here.
+                    server.write_all(&super::super::meta_message::encode_meta_reply(
+                        &super::super::features_commands::reply(&Default::default()),
+                    )).unwrap();
+                    continue;
+                }
+                index += 1;
+                if index == 1 {
                     assert!(matches!(
                         request,
                         MetaRequest::ReadManifestRange { offset: 10_005, length: 10, .. }
