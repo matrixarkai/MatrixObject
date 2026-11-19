@@ -995,4 +995,33 @@ mod shared_read_leases {
         assert!(other.is_err());
         assert_eq!(attempts.get(), 11, "only corruption is retried");
     }
+
+    /// What merging the read grace feature costs while the bit is NOT raised: each read still takes
+    /// its own open and release (two metadata writes, exactly as before), and the only addition is
+    /// one read of the feature set, not one per read; it is asked again once the window passes.
+    #[test]
+    fn an_unraised_read_costs_what_it_did_before_plus_one_feature_read_per_window() {
+        let mut harness = Harness::with_features(None, 1, 0);
+        for generation in 1..=20 {
+            harness.read_by(generation, 1, Some(Instant::now() + Duration::from_secs(5)));
+        }
+        let before = harness.seen.lock().unwrap().clone();
+        assert_eq!(
+            (opens(&before), releases(&before).len(), feature_reads(&before)),
+            (20, 20, 1),
+            "20 reads: 20 opens and 20 releases as before, one feature read in all: {before:?}"
+        );
+        // Once the recheck window has passed, the next read asks again, and only that one.
+        let aged = Instant::now().checked_sub(READ_GRACE_RECHECK + Duration::from_secs(1)).unwrap();
+        harness.client.read_grace = Some((false, aged));
+        for generation in 21..=25 {
+            harness.read_by(generation, 1, Some(Instant::now() + Duration::from_secs(5)));
+        }
+        let seen = harness.finish();
+        assert_eq!(
+            (opens(&seen), releases(&seen).len(), feature_reads(&seen)),
+            (25, 25, 2),
+            "five more reads: five more of each lease call and one more feature read: {seen:?}"
+        );
+    }
 }
