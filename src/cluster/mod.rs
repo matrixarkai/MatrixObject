@@ -174,6 +174,8 @@ pub mod append_plan;
 #[cfg(feature = "meta-server")]
 pub mod gateway_calibration;
 #[cfg(feature = "meta-server")]
+pub mod gateway_detector;
+#[cfg(feature = "meta-server")]
 pub mod gateway_picker;
 #[cfg(feature = "meta-server")]
 pub mod gateway_roster;
