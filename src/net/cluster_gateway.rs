@@ -819,6 +819,7 @@ impl ClusterGateway {
             self.object_request(request, bucket, key)
         }
     }
+}
 
 /// How many times a resolve re-reads the object when the generation moves under its fence.
 const RESOLVE_ROUNDS: usize = 3;
