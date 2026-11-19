@@ -25,6 +25,7 @@
 //! whole store behind whatever else protects that network.
 
 pub mod http;
+pub mod shard_router;
 pub mod s3;
 pub mod s3_batch;
 pub mod s3_config;
