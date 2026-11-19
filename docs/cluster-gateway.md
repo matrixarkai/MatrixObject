@@ -6,9 +6,10 @@ quorum plus chunk groups running as separate processes, reached through the clus
 (`RemoteMetaClient::write_object`, `append_object`, `read_object`, `read_object_range`,
 `delete_object`, `list_manifests`). The in-process path is untouched.
 
-This is a deliberately small door. It answers the S3 verbs a shared-log client needs and
-answers every other verb with an S3 `NotImplemented` error, so a client that probes can fall
-back and nothing returns a plausible-looking wrong answer.
+This door answers the S3 verbs a shared-log client needs, and the rest of what an S3 client
+commonly uses (copy, multipart, batch delete, conditional requests, delimiter listings). Every
+verb it does not serve is answered with an S3 `NotImplemented` error, so a client that probes can
+fall back and nothing returns a plausible-looking wrong answer.
 
 ## Verbs served
 
@@ -20,12 +21,34 @@ back and nothing returns a plausible-looking wrong answer.
 | `GET /{b}/{k}` + `Range: bytes=a-b` | `read_object_range` straight away; clamping, open-ended and suffix ranges read the manifest first |
 | `HEAD /{b}/{k}` | `read_manifest`; length in `x-amz-object-size` |
 | `DELETE /{b}/{k}` | `delete_object` (tombstone generation); absent key answers 204 |
-| `GET /{b}?list-type=2` (`prefix`, `start-after`, `continuation-token`, `max-keys`, `delimiter`) | `list_manifests` pages of 32, tombstones skipped |
+| `GET /{b}?list-type=2` (`prefix`, `start-after`, `continuation-token`, `max-keys`, `delimiter`) | `list_manifests` pages of 32, tombstones skipped; a `delimiter` folds keys into `CommonPrefixes` and counts each prefix toward `max-keys` |
+| `PUT /{b}/{k}` + `If-Match` | the object must exist and be that version (etag `"gen-N"`, or `*`), else 412 |
+| `GET`/`HEAD /{b}/{k}` + `If-None-Match` / `If-Match` | decided from the manifest's etag before any data is read: 304 / 412 |
+| `PUT /{b}/{k}` + `x-amz-copy-source` | `copy_object_atomic` on the SDK plane: the destination names the source's extents, no data moves; the destination's generation is the compare-and-swap |
+| `POST /{b}?delete` | one `delete_object` per key; an absent key is reported deleted |
+| `POST /{b}/{k}?uploads`, `PUT ?partNumber=&uploadId=`, `POST ?uploadId=`, `DELETE ?uploadId=`, `GET ?uploadId=`, `GET /{b}?uploads` | multipart, below |
+| `GET /` | the bucket the gateway was started for (buckets are implicit and cannot be enumerated) |
+| `DELETE /{b}` | 409 `BucketNotEmpty` while any live object remains, else 204 |
+| `GET /{b}?versioning`, `GET /{b}?acl`, `GET /{b}/{k}?acl`, `GET /{b}/{k}?tagging` | fixed answers: not versioned, private to the owner, no tags |
 | `PUT /{b}`, `HEAD /{b}`, `GET /{b}?location` | answered without a cluster call: buckets are implicit |
 | `GET /healthz` | one `list_manifests` call |
 
-Refused with `NotImplemented`: multipart, copy, tagging, versioning, `versionId`, CORS,
-`POST ?delete`, bucket delete, `If-Match`. `If-None-Match: *` on a PUT is honoured.
+Refused with `NotImplemented`: changing tags, ACLs, versioning, CORS or any other bucket
+configuration, `versionId`, `UploadPartCopy`, `versions`. `If-None-Match: *` on a PUT is honoured.
+
+### Multipart uploads
+
+An upload in progress is a set of ordinary objects under the reserved prefix `.multipart/`: a
+record `.multipart/<id>/meta` (the target key and the time it began) and one object
+`.multipart/<id>/<part number>` per part. Keys under the prefix are not served as objects and are
+not listed. `CompleteMultipartUpload` validates the claimed parts as S3 does (ascending, each
+named once, each etag the part the upload holds: `InvalidPartOrder`, `InvalidPart`), reads them,
+and publishes ONE object under the target key, so the target appears whole or not at all, then
+removes the parts and the record. Abort removes them. The assembled object is built in memory and
+is bounded by the gateway's whole-object limit (`MATRIXOBJECT_MAX_BODY_BYTES`); a larger
+completion is refused with 400 and the upload stays usable. A part's etag is its object's
+generation, so uploading a part again replaces it and invalidates the old etag. Parts that could
+not be removed after a completion are invisible and are removed by a later abort.
 
 ## Mapping
 
