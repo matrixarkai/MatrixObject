@@ -2244,6 +2244,46 @@ mod tests {
         (gateway, armed)
     }
 
+    const LEADERSHIP_CHANGED: &str =
+        "metadata leadership changed; write outcome may be committed; last observed phase=proposal completion";
+
+    #[test]
+    fn a_leader_side_queue_expiry_is_a_503_and_nothing_is_written() {
+        for message in [
+            "metadata request expired before proposal",
+            "metadata request expired before read confirmation",
+            "metadata expiry request expired before read confirmation",
+            "chunk request expired before proposal",
+        ] {
+            let (gateway, armed) = timeout_gateway(ObjectError::InvalidArgument(message.into()), false);
+            assert_eq!(append(&gateway, "wal", 0, b"abc").status, 200);
+            *armed.lock().unwrap() = true;
+            let response = append(&gateway, "wal", 3, b"de");
+            assert_eq!(response.status, 503, "{message}: {}", String::from_utf8_lossy(&response.body));
+            assert_eq!(gateway.handle(&request("GET", "/b/wal", &[], b"")).body, b"abc", "{message}");
+        }
+    }
+
+    #[test]
+    fn a_leadership_change_after_the_append_landed_is_answered_as_landed() {
+        let (gateway, armed) = timeout_gateway(ObjectError::InvalidArgument(LEADERSHIP_CHANGED.into()), true);
+        assert_eq!(append(&gateway, "wal", 0, b"abc").status, 200);
+        *armed.lock().unwrap() = true;
+        let response = append(&gateway, "wal", 3, b"de");
+        assert_eq!(response.status, 200, "{}", String::from_utf8_lossy(&response.body));
+        assert_eq!(gateway.handle(&request("GET", "/b/wal", &[], b"")).body, b"abcde", "landed exactly once");
+    }
+
+    #[test]
+    fn a_leadership_change_before_the_append_landed_is_a_503_and_nothing_is_written() {
+        let (gateway, armed) = timeout_gateway(ObjectError::InvalidArgument(LEADERSHIP_CHANGED.into()), false);
+        assert_eq!(append(&gateway, "wal", 0, b"abc").status, 200);
+        *armed.lock().unwrap() = true;
+        let response = append(&gateway, "wal", 3, b"de");
+        assert_eq!(response.status, 503, "{}", String::from_utf8_lossy(&response.body));
+        assert_eq!(gateway.handle(&request("GET", "/b/wal", &[], b"")).body, b"abc");
+    }
+
     #[test]
     fn a_consensus_timeout_after_the_append_landed_is_answered_as_landed() {
         let (gateway, armed) = timeout_gateway(ObjectError::InvalidArgument(RAFT_DEADLINE.into()), true);
