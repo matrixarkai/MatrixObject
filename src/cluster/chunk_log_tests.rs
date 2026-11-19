@@ -8,7 +8,8 @@ use crate::ObjectError;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -355,6 +356,142 @@ fn opening_a_chunk_fences_every_node_including_one_that_holds_exactly_the_quorum
         assert_eq!(node.tail().length, data.len() as u64);
     }
     assert_eq!(old.append(&bytes(3, 10)).unwrap_err(), ChunkLogError::StaleEpoch { current: 2 });
+}
+
+/// A proxy in front of one node that forwards nothing toward the node while `open` is false:
+/// bytes sent to it are held (and arrive in order) until the gate opens. Replies flow freely.
+fn gated_proxy(target: String, open: Arc<AtomicBool>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    thread::spawn(move || {
+        for connection in listener.incoming() {
+            let Ok(client) = connection else { break };
+            let Ok(upstream) = TcpStream::connect(&target) else { continue };
+            let (mut client_in, mut client_out) = (client.try_clone().unwrap(), client);
+            let (mut up_in, mut up_out) = (upstream.try_clone().unwrap(), upstream);
+            let open = Arc::clone(&open);
+            thread::spawn(move || {
+                let mut buffer = [0u8; 65536];
+                loop {
+                    match client_in.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(count) => {
+                            while !open.load(Ordering::SeqCst) {
+                                thread::sleep(Duration::from_millis(1));
+                            }
+                            if up_out.write_all(&buffer[..count]).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let _ = up_out.shutdown(Shutdown::Both);
+            });
+            thread::spawn(move || {
+                let _ = std::io::copy(&mut up_in, &mut client_out);
+                let _ = client_out.shutdown(Shutdown::Both);
+            });
+        }
+    });
+    addr
+}
+
+// The seal is final, so it must reach only a node that holds every byte. The first test is the
+// deterministic one: a node that came back empty after the chunk was written has never held
+// the bytes, so sealing it would leave a replica sealed at length 0 while the chunk is longer.
+#[test]
+fn a_seal_leaves_open_a_node_that_never_held_the_bytes_instead_of_sealing_it_short() {
+    let (_dir, mut nodes) = cluster();
+    let eps = endpoints(&nodes);
+    nodes[2].halt();
+    let mut first = writer(&eps, 1);
+    let data = bytes(1, 100 * 1024);
+    first.append(&data).unwrap();
+    drop(first);
+    // the third node comes back empty: it never held a byte the first writer acknowledged
+    let (dir, addr) = (nodes[2].dir.clone(), nodes[2].addr.clone());
+    nodes[2] = Node::start(&dir, &addr);
+    assert_eq!(nodes[2].tail().length, 0);
+    let mut second = writer(&eps, 2);
+    let more = bytes(2, 20 * 1024);
+    let end = (data.len() + more.len()) as u64;
+    assert_eq!(second.append(&more).unwrap(), end);
+    let footer = second.seal_footer(true).unwrap();
+    assert_eq!(footer.length, end);
+    for index in 0..2 {
+        let tail = nodes[index].tail();
+        assert!(tail.sealed, "node {index} is not sealed");
+        assert_eq!(tail.length, end, "node {index} sealed at a different length");
+    }
+    let behind = nodes[2].tail();
+    assert!(!behind.sealed, "the node that never held the bytes was sealed at {} of {end} bytes", behind.length);
+    assert_eq!(behind.length, 0);
+}
+
+// A node whose appends are still in flight when the seal starts must be waited for, then sealed
+// at the full length; it must not be sealed at the shorter length it happens to hold, nor skipped.
+#[test]
+fn a_seal_waits_for_a_node_that_lags_and_no_node_seals_short() {
+    let (_dir, nodes) = cluster();
+    let mut eps = endpoints(&nodes);
+    let gate = Arc::new(AtomicBool::new(true));
+    eps[2] = gated_proxy(nodes[2].addr.clone(), Arc::clone(&gate));
+    let mut w = writer(&eps, 1);
+    // hold the third node's incoming bytes: the first two acknowledge, the third lags
+    gate.store(false, Ordering::SeqCst);
+    let data = bytes(7, 300_000);
+    assert_eq!(w.append(&data).unwrap(), data.len() as u64);
+    assert!(nodes[2].tail().length < data.len() as u64, "the third node must be behind for this test to mean anything");
+    // let it go only after the seal has begun
+    let release = {
+        let gate = Arc::clone(&gate);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            gate.store(true, Ordering::SeqCst);
+        })
+    };
+    let footer = w.seal_footer(true).unwrap();
+    release.join().unwrap();
+    assert_eq!(footer.length, data.len() as u64);
+    for (index, node) in nodes.iter().enumerate() {
+        let tail = node.tail();
+        assert!(tail.sealed, "node {index} is not sealed");
+        assert_eq!(tail.length, data.len() as u64, "node {index} sealed at a different length");
+    }
+}
+
+// A node that was down while a newer writer took the chunk comes back at the older epoch, holding
+// bytes the newer writer never saw (they were never acknowledged). A reader must take nothing
+// from it, even when it is the first node the reader tries.
+#[test]
+fn a_reader_takes_nothing_from_a_node_left_at_an_older_writer_epoch() {
+    let (_dir, mut nodes) = cluster();
+    let eps = endpoints(&nodes);
+    let mut first = writer(&eps, 1);
+    let base = bytes(1, 100 * 1024);
+    first.append(&base).unwrap();
+    until_all_hold(&mut first, &nodes, base.len() as u64);
+    // bytes only the third node receives, which the first writer never got acknowledged
+    let mut direct = RemoteReplicaClient::connect(&nodes[2].addr, &ReplicaClientOptions::default()).unwrap();
+    direct.log_call(LogOpRequest::append(V, C, 1, 1, base.len() as u64, bytes(9, 50 * 1024))).unwrap();
+    drop(direct);
+    drop(first);
+    // the third node is down while a second writer takes the chunk and writes its own bytes
+    nodes[2].halt();
+    let mut second = writer(&eps, 2);
+    let mine = bytes(2, 20 * 1024);
+    second.append(&mine).unwrap();
+    // it comes back still at the older epoch, holding bytes the second writer never saw
+    let (dir, addr) = (nodes[2].dir.clone(), nodes[2].addr.clone());
+    nodes[2] = Node::start(&dir, &addr);
+    assert_eq!(nodes[2].tail().length, 150 * 1024);
+    let mut expected = base.clone();
+    expected.extend_from_slice(&mine);
+    // the stale node is the first one the reader tries
+    let order = vec![eps[2].clone(), eps[0].clone(), eps[1].clone()];
+    let mut r = reader(&order);
+    assert_eq!(r.length().unwrap(), expected.len() as u64);
+    assert_eq!(r.read(0, expected.len()).unwrap(), expected, "bytes from the stale node reached the reader");
 }
 
 #[test]
