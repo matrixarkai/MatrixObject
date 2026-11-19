@@ -1152,6 +1152,17 @@ jobs:
           cargo test --locked --all-features --lib a_refusal_that_names_a_changed_manifest_proves_the_publication_was_not_admitted -- --nocapture | tee /tmp/catalog-full-sdk.log
           grep -q 'test result: ok. 1 passed' /tmp/catalog-full-sdk.log
 
+      - name: an ambiguous append is resolved exactly once over real processes
+        run: |
+          set -o pipefail
+          for name in \
+            cluster_gateway_processes::an_append_resolve_finds_landed_bytes_and_fences_a_lost_attempt_over_real_processes \
+            cluster_gateway_processes::an_append_resolve_fences_under_the_publication_fence_of_compact_appends \
+            cluster_gateway_processes::killing_the_gateway_mid_append_then_resolving_through_another_stores_every_append_exactly_once; do
+            cargo test --locked --all-features --test network_metadata_consensus "$name" -- --exact --nocapture | tee /tmp/append-resolve.log
+            grep -q 'test result: ok. 1 passed' /tmp/append-resolve.log
+          done
+
       - name: live peer partitions preserve objects and recover
         run: |
           set -o pipefail

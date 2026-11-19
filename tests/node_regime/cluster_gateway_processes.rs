@@ -13,6 +13,24 @@ struct Cluster {
     _chunks: Vec<NodeProcess>,
     gateway: NodeProcess,
     directory: PathBuf,
+    endpoints: Vec<String>,
+    group_id: u64,
+}
+
+/// One more `object_server` in cluster mode over the same metadata group.
+fn gateway_process(endpoints: &[String], group_id: u64, extra: &[(&str, &str)]) -> NodeProcess {
+    let joined = endpoints.join(",");
+    let group = group_id.to_string();
+    let mut environment = vec![
+        ("MATRIXOBJECT_HTTP_ADDR", "127.0.0.1:0"),
+        ("MATRIXOBJECT_BUCKET", "gateway"),
+        ("MATRIXOBJECT_THREADS", "4"),
+        ("MATRIXOBJECT_CLUSTER_META", joined.as_str()),
+        ("MATRIXOBJECT_CLUSTER_META_GROUP", group.as_str()),
+        ("MATRIXOBJECT_CLUSTER_TIMEOUT_MS", "20000"),
+    ];
+    environment.extend_from_slice(extra);
+    processes::start(env!("CARGO_BIN_EXE_object_server"), &environment)
 }
 impl Drop for Cluster {
     fn drop(&mut self) {
@@ -68,6 +86,22 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
 
 impl Cluster {
     fn new() -> Self {
+        Self::with_env(&[])
+    }
+    fn meta_client(&self) -> RemoteMetaClient {
+        RemoteMetaClient::connect_raft_catalog(
+            &self.endpoints,
+            self.group_id,
+            &MetaClientOptions {
+                connect_timeout: Duration::from_secs(3),
+                read_timeout: Duration::from_secs(30),
+                write_timeout: Duration::from_secs(30),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+    fn with_env(extra: &[(&str, &str)]) -> Self {
         let directory = std::env::temp_dir().join(node_regime::run_token("cluster-gateway"));
         std::fs::create_dir(&directory).unwrap();
         let chunks: Vec<NodeProcess> = (0..3)
@@ -139,22 +173,14 @@ impl Cluster {
                 .heartbeat_placement_node(member, 0, 1 << 28, false, true, 100)
                 .unwrap();
         }
-        let gateway = processes::start(
-            env!("CARGO_BIN_EXE_object_server"),
-            &[
-                ("MATRIXOBJECT_HTTP_ADDR", "127.0.0.1:0"),
-                ("MATRIXOBJECT_BUCKET", "gateway"),
-                ("MATRIXOBJECT_THREADS", "4"),
-                ("MATRIXOBJECT_CLUSTER_META", &endpoints.join(",")),
-                ("MATRIXOBJECT_CLUSTER_META_GROUP", &group_id.to_string()),
-                ("MATRIXOBJECT_CLUSTER_TIMEOUT_MS", "20000"),
-            ],
-        );
+        let gateway = gateway_process(&endpoints, group_id, extra);
         Self {
             metadata,
             _chunks: chunks,
             gateway,
             directory,
+            endpoints,
+            group_id,
         }
     }
     fn addr(&self) -> &str {
@@ -311,3 +337,119 @@ fn the_gateway_keeps_serving_after_the_metadata_leader_is_lost() {
         b"before+more"
     );
 }
+
+fn sha256_hex(data: &[u8]) -> String {
+    ring::digest::digest(&ring::digest::SHA256, data)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn resolve_target(offset: u64, data: &[u8]) -> String {
+    format!(
+        "/gateway/log?append-resolve&offset={offset}&length={}&sha256={}",
+        data.len(),
+        sha256_hex(data)
+    )
+}
+
+/// The resolve of an ambiguous append over a real cluster: bytes found, a lost attempt fenced and
+/// refused when it finally arrives, and the retry as a new append stored once.
+fn resolve_over_real_processes(cluster: &Cluster) {
+    let addr = cluster.addr();
+    for (offset, text) in [(0u64, "alpha"), (5, "beta")] {
+        assert_eq!(
+            cluster.until_ok("PUT", "/gateway/log", &[("x-amz-write-offset-bytes", &offset.to_string())], text.as_bytes()),
+            200
+        );
+    }
+    // The bytes are there: landed, and nothing is fenced.
+    let (status, headers, _) = http(addr, "POST", &resolve_target(5, b"beta"), &[], b"");
+    assert_eq!((status, header(&headers, "x-append-resolution")), (200, Some("landed")));
+    // Nothing at offset 9: the resolve fences. Only the generation moves.
+    let mut client = cluster.meta_client();
+    let before = client.read_manifest("gateway", "log").unwrap();
+    let (status, headers, body) = http(addr, "POST", &resolve_target(9, b"gamma"), &[], b"");
+    assert_eq!(
+        (status, header(&headers, "x-append-resolution")),
+        (200, Some("absent")),
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    let after = client.read_manifest("gateway", "log").unwrap();
+    assert_eq!((after.generation, after.length), (before.generation + 1, 9));
+    assert!(after.extents == before.extents, "the fence keeps the extents exactly");
+    assert_eq!(http(addr, "GET", "/gateway/log", &[], b"").2, b"alphabeta");
+    // The lost attempt, built on the manifest it read before the fence, is refused when it arrives.
+    let options = matrixobjectstore_rs::cluster::ObjectWriteOptions::default();
+    assert!(client.append_object(before, b"gamma", &options).is_err(), "a fenced attempt must not publish");
+    assert_eq!(http(addr, "GET", "/gateway/log", &[], b"").2, b"alphabeta");
+    // The caller retries as a new append: stored exactly once.
+    assert_eq!(
+        cluster.until_ok("PUT", "/gateway/log", &[("x-amz-write-offset-bytes", "9")], b"gamma"),
+        200
+    );
+    assert_eq!(http(addr, "GET", "/gateway/log", &[], b"").2, b"alphabetagamma");
+    let (_, headers, _) = http(addr, "POST", &resolve_target(9, b"gamma"), &[], b"");
+    assert_eq!(header(&headers, "x-append-resolution"), Some("landed"));
+}
+
+#[test]
+fn an_append_resolve_finds_landed_bytes_and_fences_a_lost_attempt_over_real_processes() {
+    resolve_over_real_processes(&Cluster::new());
+}
+
+#[test]
+fn an_append_resolve_fences_under_the_publication_fence_of_compact_appends() {
+    resolve_over_real_processes(&Cluster::with_env(&[
+        ("MATRIXOBJECT_CLUSTER_COMPACT_APPEND", "1"),
+        ("MATRIXOBJECT_CLUSTER_RESERVE_NEXT", "1"),
+    ]));
+}
+
+#[test]
+fn killing_the_gateway_mid_append_then_resolving_through_another_stores_every_append_exactly_once() {
+    let cluster = Cluster::new();
+    let survivor = cluster.addr().to_string();
+    let (mut offset, mut expected) = (0u64, Vec::<u8>::new());
+    let mut random = 0x9e37_79b9_7f4a_7c15u64;
+    for round in 0..8u64 {
+        let data: Vec<u8> = (0..200_000u64).map(|i| (i ^ (round * 31)) as u8).collect();
+        let mut victim = gateway_process(&cluster.endpoints, cluster.group_id, &[]);
+        let victim_addr = victim.endpoint.clone();
+        let (at, body) = (offset, data.clone());
+        let sender = std::thread::spawn(move || {
+            // The victim dies mid-request, so this panics on the missing response; that is the point.
+            let _ = http(&victim_addr, "PUT", "/gateway/log", &[("x-amz-write-offset-bytes", &at.to_string())], &body);
+        });
+        random = random.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        std::thread::sleep(Duration::from_millis((random >> 33) % 150));
+        victim.child.kill().ok();
+        let _ = sender.join();
+        // Resolve through the survivor until it decides.
+        let until = Instant::now() + Duration::from_secs(60);
+        let resolution = loop {
+            let (status, headers, reply) = http(&survivor, "POST", &resolve_target(offset, &data), &[], b"");
+            if status == 200 {
+                break header(&headers, "x-append-resolution").unwrap().to_string();
+            }
+            assert!(Instant::now() < until, "resolve never decided: {status} {}", String::from_utf8_lossy(&reply));
+            std::thread::sleep(Duration::from_millis(300));
+        };
+        if resolution == "absent" {
+            assert_eq!(
+                cluster.until_ok("PUT", "/gateway/log", &[("x-amz-write-offset-bytes", &offset.to_string())], &data),
+                200,
+                "round {round}: the retry as a new append"
+            );
+        } else {
+            assert_eq!(resolution, "landed", "round {round}");
+        }
+        expected.extend_from_slice(&data);
+        offset += data.len() as u64;
+        let (_, _, stored) = http(&survivor, "GET", "/gateway/log", &[], b"");
+        assert!(stored == expected, "round {round}: {} bytes stored, {} expected ({resolution})", stored.len(), expected.len());
+    }
+}
+
