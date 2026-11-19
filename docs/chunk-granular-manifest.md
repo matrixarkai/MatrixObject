@@ -31,13 +31,18 @@ what has not been measured.
 | Group commit for log chunk writes, with the sync outside the replica lock | In the tree |
 | Metadata readers: outcome version 15, snapshot version 22, and the writer lease table restore in the proposal draft | In the tree |
 | Sealed chunk reads from disk through a bounded cache, with a handle limit and an open tail budget | In the tree |
-| Leader commands (grant, switch, renew, sweep), batched renewal (outcome version 16) and the feature gate wiring (feature bit 4) | In review |
+| Leader commands (grant, switch, renew, sweep), batched renewal (outcome version 16) and the feature gate wiring (feature bit 4) | In the tree, behind the two cluster features |
 | Replica client and quorum log writer and reader | In review (draft) |
 | Log object API (open, append, read, take over) | Written, stacked on the leader commands and the replica client; not yet opened for review |
 | End-to-end latency and metadata cost at multi-gigabyte object sizes | Not measured yet |
 
-Nothing writes a log chunk manifest unless an operator raises two cluster
-features. Nothing raises them by default.
+With neither cluster feature raised, a grant or a switch is refused ("chunk-granular
+manifests are not enabled for this cluster"), so no lease exists and no format 3
+manifest or version 15 or 16 outcome is emitted. A renew reports every lease it
+names as lost and a sweep drops none, and neither commits an entry. Nothing raises
+the features by default. Raising them is an explicit decision of the owner of a
+cluster and cannot be undone; see the irreversibility statement and the operator
+procedure, which is written for private test clusters only.
 
 ## Which objects use log chunks
 
@@ -143,11 +148,11 @@ every call, so log appends must be sent through it.
 
 ## The metadata commands
 
-The grant and switch outcome (version 15), the snapshot that holds the writer
-lease table (version 22) and the restore of that table when the leader discards a
-draft are in the tree. The leader commands that produce them, batched renewal and
-sweep (version 16) and the feature gate wiring are in review. All of them are
-behind the feature gate described below.
+The leader commands, the outcomes they produce (version 15 for grant and switch,
+version 16 for renew and sweep), the snapshot that holds the writer lease table
+(version 22) and the restore of that table when the leader discards a draft are in
+the tree. All of them are behind the feature gate described below: a grant or a
+switch is refused unless both features are raised.
 
 - **Grant** takes the writer lease of an object and, if no chunk is open, adds one
   empty tail chunk to its manifest, in one commit. A holder that asks again while
@@ -158,7 +163,9 @@ behind the feature gate described below.
   and the holder and epoch stay.
 - **Renew** extends the leases a writer holds on up to 1,024 objects in one
   commit (outcome version 16). Epochs stay and expiry only moves later. The
-  intended policy is a term of 30 to 60 seconds, renewed at half of it.
+  intended policy is a term of 30 to 60 seconds, renewed at half of it. A term is
+  between one second and one hour, and a switch that names no term renews for 30
+  seconds.
 - **Sweep** drops up to 256 expired leases in one commit (version 16), proposed by
   the leader's cleanup loop. Names that are no longer expired are filtered out
   when the decision is made.
@@ -183,15 +190,17 @@ Two cluster features gate everything that writes a log chunk manifest:
 
 - **Chunk manifest** (bit 2): manifests whose extents name log chunks.
 - **Log chunk leases** (bit 4): outcome versions 15 and 16 and the lease commands.
-  The leader commands change in review defines this bit.
 
 Each metadata voter declares the feature bits its build can read. The group raises
 a bit only through an explicit raise command, and the leader accepts it only when
 every voter the caller names has declared every bit being raised. A raised bit is
 never lowered. An entry that is already committed is always applied: a node that
-cannot read it fails loudly instead of skipping it. Both bits are required for a
-grant or a switch; one is not enough. Bit 3 is the read grace feature of the
-gateway side and bit 4 is the one above. Bits 8 to 15 are held for other records.
+cannot read it fails loudly instead of skipping it. The leader checks both bits
+for a grant and for a switch and refuses with "chunk-granular manifests are not
+enabled for this cluster" unless both are raised; one is not enough. A read
+answers from committed state. Of the bits in use, bit 2 (chunk manifest) and bit 4
+(log chunk leases) belong to this feature, and bit 3 is the read grace feature of
+the gateway side. Bits 8 to 15 are held for other records.
 
 The leader does not know what each chunk server supports. The writer probes the
 replica verb on the three nodes before it asks for a grant, and a node that does
@@ -203,9 +212,14 @@ not speak log chunks stops the writer before any metadata command is sent.
 
 ## Operator procedure
 
-Do this only on a private cluster that you can afford to rebuild. Raising the
-features on a cluster that holds data you must keep readable by older builds is a
-decision for the operator of that cluster, and it cannot be taken back.
+**Warning. Raising the two features is not a routine step, and it is not
+recommended on any cluster that is not a private test cluster.** It is
+irreversible: there is no downgrade, no command lowers a raised bit, and a metadata
+voter on an older build cannot be run afterwards. On any cluster other than a
+private test cluster that you can afford to rebuild, raising them is an explicit
+decision of that cluster's owner or operator, taken with the consequences in the
+irreversibility statement above in view. The steps below are the procedure for a
+private test cluster.
 
 1. Run a build that reads format 3 manifests, outcome versions 15 and 16 and
    snapshot version 22 on every metadata voter, every gateway and every client
