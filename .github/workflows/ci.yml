@@ -1097,6 +1097,14 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus received_chunk_health_keeps_decided_time_through_failover_restart_and_expiry -- --exact --nocapture | tee /tmp/health-process.log
           grep -q 'test result: ok. 1 passed' /tmp/health-process.log
 
+      - name: suppressed chunk reports add no entries and never expire a live node
+        run: |
+          set -o pipefail
+          for name in             unchanged_chunk_reports_add_no_raft_entries_while_changes_and_the_keepalive_are_replicated             a_live_node_stays_online_through_a_leader_change_while_its_reports_are_suppressed             a_node_that_stops_reporting_is_still_expired_when_reports_are_suppressed; do
+            cargo test --locked --all-features --test network_metadata_consensus "$name" -- --exact --nocapture | tee /tmp/report-suppression.log
+            grep -q 'test result: ok. 1 passed' /tmp/report-suppression.log
+          done
+
       - name: unavailable group preserves striped objects and other writes
         run: |
           set -o pipefail

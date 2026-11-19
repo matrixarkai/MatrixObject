@@ -17,6 +17,8 @@ use std::{
 thread_local! {
     /// The zero-fill chunk the next `Group` created on this thread gives its voters.
     static ZERO_FILL: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    /// Whether the next `Group` created on this thread answers unchanged chunk reports without a log entry.
+    static SUPPRESS_REPORTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 struct Group {
     zero_fill: Option<u64>,
@@ -179,6 +181,9 @@ impl Group {
         }
         if let Some(ttl) = &self.heartbeat_ttl {
             environment.push(("MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS", ttl));
+        }
+        if SUPPRESS_REPORTS.with(|flag| flag.get()) {
+            environment.push(("MATRIXOBJECT_METASERVER_SUPPRESS_UNCHANGED_REPORTS", "1"));
         }
         drop(self.reservations[i].take());
         let node = processes::start(env!("CARGO_BIN_EXE_metaserver"), &environment);
@@ -3103,6 +3108,138 @@ fn an_out_of_range_zero_fill_stops_the_metaserver_at_startup() {
             String::from_utf8_lossy(&output.stderr).contains("MATRIXOBJECT_WAL_ZERO_FILL_BYTES"),
             "{value}"
         );
+    }
+}
+
+fn applied_index(client: &mut RemoteMetaClient) -> u64 {
+    use matrixobjectstore_rs::cluster::{MembershipOperation as Op, MembershipRequest};
+    let identity = client.metadata_group_identity().unwrap();
+    let read = MembershipRequest {
+        version: 1,
+        bootstrap_id: identity.bootstrap_id,
+        operation: Op::Read as i32,
+        node_id: 0,
+    };
+    client.metadata_membership(read).unwrap().applied_index
+}
+
+/// Three real voters that answer unchanged chunk reports without a log entry.
+fn suppression_group(ttl_ms: &str) -> Group {
+    SUPPRESS_REPORTS.with(|flag| flag.set(true));
+    let group = Group::with_membership_options(
+        Some("chunk-1@127.0.0.1:9100@rack".into()),
+        Some(ttl_ms.into()),
+        None,
+        0,
+        true,
+    );
+    SUPPRESS_REPORTS.with(|flag| flag.set(false));
+    group
+}
+
+#[test]
+fn unchanged_chunk_reports_add_no_raft_entries_while_changes_and_the_keepalive_are_replicated() {
+    let group = suppression_group("15000");
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    let first = client
+        .report_chunk_node("chunk-1", "127.0.0.1:9100", 100, 1 << 28, true)
+        .unwrap();
+    assert!(first.online);
+    let steady = applied_index(&mut client);
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        let reply = client
+            .report_chunk_node("chunk-1", "127.0.0.1:9100", 101, 1 << 28, true)
+            .unwrap();
+        assert_eq!(
+            reply.last_heartbeat_ms, first.last_heartbeat_ms,
+            "an unchanged report must not advance the replicated stamp"
+        );
+    }
+    assert_eq!(applied_index(&mut client), steady, "unchanged reports appended Raft entries");
+    // Past a third of the 15 s TTL the keepalive is replicated.
+    std::thread::sleep(Duration::from_millis(3600));
+    let refreshed = client
+        .report_chunk_node("chunk-1", "127.0.0.1:9100", 100, 1 << 28, true)
+        .unwrap();
+    assert!(refreshed.last_heartbeat_ms > first.last_heartbeat_ms);
+    assert_eq!(applied_index(&mut client), steady + 1, "the keepalive is one entry");
+    // A change in usage beyond 1% of capacity is replicated at once.
+    let used = 100 + (1u64 << 28) / 20;
+    let changed = client
+        .report_chunk_node("chunk-1", "127.0.0.1:9100", used, 1 << 28, true)
+        .unwrap();
+    assert_eq!(changed.used_bytes, used);
+    assert_eq!(applied_index(&mut client), steady + 2, "a real change is one entry");
+}
+
+#[test]
+fn a_live_node_stays_online_through_a_leader_change_while_its_reports_are_suppressed() {
+    let mut group = suppression_group("15000");
+    let first = group.leader();
+    let mut endpoints: Vec<_> = (0..3)
+        .filter(|i| *i != first)
+        .map(|i| group.nodes[i].as_ref().unwrap().endpoint.clone())
+        .collect();
+    endpoints.push(group.nodes[first].as_ref().unwrap().endpoint.clone());
+    let mut client = RemoteMetaClient::connect_catalog(
+        &endpoints,
+        &MetaClientOptions {
+            read_timeout: Duration::from_secs(3),
+            write_timeout: Duration::from_secs(3),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    client
+        .report_chunk_node("chunk-1", "127.0.0.1:9100", 100, 1 << 28, true)
+        .unwrap();
+    let start = Instant::now();
+    let mut killed = false;
+    let mut offline_samples = 0;
+    let mut online_samples = 0;
+    while start.elapsed() < Duration::from_secs(30) {
+        if !killed && start.elapsed() >= Duration::from_secs(8) {
+            group.kill(first);
+            killed = true;
+        }
+        // The chunk process keeps reporting every second; a report during the change may fail.
+        let _ = client.report_chunk_node("chunk-1", "127.0.0.1:9100", 100, 1 << 28, true);
+        if let Ok(nodes) = client.list_placement_nodes() {
+            if nodes[0].online {
+                online_samples += 1;
+            } else {
+                offline_samples += 1;
+            }
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    assert!(killed);
+    assert_eq!(offline_samples, 0, "a node that reported on time was expired");
+    assert!(online_samples >= 15, "too few samples: {online_samples}");
+    let second = group.leader();
+    assert_ne!(first, second);
+}
+
+#[test]
+fn a_node_that_stops_reporting_is_still_expired_when_reports_are_suppressed() {
+    let group = suppression_group("6000");
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    let first = client
+        .report_chunk_node("chunk-1", "127.0.0.1:9100", 100, 1 << 28, true)
+        .unwrap();
+    assert!(first.online);
+    let until = Instant::now() + Duration::from_secs(25);
+    loop {
+        let nodes = client.list_placement_nodes().unwrap();
+        if !nodes[0].online {
+            assert_eq!(nodes[0].last_heartbeat_ms, first.last_heartbeat_ms);
+            return;
+        }
+        assert!(Instant::now() < until, "a silent node was never expired");
+        std::thread::sleep(Duration::from_millis(500));
     }
 }
 #[path = "node_regime/cluster_gateway_processes.rs"]

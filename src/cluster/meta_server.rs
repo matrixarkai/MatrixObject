@@ -285,6 +285,9 @@ pub struct MetaNodeServer {
     counters: Arc<MetaCounters>,
     stop: Arc<ServerShutdown>,
     heartbeat_ttl_ms: Option<u64>,
+    /// Answer unchanged chunk health reports without a log entry (see `report_suppress_window`).
+    #[cfg(feature = "metadata-consensus")]
+    suppress_unchanged_reports: bool,
 }
 
 impl MetaNodeServer {
@@ -343,6 +346,8 @@ impl MetaNodeServer {
             counters: Arc::new(MetaCounters::default()),
             stop: Arc::new(ServerShutdown::default()),
             heartbeat_ttl_ms: None,
+            #[cfg(feature = "metadata-consensus")]
+            suppress_unchanged_reports: false,
         })
     }
 
@@ -359,6 +364,14 @@ impl MetaNodeServer {
         Ok(())
     }
 
+    /// With consensus and a heartbeat TTL, answer chunk health reports that change nothing the
+    /// group replicates (same capacity, usage within 1%, stamp younger than a third of the TTL)
+    /// without a log entry. Off by default. Call after `enable_heartbeat_expiry`, before `enable_raft`.
+    #[cfg(feature = "metadata-consensus")]
+    pub fn suppress_unchanged_reports(&mut self, on: bool) {
+        self.suppress_unchanged_reports = on;
+    }
+
     /// Enable network consensus after seeding and before serving. Local snapshot
     /// storage and replicated storage must use separate directories.
     #[cfg(feature = "metadata-consensus")]
@@ -373,12 +386,18 @@ impl MetaNodeServer {
             ));
         }
         let directory = options.directory.clone();
+        let suppress_ms = if self.suppress_unchanged_reports {
+            self.heartbeat_ttl_ms.map_or(0, super::meta_consensus::report_suppress_window)
+        } else {
+            0
+        };
         let consensus = super::meta_consensus::MetaConsensus::open(
             options,
             meta.service.clone(),
             (*meta.groups).clone(),
             Arc::clone(&self.stop),
             self.options.max_payload_bytes,
+            suppress_ms,
         )?;
         super::api_tls::pin_file(&directory.join("api.transport"), self.options.tls.is_some())?;
         let node_count = consensus.node_count;

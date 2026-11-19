@@ -125,6 +125,7 @@ impl MetaConsensus {
         groups: super::ChunkGroupCatalog,
         stop: Arc<ServerShutdown>,
         limit: usize,
+        suppress_ms: u64,
     ) -> io::Result<Self> {
         if options.group_id == 0
             || options.node_id == 0
@@ -340,6 +341,7 @@ impl MetaConsensus {
                 &worker_stop,
                 limit,
                 checkpoint,
+                suppress_ms,
             ) {
                 worker_failed.store(true, Ordering::SeqCst);
                 eprintln!("metadata consensus stopped: {error}");
@@ -418,6 +420,7 @@ fn run(
     stop: &ServerShutdown,
     limit: usize,
     mut checkpoint: Policy,
+    suppress_ms: u64,
 ) -> Result<(), RaftError> {
     let ConsensusChannels {
         progress,
@@ -698,7 +701,9 @@ fn run(
                     while queued.front().is_some_and(|r| !read_only(&r.request) && !matches!(r.request, MetaRequest::Membership(_) | MetaRequest::ChunkCatalog(_))) {
                         writes.push_back(queued.pop_front().unwrap());
                     }
-                    propose_batch(peer, service, groups, limit, &mut writes, &mut pending)?;
+                    propose_batch_suppressing(
+                        peer, service, groups, limit, &mut writes, &mut pending, suppress_ms, wall_clock_ms(),
+                    )?;
                     writes.append(&mut queued);
                     queued = writes;
                 }
@@ -947,6 +952,89 @@ fn propose_catalog_batch(
         }
     }
     Ok(())
+}
+
+/// How long a chunk health report may go unreplicated while nothing changed: a third of the
+/// heartbeat expiry TTL, so a live node's replicated stamp is never older than that plus one
+/// report interval and expiry (which reads the replicated stamp) can never see it as silent.
+/// Zero (no TTL, or one too short to leave room) means every report is replicated.
+pub(super) fn report_suppress_window(ttl_ms: u64) -> u64 {
+    ttl_ms / 3
+}
+
+fn wall_clock_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+/// The answer to a chunk health report that changes nothing the group replicates, or `None`
+/// when the report must be replicated: the node is online and stays online, its endpoint and
+/// capacity match, its usage moved by at most 1% of capacity, and its replicated stamp is
+/// younger than `suppress_ms`. Anything else (a transition, a new capacity, an unknown node, a
+/// stamp that has aged, a clock that is behind the stamp) takes the ordinary path.
+fn unchanged_report_reply(
+    service: &MatrixMetaService,
+    request: &MetaRequest,
+    suppress_ms: u64,
+    now_ms: u64,
+) -> Option<MetaReply> {
+    let MetaRequest::ReportChunkNode { node_id, expected_endpoint, used_bytes, capacity_bytes, online } = request
+    else {
+        return None;
+    };
+    let node = service.nodes.get(node_id)?;
+    let unchanged = suppress_ms != 0
+        && *online
+        && node.online
+        && node.service_kind == "chunkserver"
+        && node.endpoint == *expected_endpoint
+        && node.capacity_bytes == *capacity_bytes
+        && used_bytes.abs_diff(node.used_bytes) <= capacity_bytes / 100
+        && node.last_heartbeat_ms != 0
+        && now_ms >= node.last_heartbeat_ms
+        && now_ms - node.last_heartbeat_ms < suppress_ms;
+    unchanged.then(|| MetaReply::PlacementNode(super::PlacementNodeSummary::from_placement_node(node)))
+}
+
+/// Reply to every unchanged health report in `queued` at once and take it out of the queue, so
+/// it costs no log entry and no batch slot. Order of the others is kept. A reply is not a
+/// promise of replication: the report changed nothing, and the next change or the keepalive is
+/// replicated as before.
+fn drop_unchanged_reports(
+    service: &MatrixMetaService,
+    queued: &mut VecDeque<Request>,
+    suppress_ms: u64,
+    now_ms: u64,
+) {
+    if suppress_ms == 0 {
+        return;
+    }
+    let mut kept = VecDeque::with_capacity(queued.len());
+    for request in queued.drain(..) {
+        match unchanged_report_reply(service, &request.request, suppress_ms, now_ms) {
+            Some(reply) => {
+                let _ = request.reply.try_send(Ok(reply));
+            }
+            None => kept.push_back(request),
+        }
+    }
+    *queued = kept;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn propose_batch_suppressing(
+    peer: &mut DurablePeer,
+    service: &mut MatrixMetaService,
+    groups: &super::ChunkGroupCatalog,
+    limit: usize,
+    queued: &mut VecDeque<Request>,
+    pending: &mut VecDeque<Pending>,
+    suppress_ms: u64,
+    now_ms: u64,
+) -> Result<(), RaftError> {
+    drop_unchanged_reports(service, queued, suppress_ms, now_ms);
+    propose_batch(peer, service, groups, limit, queued, pending)
 }
 
 fn propose_batch(
@@ -1826,6 +1914,169 @@ mod tests {
         }
         assert!(peer.is_leader());
         (files, peer)
+    }
+    fn report(used: u64) -> MetaRequest {
+        MetaRequest::ReportChunkNode {
+            node_id: "member-0-0".into(),
+            expected_endpoint: "127.0.0.1:10003".into(),
+            used_bytes: used,
+            capacity_bytes: 1 << 30,
+            online: true,
+        }
+    }
+    fn steady(service: &mut MatrixMetaService, last_heartbeat_ms: u64) {
+        let node = service.nodes.get_mut("member-0-0").unwrap();
+        node.online = true;
+        node.used_bytes = 256;
+        node.capacity_bytes = 1 << 30;
+        node.last_heartbeat_ms = last_heartbeat_ms;
+        service.invalidate_snapshot_export_cache();
+    }
+    /// Submit one request through the real proposal path of a single voter and apply what commits.
+    fn submit(
+        peer: &mut DurablePeer,
+        service: &mut MatrixMetaService,
+        groups: &ChunkGroupCatalog,
+        request: MetaRequest,
+        suppress_ms: u64,
+        now_ms: u64,
+    ) -> (Receiver<Result<MetaReply, ObjectError>>, usize) {
+        let (request, rx) = queued(request, Instant::now() + Duration::from_secs(30));
+        let mut requests = VecDeque::from([request]);
+        let mut pending = VecDeque::new();
+        propose_batch_suppressing(peer, service, groups, 65536, &mut requests, &mut pending, suppress_ms, now_ms)
+            .unwrap();
+        let proposed = pending.len();
+        peer.process_ready(|id, bytes| apply_committed(service, groups, 65536, &mut pending, id, bytes))
+            .unwrap();
+        (rx, proposed)
+    }
+    fn node_of(reply: Receiver<Result<MetaReply, ObjectError>>) -> crate::cluster::PlacementNodeSummary {
+        match reply.try_recv().unwrap().unwrap() {
+            MetaReply::PlacementNode(node) => node,
+            other => panic!("unexpected reply {other:?}"),
+        }
+    }
+    #[test]
+    fn an_unchanged_health_report_costs_no_log_entry_and_every_change_is_replicated() {
+        let (_files, mut peer) = batch_peer();
+        let (mut service, groups) = fixture(2, 1);
+        let now = wall_clock_ms();
+        let window = 5_000;
+        steady(&mut service, now - 1_000);
+        let index = service.placement_commit_index;
+        // Unchanged (usage moved far less than 1% of capacity): answered at once, nothing logged.
+        let (rx, proposed) = submit(&mut peer, &mut service, &groups, report(266), window, now);
+        assert_eq!(proposed, 0);
+        assert_eq!(node_of(rx).last_heartbeat_ms, now - 1_000, "the stamp is not advanced");
+        assert_eq!(service.placement_commit_index, index);
+        // Usage moved by 2% of capacity: replicated.
+        let (rx, proposed) = submit(&mut peer, &mut service, &groups, report(256 + (1 << 30) / 50), window, now);
+        assert_eq!(proposed, 1);
+        assert_eq!(node_of(rx).used_bytes, 256 + (1 << 30) / 50);
+        assert_eq!(service.placement_commit_index, index + 1);
+        // A stamp older than the window is refreshed even though nothing else changed.
+        steady(&mut service, now - 6_000);
+        let index = service.placement_commit_index;
+        let (rx, proposed) = submit(&mut peer, &mut service, &groups, report(256), window, now);
+        assert_eq!(proposed, 1);
+        assert!(node_of(rx).last_heartbeat_ms >= now, "the keepalive advances the stamp");
+        assert_eq!(service.placement_commit_index, index + 1);
+        // A node that was offline comes back through the log.
+        steady(&mut service, now - 1_000);
+        service.nodes.get_mut("member-0-0").unwrap().online = false;
+        service.invalidate_snapshot_export_cache();
+        let (rx, proposed) = submit(&mut peer, &mut service, &groups, report(256), window, now);
+        assert_eq!(proposed, 1);
+        assert!(node_of(rx).online);
+        // A new capacity is replicated.
+        steady(&mut service, now - 1_000);
+        let mut resized = report(256);
+        if let MetaRequest::ReportChunkNode { capacity_bytes, .. } = &mut resized {
+            *capacity_bytes = 1 << 31;
+        }
+        let (_, proposed) = submit(&mut peer, &mut service, &groups, resized, window, now);
+        assert_eq!(proposed, 1);
+        // Suppression off (window zero) replicates every report, as before.
+        steady(&mut service, now - 1_000);
+        let (_, proposed) = submit(&mut peer, &mut service, &groups, report(256), 0, now);
+        assert_eq!(proposed, 1);
+        // A clock behind the stamp never suppresses.
+        steady(&mut service, now + 5_000);
+        let (_, proposed) = submit(&mut peer, &mut service, &groups, report(256), window, now);
+        assert_eq!(proposed, 1);
+    }
+    #[test]
+    fn a_report_for_the_wrong_endpoint_or_an_unknown_node_is_never_suppressed() {
+        let (_files, mut peer) = batch_peer();
+        let (mut service, groups) = fixture(2, 1);
+        let now = wall_clock_ms();
+        steady(&mut service, now - 1_000);
+        let mut wrong = report(256);
+        if let MetaRequest::ReportChunkNode { expected_endpoint, .. } = &mut wrong {
+            *expected_endpoint = "127.0.0.1:1".into();
+        }
+        let (rx, _) = submit(&mut peer, &mut service, &groups, wrong, 5_000, now);
+        assert!(rx.try_recv().unwrap().is_err(), "the ordinary path refuses a mismatched endpoint");
+        let mut unknown = report(256);
+        if let MetaRequest::ReportChunkNode { node_id, .. } = &mut unknown {
+            *node_id = "no-such-node".into();
+        }
+        let (rx, _) = submit(&mut peer, &mut service, &groups, unknown, 5_000, now);
+        assert!(rx.try_recv().unwrap().is_err());
+    }
+    #[test]
+    fn a_live_node_is_never_expired_while_its_reports_are_suppressed() {
+        // The leader decides who is silent from the REPLICATED stamp (followers only apply the
+        // outcome), so the suppression window must leave the stamp younger than the TTL for a
+        // node that reports on time. Reports every 4 s for two minutes, expiry checked every second.
+        for ttl in [15_000u64, 60_000] {
+            let (mut service, _groups) = fixture(2, 1);
+            let window = report_suppress_window(ttl);
+            let mut t = 1_000_000u64;
+            steady(&mut service, t);
+            let mut replicated = 0;
+            while t < 1_000_000 + 120_000 {
+                t += 1_000;
+                if (t - 1_000_000) % 4_000 == 0 {
+                    let mut queue = VecDeque::new();
+                    let (request, _rx) = queued(report(256), Instant::now() + Duration::from_secs(30));
+                    queue.push_back(request);
+                    drop_unchanged_reports(&service, &mut queue, window, t);
+                    if !queue.is_empty() {
+                        // What the leader would replicate: the stamp becomes the leader clock.
+                        service.nodes.get_mut("member-0-0").unwrap().last_heartbeat_ms = t;
+                        replicated += 1;
+                    }
+                }
+                service.expire_node_heartbeats(ttl, t).unwrap();
+                assert!(service.nodes["member-0-0"].online, "expired at {t} with ttl {ttl}, window {window}");
+            }
+            assert!(replicated < 30, "ttl {ttl}: {replicated} of 30 reports replicated");
+        }
+        // A window as long as the TTL is exactly the bug this guards against.
+        let (mut service, _groups) = fixture(2, 1);
+        let mut t = 1_000_000u64;
+        steady(&mut service, t);
+        let mut expired = false;
+        while t < 1_000_000 + 120_000 {
+            t += 1_000;
+            if (t - 1_000_000) % 7_000 == 0 {
+                let mut queue = VecDeque::new();
+                let (request, _rx) = queued(report(256), Instant::now() + Duration::from_secs(30));
+                queue.push_back(request);
+                drop_unchanged_reports(&service, &mut queue, 15_000, t);
+                if !queue.is_empty() {
+                    service.nodes.get_mut("member-0-0").unwrap().last_heartbeat_ms = t;
+                }
+            }
+            service.expire_node_heartbeats(15_000, t).unwrap();
+            expired |= !service.nodes["member-0-0"].online;
+            if expired {
+                break;
+            }
+        }
+        assert!(expired, "a window equal to the TTL must let a live node expire, or this test proves nothing");
     }
     fn queued(
         request: MetaRequest,
