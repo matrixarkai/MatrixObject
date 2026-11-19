@@ -34,6 +34,8 @@ has not been measured or tested.
 | Leader commands (grant, switch, renew, sweep), batched renewal (outcome version 16) and the feature gate wiring (feature bit 4) | In the tree, behind the two cluster features |
 | Replica client and quorum log writer and reader | In the tree |
 | Log object API (open, append, read, take over) | In the tree, behind the two cluster features |
+| Reclaiming the log chunk files of a deleted log object | Not implemented |
+| Repair of a log chunk left under-replicated | Not implemented |
 | End-to-end latency and metadata cost at multi-gigabyte object sizes | Not measured yet |
 
 With neither cluster feature raised, a grant or a switch is refused ("chunk-granular
@@ -453,6 +455,15 @@ through an 8 MiB cache peaked at 13,632,156 bytes.
 - The planted-defect runs for the log object (deliberately breaking the code to
   check that its tests fail) and the instruction-count cost probes have not been
   run.
+- Nothing reclaims the log chunk files of a deleted log object: this is not
+  implemented. A search of the source found no code in object deletion, retention
+  or reclaim that refers to log chunks, no removal of a log chunk file in the chunk
+  store, and no replica operation that drops a chunk (the verb has append, seal,
+  truncate, tail and read). The log chunk files stay on the chunk servers until an
+  operator removes them.
+- The ordinary object read path refuses an object that holds log chunk extents
+  ("object holds log-chunk extents this reader cannot read"). A log object is read
+  through the log object reader.
 - A grant is accepted for an object that already holds page extents: it adds a log
   chunk after them and makes the manifest format 3. The log object reader reads only
   objects whose extents are all log chunks, so it refuses such an object. Open new
