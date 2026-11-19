@@ -10,7 +10,11 @@
 //!
 //! `BITS` is a number (`0x` for hex). A raise is refused unless every listed voter (the whole
 //! membership) has declared every bit. Raised bits are never lowered. Bits: 1 compact append,
-//! 2 reserve-next, 4 chunk manifest, 8 read grace.
+//! 2 reserve-next, 4 chunk manifest, 8 read grace, 16 log chunk leases (raised together with 4
+//! for log objects: 0x14).
+//!
+//! A raise is irreversible: raised bits are never lowered, and raising the chunk manifest bits on a
+//! cluster that is not a private test cluster is an explicit decision of its owner.
 
 use matrixobjectstore_rs::cluster::{MetaClientOptions, RemoteMetaClient};
 
