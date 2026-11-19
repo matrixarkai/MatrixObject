@@ -2135,7 +2135,7 @@ mod tests {
         shared.lock().unwrap().objects.get(&("b".to_string(), "k".to_string())).map(|(_, b)| b.clone()).unwrap_or_default()
     }
 
-    fn manifest_of(shared: &Arc<Mutex<Shared>>) -> ObjectManifest {
+    fn resolve_manifest_of(shared: &Arc<Mutex<Shared>>) -> ObjectManifest {
         shared.lock().unwrap().objects[&("b".to_string(), "k".to_string())].0.clone()
     }
 
@@ -2158,10 +2158,10 @@ mod tests {
         let (gateway, shared) = gateway();
         assert_eq!(resolve_test_append(&gateway, 0, b"aaaa").status, 200);
         // The lost attempt read this manifest and is still in flight.
-        let lost_expected = manifest_of(&shared);
+        let lost_expected = resolve_manifest_of(&shared);
         let response = resolve(&gateway, 4, b"bbb");
         assert_eq!(header(&response, "x-append-resolution"), Some("absent"));
-        let fenced = manifest_of(&shared);
+        let fenced = resolve_manifest_of(&shared);
         assert_eq!((fenced.generation, fenced.length), (lost_expected.generation + 1, 4), "only the generation moves");
         assert_eq!(bytes_of(&shared), b"aaaa");
         // The late attempt now reaches the plane: its compare-and-set on the old generation fails.
@@ -2180,7 +2180,7 @@ mod tests {
         let (gateway, shared) = gateway();
         let response = resolve(&gateway, 0, b"xyz");
         assert_eq!(header(&response, "x-append-resolution"), Some("absent"));
-        assert_eq!(manifest_of(&shared).length, 0, "the key now exists, empty");
+        assert_eq!(resolve_manifest_of(&shared).length, 0, "the key now exists, empty");
         // The late first append builds on 'no object': refused.
         let mut plane = MemoryPlane(Arc::clone(&shared));
         assert!(plane.write("b", "k", None, b"xyz").is_err());
