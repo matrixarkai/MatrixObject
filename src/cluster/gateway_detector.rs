@@ -13,7 +13,7 @@
 //!
 //! [`GatewayFailureDetector`] learns each gateway's own heartbeat interval and reports
 //! suspicion as `phi`, so one threshold means the same confidence for every node, and it
-//! refuses to convict while the detector itself has just stalled. [`plan_conviction`] groups
+//! refuses to convict while the detector itself has just stalled. `plan_conviction` groups
 //! gateways by location and holds a location back ("safe mode") when too large a fraction of
 //! it is abnormal at once; an isolated failure is still convicted immediately.
 //!
