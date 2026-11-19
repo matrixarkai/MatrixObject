@@ -14,10 +14,10 @@ range, and an append goes straight to the three replicas of the open chunk
 without any metadata command. The metadata plane is touched only when a writer
 takes the object, at each chunk boundary, and when a lease is renewed.
 
-This page describes the model, the formats, the replica verb, the metadata
-commands, the feature gate and the operator procedure. It also states which parts
-are in the main tree today, which are in review, and
-what has not been measured.
+This page describes the model, the formats, the replica verb, the replica client,
+the metadata commands, the log object writer and reader, the feature gate and the
+operator procedure. It also states which parts are in the main tree today and what
+has not been measured or tested.
 
 ## What is in the tree and what is not
 
@@ -33,7 +33,9 @@ what has not been measured.
 | Sealed chunk reads from disk through a bounded cache, with a handle limit and an open tail budget | In the tree |
 | Leader commands (grant, switch, renew, sweep), batched renewal (outcome version 16) and the feature gate wiring (feature bit 4) | In the tree, behind the two cluster features |
 | Replica client and quorum log writer and reader | In the tree |
-| Log object API (open, append, read, take over) | In review (draft) |
+| Log object API (open, append, read, take over) | In the tree, behind the two cluster features |
+| Reclaiming the log chunk files of a deleted log object | Not implemented |
+| Repair of a log chunk left under-replicated | Not implemented |
 | End-to-end latency and metadata cost at multi-gigabyte object sizes | Not measured yet |
 
 With neither cluster feature raised, a grant or a switch is refused ("chunk-granular
@@ -52,7 +54,8 @@ corpus of many small objects. A hundred thousand objects of 4 KiB each must not
 become a hundred thousand open tail chunks and files on every chunk server, so
 they stay in page mode.
 
-The choice is made when the object is created and is recorded in its manifest.
+The choice is made when the object is created and is recorded in its manifest:
+the first grant of the log object writer creates a new object as a log object.
 A reader never guesses: it follows the kind of each extent it finds. An append to
 a page-mode object that grows large stays in page mode. There is no automatic
 conversion. When a page-mode object reaches the 4,096-extent limit its append is
@@ -227,9 +230,111 @@ would add a 4,097th is refused and the writer may still fill the open chunk.
 
 **Cost.** A writer pays one grant when it opens an object, one switch per chunk
 boundary, and one renewal per half term for all the objects it holds. An append
-between those costs no metadata entry. The count of metadata entries per append
-between chunk switches is the figure to verify on a running cluster (see the
-limits below).
+between those costs no metadata entry. A test asserts these counts (see the log
+object section below); a measurement at multi-gigabyte sizes is pending (see the
+limits).
+
+## The log object
+
+A log object is written through `LogObject`, by one leaseholder, and read through
+`LogObjectReader`. Both sit on the replica client and the metadata commands above,
+and everything here is behind the two cluster features: with them not raised, the
+metadata plane refuses the grant and a writer cannot open an object.
+
+**Options.** A writer is named by its holder name and the chunk group that holds the
+object's chunks. The defaults are a chunk of 64 MiB, a lease term of 30 seconds,
+no SHA-256 in the seal footer, and at most 4,096 entries per object. A chunk size
+up to the 64 MiB limit and the other values can be set.
+
+**Opening for append.** `open_for_append`:
+
+1. asks the metadata plane for the nodes of the chunk group, and refuses a group
+   that does not have three;
+2. probes each of the three nodes with a tail request of a chunk it never held. A
+   node that answers unknown-verb stops the writer with a "does not speak log
+   chunks" error before any grant is sent, because a grant is a metadata commit and
+   cannot be taken back. A node that cannot be reached is skipped, and fewer than
+   two reachable nodes is an error;
+3. sends one grant, which takes the lease and, if the object is new, creates it as a
+   log object, and opens the chunk being written at the lease's epoch;
+4. returns the object's length, which is where the next byte goes. After a writer
+   died, the tail is decided from what the nodes hold.
+
+**Appending.** An append is cut at chunk boundaries and goes to the three nodes of
+the open chunk. No metadata command is sent for it. It returns the object length
+once two nodes hold every byte durably; if the quorum is not reached the bytes are
+kept and `settle` waits for them. A handle stops writing, with a lost-lease error,
+when its own view of the lease has run out. That view is measured from the moment
+the request that granted or renewed the lease was sent, so a writer never believes
+in a lease longer than the metadata plane does.
+
+**The chunk boundary.** The object moves to its next chunk when the next byte needs
+room. The entry cap is checked first: an object at its cap keeps its open chunk,
+which can still be filled, and refuses the append that does not fit. Then the chunk
+is sealed on the nodes, and only if the seal returned a footer, ONE switch carrying
+the sealed length and the footer is sent to the metadata plane. The switch also
+renews the lease. The next chunk must start where the sealed chunk ends, or the
+writer reports corruption.
+
+**When a seal does not complete.** The metadata switch is never sent without a
+footer.
+
+- If the seal reached no node, the chunk is open everywhere, no switch is sent, and
+  the handle is kept open.
+- If it reached a node but returned no footer, or fails for another reason (a node
+  sealed at another length, a newer epoch), the handle is closed and the writer must
+  open the object again.
+- If the switch fails after the chunk was sealed, the handle is closed, and the next
+  open finishes the switch.
+
+**Recovering an interrupted switch.** A writer can die after it sealed the chunk and
+before the switch reached the metadata plane, so that the manifest still names the
+sealed chunk as the open one. The next writer, when it opens, finds the chunk sealed
+and reads the tail of every reachable node. If two nodes report the same sealed
+footer it sends the switch with it. If fewer than two do (a seal that reached only
+one node), it seals, at its own epoch, every node that holds exactly the sealed
+length, and then sends the switch if two nodes hold the same footer. A node at any
+other length is not touched. Nodes that report different footers, or fewer than two
+sealed nodes, are an error.
+
+**Renewal.** An append that finds the lease past half its term renews it with one
+command. A writer that holds many objects renews all their leases in one command.
+A handle whose lease the metadata plane no longer holds for this writer is closed.
+
+**Errors.** The writer reports typed errors: a node does not speak log chunks, the
+object is not open for append, the object is leased to another writer, the writer's
+lease was lost, the object holds the most entries it may, a chunk error (including
+no quorum), a metadata error, and an invalid request.
+
+**Reading.** `LogObjectReader` follows the object's manifest. It reads only objects
+whose extents are all log chunks, and refuses any other with "the object is not a log
+object". A sealed chunk is read from its nodes up to its recorded length, and a
+short answer for a sealed chunk is an error, never partial data. The open chunk, the
+live tail, is read only up to the length two of its nodes hold durably. A read is
+therefore cut short at the end of the object: the end of the last sealed chunk plus
+the durable length of the open chunk. When the open chunk answers short, the reader
+reads the manifest once more, because the object may have moved to a later chunk.
+The length of an object is computed the same way.
+
+**What the test asserts about metadata cost.** One test runs three real metadata
+voter processes and three real chunk nodes and reads the metadata group's commit
+index before and after each step. It asserts that:
+
+- with the features not raised, opening the object fails and the commit index does
+  not move;
+- after the features are declared and raised, a grant costs one entry;
+- an append inside a chunk costs none, and an append that crosses N chunk boundaries
+  costs N entries, plus one renewal if the lease was past half its term;
+- renewing one lease costs one entry, and renewing the leases of three objects in one
+  command costs one entry;
+- reads cost none;
+- an append is unaffected by a follower being down, and after every voter is
+  restarted a second writer takes the object over once the first writer's lease has
+  run out, starts at the length the nodes acknowledged, loses no acknowledged byte,
+  and the first writer is then refused.
+
+These are what the test asserts. There is no end-to-end latency or object-size
+measurement yet; it is pending.
 
 ## The feature gate
 
@@ -283,8 +388,9 @@ private test cluster.
 4. Raise the bits with `raise_cluster_features`, naming the whole voter set in
    ascending order. The leader refuses the raise if any named voter has not
    declared every bit. Read the set back and check that `raised` holds both bits.
-5. Create the objects that will be log objects with the log object flag at create
-   time. Page-mode objects are unaffected.
+5. Open each new object that will be a log object for append with the log object
+   writer: its first grant creates it as a log object. Page-mode objects are
+   unaffected.
 
 To check at any time: `read_cluster_features` returns the raised bits and every
 voter's declaration; a sealed chunk entry in a manifest carries its footer CRC.
@@ -325,10 +431,12 @@ through an 8 MiB cache peaked at 13,632,156 bytes.
 - The metadata cost per GiB appended is about 16 entries for a log object and one
   entry per page range in page mode. That is a count from the format, not a
   measurement of a running cluster.
-- Append latency against object size up to 4 GiB, the number of metadata entries
-  per append between chunk switches (zero by construction), the cost of a ranged
-  read at that size, and a restart and recovery run at that size are pending
-  measurement on a private cluster with both bits raised.
+- Append latency against object size up to 4 GiB, the cost of a ranged read at that
+  size, and a restart and recovery run at that size are pending measurement on a
+  private cluster with both bits raised. No end-to-end latency or object-size
+  measurement exists yet. The number of metadata entries per append is asserted by
+  a test (see the log object section) and has not been measured at multi-gigabyte
+  sizes.
 - Chunk server memory against corpus size, and metadata server memory per GiB
   appended, are pending measurement.
 - A node refuses to open a new tail past its tail budget, and the metadata plane
@@ -337,6 +445,28 @@ through an 8 MiB cache peaked at 13,632,156 bytes.
   behind must catch up or be replaced before it serves a write again.
 - A chunk can be left unsealed on a lagging node: a node that is down or does not
   catch up when the chunk is sealed stays open and under-replicated, and there is
-  no automatic repair for log chunks yet.
+  no automatic repair for log chunks yet. When a writer completes an interrupted
+  switch it does not touch a node at any other length.
+- Not tested at the log object level: a writer that keeps appending on the same
+  handle after a seal that reached no node (the tests show the handle is kept open
+  and that a new writer then continues); and a node that seals a chunk at another
+  length (the writer treats it as an error that closes the handle, and no test
+  exercises it).
+- The planted-defect runs for the log object (deliberately breaking the code to
+  check that its tests fail) and the instruction-count cost probes have not been
+  run.
+- Nothing reclaims the log chunk files of a deleted log object: this is not
+  implemented. A search of the source found no code in object deletion, retention
+  or reclaim that refers to log chunks, no removal of a log chunk file in the chunk
+  store, and no replica operation that drops a chunk (the verb has append, seal,
+  truncate, tail and read). The log chunk files stay on the chunk servers until an
+  operator removes them.
+- The ordinary object read path refuses an object that holds log chunk extents
+  ("object holds log-chunk extents this reader cannot read"). A log object is read
+  through the log object reader.
+- A grant is accepted for an object that already holds page extents: it adds a log
+  chunk after them and makes the manifest format 3. The log object reader reads only
+  objects whose extents are all log chunks, so it refuses such an object. Open new
+  objects with the log object writer.
 - Format 3 objects cannot be read by older builds, and a raised feature cannot be
   lowered. See the irreversibility statement above.
