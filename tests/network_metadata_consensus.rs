@@ -3342,7 +3342,7 @@ fn forget_group(prefixes: &'static str) -> Group {
     group
 }
 
-fn created(bucket: &str, key: &str) -> ManifestOutcome {
+fn created(bucket: &str, key: &str) -> matrixobjectstore_rs::object_manifest::ManifestOutcome {
     use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
     ManifestOutcome::decide(
         None,
