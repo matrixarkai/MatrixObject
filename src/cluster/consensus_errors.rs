@@ -34,7 +34,7 @@ const RETRYABLE: [&str; 9] = [
 ///
 /// THE MESSAGE IS RECOGNISED WITH ITS `Display` PREFIXES REMOVED. The metaserver (and a chunk server)
 /// answers a failure with `error.to_string()` (`meta_server.rs`, `frame_response`), and `ObjectError`'s
-/// `Display` is "invalid argument: <message>"; the client rebuilds the error with
+/// `Display` is `"invalid argument: <message>"`; the client rebuilds the error with
 /// `StatusCode::into_error(<that text>)`. So an error that crossed the wire is
 /// `InvalidArgument("invalid argument: metadata consensus deadline; ...")`, which a plain `starts_with`
 /// on the bare message never matched: a refusal built in process was a 503 and the same refusal from a
