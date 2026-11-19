@@ -2244,6 +2244,34 @@ mod tests {
         (gateway, armed)
     }
 
+    /// The shape a refusal has once it crossed the metadata wire: `error.to_string()` rebuilt as an
+    /// `InvalidArgument`, so the message starts with the `Display` prefix.
+    fn over_the_wire(error: ObjectError) -> ObjectError {
+        crate::cluster::StatusCode::for_error(&error).into_error(error.to_string())
+    }
+
+    #[test]
+    fn a_consensus_deadline_that_crossed_the_wire_is_a_503_before_the_append_landed() {
+        let wire = over_the_wire(ObjectError::InvalidArgument(RAFT_DEADLINE.into()));
+        let (gateway, armed) = timeout_gateway(wire, false);
+        assert_eq!(append(&gateway, "wal", 0, b"abc").status, 200);
+        *armed.lock().unwrap() = true;
+        let response = append(&gateway, "wal", 3, b"de");
+        assert_eq!(response.status, 503, "{}", String::from_utf8_lossy(&response.body));
+        assert_eq!(gateway.handle(&request("GET", "/b/wal", &[], b"")).body, b"abc");
+    }
+
+    #[test]
+    fn a_consensus_deadline_that_crossed_the_wire_after_the_append_landed_is_answered_as_landed() {
+        let wire = over_the_wire(ObjectError::InvalidArgument(RAFT_DEADLINE.into()));
+        let (gateway, armed) = timeout_gateway(wire, true);
+        assert_eq!(append(&gateway, "wal", 0, b"abc").status, 200);
+        *armed.lock().unwrap() = true;
+        let response = append(&gateway, "wal", 3, b"de");
+        assert_eq!(response.status, 200, "{}", String::from_utf8_lossy(&response.body));
+        assert_eq!(gateway.handle(&request("GET", "/b/wal", &[], b"")).body, b"abcde", "landed exactly once");
+    }
+
     const LEADERSHIP_CHANGED: &str =
         "metadata leadership changed; write outcome may be committed; last observed phase=proposal completion";
 

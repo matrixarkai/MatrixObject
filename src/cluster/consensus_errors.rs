@@ -31,12 +31,32 @@ const RETRYABLE: [&str; 9] = [
 /// The group could not take the request in time: its queue was full, no leader was reachable, the
 /// proposal did not complete before the request timeout, the request expired while queued, or
 /// leadership changed under it. Retrying later is reasonable.
+///
+/// THE MESSAGE IS RECOGNISED WITH ITS `Display` PREFIXES REMOVED. The metaserver (and a chunk server)
+/// answers a failure with `error.to_string()` (`meta_server.rs`, `frame_response`), and `ObjectError`'s
+/// `Display` is "invalid argument: <message>"; the client rebuilds the error with
+/// `StatusCode::into_error(<that text>)`. So an error that crossed the wire is
+/// `InvalidArgument("invalid argument: metadata consensus deadline; ...")`, which a plain `starts_with`
+/// on the bare message never matched: a refusal built in process was a 503 and the same refusal from a
+/// real metaserver was a 400. Every wrapper that formats the error again adds the prefix once more.
 pub fn consensus_unavailable(error: &ObjectError) -> bool {
     matches!(
         error,
         ObjectError::InvalidArgument(message)
-            if RETRYABLE.iter().any(|start| message.starts_with(start))
+            if {
+                let bare = without_display_prefixes(message);
+                RETRYABLE.iter().any(|start| bare.starts_with(start))
+            }
     )
+}
+
+/// `message` without any number of leading "invalid argument: " (the `Display` prefix of the variant).
+fn without_display_prefixes(message: &str) -> &str {
+    let mut bare = message;
+    while let Some(rest) = bare.strip_prefix("invalid argument: ") {
+        bare = rest;
+    }
+    bare
 }
 
 /// Same as [`consensus_unavailable`], and the group says the request may nevertheless have
@@ -108,6 +128,38 @@ mod tests {
         ] {
             assert!(!consensus_unavailable(&ObjectError::InvalidArgument(message.into())), "{message}");
         }
+    }
+
+    /// What actually reaches the gateway. The metaserver sends `error.to_string()` and the client rebuilds the
+    /// error with `StatusCode::into_error`, so the message carries the `Display` prefix (and again for every
+    /// wrapper that formats it). This is the shape PR 654's check never matched.
+    #[test]
+    fn a_refusal_that_crossed_the_metadata_wire_is_still_recognised() {
+        use crate::cluster::StatusCode;
+        let deadline_write = "metadata consensus deadline; last observed phase=proposal completion; write outcome may be committed; do not replay";
+        for inner in [
+            "metadata consensus deadline; last observed phase=queued; read request; no mutation submitted",
+            deadline_write,
+            "metadata consensus unavailable or request queue full",
+            "metadata request expired before proposal",
+            "metadata leadership changed; write outcome may be committed",
+            "chunk consensus deadline; last observed phase=queued; read request; no mutation submitted",
+        ] {
+            let sent = ObjectError::InvalidArgument(inner.into());
+            let received = StatusCode::for_error(&sent).into_error(sent.to_string());
+            assert!(matches!(&received, ObjectError::InvalidArgument(m) if m.starts_with("invalid argument: ")), "{received:?}");
+            assert!(consensus_unavailable(&received), "over the wire: {received:?}");
+            let twice = StatusCode::for_error(&received).into_error(received.to_string());
+            assert!(consensus_unavailable(&twice), "through a second hop: {twice:?}");
+        }
+        let sent = ObjectError::InvalidArgument(deadline_write.into());
+        let received = StatusCode::for_error(&sent).into_error(sent.to_string());
+        assert!(outcome_may_be_committed(&received), "a write that may have committed must say so after the wire");
+        // A genuine client error stays one across the wire, and only the variant's own prefix is removed.
+        let bad = ObjectError::InvalidArgument("invalid bucket name".into());
+        assert!(!consensus_unavailable(&StatusCode::for_error(&bad).into_error(bad.to_string())));
+        let mentioned = ObjectError::InvalidArgument("bad key near metadata consensus ".into());
+        assert!(!consensus_unavailable(&mentioned));
     }
 
     /// The guard: read the worker sources, take every string literal outside the test modules that
