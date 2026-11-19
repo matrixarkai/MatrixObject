@@ -2123,7 +2123,7 @@ mod tests {
             .collect()
     }
 
-    fn append(gateway: &ClusterGateway, offset: u64, data: &[u8]) -> Response {
+    fn resolve_test_append(gateway: &ClusterGateway, offset: u64, data: &[u8]) -> Response {
         gateway.handle(&request("PUT", "/b/k", &[(WRITE_OFFSET_HEADER, &offset.to_string())], data))
     }
 
@@ -2143,8 +2143,8 @@ mod tests {
     #[test]
     fn a_resolve_finds_an_append_that_landed_by_its_bytes_and_fences_nothing() {
         let (gateway, shared) = gateway();
-        assert_eq!(append(&gateway, 0, b"aaaa").status, 200);
-        assert_eq!(append(&gateway, 4, b"bbb").status, 200);
+        assert_eq!(resolve_test_append(&gateway, 0, b"aaaa").status, 200);
+        assert_eq!(resolve_test_append(&gateway, 4, b"bbb").status, 200);
         let response = resolve(&gateway, 4, b"bbb");
         assert_eq!((response.status, header(&response, "x-append-resolution")), (200, Some("landed")));
         assert!(!shared.lock().unwrap().calls.contains(&"publish_unchanged"), "a landed append needs no fence");
@@ -2157,7 +2157,7 @@ mod tests {
     #[test]
     fn a_resolve_fences_a_lost_append_so_a_late_attempt_is_refused_and_the_retry_lands_once() {
         let (gateway, shared) = gateway();
-        assert_eq!(append(&gateway, 0, b"aaaa").status, 200);
+        assert_eq!(resolve_test_append(&gateway, 0, b"aaaa").status, 200);
         // The lost attempt read this manifest and is still in flight.
         let lost_expected = manifest_of(&shared);
         let response = resolve(&gateway, 4, b"bbb");
@@ -2170,7 +2170,7 @@ mod tests {
         assert!(plane.append(lost_expected, b"bbb").is_err());
         assert_eq!(bytes_of(&shared), b"aaaa", "the late attempt must not land");
         // The caller retries as a NEW append: stored exactly once.
-        assert_eq!(append(&gateway, 4, b"bbb").status, 200);
+        assert_eq!(resolve_test_append(&gateway, 4, b"bbb").status, 200);
         assert_eq!(bytes_of(&shared), b"aaaabbb");
         assert_eq!(header(&resolve(&gateway, 4, b"bbb"), "x-append-resolution"), Some("landed"));
     }
@@ -2185,7 +2185,7 @@ mod tests {
         // The late first append builds on 'no object': refused.
         let mut plane = MemoryPlane(Arc::clone(&shared));
         assert!(plane.write("b", "k", None, b"xyz").is_err());
-        assert_eq!(append(&gateway, 0, b"xyz").status, 200);
+        assert_eq!(resolve_test_append(&gateway, 0, b"xyz").status, 200);
         assert_eq!(bytes_of(&shared), b"xyz");
         // An append at an offset past a missing object can never land: absent, nothing created.
         assert_eq!(header(&resolve(&other, 8, b"xyz"), "x-append-resolution"), Some("absent"));
@@ -2195,7 +2195,7 @@ mod tests {
     #[test]
     fn a_resolve_gives_up_after_three_rounds_of_a_generation_that_keeps_moving() {
         let (gateway, shared) = gateway();
-        assert_eq!(append(&gateway, 0, b"aaaa").status, 200);
+        assert_eq!(resolve_test_append(&gateway, 0, b"aaaa").status, 200);
         shared.lock().unwrap().racing_fence = true;
         let response = resolve(&gateway, 4, b"bbb");
         assert_eq!(response.status, 503, "{}", String::from_utf8_lossy(&response.body));
