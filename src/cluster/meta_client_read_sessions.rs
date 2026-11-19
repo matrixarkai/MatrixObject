@@ -8,10 +8,22 @@ struct ReadLease {
     key: String,
     generation: u64,
     digest: Vec<u8>,
+    /// Whether every extent of the generation carries a published SHA-256 (manifest format 2 and
+    /// later). Only such a read can go without a lease: it is what makes a page reused under a
+    /// slow reader fail instead of returning other data.
+    digest_checked: bool,
 }
 
 /// How long a read lease the client opens lasts, in milliseconds.
 const READ_LEASE_TTL_MS: u64 = 60_000;
+/// The reclaim grace window `T`: what reclaims pages frees a superseded generation only this long
+/// after it was superseded (docs/read-session-leases.md).
+pub const READ_GRACE: Duration = Duration::from_secs(60);
+/// A fenced read that finishes within this (`T / 2`, from when it learned the manifest) takes no
+/// read lease once the cluster has raised the read grace feature.
+pub const SHORT_READ: Duration = Duration::from_secs(30);
+/// How long an answer of "not raised" is believed before the feature set is read again.
+const READ_GRACE_RECHECK: Duration = Duration::from_secs(30);
 /// A held lease with less than this left is not used again: a read could outlive it.
 const READ_LEASE_MIN_REMAINING: Duration = Duration::from_secs(5);
 
@@ -157,6 +169,42 @@ impl ReadLeaseCache {
 }
 
 impl RemoteMetaClient {
+    /// Whether the cluster has raised the read grace feature. Raised bits stay raised, so a yes is
+    /// kept; a no (or a failed read of the feature set) is asked again after a while.
+    #[cfg(feature = "replica-server")]
+    fn read_grace_raised(&mut self) -> bool {
+        if let Some((true, _)) = self.read_grace {
+            return true;
+        }
+        let now = Instant::now();
+        if let Some((false, asked)) = self.read_grace {
+            if now.duration_since(asked) < READ_GRACE_RECHECK {
+                return false;
+            }
+        }
+        let raised = self
+            .read_cluster_features()
+            .map(|features| features.has(crate::cluster_features::FEATURE_READ_GRACE))
+            .unwrap_or(false);
+        self.read_grace = Some((raised, now));
+        raised
+    }
+
+    /// Run a lease-free read again once, after reading the manifest again, when it failed with
+    /// corruption: a generation superseded and reclaimed under a slow reader looks exactly like
+    /// that (the extent no longer matches the manifest), and the second attempt names the new
+    /// generation. Corruption that is real fails the second attempt too.
+    #[cfg(feature = "replica-server")]
+    fn retry_stale_read<T>(
+        &mut self,
+        mut attempt: impl FnMut(&mut Self) -> Result<T, ObjectError>,
+    ) -> Result<T, ObjectError> {
+        match attempt(self) {
+            Err(ObjectError::Corruption(_)) if matches!(self.read_grace, Some((true, _))) => attempt(self),
+            other => other,
+        }
+    }
+
     /// Use `cache` for the read leases of every read this client makes.
     pub fn share_read_leases(&mut self, cache: std::sync::Arc<ReadLeaseCache>) {
         self.read_lease_cache = Some(cache);
@@ -235,6 +283,7 @@ impl RemoteMetaClient {
                 key: manifest.key.clone(),
                 generation: manifest.generation,
                 digest: self.manifest_digest(manifest)?,
+                digest_checked: manifest.format_version >= 2,
             });
         }
         self.with_read_leases(&leases, options, |client, bounded| read(client, entries, bounded))
@@ -251,6 +300,24 @@ impl RemoteMetaClient {
     ) -> Result<T, ObjectError> {
         if self.read_protection_fence == 0 || leases.is_empty() {
             return read(self, options);
+        }
+        // Once the cluster has raised the read grace feature, a read that will be over within half
+        // the grace window needs no lease: a superseded generation's pages outlive it. A read that
+        // may run longer (no deadline, or a later one) takes a lease as before.
+        if self.read_grace_raised() {
+            let start = Instant::now();
+            let short = self.short_read;
+            if leases.iter().all(|lease| lease.digest_checked)
+                && options.deadline.is_some_and(|deadline| deadline <= start + short)
+            {
+                let value = read(self, options)?;
+                if start.elapsed() > short {
+                    return Err(ObjectError::PreconditionFailed(
+                        "a read ran past half the reclaim grace window; retry it".into(),
+                    ));
+                }
+                return Ok(value);
+            }
         }
         if let Some(cache) = self.read_lease_cache.clone() {
             if leases.len() <= cache.capacity {
@@ -392,6 +459,7 @@ impl RemoteMetaClient {
                 key: manifest.key.clone(),
                 generation: manifest.generation,
                 digest: manifest_sha256,
+                digest_checked: manifest.format_version >= 2,
             }]
         };
         self.with_read_leases(&leases, options, |client, bounded| {
@@ -510,6 +578,7 @@ mod compact_selected_grants {
                 key: manifest.key.clone(),
                 generation: manifest.generation,
                 digest,
+                digest_checked: true,
             };
             let result = client.open_leased_read_session(&lease, 1000);
             if mode == 0 {
@@ -550,6 +619,9 @@ mod shared_read_leases {
     /// What a stand-in metaserver saw: (action, retention id or generation).
     type Seen = Arc<Mutex<Vec<(u32, u64)>>>;
 
+    /// The action recorded for a read of the cluster feature set.
+    const FEATURES: u32 = 100;
+
     struct Harness {
         client: RemoteMetaClient,
         seen: Seen,
@@ -558,6 +630,11 @@ mod shared_read_leases {
 
     impl Harness {
         fn new(cache: Option<Arc<ReadLeaseCache>>, fence: u64) -> Self {
+            Self::with_features(cache, fence, 0)
+        }
+
+        /// A stand-in whose cluster has raised `raised` of the feature bits.
+        fn with_features(cache: Option<Arc<ReadLeaseCache>>, fence: u64, raised: u64) -> Self {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let endpoint = listener.local_addr().unwrap().to_string();
             let seen: Seen = Arc::default();
@@ -574,11 +651,25 @@ mod shared_read_leases {
                     let mut payload =
                         vec![0; u32::from_be_bytes(header[2..].try_into().unwrap()) as usize];
                     socket.read_exact(&mut payload).unwrap();
-                    let MetaRequest::ManifestRetention(request) =
+                    let request =
                         MetaRequest::decode(MetaRequestCode::from_u8(header[1]).unwrap(), &payload)
-                            .unwrap()
-                    else {
-                        panic!("only retention requests are expected")
+                            .unwrap();
+                    let request = match request {
+                        MetaRequest::Features(_) => {
+                            log.lock().unwrap().push((FEATURES, 0));
+                            let features = crate::cluster_features::ClusterFeatures {
+                                raised,
+                                declared: Default::default(),
+                            };
+                            socket
+                                .write_all(&super::super::meta_message::encode_meta_reply(
+                                    &super::super::features_commands::reply(&features),
+                                ))
+                                .unwrap();
+                            continue;
+                        }
+                        MetaRequest::ManifestRetention(request) => request,
+                        other => panic!("unexpected request {other:?}"),
                     };
                     let reply = if request.action == 8 {
                         next_handle += 1;
@@ -622,6 +713,13 @@ mod shared_read_leases {
                 .unwrap();
         }
 
+        /// A read that is to be over by `deadline`.
+        fn read_by(&mut self, generation: u64, digest: u8, deadline: Option<Instant>) {
+            let leases = [lease(generation, digest)];
+            let options = super::super::ReplicaClientOptions { deadline, ..Default::default() };
+            self.client.with_read_leases(&leases, &options, |_, _| Ok(())).unwrap();
+        }
+
         fn finish(self) -> Vec<(u32, u64)> {
             drop(self.client);
             self.worker.join().unwrap();
@@ -636,7 +734,12 @@ mod shared_read_leases {
             key: "object".into(),
             generation,
             digest: vec![digest; 32],
+            digest_checked: true,
         }
+    }
+
+    fn feature_reads(seen: &[(u32, u64)]) -> usize {
+        seen.iter().filter(|(action, _)| *action == FEATURES).count()
     }
 
     fn opens(seen: &[(u32, u64)]) -> usize {
@@ -775,5 +878,121 @@ mod shared_read_leases {
         first.read(1, 1);
         assert_eq!(cache.opens(), 1);
         drop(first.client);
+    }
+
+    /// With the cluster's read grace feature raised, reads that will be over within half the grace
+    /// window take no lease at all: no open, no release, however many generations they read.
+    #[test]
+    fn a_short_read_takes_no_lease_once_the_grace_feature_is_raised() {
+        let cache = Arc::new(ReadLeaseCache::new(4));
+        let mut harness = Harness::with_features(
+            Some(Arc::clone(&cache)),
+            1,
+            crate::cluster_features::FEATURE_READ_GRACE,
+        );
+        for generation in 1..=6 {
+            harness.read_by(generation, 1, Some(Instant::now() + Duration::from_secs(5)));
+        }
+        let seen = harness.finish();
+        assert_eq!((opens(&seen), releases(&seen).len()), (0, 0), "{seen:?}");
+        assert_eq!(feature_reads(&seen), 1, "the feature set is read once, not per read: {seen:?}");
+        assert_eq!(cache.opens(), 0);
+    }
+
+    /// Without the feature a short read takes a lease exactly as before (and shares it).
+    #[test]
+    fn without_the_grace_feature_a_short_read_takes_a_lease_as_before() {
+        let cache = Arc::new(ReadLeaseCache::new(4));
+        let mut harness = Harness::with_features(Some(Arc::clone(&cache)), 1, 0);
+        for generation in [1, 1, 2, 2] {
+            harness.read_by(generation, 1, Some(Instant::now() + Duration::from_secs(5)));
+        }
+        let seen = harness.finish();
+        assert_eq!((opens(&seen), releases(&seen).len()), (2, 0), "{seen:?}");
+        assert_eq!(feature_reads(&seen), 1, "a no is believed for a while: {seen:?}");
+    }
+
+    /// A read that may run past half the window (no deadline, or a later one) takes a lease even
+    /// with the feature raised.
+    #[test]
+    fn a_read_that_may_run_long_takes_a_lease_even_with_the_grace_feature() {
+        let mut harness = Harness::with_features(None, 1, crate::cluster_features::FEATURE_READ_GRACE);
+        harness.read_by(1, 1, None);
+        harness.read_by(2, 1, Some(Instant::now() + SHORT_READ + Duration::from_secs(15)));
+        harness.read_by(3, 1, Some(Instant::now() + Duration::from_secs(5)));
+        let seen = harness.finish();
+        assert_eq!((opens(&seen), releases(&seen).len()), (2, 2), "{seen:?}");
+    }
+
+    /// A generation whose extents carry no published SHA-256 (manifest format 1) keeps its lease: the
+    /// digest check is what makes a reused page fail instead of returning other data.
+    #[test]
+    fn a_generation_without_published_digests_keeps_its_lease_with_the_feature() {
+        let mut harness = Harness::with_features(None, 1, crate::cluster_features::FEATURE_READ_GRACE);
+        let legacy = [ReadLease { digest_checked: false, ..lease(1, 1) }];
+        let options = super::super::ReplicaClientOptions {
+            deadline: Some(Instant::now() + Duration::from_secs(5)),
+            ..Default::default()
+        };
+        harness.client.with_read_leases(&legacy, &options, |_, _| Ok(())).unwrap();
+        harness.read_by(2, 1, Some(Instant::now() + Duration::from_secs(5)));
+        let seen = harness.finish();
+        assert_eq!((opens(&seen), releases(&seen).len()), (1, 1), "{seen:?}");
+    }
+
+    /// A lease-free read that runs past the window fails with a retryable error and returns no bytes.
+    #[test]
+    fn a_read_that_overruns_half_the_grace_window_fails_retryably() {
+        let mut harness = Harness::with_features(None, 1, crate::cluster_features::FEATURE_READ_GRACE);
+        harness.client.short_read = Duration::from_millis(150);
+        let leases = [lease(1, 1)];
+        let options = super::super::ReplicaClientOptions {
+            deadline: Some(Instant::now() + Duration::from_millis(100)),
+            ..Default::default()
+        };
+        let result = harness.client.with_read_leases(&leases, &options, |_, _| {
+            std::thread::sleep(Duration::from_millis(250));
+            Ok(b"bytes".to_vec())
+        });
+        match result {
+            Err(ObjectError::PreconditionFailed(message)) => assert!(message.contains("reclaim grace"), "{message}"),
+            other => panic!("an overrunning read must fail retryably, got {other:?}"),
+        }
+        let seen = harness.finish();
+        assert_eq!(opens(&seen), 0, "{seen:?}");
+    }
+
+    /// Corruption on a lease-free read is retried once (a generation reclaimed under a slow reader
+    /// looks like it); real corruption fails the second attempt too. Without the feature there is
+    /// no retry: a read under a lease cannot see a reclaimed generation.
+    #[test]
+    fn corruption_on_a_lease_free_read_is_retried_once() {
+        let attempts = std::cell::Cell::new(0);
+        let corrupt = |client: &mut RemoteMetaClient, then_ok: bool| {
+            attempts.set(0);
+            client.retry_stale_read(|_| {
+                attempts.set(attempts.get() + 1);
+                if then_ok && attempts.get() == 2 {
+                    Ok(7)
+                } else {
+                    Err(ObjectError::Corruption("object extent does not match manifest".into()))
+                }
+            })
+        };
+        let mut raised = Harness::with_features(None, 1, crate::cluster_features::FEATURE_READ_GRACE);
+        raised.client.read_grace = Some((true, Instant::now()));
+        assert_eq!(corrupt(&mut raised.client, true).unwrap(), 7);
+        assert_eq!(attempts.get(), 2);
+        assert!(corrupt(&mut raised.client, false).is_err());
+        assert_eq!(attempts.get(), 2, "one retry, not a loop");
+        let mut plain = Harness::with_features(None, 1, 0);
+        assert!(corrupt(&mut plain.client, true).is_err());
+        assert_eq!(attempts.get(), 1, "no retry without the feature");
+        let other = raised.client.retry_stale_read(|_| -> Result<u8, _> {
+            attempts.set(attempts.get() + 10);
+            Err(ObjectError::PreconditionFailed("not corruption".into()))
+        });
+        assert!(other.is_err());
+        assert_eq!(attempts.get(), 11, "only corruption is retried");
     }
 }

@@ -106,6 +106,15 @@ fn frame(stream: &mut TcpStream) -> Vec<u8> {
     bytes
 }
 
+// A client asks the cluster for its feature set once before its first read (the read grace bit
+// decides whether a short read needs a lease). The proxies below stand between a client and the
+// server, so each relays that one exchange before the frames its test is about.
+fn relay_features(reader: &mut TcpStream, upstream: &mut TcpStream) {
+    let request = frame(reader);
+    upstream.write_all(&request).unwrap();
+    reader.write_all(&frame(upstream)).unwrap();
+}
+
 // Each operation uses the normal public read API, rather than the explicit helper.
 #[test]
 fn ordinary_reads_hold_selected_generation_across_delete_and_release() {
@@ -122,6 +131,7 @@ fn ordinary_reads_hold_selected_generation_across_delete_and_release() {
         let worker = thread::spawn(move || {
             let (mut reader, _) = socket.accept().unwrap();
             let mut upstream = TcpStream::connect(endpoint).unwrap();
+            relay_features(&mut reader, &mut upstream);
             // The single native lookup carries the catalog policy. Duplicate
             // batch entries must still use exactly one shared grant.
             let lookup = frame(&mut reader);
@@ -241,6 +251,7 @@ fn batch_conflict_releases_prior_grants_and_returns_no_result() {
     let worker = thread::spawn(move || {
         let (mut reader, _) = socket.accept().unwrap();
         let mut upstream = TcpStream::connect(endpoint).unwrap();
+        relay_features(&mut reader, &mut upstream);
         for index in 0..4 {
             let request = frame(&mut reader);
             if index == 2 {
@@ -291,6 +302,7 @@ fn cleanup_cannot_turn_an_expired_operation_into_success() {
     let worker = thread::spawn(move || {
         let (mut reader, _) = socket.accept().unwrap();
         let mut upstream = TcpStream::connect(endpoint).unwrap();
+        relay_features(&mut reader, &mut upstream);
         for index in 0..3 {
             upstream.write_all(&frame(&mut reader)).unwrap();
             let reply = frame(&mut upstream);
@@ -326,6 +338,7 @@ fn lost_acquisition_reply_does_not_replay_a_grant() {
     let worker = thread::spawn(move || {
         let (mut reader, _) = socket.accept().unwrap();
         let mut upstream = TcpStream::connect(endpoint).unwrap();
+        relay_features(&mut reader, &mut upstream);
         upstream.write_all(&frame(&mut reader)).unwrap();
         reader.write_all(&frame(&mut upstream)).unwrap();
         let request = frame(&mut reader);

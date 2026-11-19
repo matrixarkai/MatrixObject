@@ -177,6 +177,26 @@ mod tests {
     const BOTH: u64 = FEATURE_COMPACT_APPEND | FEATURE_RESERVE_NEXT;
 
     #[test]
+    fn the_read_grace_bit_is_known_and_is_raised_like_the_others() {
+        use crate::cluster_features::FEATURE_READ_GRACE;
+        assert_ne!(SUPPORTED_FEATURES & FEATURE_READ_GRACE, 0);
+        assert_eq!(FEATURE_READ_GRACE & (FEATURE_COMPACT_APPEND | FEATURE_RESERVE_NEXT), 0);
+        let mut service = MatrixMetaService::new();
+        for voter in 1..=3 {
+            declare(&mut service, voter, FEATURE_READ_GRACE);
+        }
+        assert!(!service.cluster_features.has(FEATURE_READ_GRACE), "declared is not raised");
+        assert!(raise(&mut service, FEATURE_READ_GRACE, &[1, 2, 3]).unwrap());
+        assert!(service.cluster_features.has(FEATURE_READ_GRACE));
+        assert!(!service.cluster_features.has(FEATURE_COMPACT_APPEND));
+        // one voter that has not declared it keeps it down
+        let mut mixed = MatrixMetaService::new();
+        declare(&mut mixed, 1, FEATURE_READ_GRACE);
+        declare(&mut mixed, 2, FEATURE_COMPACT_APPEND);
+        assert!(raise(&mut mixed, FEATURE_READ_GRACE, &[1, 2]).is_err());
+    }
+
+    #[test]
     fn a_declaration_is_recorded_once_and_a_repeat_changes_nothing() {
         let mut service = MatrixMetaService::new();
         let index = service.placement_commit_index;
