@@ -381,6 +381,63 @@ mod tests {
         assert!(prepare_at(&service, &groups, &stale, 8192, 0).is_err());
     }
 
+    fn manifest_for(command: &StagedAllocationRequest) -> crate::object_manifest::ManifestOutcome {
+        crate::object_manifest::ManifestOutcome::decide(None,
+            crate::object_manifest::ObjectManifest { format_version: 2, bucket: command.bucket.clone(),
+                key: command.key.clone(), generation: 1, ..Default::default() }).unwrap()
+    }
+
+    #[test]
+    fn an_abort_fences_a_late_publication_and_replies_the_same_whether_or_not_it_removed_a_record() {
+        let mut service = MatrixMetaService::new();
+        let groups = ChunkGroupCatalog::default();
+        let enable = StagedAllocationRequest { version: 1, action: 6, ..Default::default() };
+        prepare_at(&service, &groups, &enable, 8192, 0).unwrap().0.apply(&mut service).unwrap();
+        let handle = StagedAllocationRequest {
+            version: 3, allocation_id: service.placement_commit_index + 1,
+            request_nonce: vec![5; 32], ..request()
+        };
+        prepare_at(&service, &groups, &handle, 8192, 0).unwrap().0.apply(&mut service).unwrap();
+        let id = handle.allocation_id;
+        let abort = StagedAllocationRequest { version: 1, action: 3, allocation_id: id, ..Default::default() };
+        let (removed, first_reply) = prepare_at(&service, &groups, &abort, 8192, 0).unwrap();
+        assert!(removed.staging.is_some(), "the first abort removes the record");
+        removed.apply(&mut service).unwrap();
+        let (nothing, second_reply) = prepare_at(&service, &groups, &abort, 8192, 0).unwrap();
+        assert!(nothing.staging.is_none(), "a second abort changes nothing");
+        assert_eq!(format!("{first_reply:?}"), format!("{second_reply:?}"),
+            "the reply cannot tell a caller whether the abort removed anything");
+        let publish = StagedAllocationRequest { version: 1, action: 4, allocation_id: id,
+            outcome: Some(manifest_for(&handle)), ..Default::default() };
+        let late = prepare_at(&service, &groups, &publish, 8192, 0).unwrap_err();
+        assert!(late.to_string().contains("no longer active"), "a late publication is refused: {late}");
+        let again = prepare_at(&service, &groups, &handle, 8192, 0).unwrap_err();
+        assert!(again.to_string().contains("consumed or retired"), "the handle never allocates again: {again}");
+    }
+
+    #[test]
+    fn an_abort_after_a_publication_is_a_silent_no_op_so_the_read_back_decides() {
+        let mut service = MatrixMetaService::new();
+        let groups = ChunkGroupCatalog::default();
+        let enable = StagedAllocationRequest { version: 1, action: 6, ..Default::default() };
+        prepare_at(&service, &groups, &enable, 8192, 0).unwrap().0.apply(&mut service).unwrap();
+        let handle = StagedAllocationRequest {
+            version: 3, allocation_id: service.placement_commit_index + 1,
+            request_nonce: vec![6; 32], ..request()
+        };
+        prepare_at(&service, &groups, &handle, 8192, 0).unwrap().0.apply(&mut service).unwrap();
+        let id = handle.allocation_id;
+        let publish = StagedAllocationRequest { version: 1, action: 4, allocation_id: id,
+            outcome: Some(manifest_for(&handle)), ..Default::default() };
+        prepare_at(&service, &groups, &publish, 8192, 0).unwrap().0.apply(&mut service).unwrap();
+        assert!(service.object_manifests.staged_allocation(id).is_none(), "publication consumes the record");
+        let abort = StagedAllocationRequest { version: 1, action: 3, allocation_id: id, ..Default::default() };
+        let (outcome, _) = prepare_at(&service, &groups, &abort, 8192, 0).unwrap();
+        assert!(outcome.staging.is_none(), "nothing is left to remove");
+        let again = prepare_at(&service, &groups, &handle, 8192, 0).unwrap_err();
+        assert!(again.to_string().contains("consumed or retired"), "{again}");
+    }
+
     #[test]
     fn staged_leases_enforce_deadlines_renewal_and_capacity_without_clocked_replay() {
         let mut service = MatrixMetaService::new();
