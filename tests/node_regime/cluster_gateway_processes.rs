@@ -230,6 +230,62 @@ fn the_gateway_serves_its_verbs_over_real_metadata_and_chunk_processes() {
     assert_eq!(http(addr, "GET", "/gateway?versioning", &[], b"").0, 501);
 }
 
+/// A metadata group configured to name at most eight objects, a gateway in front of it, real
+/// processes and real HTTP. The ninth CREATE is a 507 that says the catalog is full (not a 503, not
+/// "unconfirmed", not "corruption") and it is answered, not retried until a deadline; everything that
+/// does not add a name still works. A delete keeps its slot (the catalog keeps tombstones so that a
+/// recreation must name the deleted generation), so a delete does NOT make room for a different key.
+#[test]
+fn a_full_catalog_refuses_a_new_object_with_507_and_still_serves_what_exists() {
+    OBJECT_CAP.with(|cap| cap.set(Some(8)));
+    let cluster = Cluster::new();
+    OBJECT_CAP.with(|cap| cap.set(None));
+    let addr = cluster.addr();
+    // Retry only while the cluster is between leaders (503); any other answer is final.
+    let decided = |method: &str, path: &str, headers: &[(&str, &str)], body: &[u8]| -> (u16, String) {
+        let until = Instant::now() + Duration::from_secs(40);
+        loop {
+            let (status, _, reply) = http(addr, method, path, headers, body);
+            if status != 503 || Instant::now() > until {
+                return (status, String::from_utf8_lossy(&reply).to_string());
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    };
+    let listed = || {
+        let (_, _, listing) = http(addr, "GET", "/gateway?list-type=2", &[], b"");
+        String::from_utf8_lossy(&listing).matches("<Key>").count()
+    };
+    let baseline = listed();
+    let mut created = Vec::new();
+    let refusal = loop {
+        let key = format!("o{}", created.len());
+        let started = Instant::now();
+        let (status, text) = decided("PUT", &format!("/gateway/{key}"), &[("x-amz-write-offset-bytes", "0")], b"x");
+        if status == 200 {
+            created.push(key);
+            assert!(created.len() <= 8, "the configured limit of 8 was not enforced");
+        } else {
+            assert!(started.elapsed() < Duration::from_secs(10), "the refusal took {:?}: it was retried, not answered", started.elapsed());
+            break (status, text);
+        }
+    };
+    assert_eq!(refusal.0, 507, "{}", refusal.1);
+    assert!(refusal.1.contains("catalog full"), "{}", refusal.1);
+    assert!(!refusal.1.contains("corruption") && !refusal.1.contains("unconfirmed"), "{}", refusal.1);
+    assert_eq!(created.len() + baseline, 8, "{} created over {} that were there", created.len(), baseline);
+    assert_eq!(listed(), 8, "the refused create left nothing behind");
+
+    // What does not add a name is still served.
+    assert_eq!(decided("PUT", "/gateway/o0", &[], b"overwritten").0, 200, "overwrite");
+    assert_eq!(decided("PUT", "/gateway/o1", &[("x-amz-write-offset-bytes", "1")], b"y").0, 200, "append");
+    assert_eq!(decided("GET", "/gateway/o0", &[], b"").1, "overwritten");
+    assert_eq!(decided("DELETE", "/gateway/o2", &[], b"").0, 204, "delete");
+    // ... and a delete keeps its slot: a different new key is still refused, the deleted key can come back.
+    assert_eq!(decided("PUT", "/gateway/another", &[], b"z").0, 507, "a delete does not free a slot for another key");
+    assert_eq!(decided("PUT", "/gateway/o2", &[], b"back").0, 200, "the deleted key is re-created");
+}
+
 #[test]
 fn the_gateway_keeps_serving_after_the_metadata_leader_is_lost() {
     let mut cluster = Cluster::new();

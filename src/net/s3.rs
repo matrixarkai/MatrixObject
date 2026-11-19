@@ -54,6 +54,9 @@ pub enum S3ErrorCode {
     NotImplemented,
     InternalError,
     ServiceUnavailable,
+    /// The catalog that names objects is full: a refusal that is permanent until something is
+    /// removed or the limit is raised, so it is not a 503 and a client must not retry it.
+    InsufficientStorage,
 }
 
 impl S3ErrorCode {
@@ -82,6 +85,7 @@ impl S3ErrorCode {
             S3ErrorCode::NotImplemented => "NotImplemented",
             S3ErrorCode::InternalError => "InternalError",
             S3ErrorCode::ServiceUnavailable => "ServiceUnavailable",
+            S3ErrorCode::InsufficientStorage => "InsufficientStorage",
         }
     }
 
@@ -105,6 +109,7 @@ impl S3ErrorCode {
             S3ErrorCode::NotImplemented => 501,
             S3ErrorCode::InternalError => 500,
             S3ErrorCode::ServiceUnavailable => 503,
+            S3ErrorCode::InsufficientStorage => 507,
         }
     }
 }

@@ -2514,6 +2514,9 @@ fn resolve(endpoint: &str) -> Result<SocketAddr, ObjectError> {
 /// the same publication twice, so such a refusal cannot be an earlier copy's effect.
 fn refusal_proves_not_admitted(error: &ObjectError) -> bool {
     match error {
+        // The leader refused it while deciding it, before any proposal: nothing was published and
+        // asking again cannot change the answer, so it is neither unconfirmed nor to be read back.
+        ObjectError::InvalidArgument(_) => crate::object_manifest::catalog_full_refusal(error),
         ObjectError::PreconditionFailed(message) => [
             "object manifest changed before publication",
             "compact append prior manifest changed",

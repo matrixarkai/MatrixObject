@@ -1547,6 +1547,8 @@ fn error_response(error: ObjectError, resource: &str, missing_is_bucket: bool) -
         ObjectError::InvalidArgument(message) if message.starts_with("append refused") => {
             s3::S3ErrorCode::InvalidRequest
         }
+        // The catalog has no room: permanent until something is removed, so not a 503.
+        _ if crate::object_manifest::catalog_full_refusal(&error) => s3::S3ErrorCode::InsufficientStorage,
         _ if plane_unreachable(&error)
             || placement_unavailable(&error)
             || leader_unavailable(&error)
@@ -2310,6 +2312,72 @@ mod tests {
         let response = append(&gateway, "wal", 3, b"de");
         assert_eq!(response.status, 503, "{}", String::from_utf8_lossy(&response.body));
         assert_eq!(gateway.handle(&request("GET", "/b/wal", &[], b"")).body, b"abc");
+    }
+
+    /// A plane that refuses every CREATE (a write with nothing expected) once `full` is set, the way the
+    /// metaserver refuses it after the metadata wire, and counts how often a create was attempted.
+    struct FullPlane {
+        inner: Arc<Mutex<MemoryPlane>>,
+        error: ObjectError,
+        full: Arc<Mutex<bool>>,
+        creates: Arc<Mutex<usize>>,
+    }
+
+    impl ObjectPlane for FullPlane {
+        fn read_manifest(&mut self, b: &str, k: &str) -> Result<ObjectManifest, ObjectError> { self.inner.lock().unwrap().read_manifest(b, k) }
+        fn write(&mut self, b: &str, k: &str, e: Option<ObjectManifest>, d: &[u8]) -> Result<ObjectManifest, PlaneFailure> {
+            if e.is_none() && *self.full.lock().unwrap() {
+                *self.creates.lock().unwrap() += 1;
+                return Err(self.error.clone_error().into());
+            }
+            self.inner.lock().unwrap().write(b, k, e, d)
+        }
+        fn append(&mut self, e: ObjectManifest, d: &[u8]) -> Result<ObjectManifest, PlaneFailure> { self.inner.lock().unwrap().append(e, d) }
+        fn append_best(&mut self, e: ObjectManifest, d: &[u8]) -> Result<ObjectManifest, PlaneFailure> { self.inner.lock().unwrap().append_best(e, d) }
+        fn read(&mut self, b: &str, k: &str) -> Result<(ObjectManifest, Vec<u8>), ObjectError> { self.inner.lock().unwrap().read(b, k) }
+        fn read_range(&mut self, b: &str, k: &str, o: u64, l: u64) -> Result<(ObjectManifest, Vec<u8>), ObjectError> { self.inner.lock().unwrap().read_range(b, k, o, l) }
+        fn delete(&mut self, b: &str, k: &str) -> Result<ObjectManifest, ObjectError> { self.inner.lock().unwrap().delete(b, k) }
+        fn list(&mut self, b: &str, a: Option<&str>, l: u32) -> Result<ManifestListPage, ObjectError> { self.inner.lock().unwrap().list(b, a, l) }
+    }
+
+    /// A create the catalog has no room for, in the shape it has after the metadata wire, is a 507 that
+    /// says so and is attempted ONCE (no retry, no read-back loop); it is never "corruption" and never
+    /// "unconfirmed". An object that already exists can still be overwritten and deleted.
+    #[test]
+    fn a_catalog_full_refusal_is_a_507_answered_once_and_never_corruption() {
+        for inner in [
+            crate::object_manifest::catalog_full(8),
+            crate::object_manifest::catalog_image_too_large(),
+        ] {
+            let wire = crate::cluster::StatusCode::for_error(&inner).into_error(inner.to_string());
+            let shared = Arc::new(Mutex::new(MemoryPlane(Arc::new(Mutex::new(Shared::default())))));
+            let full = Arc::new(Mutex::new(false));
+            let creates = Arc::new(Mutex::new(0usize));
+            let (plane, flag, count) = (Arc::clone(&shared), Arc::clone(&full), Arc::clone(&creates));
+            let gateway = ClusterGateway::new(
+                move || {
+                    Ok(Box::new(FullPlane {
+                        inner: Arc::clone(&plane),
+                        error: wire.clone_error(),
+                        full: Arc::clone(&flag),
+                        creates: Arc::clone(&count),
+                    }) as Box<dyn ObjectPlane>)
+                },
+                GatewayOptions::default(),
+                "b",
+            );
+            assert_eq!(gateway.handle(&request("PUT", "/b/first", &[], b"one")).status, 200);
+            *full.lock().unwrap() = true;
+            let response = gateway.handle(&request("PUT", "/b/second", &[], b"two"));
+            let text = String::from_utf8_lossy(&response.body).to_string();
+            assert_eq!(response.status, 507, "{text}");
+            assert!(text.contains("catalog full") || text.contains("catalog image too large"), "{text}");
+            assert!(!text.contains("corruption") && !text.contains("unconfirmed"), "{text}");
+            assert_eq!(*creates.lock().unwrap(), 1, "the create is attempted once");
+            assert_eq!(gateway.handle(&request("GET", "/b/second", &[], b"")).status, 404);
+            assert_eq!(gateway.handle(&request("PUT", "/b/first", &[], b"uno")).status, 200, "an existing object can be overwritten");
+            assert_eq!(gateway.handle(&request("DELETE", "/b/first", &[], b"")).status, 204, "and deleted");
+        }
     }
 
     #[test]

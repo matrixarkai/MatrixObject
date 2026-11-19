@@ -21,6 +21,7 @@
 //! | variable | default | meaning |
 //! |---|---|---|
 //! | `MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES` | `67108864` | WAL checkpoint interval; 1024..134217728 bytes; `0` disables checkpoints (the WAL is then never truncated and a voter refuses appends at 512 MiB) |
+//! | `MATRIXOBJECT_METASERVER_MAX_OBJECTS` | `100000` | most objects the catalog may name before creating another is refused with `catalog full` (HTTP 507 at the gateway); 1..=100000, the ceiling the format allows. A tombstone counts: deleting an object keeps its slot. Enforced where the leader decides a publication, never at apply or restore |
 //! | `MATRIXOBJECT_METASERVER_ADDR` | `127.0.0.1:17200` | address to bind; port `0` lets the kernel choose |
 //! | `MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS` | `15000` | automatic expiry TTL, 1000..3600000 ms; `0` turns expiry off. The default is five chunk report intervals |
 //! | `MATRIXOBJECT_METASERVER_SUPPRESS_UNCHANGED_REPORTS` | `0` | `1` answers a chunk health report that changes nothing replicated (same capacity, usage within 1%, replicated stamp younger than a third of the heartbeat TTL) without a log entry; every change and a keepalive every TTL/3 are still replicated. Needs the heartbeat TTL on |
@@ -273,6 +274,21 @@ fn main() {
             std::process::exit(2);
         }
     }
+
+    // The limit on creating a new object. Out of range is refused, not clamped: a limit that is not the
+    // one the operator wrote is worse than no start.
+    let max_objects = env_usize(
+        "MATRIXOBJECT_METASERVER_MAX_OBJECTS",
+        matrixobjectstore_rs::object_manifest::MAX_OBJECTS,
+    );
+    if max_objects == 0 || max_objects > matrixobjectstore_rs::object_manifest::MAX_OBJECTS {
+        eprintln!(
+            "invalid MATRIXOBJECT_METASERVER_MAX_OBJECTS {max_objects}: must be 1..={}",
+            matrixobjectstore_rs::object_manifest::MAX_OBJECTS
+        );
+        std::process::exit(2);
+    }
+    matrixobjectstore_rs::object_manifest::set_admission_cap(max_objects);
 
     let seed_nodes = env_usize("MATRIXOBJECT_METASERVER_SEED_DATA_NODES", 0);
     let seed_capacity = env_usize(

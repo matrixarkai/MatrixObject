@@ -19,9 +19,12 @@ thread_local! {
     static ZERO_FILL: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
     /// Whether the next `Group` created on this thread answers unchanged chunk reports without a log entry.
     static SUPPRESS_REPORTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    // MATRIXOBJECT_METASERVER_MAX_OBJECTS for the voters of the next Group built on this thread.
+    static OBJECT_CAP: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 struct Group {
     zero_fill: Option<u64>,
+    object_cap: Option<usize>,
     nodes: Vec<Option<NodeProcess>>,
     peers: BTreeMap<u64, std::net::SocketAddr>,
     root: PathBuf,
@@ -105,6 +108,7 @@ impl Group {
         });
         let mut group = Self {
             zero_fill: ZERO_FILL.with(|chunk| chunk.get()),
+            object_cap: OBJECT_CAP.with(|cap| cap.get()),
             nodes: (0..if membership { 4 } else { 3 }).map(|_| None).collect(),
             peers,
             root,
@@ -136,6 +140,7 @@ impl Group {
         let checkpoint_bytes = self.checkpoint_bytes.to_string();
         let request_timeout_ms = self.request_timeout_ms.to_string();
         let zero_fill = self.zero_fill.map(|bytes| bytes.to_string());
+        let object_cap = self.object_cap.map(|cap| cap.to_string());
         let path = self.root.join(i.to_string());
         let bind = self.api_addresses[i].to_string();
         let mut environment = vec![
@@ -161,6 +166,9 @@ impl Group {
         }
         if let Some(bytes) = &zero_fill {
             environment.push(("MATRIXOBJECT_WAL_ZERO_FILL_BYTES", bytes.as_str()));
+        }
+        if let Some(cap) = &object_cap {
+            environment.push(("MATRIXOBJECT_METASERVER_MAX_OBJECTS", cap.as_str()));
         }
         let roster = self.roster.as_ref().map(|roster| {
             let mut entries: Vec<_> = roster.split(',').collect();
