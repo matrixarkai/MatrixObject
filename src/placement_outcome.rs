@@ -1296,7 +1296,7 @@ mod catalog_admission_tests {
     }
 
     fn current(service: &MatrixMetaService, key: &str) -> Option<ObjectManifest> {
-        service.object_manifests.get(&ObjectId::new("b".into(), key.into())).map(|stored| stored.to_manifest())
+        service.object_manifests.get(&ObjectId::new("b", key)).map(|stored| stored.to_manifest())
     }
 
     /// At a configured limit of 4: the fifth CREATE is refused with the typed message, and everything
