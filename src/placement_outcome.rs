@@ -801,6 +801,14 @@ impl PlacementOutcome {
         if !service.object_manifests.matches_expected(&after.object_id(), manifest.before.as_ref()) {
             return Err(invalid("manifest publication prior state mismatch"));
         }
+        // ADMISSION ONLY (`admit` is true where the leader decides, before the proposal): the configured limit
+        // on creating a new object. Apply and restore keep the ceiling, which is the same on every voter.
+        if admit {
+            let limit = crate::object_manifest::admission_cap();
+            if service.object_manifests.get(&after.object_id()).is_none() && service.object_manifests.len() >= limit {
+                return Err(crate::object_manifest::catalog_full(limit));
+            }
+        }
         let allocation_id = self.staging.as_ref().and_then(|change| change.before.as_ref()).map(|record| record.allocation_id);
         let body_bytes = service.object_manifests.check_outcome_with_admission(manifest, allocation_id, self.copy_source.as_ref())?;
         self.check_placement_and_capacity(service, &after.object_id(), admit)?;
@@ -1264,6 +1272,97 @@ impl PlacementOutcome {
         service.placement_commit_index = self.after_index;
         service.invalidate_snapshot_export_cache();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod catalog_admission_tests {
+    use super::*;
+    use crate::object_manifest::{admission_cap, catalog_full_refusal, with_admission_cap, MAX_OBJECTS};
+
+    /// A service with one online node per group the manifests name, so that publishing is decided on its
+    /// merits and the only thing under test is the object count.
+    fn publish(service: &mut MatrixMetaService, key: &str, generation: u64, deleted: bool, before: Option<ObjectManifest>) -> Result<(), ObjectError> {
+        let after = ObjectManifest {
+            format_version: 2,
+            bucket: "b".into(),
+            key: key.into(),
+            generation,
+            deleted,
+            ..Default::default()
+        };
+        let outcome = ManifestOutcome::decide(before, after)?;
+        PlacementOutcome::publish_manifest(service, outcome, 0)?.apply(service)
+    }
+
+    fn current(service: &MatrixMetaService, key: &str) -> Option<ObjectManifest> {
+        service.object_manifests.get(&ObjectId::new("b", key)).map(|stored| stored.to_manifest())
+    }
+
+    /// At a configured limit of 4: the fifth CREATE is refused with the typed message, and everything
+    /// that does not add a name is still admitted: overwrite, append-shaped republish, delete (the
+    /// tombstone keeps its slot), and re-creating the deleted key. A delete does NOT free a slot for a
+    /// different key, because the catalog keeps tombstones so that a recreation must name the deleted
+    /// generation; this pins that behaviour so a change to it is a decision, not an accident.
+    #[test]
+    fn the_configured_limit_refuses_only_the_create_that_would_add_a_name() {
+        with_admission_cap(4, || {
+            let mut service = MatrixMetaService::new();
+            for index in 0..4 {
+                publish(&mut service, &format!("k{index}"), 1, false, None).unwrap();
+            }
+            assert_eq!(service.object_manifests.len(), 4);
+            let error = publish(&mut service, "k4", 1, false, None).unwrap_err();
+            assert!(catalog_full_refusal(&error), "{error:?}");
+            assert!(matches!(error, ObjectError::InvalidArgument(_)), "never corruption: {error:?}");
+            assert!(error.to_string().contains("catalog full"), "{error}");
+            assert_eq!(service.object_manifests.len(), 4, "a refusal changes nothing");
+            // overwrite
+            let before = current(&service, "k0");
+            publish(&mut service, "k0", 2, false, before).unwrap();
+            // delete: the tombstone stays
+            let before = current(&service, "k1");
+            publish(&mut service, "k1", 2, true, before).unwrap();
+            assert_eq!(service.object_manifests.len(), 4, "a tombstone keeps its slot");
+            let still = publish(&mut service, "k4", 1, false, None).unwrap_err();
+            assert!(catalog_full_refusal(&still), "a delete does not free a slot for another key: {still:?}");
+            // re-creating the deleted key names the tombstone's generation and is admitted
+            let before = current(&service, "k1");
+            publish(&mut service, "k1", 3, false, before).unwrap();
+            assert_eq!(service.object_manifests.len(), 4);
+        });
+    }
+
+    /// The limit is read where the leader decides (`admit`), never where an outcome is applied: an
+    /// outcome decided under a higher limit applies on a voter configured with a lower one, so the
+    /// voters cannot diverge on a committed publication.
+    #[test]
+    fn a_decided_outcome_applies_whatever_limit_the_applying_voter_has() {
+        let mut leader = MatrixMetaService::new();
+        let mut voter = MatrixMetaService::new();
+        let mut decided = Vec::new();
+        with_admission_cap(10, || {
+            for index in 0..6 {
+                let after = ObjectManifest { format_version: 2, bucket: "b".into(), key: format!("k{index}"), generation: 1, ..Default::default() };
+                let outcome = ManifestOutcome::decide(None, after).unwrap();
+                let placement = PlacementOutcome::publish_manifest(&leader, outcome, 0).unwrap();
+                placement.apply(&mut leader).unwrap();
+                decided.push(placement);
+            }
+        });
+        with_admission_cap(2, || {
+            for placement in &decided {
+                placement.apply(&mut voter).unwrap();
+            }
+        });
+        assert_eq!(voter.object_manifests.len(), 6);
+    }
+
+    #[test]
+    fn the_default_limit_is_the_ceiling() {
+        // (the process-wide setter is not exercised here: tests share the process and a changed limit would
+        // leak into the others; its range is enforced by the metaserver's startup check and by the clamp)
+        assert_eq!(admission_cap(), MAX_OBJECTS);
     }
 }
 

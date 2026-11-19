@@ -32,7 +32,79 @@ impl std::hash::Hasher for PageHasher {
 }
 type PageSet<K> = std::collections::HashSet<K, std::hash::BuildHasherDefault<PageHasher>>;
 const MAX_SNAPSHOT: usize = 64 * 1024 * 1024;
-const MAX_OBJECTS: usize = 100_000;
+/// The most objects a catalog image may hold. This is the CEILING: restore refuses a bigger image and
+/// `apply` refuses to grow past it, on every voter alike, so it can never differ between replicas.
+pub const MAX_OBJECTS: usize = 100_000;
+
+/// The limit on creating a NEW object, configured per metaserver process and enforced ONLY where the
+/// leader decides a publication (admission, before the proposal). It is never read at apply or restore:
+/// a voter with a lower value would otherwise refuse an outcome the group had already committed and
+/// diverge. Between 1 and [`MAX_OBJECTS`]; a leader change with different values only changes which
+/// creates are admitted.
+static ADMISSION_CAP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(MAX_OBJECTS);
+
+#[cfg(test)]
+thread_local! {
+    static TEST_ADMISSION_CAP: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Set the admission limit of this process; returns the value in force (clamped into `1..=MAX_OBJECTS`).
+pub fn set_admission_cap(cap: usize) -> usize {
+    let cap = cap.clamp(1, MAX_OBJECTS);
+    ADMISSION_CAP.store(cap, std::sync::atomic::Ordering::Relaxed);
+    cap
+}
+
+/// The limit a leader applies when it decides the creation of a new object.
+pub fn admission_cap() -> usize {
+    #[cfg(test)]
+    {
+        if let Some(cap) = TEST_ADMISSION_CAP.with(|cell| cell.get()) {
+            return cap;
+        }
+    }
+    ADMISSION_CAP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Run `body` with this thread's admission limit set to `cap` (tests only).
+#[cfg(test)]
+pub(crate) fn with_admission_cap<T>(cap: usize, body: impl FnOnce() -> T) -> T {
+    let before = TEST_ADMISSION_CAP.with(|cell| cell.replace(Some(cap)));
+    let result = body();
+    TEST_ADMISSION_CAP.with(|cell| cell.set(before));
+    result
+}
+
+/// The refusal of a create the catalog has no room for. An `InvalidArgument` with a fixed start, so
+/// that it survives the metadata wire (the metaserver sends `error.to_string()`, which adds the
+/// variant's "invalid argument: " prefix, and the client rebuilds an `InvalidArgument` from that).
+pub(crate) fn catalog_full(limit: usize) -> ObjectError {
+    ObjectError::InvalidArgument(format!(
+        "catalog full: the metadata group already names {limit} objects (the configured limit); \
+         remove objects or raise MATRIXOBJECT_METASERVER_MAX_OBJECTS up to {MAX_OBJECTS}"
+    ))
+}
+
+/// The refusal of a publication whose catalog image would pass the snapshot bound.
+pub(crate) fn catalog_image_too_large() -> ObjectError {
+    ObjectError::InvalidArgument(format!(
+        "catalog image too large: this publication would take the metadata catalog image past its {MAX_SNAPSHOT} byte bound"
+    ))
+}
+
+/// True for a refusal that says the catalog has no room (object count or image size), however many
+/// times the "invalid argument: " prefix was added on its way here. It is permanent until the state
+/// changes: not a 503, not unconfirmed, not to be retried.
+pub fn catalog_full_refusal(error: &ObjectError) -> bool {
+    let ObjectError::InvalidArgument(message) = error else {
+        return false;
+    };
+    let mut bare = message.as_str();
+    while let Some(rest) = bare.strip_prefix("invalid argument: ") {
+        bare = rest;
+    }
+    bare.starts_with("catalog full: ") || bare.starts_with("catalog image too large: ")
+}
 
 /// A committed namespace for immutable object pages.
 /// Allocation IDs are unique within one metadata history, including recovery.
@@ -1254,9 +1326,7 @@ impl ManifestCatalog {
         }
         let released = allocation_id.and_then(|id| self.staged.get(&id)).map_or(0, entry_size);
         if body_bytes + self.retention_bytes + self.staged_bytes - released > MAX_SNAPSHOT - self.header_size() {
-            return Err(invalid(
-                "manifest publication exceeds checkpoint size bound",
-            ));
+            return Err(catalog_image_too_large());
         }
         Ok(Some(body_bytes))
     }
@@ -1306,9 +1376,7 @@ impl ManifestCatalog {
         }
         let released = allocation_id.and_then(|id| self.staged.get(&id)).map_or(0, entry_size);
         if body_bytes + self.retention_bytes + self.staged_bytes - released > MAX_SNAPSHOT - self.header_size() {
-            return Err(invalid(
-                "manifest publication exceeds checkpoint size bound",
-            ));
+            return Err(catalog_image_too_large());
         }
         Ok(body_bytes)
     }
@@ -2476,5 +2544,51 @@ mod tests {
             restored.object_manifests.get_manifest(&manifest(3).object_id()),
             Some(manifest(3).clone())
         );
+    }
+}
+
+#[cfg(test)]
+mod catalog_full_tests {
+    use super::*;
+
+    /// The refusal is recognised however many "invalid argument: " prefixes it collected on its way
+    /// (the variant's Display adds one at the metaserver and again at every wrapper that formats it),
+    /// and only by its start: a message that mentions the words, another variant, or an unrelated
+    /// refusal is not it.
+    #[test]
+    fn a_catalog_full_refusal_is_recognised_through_any_number_of_display_prefixes() {
+        let full = catalog_full(8);
+        let image = catalog_image_too_large();
+        assert!(catalog_full_refusal(&full) && catalog_full_refusal(&image));
+        let full = catalog_full(8);
+        let mut once = full;
+        for hops in 1..=3 {
+            once = ObjectError::InvalidArgument(once.to_string());
+            assert!(catalog_full_refusal(&once), "after {hops} hops: {once:?}");
+        }
+        for not_it in [
+            ObjectError::InvalidArgument("bad key near catalog full: ".into()),
+            ObjectError::InvalidArgument("manifest outcome generation is not consecutive".into()),
+            ObjectError::PreconditionFailed("catalog full: 8".into()),
+            ObjectError::Corruption("catalog full: 8".into()),
+            ObjectError::NotFound("catalog full: 8".into()),
+        ] {
+            assert!(!catalog_full_refusal(&not_it), "{not_it:?}");
+        }
+    }
+
+    /// Through the real wire functions: `error.to_string()` then `StatusCode::into_error`, as the
+    /// metaserver sends it and the client rebuilds it. The message says what is full and what to do,
+    /// never "corruption", and it is the typed variant a gateway maps to 507.
+    #[cfg(any(feature = "replica-server", feature = "meta-server"))]
+    #[test]
+    fn a_catalog_full_refusal_survives_the_metadata_wire_and_says_what_to_do() {
+        for sent in [catalog_full(8), catalog_image_too_large()] {
+            let received = crate::cluster::StatusCode::for_error(&sent).into_error(sent.to_string());
+            assert!(matches!(received, ObjectError::InvalidArgument(_)), "{received:?}");
+            assert!(catalog_full_refusal(&received), "{received:?}");
+            assert!(!received.to_string().contains("corruption"), "{received}");
+        }
+        assert!(catalog_full(8).to_string().contains("MATRIXOBJECT_METASERVER_MAX_OBJECTS"));
     }
 }

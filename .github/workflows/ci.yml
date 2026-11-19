@@ -1138,6 +1138,20 @@ jobs:
           cargo test --locked --all-features --test network_chunk_consensus coupled_groups::unavailable_group_preserves_striped_objects_and_other_group_writes -- --exact --nocapture | tee /tmp/striped-isolation.log
           grep -q 'test result: ok. 1 passed' /tmp/striped-isolation.log
 
+      - name: a full metadata catalog refuses a create with 507 and serves what exists
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_metadata_consensus cluster_gateway_processes::a_full_catalog_refuses_a_new_object_with_507_and_still_serves_what_exists -- --exact --nocapture | tee /tmp/catalog-full.log
+          grep -q 'test result: ok. 1 passed' /tmp/catalog-full.log
+          cargo test --locked --all-features --lib catalog_admission_tests -- --nocapture | tee /tmp/catalog-admission.log
+          grep -q 'test result: ok. 3 passed' /tmp/catalog-admission.log
+          cargo test --locked --all-features --lib catalog_full_tests -- --nocapture | tee /tmp/catalog-full-lib.log
+          grep -q 'test result: ok. 2 passed' /tmp/catalog-full-lib.log
+          cargo test --locked --all-features --lib a_catalog_full_refusal_is_a_507_answered_once_and_never_corruption -- --nocapture | tee /tmp/catalog-full-gw.log
+          grep -q 'test result: ok. 1 passed' /tmp/catalog-full-gw.log
+          cargo test --locked --all-features --lib a_refusal_that_names_a_changed_manifest_proves_the_publication_was_not_admitted -- --nocapture | tee /tmp/catalog-full-sdk.log
+          grep -q 'test result: ok. 1 passed' /tmp/catalog-full-sdk.log
+
       - name: live peer partitions preserve objects and recover
         run: |
           set -o pipefail
