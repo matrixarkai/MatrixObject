@@ -49,6 +49,9 @@ use crate::cluster::message::{
 use crate::cluster::wire::{StatusCode, HEADER_BYTES, MAX_PAYLOAD_BYTES};
 use crate::{ObjectError, PageId, ReplicaHead, ReplicaReadResult};
 
+/// Appends one pipeline carries.
+pub const LOG_PIPELINE_DEPTH: usize = 32;
+
 /// How a client connects and how long it waits.
 #[derive(Clone, Debug)]
 pub struct ReplicaClientOptions {
@@ -1538,6 +1541,122 @@ impl RemoteReplicaClient {
             ReplicaReply::NamespaceFence(actual) if actual.namespace()? == *namespace => Ok(actual),
             _ => Err(ObjectError::Corruption("namespace fence reply names another namespace".into())),
         }
+    }
+
+    /// One log chunk operation on this node. A node that does not know the verb answers
+    /// `LogCallError::NotSpoken`, which proves nothing was applied.
+    pub fn log_call(&mut self, op: super::log_op::LogOpRequest) -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
+        use super::chunk_log::LogCallError;
+        match self.call(ReplicaRequest::LogOp(op)) {
+            Ok(ReplicaReply::LogOp(reply)) => Ok(reply),
+            Ok(other) => Err(LogCallError::Refused(unexpected_reply("a log chunk operation", &other))),
+            Err(error) => Err(LogCallError::from_object(error, !self.connection_usable)),
+        }
+    }
+
+    pub fn log_tail(&mut self, volume: u64, chunk: u64, generation: u32) -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
+        self.log_call(super::log_op::LogOpRequest::tail(volume, chunk, generation))
+    }
+
+    pub fn log_read(&mut self, volume: u64, chunk: u64, generation: u32, offset: u64, length: u32) -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
+        self.log_call(super::log_op::LogOpRequest::read(volume, chunk, generation, offset, length))
+    }
+
+    pub fn log_seal(&mut self, volume: u64, chunk: u64, generation: u32, epoch: u64, with_sha256: bool) -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
+        self.log_call(super::log_op::LogOpRequest::seal(volume, chunk, generation, epoch, with_sha256))
+    }
+
+    pub fn log_truncate(&mut self, volume: u64, chunk: u64, generation: u32, epoch: u64, length: u64) -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
+        self.log_call(super::log_op::LogOpRequest::truncate(volume, chunk, generation, epoch, length))
+    }
+
+    /// Send up to [`LOG_PIPELINE_DEPTH`] appends back to back on this connection and collect
+    /// one result per request, in order. The node acknowledges by contiguous length, so the
+    /// order the records are applied in does not change what each reply says.
+    ///
+    /// The first request goes alone: it discovers whether the node speaks log chunks at all,
+    /// so an older node costs one exchange and nothing else was sent. A refusal of one
+    /// request (a stale epoch, a sealed chunk) leaves the connection usable and the rest still
+    /// get their own answers; a transport failure ends the batch, and every request it did not
+    /// get an answer for reports `LogCallError::Transport` (the bytes may or may not have
+    /// landed: the caller learns where by asking for the tail on a new connection).
+    pub fn log_append_pipelined(&mut self, ops: &[super::log_op::LogOpRequest]) -> Vec<Result<super::log_op::LogOpReply, super::chunk_log::LogCallError>> {
+        use super::chunk_log::LogCallError;
+        let refuse = |message: &str| -> Vec<Result<super::log_op::LogOpReply, LogCallError>> {
+            ops.iter().map(|_| Err(LogCallError::Refused(ObjectError::InvalidArgument(message.into())))).collect()
+        };
+        if ops.len() > LOG_PIPELINE_DEPTH {
+            return refuse("a log append pipeline is bounded");
+        }
+        if ops.iter().any(|op| op.op != super::log_op::OP_APPEND) {
+            return refuse("a log append pipeline carries appends only");
+        }
+        if ops.iter().any(|op| ReplicaRequest::LogOp(op.clone()).encode_payload().len() > self.max_payload_bytes) {
+            return refuse("a log append exceeds the payload bound");
+        }
+        let Some(first) = ops.first() else { return Vec::new() };
+        let mut results = Vec::with_capacity(ops.len());
+        results.push(self.log_call(first.clone()));
+        let stop = |error: &LogCallError| matches!(error, LogCallError::NotSpoken | LogCallError::Transport(_));
+        if let Some(Err(error)) = results.first() {
+            if stop(error) {
+                let error = error.clone();
+                results.extend(ops[1..].iter().map(|_| Err(error.clone())));
+                return results;
+            }
+        }
+        if ops.len() == 1 {
+            return results;
+        }
+        self.connection_usable = false;
+        let mut sent = 1;
+        let mut failure: Option<LogCallError> = None;
+        for op in &ops[1..] {
+            if let Err(error) = self.send_request(&ReplicaRequest::LogOp(op.clone())) {
+                failure = Some(LogCallError::Transport(error));
+                break;
+            }
+            sent += 1;
+        }
+        for _ in 1..sent {
+            if failure.is_some() {
+                break;
+            }
+            // A status error is fully read and leaves the socket usable; a transport failure
+            // does not, so the flag tells the two apart.
+            self.connection_usable = false;
+            match exchange_deadline(self.read_timeout, self.deadline)
+                .and_then(|deadline| self.read_reply(crate::cluster::wire::RequestCode::LogOp, deadline))
+            {
+                Ok(ReplicaReply::LogOp(reply)) => results.push(Ok(reply)),
+                Ok(other) => {
+                    failure = Some(LogCallError::Refused(unexpected_reply("a log append", &other)));
+                    self.connection_usable = false;
+                }
+                Err(error) => {
+                    let error = LogCallError::from_object(error, !self.connection_usable);
+                    if matches!(error, LogCallError::Transport(_)) {
+                        failure = Some(error);
+                    } else {
+                        results.push(Err(error));
+                    }
+                }
+            }
+        }
+        let failure = failure.or_else(|| {
+            (sent < ops.len()).then(|| LogCallError::Transport(transport_error(&self.endpoint, "pipelining log appends", "a request was not sent")))
+        });
+        if let Some(error) = failure {
+            let _ = self.writer.shutdown(Shutdown::Both);
+            self.connection_usable = false;
+            while results.len() < ops.len() {
+                results.push(Err(error.clone()));
+            }
+        } else {
+            self.connection_usable = true;
+        }
+        self.last_exchange = Instant::now();
+        results
     }
 
     fn call(&mut self, request: ReplicaRequest) -> Result<ReplicaReply, ObjectError> {

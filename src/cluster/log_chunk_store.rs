@@ -63,12 +63,16 @@ pub fn sync_pending(pending: &[PendingSync]) -> Result<(), ObjectError> {
     Ok(())
 }
 
+/// What a node says when a writer's epoch is behind the chunk's: the client parses the number.
+pub(super) const STALE_EPOCH_PREFIX: &str = "log chunk writer epoch is stale; the chunk is at epoch ";
+pub(super) const SEALED_MESSAGE: &str = "log chunk is sealed";
+
 pub(super) fn to_object_error(error: LogError) -> ObjectError {
     match error {
         LogError::Fenced { current } => {
-            ObjectError::PreconditionFailed(format!("log chunk writer epoch is stale; the chunk is at epoch {current}"))
+            ObjectError::PreconditionFailed(format!("{STALE_EPOCH_PREFIX}{current}"))
         }
-        LogError::Sealed => ObjectError::PreconditionFailed("log chunk is sealed".into()),
+        LogError::Sealed => ObjectError::PreconditionFailed(SEALED_MESSAGE.into()),
         LogError::Overlap => ObjectError::PreconditionFailed("log chunk bytes differ from bytes already held".into()),
         LogError::Window => ObjectError::PreconditionFailed("log chunk reorder window is full".into()),
         LogError::SealMismatch => ObjectError::PreconditionFailed("log chunk has records waiting; it cannot seal yet".into()),
