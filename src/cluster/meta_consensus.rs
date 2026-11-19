@@ -1057,20 +1057,6 @@ fn filter_expired(
         .collect()
 }
 
-/// How long a chunk health report may go unreplicated while nothing changed: a third of the
-/// heartbeat expiry TTL, so a live node's replicated stamp is never older than that plus one
-/// report interval and expiry (which reads the replicated stamp) can never see it as silent.
-/// Zero (no TTL, or one too short to leave room) means every report is replicated.
-pub(super) fn report_suppress_window(ttl_ms: u64) -> u64 {
-    ttl_ms / 3
-}
-
-fn wall_clock_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64)
-}
-
 /// The answer to a chunk health report that changes nothing the group replicates, or `None`
 /// when the report must be replicated: the node is online and stays online, its endpoint and
 /// capacity match, and its usage moved by at most 1% of capacity. Without leader liveness the
