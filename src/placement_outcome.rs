@@ -215,9 +215,35 @@ pub struct PlacementOutcome {
     /// Version 16 only: many leases renewed or dropped at once, and nothing else.
     #[prost(message, optional, tag = "18")]
     pub lease_batch: Option<crate::log_chunk_outcome::LeaseBatch>,
+    /// The leader's decision on the delete of a live object, version 2 only: once the tombstone is applied, drop
+    /// it and the placement record. Emitted ONLY when the cluster has raised `FEATURE_FORGET_PREFIX`, the key lies
+    /// under a configured never-reused prefix, and nothing in state names it. A voter that does not know the field
+    /// refuses the entry (the canonical re-encoding differs), which is why the bit gates every emission.
+    #[prost(bool, tag = "20")]
+    pub forget: bool,
 }
 fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
+}
+
+/// The leader's decision, taken while it prepares a delete: forget the tombstone only when ALL hold. The cluster has
+/// raised `FEATURE_FORGET_PREFIX` (every voter reads the field); the delete is the plain one of a LIVE object (no
+/// staging, no copy); its key lies under a configured never-reused prefix; and nothing in state (a retained
+/// manifest, a read session, a staged allocation) names the key. Otherwise the delete is the ordinary tombstone:
+/// a refusal to forget is never an error. Decided here and carried in the outcome; apply never re-decides.
+fn forget_decided(service: &MatrixMetaService, outcome: &PlacementOutcome) -> bool {
+    let Some(manifest) = &outcome.manifest else { return false };
+    let (Some(before), Some(after)) = (manifest.before.as_ref(), manifest.after.as_ref()) else { return false };
+    if !after.deleted || before.deleted || outcome.staging.is_some() || outcome.copy_source.is_some() {
+        return false;
+    }
+    if !service.cluster_features.has(crate::cluster_features::FEATURE_FORGET_PREFIX) {
+        return false;
+    }
+    if !crate::object_manifest::forget_prefix_matches(&after.bucket, &after.key) {
+        return false;
+    }
+    !service.object_manifests.names_key(&after.object_id())
 }
 
 /// The manifest side of an outcome being applied.
@@ -347,6 +373,19 @@ impl PlacementOutcome {
     /// `manifest_validated` says the publication's manifests were validated by the caller
     /// (the expansion of a compact append), so they are not walked again.
     fn validate_manifest_binding_with(&self, manifest_validated: bool) -> Result<(), ObjectError> {
+        if self.forget {
+            let sound = self.version == 2
+                && self.staging.is_none()
+                && self.copy_source.is_none()
+                && self.placements.len() == 1
+                && self.manifest.as_ref().is_some_and(|manifest| {
+                    manifest.after.as_ref().is_some_and(|after| after.deleted)
+                        && manifest.before.as_ref().is_some_and(|before| !before.deleted)
+                });
+            if !sound {
+                return Err(invalid("a forget outcome must be the plain delete of a live object"));
+            }
+        }
         if self.features.is_some() || self.version == 14 {
             let change = self.features.as_ref().filter(|_| self.version == 14)
                 .ok_or_else(|| invalid("a feature outcome is version 14 and carries its change"))?;
@@ -653,6 +692,7 @@ impl PlacementOutcome {
             features: None,
             log_chunk: None,
             lease_batch: None,
+            forget: false,
         };
         outcome.validate_manifest_binding()?;
         outcome.validate_append_publication(service, true, before_manifest, after_manifest)?;
@@ -722,7 +762,7 @@ impl PlacementOutcome {
             update_time_ms,
         };
         let nodes = Self::capacity_changes(service, &before, &placement)?;
-        let outcome = Self {
+        let mut outcome = Self {
             version: if copy_source.is_some() { 6 } else if staging.is_some() { 4 } else { 2 },
             before_index: service.placement_commit_index,
             after_index: service
@@ -747,7 +787,9 @@ impl PlacementOutcome {
             features: None,
             log_chunk: None,
             lease_batch: None,
+            forget: false,
         };
+        outcome.forget = forget_decided(service, &outcome);
         outcome.validate_manifest_binding()?;
         outcome.validate_publication(service, true)?;
         outcome.to_payload()?;
@@ -939,6 +981,7 @@ impl PlacementOutcome {
             features: None,
             log_chunk: None,
             lease_batch: None,
+            forget: false,
         })
     }
     pub fn finish(mut self, service: &MatrixMetaService) -> Result<Self, ObjectError> {
@@ -1269,9 +1312,187 @@ impl PlacementOutcome {
             let after = change.after.as_ref().unwrap();
             service.placements.insert(after.id(), after.value());
         }
+        // The leader decided to forget this delete: the tombstone and the placement record go, exactly as the undo
+        // of a speculative draft removes an entry (`revision` and `body_bytes` follow the entry).
+        if self.forget {
+            if let Some(id) = self.manifest.as_ref().and_then(|manifest| manifest.after.as_ref()).map(|after| after.object_id()) {
+                service.object_manifests.forget_entry(&id);
+                service.placements.remove(&id);
+            }
+        }
         service.placement_commit_index = self.after_index;
         service.invalidate_snapshot_export_cache();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod forget_prefix_tests {
+    use super::*;
+    use crate::cluster_features::FEATURE_FORGET_PREFIX;
+    use crate::object_manifest::{with_forget_prefixes, ManifestCatalog};
+    use std::sync::Arc;
+
+    fn manifest(bucket: &str, key: &str, generation: u64, deleted: bool) -> ObjectManifest {
+        ObjectManifest { format_version: 2, bucket: bucket.into(), key: key.into(), generation, deleted, ..Default::default() }
+    }
+
+    fn service(raised: bool) -> MatrixMetaService {
+        let mut service = MatrixMetaService::new();
+        if raised {
+            service.cluster_features.raised |= FEATURE_FORGET_PREFIX;
+        }
+        service
+    }
+
+    fn create(service: &mut MatrixMetaService, bucket: &str, key: &str) -> (ObjectManifest, PlacementOutcome) {
+        let created = manifest(bucket, key, 1, false);
+        let outcome = ManifestOutcome::decide(None, created.clone()).unwrap();
+        let placement = PlacementOutcome::publish_manifest(service, outcome, 0).unwrap();
+        placement.apply(service).unwrap();
+        (created, placement)
+    }
+
+    fn delete(service: &mut MatrixMetaService, before: &ObjectManifest) -> PlacementOutcome {
+        let after = ObjectManifest { generation: before.generation + 1, deleted: true, ..before.clone() };
+        let outcome = ManifestOutcome::decide(Some(before.clone()), after).unwrap();
+        let placement = PlacementOutcome::publish_manifest(service, outcome, 0).unwrap();
+        placement.apply(service).unwrap();
+        placement
+    }
+
+    /// DEFAULT BEHAVIOUR IS UNCHANGED: with no prefix configured nothing is forgotten, whether or not the bit is
+    /// raised, and the outcomes and the catalog image are byte for byte what a service without the bit produces.
+    #[test]
+    fn without_a_configured_prefix_nothing_is_forgotten_and_the_bytes_are_identical() {
+        with_forget_prefixes(&[], || {
+            let (mut plain, mut raised) = (service(false), service(true));
+            let (a, created_a) = create(&mut plain, "wal", "seg_1");
+            let (b, created_b) = create(&mut raised, "wal", "seg_1");
+            assert_eq!(created_a.to_payload().unwrap(), created_b.to_payload().unwrap());
+            let (deleted_a, deleted_b) = (delete(&mut plain, &a), delete(&mut raised, &b));
+            assert!(!deleted_a.forget && !deleted_b.forget);
+            assert_eq!(deleted_a.to_payload().unwrap(), deleted_b.to_payload().unwrap());
+            assert_eq!(plain.object_manifests.to_bytes().unwrap(), raised.object_manifests.to_bytes().unwrap());
+            assert_eq!(raised.object_manifests.len(), 1, "the tombstone stays");
+        });
+    }
+
+    /// Forget needs all of: the bit raised, a key under a configured prefix, a live object and a plain delete.
+    #[test]
+    fn forget_needs_the_bit_the_prefix_and_a_live_plain_delete() {
+        with_forget_prefixes(&["wal/seg_"], || {
+            // the bit is not raised: an ordinary tombstone, whatever the prefix says
+            let mut off = service(false);
+            let (made, _) = create(&mut off, "wal", "seg_1");
+            assert!(!delete(&mut off, &made).forget);
+            assert_eq!(off.object_manifests.len(), 1);
+            // raised, but the key is outside the prefix: ordinary tombstone
+            let mut on = service(true);
+            let (other, _) = create(&mut on, "ordinary", "seg_1");
+            assert!(!delete(&mut on, &other).forget);
+            assert_eq!(on.object_manifests.len(), 1);
+            // raised and under the prefix: forgotten, with its placement record
+            let (seg, _) = create(&mut on, "wal", "seg_2");
+            assert_eq!(on.object_manifests.len(), 2);
+            let forgotten = delete(&mut on, &seg);
+            assert!(forgotten.forget);
+            assert_eq!(on.object_manifests.len(), 1, "only the ordinary tombstone is left");
+            assert!(on.object_manifests.get(&ObjectId::new("wal", "seg_2")).is_none());
+            assert!(on.placements.get(&ObjectId::new("wal", "seg_2")).is_none());
+            // the outcome says what it is, and an old voter would refuse it: the canonical re-encoding differs
+            let decoded = PlacementOutcome::from_payload(&forgotten.to_payload().unwrap()).unwrap();
+            assert!(decoded.forget);
+        });
+    }
+
+    /// Under the contract a forgotten key can be created again at generation 1; a kept tombstone refuses that
+    /// create (the stale-creator fence the tombstone provides for every other key).
+    #[test]
+    fn a_forgotten_key_can_be_created_again_and_a_kept_tombstone_refuses_it() {
+        with_forget_prefixes(&["wal/seg_"], || {
+            let mut on = service(true);
+            let (seg, _) = create(&mut on, "wal", "seg_1");
+            assert!(delete(&mut on, &seg).forget);
+            create(&mut on, "wal", "seg_1");
+            assert_eq!(on.object_manifests.get(&ObjectId::new("wal", "seg_1")).unwrap().generation, 1);
+            let mut kept = service(false);
+            let (seg, _) = create(&mut kept, "wal", "seg_1");
+            delete(&mut kept, &seg);
+            let stale = ManifestOutcome::decide(None, manifest("wal", "seg_1", 1, false)).unwrap();
+            assert!(PlacementOutcome::publish_manifest(&kept, stale, 0).is_err(), "the tombstone refuses a create that names no generation");
+        });
+    }
+
+    /// The leader never forgets a key that something in state still names (a retained manifest, which is also
+    /// what a read session is, or a staged allocation): the delete degrades to the ordinary tombstone, never an
+    /// error. A gateway's or a client's cache is not visible to the leader; the never-reused contract covers it.
+    #[test]
+    fn a_key_that_state_still_names_is_not_forgotten_and_the_delete_still_succeeds() {
+        with_forget_prefixes(&["wal/seg_"], || {
+            let mut held = service(true);
+            let (seg, _) = create(&mut held, "wal", "seg_1");
+            held.object_manifests.restore_retention_arc(
+                1,
+                Some(Arc::new(crate::manifest_retention::RetainedManifest {
+                    retention_id: 1,
+                    manifest: Some(seg.clone()),
+                    expires_at_ms: 0,
+                })),
+            );
+            let outcome = delete(&mut held, &seg);
+            assert!(!outcome.forget, "a read session names the key");
+            assert!(held.object_manifests.get(&ObjectId::new("wal", "seg_1")).unwrap().deleted);
+
+            let mut staged = service(true);
+            let (seg, _) = create(&mut staged, "wal", "seg_2");
+            staged.object_manifests.restore_staging(
+                7,
+                Some(crate::staged_allocation::StagedAllocation {
+                    version: 2,
+                    allocation_id: 7,
+                    page_count: 1,
+                    bucket: "wal".into(),
+                    key: "seg_2".into(),
+                    expected_generation: 1,
+                    ..Default::default()
+                }),
+            );
+            assert!(!delete(&mut staged, &seg).forget, "a staged allocation names the key");
+        });
+    }
+
+    /// Determinism: a second voter that applies the leader's outcome payloads ends with a catalog equal to the
+    /// leader's (that equality includes `revision` and `body_bytes`), and so does a catalog restored from the
+    /// leader's snapshot bytes, which rebuilds both from the entries present.
+    #[test]
+    fn a_forget_applies_identically_on_a_second_voter_and_after_a_restore() {
+        with_forget_prefixes(&["wal/seg_"], || {
+            let mut leader = service(true);
+            let mut payloads = Vec::new();
+            let mut live = Vec::new();
+            for index in 0..6 {
+                let (made, outcome) = create(&mut leader, "wal", &format!("seg_{index}"));
+                payloads.push(outcome.to_payload().unwrap());
+                live.push(made);
+            }
+            let (ordinary, outcome) = create(&mut leader, "ordinary", "k");
+            payloads.push(outcome.to_payload().unwrap());
+            for made in live.iter().take(4) {
+                payloads.push(delete(&mut leader, made).to_payload().unwrap());
+            }
+            payloads.push(delete(&mut leader, &ordinary).to_payload().unwrap());
+            assert_eq!(leader.object_manifests.len(), 3, "two live segments and one ordinary tombstone");
+
+            let mut follower = service(true);
+            for payload in &payloads {
+                PlacementOutcome::from_payload(payload).unwrap().apply(&mut follower).unwrap();
+            }
+            assert_eq!(follower.object_manifests, leader.object_manifests);
+            assert_eq!(follower.placements.len(), leader.placements.len());
+            let restored = ManifestCatalog::from_bytes(&leader.object_manifests.to_bytes().unwrap()).unwrap();
+            assert_eq!(restored, leader.object_manifests, "revision and body_bytes equal a rebuild");
+        });
     }
 }
 

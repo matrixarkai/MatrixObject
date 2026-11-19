@@ -23,10 +23,13 @@ thread_local! {
     static OBJECT_CAP: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     /// Whether the next `Group` created on this thread lets its leader decide expiry from what it has heard.
     static LEADER_LIVENESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    // MATRIXOBJECT_METASERVER_FORGET_PREFIXES for the voters of the next Group built on this thread.
+    static FORGET_PREFIXES: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
 }
 struct Group {
     zero_fill: Option<u64>,
     object_cap: Option<usize>,
+    forget_prefixes: Option<&'static str>,
     nodes: Vec<Option<NodeProcess>>,
     peers: BTreeMap<u64, std::net::SocketAddr>,
     root: PathBuf,
@@ -111,6 +114,7 @@ impl Group {
         let mut group = Self {
             zero_fill: ZERO_FILL.with(|chunk| chunk.get()),
             object_cap: OBJECT_CAP.with(|cap| cap.get()),
+            forget_prefixes: FORGET_PREFIXES.with(|prefixes| prefixes.get()),
             nodes: (0..if membership { 4 } else { 3 }).map(|_| None).collect(),
             peers,
             root,
@@ -171,6 +175,9 @@ impl Group {
         }
         if let Some(cap) = &object_cap {
             environment.push(("MATRIXOBJECT_METASERVER_MAX_OBJECTS", cap.as_str()));
+        }
+        if let Some(prefixes) = self.forget_prefixes {
+            environment.push(("MATRIXOBJECT_METASERVER_FORGET_PREFIXES", prefixes));
         }
         let roster = self.roster.as_ref().map(|roster| {
             let mut entries: Vec<_> = roster.split(',').collect();
@@ -3299,6 +3306,51 @@ fn failover_client(group: &Group, leader: usize) -> RemoteMetaClient {
     .unwrap()
 }
 
+/// Every entry of the catalog, tombstones included, read through the leader at one revision.
+fn catalog_entries(client: &mut RemoteMetaClient) -> (Vec<(String, String, bool)>, Vec<u8>) {
+    let mut seen = Vec::new();
+    let mut after: Option<(String, String)> = None;
+    loop {
+        let page = client
+            .list_manifest_catalog(after.as_ref().map(|(b, k)| (b.as_str(), k.as_str())), 32, None)
+            .unwrap();
+        for entry in &page.entries {
+            seen.push((entry.bucket.clone(), entry.key.clone(), entry.deleted));
+        }
+        if !page.has_more {
+            return (seen, page.revision);
+        }
+        let last = page.entries.last().unwrap();
+        after = Some((last.bucket.clone(), last.key.clone()));
+    }
+}
+
+fn forget_group(prefixes: &'static str) -> Group {
+    FORGET_PREFIXES.with(|cell| cell.set(Some(prefixes)));
+    let group = Group::new();
+    FORGET_PREFIXES.with(|cell| cell.set(None));
+    let mut client = group.client(group.leader());
+    // Every voter declares the bit and the group raises it: the only way emission starts.
+    for voter in 1..=3u64 {
+        client
+            .declare_voter_features(voter, matrixobjectstore_rs::cluster_features::FEATURE_FORGET_PREFIX)
+            .unwrap();
+    }
+    client
+        .raise_cluster_features(matrixobjectstore_rs::cluster_features::FEATURE_FORGET_PREFIX, vec![1, 2, 3])
+        .unwrap();
+    group
+}
+
+fn created(bucket: &str, key: &str) -> matrixobjectstore_rs::object_manifest::ManifestOutcome {
+    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
+    ManifestOutcome::decide(
+        None,
+        ObjectManifest { format_version: 2, bucket: bucket.into(), key: key.into(), generation: 1, ..Default::default() },
+    )
+    .unwrap()
+}
+
 const TWO_NODES: &str = "chunk-1@127.0.0.1:9100@rack,chunk-2@127.0.0.1:9101@rack2";
 
 fn wall_ms() -> u64 {
@@ -3534,6 +3586,96 @@ fn a_healthy_chunk_group_stays_in_placement_through_a_leader_change_and_leaves_w
     assert!(left - silent_since.unwrap() >= Duration::from_millis(5_000), "left only {:?} after the members fell silent", left - silent_since.unwrap());
     assert!(client.plan_object_placement("bucket", "key", 100, 1).map_or(true, |plan| plan.node_ids != vec!["group-a".to_string()]));
 }
+/// A WAL that rolls a segment 100 times, creating a never-reused key and deleting the one before it, leaves the
+/// catalog at its live objects. An ordinary object deleted in the same group keeps its tombstone (it is not under
+/// the prefix). Without the prefix every rollover would leave one more tombstone.
+#[test]
+fn forget_prefix_keeps_the_catalog_bounded_across_rollovers() {
+    let group = forget_group("wal/seg_");
+    let mut client = group.client(group.leader());
+    client.publish_manifest(created("ordinary", "k"), 0).unwrap();
+    client.delete_object("ordinary", "k", 0).unwrap();
+    client.publish_manifest(created("wal", "seg_live"), 0).unwrap();
+    for index in 0..100 {
+        let key = format!("seg_{index:05}");
+        client.publish_manifest(created("wal", &key), 0).unwrap();
+        client.delete_object("wal", &key, 0).unwrap();
+    }
+    let (entries, _) = catalog_entries(&mut client);
+    assert_eq!(
+        entries,
+        vec![
+            ("ordinary".to_string(), "k".to_string(), true),
+            ("wal".to_string(), "seg_live".to_string(), false),
+        ],
+        "100 rollovers left only the live segment and the ordinary tombstone"
+    );
+    // A forgotten key can be created again under the contract.
+    client.publish_manifest(created("wal", "seg_00007"), 0).unwrap();
+}
+
+/// The same rollovers with the leader killed in the middle and then every voter restarted: the catalog is the same
+/// on the voter that was restored from its log and on the one that applied the forgets live (compared through the
+/// leader before and after a leadership change), and nothing is resurrected.
+#[test]
+fn forget_prefix_survives_a_leader_kill_and_a_total_restart() {
+    let mut group = forget_group("wal/seg_");
+    let mut client = group.client(group.leader());
+    client.publish_manifest(created("ordinary", "k"), 0).unwrap();
+    client.delete_object("ordinary", "k", 0).unwrap();
+    client.publish_manifest(created("wal", "seg_live"), 0).unwrap();
+    // idempotent steps, so that the one in flight when the leader dies can simply be repeated
+    let roll = |group: &Group, index: usize| {
+        let key = format!("seg_{index:05}");
+        let until = Instant::now() + Duration::from_secs(30);
+        loop {
+            let mut client = group.client(group.leader());
+            let made = client.read_manifest("wal", &key).is_ok() || client.publish_manifest(created("wal", &key), 0).is_ok();
+            let gone = made && (client.read_manifest("wal", &key).map_or(true, |m| m.deleted)
+                || client.delete_object("wal", &key, 0).is_ok());
+            if gone && client.read_manifest("wal", &key).map_or(true, |m| m.deleted) {
+                return;
+            }
+            assert!(Instant::now() < until, "segment {index} did not roll");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    for index in 0..15 {
+        roll(&group, index);
+    }
+    let killed = group.leader();
+    group.kill(killed);
+    for index in 15..30 {
+        roll(&group, index);
+    }
+    group.start(killed);
+    for index in 30..40 {
+        roll(&group, index);
+    }
+    let expected = vec![
+        ("ordinary".to_string(), "k".to_string(), true),
+        ("wal".to_string(), "seg_live".to_string(), false),
+    ];
+    let mut client = group.client(group.leader());
+    assert_eq!(catalog_entries(&mut client).0, expected);
+    for index in 0..3 {
+        if group.nodes[index].is_some() {
+            group.kill(index);
+        }
+    }
+    for index in 0..3 {
+        group.start(index);
+    }
+    let first = group.leader();
+    let (after_restart, revision) = catalog_entries(&mut group.client(first));
+    assert_eq!(after_restart, expected, "a total restart replays the forgets to the same catalog");
+    // A different voter as leader sees the same entries and the same revision.
+    group.kill(first);
+    let (second_entries, second_revision) = catalog_entries(&mut group.client(group.leader()));
+    assert_eq!(second_entries, expected);
+    assert_eq!(second_revision, revision, "the voters hold the same revision");
+}
+
 #[path = "node_regime/cluster_gateway_processes.rs"]
 mod cluster_gateway_processes;
 

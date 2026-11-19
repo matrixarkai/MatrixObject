@@ -22,6 +22,7 @@
 //! |---|---|---|
 //! | `MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES` | `67108864` | WAL checkpoint interval; 1024..134217728 bytes; `0` disables checkpoints (the WAL is then never truncated and a voter refuses appends at 512 MiB) |
 //! | `MATRIXOBJECT_METASERVER_MAX_OBJECTS` | `100000` | most objects the catalog may name before creating another is refused with `catalog full` (HTTP 507 at the gateway); 1..=100000, the ceiling the format allows. A tombstone counts: deleting an object keeps its slot. Enforced where the leader decides a publication, never at apply or restore |
+//! | `MATRIXOBJECT_METASERVER_FORGET_PREFIXES` | *(unset)* | comma-separated `bucket/key-prefix` list of keys that are NEVER REUSED (nobody creates a key twice; no create arrives after its delete): a delete under one may drop its tombstone, so the catalog does not fill with tombstones. Only effective once the cluster has raised the forget-prefix feature bit (never raised by default). ORDINARY OBJECTS MUST NOT be listed: dropping the tombstone repeats generation 1 for a recreated key |
 //! | `MATRIXOBJECT_METASERVER_ADDR` | `127.0.0.1:17200` | address to bind; port `0` lets the kernel choose |
 //! | `MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS` | `15000` | automatic expiry TTL, 1000..3600000 ms; `0` turns expiry off. The default is five chunk report intervals |
 //! | `MATRIXOBJECT_METASERVER_SUPPRESS_UNCHANGED_REPORTS` | `0` | `1` answers a chunk health report that changes nothing replicated (same capacity, usage within 1%, replicated stamp younger than a third of the heartbeat TTL) without a log entry; every change and a keepalive every TTL/3 are still replicated. Needs the heartbeat TTL on |
@@ -290,6 +291,18 @@ fn main() {
         std::process::exit(2);
     }
     matrixobjectstore_rs::object_manifest::set_admission_cap(max_objects);
+
+    // Keys declared never reused. Empty entries are refused: an empty prefix would match every key.
+    if let Ok(list) = std::env::var("MATRIXOBJECT_METASERVER_FORGET_PREFIXES") {
+        let prefixes: Vec<String> = list.split(',').map(|prefix| prefix.trim().to_string()).collect();
+        if prefixes.iter().any(|prefix| !prefix.contains('/') || prefix.starts_with('/')) {
+            eprintln!(
+                "invalid MATRIXOBJECT_METASERVER_FORGET_PREFIXES {list:?}: every entry must be bucket/key-prefix"
+            );
+            std::process::exit(2);
+        }
+        matrixobjectstore_rs::object_manifest::set_forget_prefixes(prefixes);
+    }
 
     let seed_nodes = env_usize("MATRIXOBJECT_METASERVER_SEED_DATA_NODES", 0);
     let seed_capacity = env_usize(
