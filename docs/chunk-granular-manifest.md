@@ -16,7 +16,8 @@ takes the object, at each chunk boundary, and when a lease is renewed.
 
 This page describes the model, the formats, the replica verb, the metadata
 commands, the feature gate and the operator procedure. It also states which parts
-are in the main tree today and which are not, and what has not been measured.
+are in the main tree today, which are in review or not yet opened for review, and
+what has not been measured.
 
 ## What is in the tree and what is not
 
@@ -28,10 +29,11 @@ are in the main tree today and which are not, and what has not been measured.
 | Cluster feature set; declare, raise and read commands | In the tree |
 | Replica verb `LogOp` (code 28) and the per-node chunk store | In the tree |
 | Group commit for log chunk writes, with the sync outside the replica lock | In the tree |
-| Metadata commands: grant, switch, renew, sweep; outcome versions 15 and 16; snapshot version 22; feature bit 4 | Written and tested; not in the tree yet |
-| Replica client and quorum writer and reader for log chunks | Written; not in the tree yet |
-| Log object API (open, append, read, take over) | Written; not in the tree yet |
-| Sealed chunk reads from disk through a bounded cache | Written; not in the tree yet |
+| Metadata readers: outcome version 15, snapshot version 22, and the writer lease table restore in the proposal draft | In review |
+| Leader commands (grant, switch, renew, sweep), batched renewal (outcome version 16) and the feature gate wiring (feature bit 4) | In review, stacked on the metadata readers |
+| Replica client and quorum log writer and reader | In review (draft) |
+| Sealed chunk reads from disk through a bounded cache | In review (draft) |
+| Log object API (open, append, read, take over) | Written, stacked on the leader commands and the replica client; not yet opened for review |
 | End-to-end latency and metadata cost at multi-gigabyte object sizes | Not measured yet |
 
 Nothing writes a log chunk manifest unless an operator raises two cluster
@@ -141,7 +143,7 @@ every call, so log appends must be sent through it.
 
 ## The metadata commands
 
-These commands are written and tested and are not in the main tree yet. They are
+These commands are in review and are not in the main tree yet. They are
 behind the feature gate described below.
 
 - **Grant** takes the writer lease of an object and, if no chunk is open, adds one
@@ -228,7 +230,7 @@ whole file, up to 64 MiB, is read when the chunk is opened. A node may keep 256
 chunks open and refuses to open more. That is the same resident model as page
 payloads, so it does not yet allow a corpus larger than memory.
 
-The change that is written and not yet in the tree makes memory flat in corpus
+The change that is in review, and not yet in the tree, makes memory flat in corpus
 size:
 
 - Only the open tail chunk of an object keeps its bytes in memory. A sealed chunk
