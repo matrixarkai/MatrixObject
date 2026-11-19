@@ -1544,7 +1544,7 @@ impl RemoteReplicaClient {
     }
 
     /// One log chunk operation on this node. A node that does not know the verb answers
-    /// [`LogCallError::NotSpoken`], which proves nothing was applied.
+    /// `LogCallError::NotSpoken`, which proves nothing was applied.
     pub fn log_call(&mut self, op: super::log_op::LogOpRequest) -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
         use super::chunk_log::LogCallError;
         match self.call(ReplicaRequest::LogOp(op)) {
@@ -1578,7 +1578,7 @@ impl RemoteReplicaClient {
     /// so an older node costs one exchange and nothing else was sent. A refusal of one
     /// request (a stale epoch, a sealed chunk) leaves the connection usable and the rest still
     /// get their own answers; a transport failure ends the batch, and every request it did not
-    /// get an answer for reports [`LogCallError::Transport`] (the bytes may or may not have
+    /// get an answer for reports `LogCallError::Transport` (the bytes may or may not have
     /// landed: the caller learns where by asking for the tail on a new connection).
     pub fn log_append_pipelined(&mut self, ops: &[super::log_op::LogOpRequest]) -> Vec<Result<super::log_op::LogOpReply, super::chunk_log::LogCallError>> {
         use super::chunk_log::LogCallError;
