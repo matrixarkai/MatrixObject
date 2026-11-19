@@ -29,6 +29,9 @@ use crate::cluster::{consensus_unavailable, outcome_may_be_committed};
 use crate::object_manifest::{ManifestListPage, ObjectManifest};
 use crate::ObjectError;
 
+#[path = "cluster_gateway_s3.rs"]
+mod s3_verbs;
+
 /// The most extents the replica plane lets one object hold.
 pub const MAX_OBJECT_EXTENTS: usize = 4096;
 
@@ -104,6 +107,20 @@ pub trait ObjectPlane: Send {
         length: u64,
     ) -> Result<(ObjectManifest, Vec<u8>), ObjectError>;
     fn delete(&mut self, bucket: &str, key: &str) -> Result<ObjectManifest, ObjectError>;
+    /// Make `bucket`/`key` hold what `source_bucket`/`source_key` holds, on top of `expected` (the
+    /// destination as the caller read it). The default reads and writes the bytes; the SDK plane
+    /// overrides it with the metadata plane's atomic copy, which moves no data.
+    fn copy(
+        &mut self,
+        source_bucket: &str,
+        source_key: &str,
+        bucket: &str,
+        key: &str,
+        expected: Option<ObjectManifest>,
+    ) -> Result<ObjectManifest, PlaneFailure> {
+        let (_, data) = self.read(source_bucket, source_key)?;
+        self.write(bucket, key, expected, &data)
+    }
     fn list(
         &mut self,
         bucket: &str,
@@ -484,6 +501,30 @@ impl ObjectPlane for SdkPlane {
     fn delete(&mut self, bucket: &str, key: &str) -> Result<ObjectManifest, ObjectError> {
         self.client.delete_object(bucket, key, now_ms())
     }
+    fn copy(
+        &mut self,
+        source_bucket: &str,
+        source_key: &str,
+        bucket: &str,
+        key: &str,
+        expected: Option<ObjectManifest>,
+    ) -> Result<ObjectManifest, PlaneFailure> {
+        use crate::manifest_copy::AtomicCopyFailure;
+        self.client
+            .copy_object_atomic(
+                source_bucket,
+                source_key,
+                bucket,
+                key,
+                expected,
+                self.options.max_object_bytes as u64,
+                now_ms(),
+            )
+            .map_err(|failure| match failure {
+                AtomicCopyFailure::Refused(error) => PlaneFailure { error, unconfirmed: false },
+                AtomicCopyFailure::Unconfirmed(error) => PlaneFailure { error, unconfirmed: true },
+            })
+    }
     fn list(
         &mut self,
         bucket: &str,
@@ -739,7 +780,7 @@ impl ClusterGateway {
         match request.path.as_str() {
             "/healthz" | "/health" => return self.health(request),
             "/" => {
-                return not_implemented("ListBuckets", "/");
+                return self.list_buckets(request);
             }
             _ => {}
         }
@@ -776,8 +817,23 @@ impl ClusterGateway {
 
     fn bucket_request(&self, request: &Request, bucket: &str) -> Response {
         let resource = format!("/{bucket}");
-        // Every sub-resource this door does not serve is named in the refusal. Query-selected
-        // verbs come first, because S3 selects them on the same method as the plain verb.
+        let method = request.method.as_str();
+        // The sub-resources this door serves, which S3 selects on the same method as the plain
+        // verb, come first.
+        if method == "GET" && request.query_param("uploads").is_some() {
+            return self.list_multipart_uploads(request, bucket);
+        }
+        if method == "POST" && request.query_param("delete").is_some() {
+            return self.delete_objects(request, bucket);
+        }
+        if method == "GET" {
+            for probe in ["versioning", "acl"] {
+                if request.query_param(probe).is_some() {
+                    return self.probe_answer(probe);
+                }
+            }
+        }
+        // Every sub-resource this door does not serve is named in the refusal.
         for sub in [
             "uploads", "versioning", "versions", "cors", "delete", "tagging", "policy", "acl",
             "lifecycle", "notification",
@@ -786,7 +842,7 @@ impl ClusterGateway {
                 return not_implemented(&format!("the bucket sub-resource ?{sub}"), &resource);
             }
         }
-        match request.method.as_str() {
+        match method {
             "GET" if request.query_param("location").is_some() => s3::xml_response(
                 200,
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><LocationConstraint xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"></LocationConstraint>".to_string(),
@@ -798,36 +854,74 @@ impl ClusterGateway {
                 Ok(()) => Response::status(200).with_header("location", resource),
                 Err(error) => error_response(error, &resource, true),
             },
-            "DELETE" => not_implemented("DeleteBucket", &resource),
-            _ => method_not_allowed("GET, PUT, HEAD", &resource),
+            "DELETE" => self.delete_bucket(bucket),
+            _ => method_not_allowed("GET, PUT, HEAD, DELETE, POST", &resource),
         }
     }
 
     fn object_request(&self, request: &Request, bucket: &str, key: &str) -> Response {
         let resource = format!("/{bucket}/{key}");
+        let method = request.method.as_str();
+        let upload_id = request.query_param("uploadId");
+        let part_number = request.query_param("partNumber");
+        let starts_upload = request.query_param("uploads").is_some();
+        if s3_verbs::is_reserved(key) {
+            return s3::error_response(
+                s3::S3ErrorCode::InvalidArgument,
+                &format!("keys under {} are reserved for multipart uploads", s3_verbs::RESERVED_PREFIX),
+                &resource,
+            );
+        }
+        // The multipart family, selected by `uploads`, `uploadId` and `partNumber`.
+        match (method, starts_upload, upload_id.as_deref(), part_number.as_deref()) {
+            ("POST", true, None, None) => return self.create_multipart_upload(bucket, key),
+            ("PUT", false, Some(id), Some(number)) => {
+                if request.header("x-amz-copy-source").is_some() {
+                    return not_implemented("UploadPartCopy", &resource);
+                }
+                return self.upload_part(request, bucket, key, id, number);
+            }
+            ("POST", false, Some(id), None) => {
+                return self.complete_multipart_upload(request, bucket, key, id)
+            }
+            ("DELETE", false, Some(id), None) => return self.abort_multipart_upload(bucket, key, id),
+            ("GET", false, Some(id), None) => return self.list_parts(request, bucket, key, id),
+            _ => {}
+        }
+        if starts_upload || upload_id.is_some() || part_number.is_some() {
+            return method_not_allowed("POST, PUT, DELETE, GET", &resource);
+        }
+        // Reads of an object's ACL and tags are answered (objects are private and untagged);
+        // changing them is not served.
+        if method == "GET" {
+            for probe in ["acl", "tagging"] {
+                if request.query_param(probe).is_some() {
+                    return match self.with_plane(|plane| plane.read_manifest(bucket, key)) {
+                        Ok(manifest) if !manifest.deleted => self.probe_answer(probe),
+                        Ok(_) => no_such_key(&resource),
+                        Err(error) => error_response(error, &resource, false),
+                    };
+                }
+            }
+        }
         for sub in [
-            "uploads", "uploadId", "partNumber", "versionId", "tagging", "acl", "retention",
-            "legal-hold", "restore", "select",
+            "versionId", "tagging", "acl", "retention", "legal-hold", "restore", "select",
         ] {
             if request.query_param(sub).is_some() {
                 return not_implemented(&format!("the object sub-resource ?{sub}"), &resource);
             }
         }
-        match request.method.as_str() {
+        match method {
             "PUT" => {
-                if request.header("x-amz-copy-source").is_some() {
-                    return not_implemented("CopyObject", &resource);
-                }
-                if request.header("if-match").is_some() {
-                    return not_implemented("a PUT conditioned on If-Match", &resource);
+                if let Some(source) = request.header("x-amz-copy-source") {
+                    return self.copy_object(request, bucket, key, source);
                 }
                 self.put_object(request, bucket, key)
             }
             "GET" => self.get_object(request, bucket, key, false),
             "HEAD" => self.get_object(request, bucket, key, true),
             "DELETE" => self.delete_object(bucket, key),
-            "POST" => not_implemented("POST on an object (multipart upload)", &resource),
-            _ => method_not_allowed("PUT, GET, HEAD, DELETE", &resource),
+            _ => method_not_allowed("PUT, GET, HEAD, DELETE, POST", &resource),
         }
     }
 
@@ -853,9 +947,16 @@ impl ClusterGateway {
         let only_if_absent = request
             .header("if-none-match")
             .is_some_and(|value| value.trim() == "*");
+        let required_etag = request.header("if-match").map(str::to_string);
         match offset {
             Some(offset) => self.append_object(bucket, key, offset, &request.body),
-            None => self.replace_object(bucket, key, &request.body, only_if_absent),
+            None => self.replace_object(
+                bucket,
+                key,
+                &request.body,
+                only_if_absent,
+                required_etag.as_deref(),
+            ),
         }
     }
 
@@ -866,7 +967,24 @@ impl ClusterGateway {
         key: &str,
         body: &[u8],
         only_if_absent: bool,
+        required_etag: Option<&str>,
     ) -> Response {
+        match self.replace_manifest(bucket, key, body, only_if_absent, required_etag) {
+            Ok(manifest) => object_written(&manifest),
+            Err(response) => response,
+        }
+    }
+
+    /// The replacing write, answering with the manifest it published or the S3 refusal.
+    /// `required_etag` is an `If-Match`: the object must exist and be that version.
+    fn replace_manifest(
+        &self,
+        bucket: &str,
+        key: &str,
+        body: &[u8],
+        only_if_absent: bool,
+        required_etag: Option<&str>,
+    ) -> Result<ObjectManifest, Response> {
         let resource = format!("/{bucket}/{key}");
         const ATTEMPTS: usize = 4;
         for _ in 0..ATTEMPTS {
@@ -881,39 +999,48 @@ impl ClusterGateway {
                         "If-None-Match: * and the object exists".into(),
                     ))));
                 }
+                if let Some(required) = required_etag {
+                    let live = current.as_ref().filter(|m| !m.deleted);
+                    if !live.is_some_and(|m| s3_verbs::etag_matches(required, &etag_of(m.generation))) {
+                        return Ok(Err(PlaneFailure::from(ObjectError::PreconditionFailed(
+                            "If-Match does not name the current version of the object".into(),
+                        ))));
+                    }
+                }
                 Ok(plane.write(bucket, key, current, body))
             });
             match outcome {
-                Err(error) => return error_response(error, &resource, false),
+                Err(error) => return Err(error_response(error, &resource, false)),
                 Ok(Ok(manifest)) => {
                     self.remember(&manifest);
-                    return object_written(&manifest);
+                    return Ok(manifest);
                 }
                 Ok(Err(failure)) => {
                     self.forget(bucket, key);
                     if failure.unconfirmed || outcome_may_be_committed(&failure.error) {
                         if let Some(manifest) = self.resolve_landed_replace(bucket, key, body) {
                             self.remember(&manifest);
-                            return object_written(&manifest);
+                            return Ok(manifest);
                         }
                     }
                     if failure.unconfirmed {
-                        return unconfirmed(&failure.error, &resource);
+                        return Err(unconfirmed(&failure.error, &resource));
                     }
                     // Another writer published between the read and the write; the conditional
-                    // publish refused it, so look again and decide on what is there now.
-                    if lost_race(&failure.error) && !only_if_absent {
+                    // publish refused it, so look again and decide on what is there now. A
+                    // precondition of the request itself is decided once, not retried.
+                    if lost_race(&failure.error) && !only_if_absent && required_etag.is_none() {
                         continue;
                     }
-                    return error_response(failure.error, &resource, false);
+                    return Err(error_response(failure.error, &resource, false));
                 }
             }
         }
-        s3::error_response(
+        Err(s3::error_response(
             s3::S3ErrorCode::PreconditionFailed,
             "the object kept changing under this write; gave up after several attempts",
             &resource,
-        )
+        ))
     }
 
     /// `PutObject` with a write offset: an append that lands at the end or not at all.
@@ -1048,6 +1175,9 @@ impl ClusterGateway {
         if head {
             return match self.with_plane(|plane| plane.read_manifest(bucket, key)) {
                 Ok(manifest) if !manifest.deleted => {
+                    if let Some(refused) = s3_verbs::read_condition(request, &manifest, &resource) {
+                        return refused;
+                    }
                     let mut response = Response::status(200);
                     object_headers(&mut response, &manifest);
                     response
@@ -1059,7 +1189,8 @@ impl ClusterGateway {
         let range = request.header("range").map(str::trim);
         // A closed range inside the object is the hot read of a shared log, and it can be asked
         // of the data groups without a separate manifest read.
-        if let Some((start, length)) = range.and_then(closed_range) {
+        let conditional = request.header("if-match").is_some() || request.header("if-none-match").is_some();
+        if let Some((start, length)) = range.and_then(closed_range).filter(|_| !conditional) {
             match self.with_plane(|plane| plane.read_range(bucket, key, start, length)) {
                 Ok((manifest, data)) => {
                     let last = start + length - 1;
@@ -1085,6 +1216,9 @@ impl ClusterGateway {
             Ok(_) => return no_such_key(&resource),
             Err(error) => return error_response(error, &resource, false),
         };
+        if let Some(refused) = s3_verbs::read_condition(request, &manifest, &resource) {
+            return refused;
+        }
         match http::resolve_range(request.header("range"), manifest.length) {
             ResolvedRange::Whole => match self.with_plane(|plane| plane.read(bucket, key)) {
                 Ok((manifest, data)) => {
@@ -1145,9 +1279,7 @@ impl ClusterGateway {
     /// `ListObjectsV2`: keys in order, tombstones skipped, paged by the last key returned.
     fn list_bucket(&self, request: &Request, bucket: &str) -> Response {
         let resource = format!("/{bucket}");
-        if request.query_param("delimiter").is_some_and(|d| !d.is_empty()) {
-            return not_implemented("ListObjectsV2 with a delimiter", &resource);
-        }
+        let delimiter = request.query_param("delimiter").filter(|d| !d.is_empty());
         let prefix = request.query_param("prefix").unwrap_or_default();
         let continuation = request
             .query_param("continuation-token")
@@ -1169,10 +1301,14 @@ impl ClusterGateway {
         };
         let walked = self.with_plane(|plane| {
             let mut entries: Vec<s3::ListEntry> = Vec::new();
+            let mut prefixes: Vec<String> = Vec::new();
             let mut after = resume.clone();
             let mut truncated = false;
+            // Where a following page resumes: the last key returned, or past the last common prefix.
+            let mut last: Option<String> = None;
             'pages: loop {
                 let page = plane.list(bucket, after.as_deref(), LIST_PAGE)?;
+                let mut jumped = false;
                 for summary in &page.entries {
                     after = Some(summary.key.clone());
                     if summary.key.as_str() < prefix.as_str() {
@@ -1182,13 +1318,28 @@ impl ClusterGateway {
                         // Keys are in order, so nothing later can match.
                         break 'pages;
                     }
-                    if summary.deleted {
+                    if summary.deleted || s3_verbs::is_reserved(&summary.key) {
                         continue;
                     }
-                    if entries.len() == max_keys {
+                    if entries.len() + prefixes.len() == max_keys {
                         truncated = true;
                         break 'pages;
                     }
+                    // A key whose remainder holds the delimiter is folded into its common prefix,
+                    // and every key under that prefix is skipped.
+                    if let Some(delimiter) = &delimiter {
+                        let rest = &summary.key[prefix.len()..];
+                        if let Some(at) = rest.find(delimiter.as_str()) {
+                            let common = format!("{prefix}{}", &rest[..at + delimiter.len()]);
+                            let resume_after = s3_verbs::past_prefix(&common);
+                            prefixes.push(common);
+                            last = Some(resume_after.clone());
+                            after = Some(resume_after);
+                            jumped = true;
+                            break;
+                        }
+                    }
+                    last = Some(summary.key.clone());
                     entries.push(s3::ListEntry {
                         key: summary.key.clone(),
                         last_modified_ms: 0,
@@ -1197,32 +1348,31 @@ impl ClusterGateway {
                         storage_class: s3::DEFAULT_STORAGE_CLASS.to_string(),
                     });
                 }
+                if jumped {
+                    continue 'pages;
+                }
                 if !page.has_more {
                     break;
                 }
             }
-            Ok((entries, truncated))
+            Ok((entries, prefixes, truncated, last))
         });
-        let (entries, truncated) = match walked {
+        let (entries, prefixes, truncated, last) = match walked {
             Ok(value) => value,
             Err(error) => return error_response(error, &resource, true),
         };
-        let next = if truncated {
-            entries.last().map(|entry| entry.key.clone())
-        } else {
-            None
-        };
+        let next = if truncated { last } else { None };
         let result = s3::ListResult {
             bucket: bucket.to_string(),
             prefix,
-            delimiter: None,
+            delimiter: delimiter.clone(),
             max_keys,
             is_truncated: truncated,
             continuation_token: continuation,
             next_continuation_token: next,
             start_after,
             entries,
-            common_prefixes: Vec::new(),
+            common_prefixes: prefixes,
         };
         s3::xml_response(200, s3::list_objects_v2_xml(&result))
     }
@@ -1350,7 +1500,7 @@ fn not_implemented(what: &str, resource: &str) -> Response {
     s3::error_response(
         s3::S3ErrorCode::NotImplemented,
         &format!(
-            "{what} is not served by the cluster gateway; it serves PUT, append (x-amz-write-offset-bytes), GET (with Range), HEAD, DELETE and ListObjectsV2"
+            "{what} is not served by the cluster gateway; it serves PUT (with If-Match and If-None-Match), append (x-amz-write-offset-bytes), CopyObject, GET (with Range and conditions), HEAD, DELETE, DeleteObjects, the multipart family, ListObjectsV2 (with a delimiter), ListBuckets and DeleteBucket"
         ),
         resource,
     )
@@ -2327,21 +2477,16 @@ mod tests {
     fn every_verb_outside_the_subset_is_not_implemented() {
         let (gateway, _) = gateway();
         for (method, target, headers) in [
-            ("POST", "/b/k?uploads", vec![]),
-            ("PUT", "/b/k?partNumber=1&uploadId=u", vec![]),
-            ("POST", "/b/k?uploadId=u", vec![]),
-            ("PUT", "/b/k", vec![("x-amz-copy-source", "/b/other")]),
-            ("PUT", "/b/k", vec![("If-Match", "\"gen-1\"")]),
-            ("GET", "/b/k?tagging", vec![]),
+            ("PUT", "/b/k?partNumber=1&uploadId=u", vec![("x-amz-copy-source", "/b/other")]),
             ("PUT", "/b/k?tagging", vec![]),
+            ("PUT", "/b/k?acl", vec![]),
             ("GET", "/b/k?versionId=3", vec![]),
-            ("GET", "/b?versioning", vec![]),
             ("GET", "/b?versions", vec![]),
             ("PUT", "/b?cors", vec![]),
-            ("POST", "/b?delete", vec![]),
-            ("DELETE", "/b", vec![]),
-            ("GET", "/", vec![]),
-            ("GET", "/b?list-type=2&delimiter=%2F", vec![]),
+            ("PUT", "/b?versioning", vec![]),
+            ("PUT", "/b?acl", vec![]),
+            ("GET", "/b?policy", vec![]),
+            ("GET", "/b?lifecycle", vec![]),
         ] {
             let response = gateway.handle(&request(method, target, &headers, b""));
             assert_eq!(response.status, 501, "{method} {target}");
@@ -2378,5 +2523,429 @@ mod tests {
         );
         assert_eq!(gateway.handle(&request("GET", "/b/k", &[], b"")).status, 500);
         assert_eq!(gateway.handle(&request("GET", "/healthz", &[], b"")).status, 503);
+    }
+
+    // ----- the S3 verbs beyond put, get, append and delete -----
+
+    fn text(response: &Response) -> String {
+        String::from_utf8_lossy(&response.body).to_string()
+    }
+
+    fn between(body: &str, tag: &str) -> Option<String> {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        body.split_once(&open)?.1.split_once(&close).map(|(value, _)| value.to_string())
+    }
+
+    fn all_between(body: &str, tag: &str) -> Vec<String> {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        body.split(&open)
+            .skip(1)
+            .filter_map(|rest| rest.split_once(&close).map(|(value, _)| value.to_string()))
+            .collect()
+    }
+
+    fn put(gateway: &ClusterGateway, key: &str, body: &[u8]) -> Response {
+        gateway.handle(&request("PUT", &format!("/b/{key}"), &[], body))
+    }
+
+    fn begin(gateway: &ClusterGateway, key: &str) -> String {
+        let response = gateway.handle(&request("POST", &format!("/b/{key}?uploads"), &[], b""));
+        assert_eq!(response.status, 200, "{}", text(&response));
+        between(&text(&response), "UploadId").unwrap()
+    }
+
+    fn part(gateway: &ClusterGateway, key: &str, id: &str, number: u32, body: &[u8]) -> Response {
+        gateway.handle(&request(
+            "PUT",
+            &format!("/b/{key}?partNumber={number}&uploadId={id}"),
+            &[],
+            body,
+        ))
+    }
+
+    fn complete_body(parts: &[(u32, &str)]) -> String {
+        let mut body = String::from("<CompleteMultipartUpload>");
+        for (number, etag) in parts {
+            body.push_str(&format!(
+                "<Part><PartNumber>{number}</PartNumber><ETag>&quot;{etag}&quot;</ETag></Part>"
+            ));
+        }
+        body.push_str("</CompleteMultipartUpload>");
+        body
+    }
+
+    fn etag_header(response: &Response) -> String {
+        header(response, "etag").unwrap().trim_matches('"').to_string()
+    }
+
+    #[test]
+    fn a_listing_with_a_delimiter_folds_keys_into_common_prefixes() {
+        let (gateway, _) = gateway();
+        for key in ["a/1", "a/2", "a/x/3", "b/1", "c", "d"] {
+            assert_eq!(put(&gateway, key, b"x").status, 200);
+        }
+        let all = text(&gateway.handle(&request("GET", "/b?list-type=2&delimiter=%2F", &[], b"")));
+        assert_eq!(all_between(&all, "Key"), ["c", "d"], "{all}");
+        assert_eq!(all_between(&all, "Prefix").iter().filter(|p| p.ends_with('/')).count(), 2, "{all}");
+        assert!(all.contains("<CommonPrefixes><Prefix>a/</Prefix></CommonPrefixes>"), "{all}");
+        assert!(all.contains("<CommonPrefixes><Prefix>b/</Prefix></CommonPrefixes>"), "{all}");
+        // Under a prefix the next level is folded.
+        let under = text(&gateway.handle(&request("GET", "/b?list-type=2&prefix=a%2F&delimiter=%2F", &[], b"")));
+        assert_eq!(all_between(&under, "Key"), ["a/1", "a/2"], "{under}");
+        assert!(under.contains("<CommonPrefixes><Prefix>a/x/</Prefix></CommonPrefixes>"), "{under}");
+        // A delimiter nothing contains folds nothing.
+        let none = text(&gateway.handle(&request("GET", "/b?list-type=2&delimiter=%7C", &[], b"")));
+        assert_eq!(all_between(&none, "Key").len(), 6, "{none}");
+    }
+
+    #[test]
+    fn a_delimited_listing_pages_without_losing_or_repeating_anything() {
+        let (gateway, _) = gateway();
+        for key in ["a/1", "a/2", "a/3", "b/1", "b/2", "c", "d/1", "e"] {
+            assert_eq!(put(&gateway, key, b"x").status, 200);
+        }
+        let mut seen: Vec<String> = Vec::new();
+        let mut token: Option<String> = None;
+        for _ in 0..20 {
+            let target = match &token {
+                None => "/b?list-type=2&delimiter=%2F&max-keys=2".to_string(),
+                Some(token) => format!("/b?list-type=2&delimiter=%2F&max-keys=2&continuation-token={}", http_escape(token)),
+            };
+            let page = text(&gateway.handle(&request("GET", &target, &[], b"")));
+            seen.extend(all_between(&page, "Key"));
+            seen.extend(
+                page.split("<CommonPrefixes><Prefix>")
+                    .skip(1)
+                    .filter_map(|rest| rest.split_once("</Prefix>").map(|(value, _)| value.to_string())),
+            );
+            if between(&page, "IsTruncated").as_deref() == Some("true") {
+                token = Some(between(&page, "NextContinuationToken").expect("a truncated page names its token"));
+            } else {
+                break;
+            }
+        }
+        seen.sort();
+        assert_eq!(seen, ["a/", "b/", "c", "d/", "e"]);
+    }
+
+    fn http_escape(value: &str) -> String {
+        value
+            .bytes()
+            .map(|byte| match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (byte as char).to_string(),
+                _ => format!("%{byte:02X}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_multipart_upload_assembles_one_object_and_leaves_nothing_behind() {
+        let (gateway, shared) = gateway();
+        let id = begin(&gateway, "big");
+        let two = part(&gateway, "big", &id, 2, b"-world");
+        let one = part(&gateway, "big", &id, 1, b"hello");
+        assert_eq!((one.status, two.status), (200, 200));
+        let (e1, e2) = (etag_header(&one), etag_header(&two));
+        // The object does not exist, and the upload's records are not listed, before completion.
+        assert_eq!(gateway.handle(&request("GET", "/b/big", &[], b"")).status, 404);
+        let listing = text(&gateway.handle(&request("GET", "/b?list-type=2", &[], b"")));
+        assert!(!listing.contains(".multipart"), "{listing}");
+        let parts = text(&gateway.handle(&request("GET", &format!("/b/big?uploadId={id}"), &[], b"")));
+        assert_eq!(all_between(&parts, "PartNumber"), ["1", "2"], "{parts}");
+        assert_eq!(all_between(&parts, "Size"), ["5", "6"], "{parts}");
+        let uploads = text(&gateway.handle(&request("GET", "/b?uploads", &[], b"")));
+        assert!(uploads.contains(&format!("<UploadId>{id}</UploadId>")) && uploads.contains("<Key>big</Key>"), "{uploads}");
+        // Completing publishes the concatenation, once.
+        let done = gateway.handle(&request(
+            "POST",
+            &format!("/b/big?uploadId={id}"),
+            &[],
+            complete_body(&[(1, &e1), (2, &e2)]).as_bytes(),
+        ));
+        assert_eq!(done.status, 200, "{}", text(&done));
+        assert!(text(&done).contains("<CompleteMultipartUploadResult"), "{}", text(&done));
+        assert_eq!(gateway.handle(&request("GET", "/b/big", &[], b"")).body, b"hello-world");
+        // The parts and the record are gone, and the upload with them.
+        let gone = gateway.handle(&request("GET", &format!("/b/big?uploadId={id}"), &[], b""));
+        assert_eq!(gone.status, 404, "{}", text(&gone));
+        let live: Vec<String> = shared
+            .lock()
+            .unwrap()
+            .objects
+            .iter()
+            .filter(|(_, (m, _))| !m.deleted)
+            .map(|((_, key), _)| key.clone())
+            .collect();
+        assert_eq!(live, ["big"]);
+        let again = gateway.handle(&request(
+            "POST",
+            &format!("/b/big?uploadId={id}"),
+            &[],
+            complete_body(&[(1, &e1), (2, &e2)]).as_bytes(),
+        ));
+        assert_eq!(again.status, 404, "completing twice");
+    }
+
+    #[test]
+    fn a_multipart_completion_is_checked_against_the_parts_the_upload_holds() {
+        let (gateway, _) = gateway();
+        let id = begin(&gateway, "k");
+        let one = etag_header(&part(&gateway, "k", &id, 1, b"aaa"));
+        let two = etag_header(&part(&gateway, "k", &id, 2, b"bbb"));
+        let complete = |parts: &[(u32, &str)]| {
+            gateway.handle(&request("POST", &format!("/b/k?uploadId={id}"), &[], complete_body(parts).as_bytes()))
+        };
+        let order = complete(&[(2, &two), (1, &one)]);
+        assert_eq!(order.status, 400);
+        assert!(text(&order).contains("InvalidPartOrder"), "{}", text(&order));
+        let wrong = complete(&[(1, "gen-999")]);
+        assert_eq!(wrong.status, 400);
+        assert!(text(&wrong).contains("InvalidPart"), "{}", text(&wrong));
+        let missing = complete(&[(1, &one), (3, &two)]);
+        assert_eq!(missing.status, 400);
+        assert!(text(&missing).contains("InvalidPart"), "{}", text(&missing));
+        let malformed = gateway.handle(&request("POST", &format!("/b/k?uploadId={id}"), &[], b"<nope/>"));
+        assert_eq!(malformed.status, 400);
+        assert!(text(&malformed).contains("MalformedXML"), "{}", text(&malformed));
+        // Nothing was published by any refusal, and the upload is still usable.
+        assert_eq!(gateway.handle(&request("GET", "/b/k", &[], b"")).status, 404);
+        assert_eq!(complete(&[(1, &one)]).status, 200);
+        assert_eq!(gateway.handle(&request("GET", "/b/k", &[], b"")).body, b"aaa");
+        // A part uploaded again replaces the part, and its old etag no longer completes.
+        let id = begin(&gateway, "r");
+        let first = etag_header(&part(&gateway, "r", &id, 1, b"old"));
+        let second = etag_header(&part(&gateway, "r", &id, 1, b"new"));
+        assert_ne!(first, second);
+        let stale = gateway.handle(&request("POST", &format!("/b/r?uploadId={id}"), &[], complete_body(&[(1, &first)]).as_bytes()));
+        assert_eq!(stale.status, 400);
+        let fresh = gateway.handle(&request("POST", &format!("/b/r?uploadId={id}"), &[], complete_body(&[(1, &second)]).as_bytes()));
+        assert_eq!(fresh.status, 200);
+        assert_eq!(gateway.handle(&request("GET", "/b/r", &[], b"")).body, b"new");
+    }
+
+    #[test]
+    fn multipart_requests_for_the_wrong_upload_or_part_are_refused() {
+        let (gateway, _) = gateway();
+        let id = begin(&gateway, "k");
+        for (target, status) in [
+            (format!("/b/k?partNumber=0&uploadId={id}"), 400),
+            (format!("/b/k?partNumber=10001&uploadId={id}"), 400),
+            (format!("/b/k?partNumber=x&uploadId={id}"), 400),
+            (format!("/b/other?partNumber=1&uploadId={id}"), 404),
+            ("/b/k?partNumber=1&uploadId=nonsense".to_string(), 404),
+            (format!("/b/k?partNumber=1&uploadId={}", "0".repeat(32)), 404),
+        ] {
+            assert_eq!(gateway.handle(&request("PUT", &target, &[], b"x")).status, status, "{target}");
+        }
+        // An upload part copy is not served, and the method on an upload is checked.
+        let copy = gateway.handle(&request("PUT", &format!("/b/k?partNumber=1&uploadId={id}"), &[("x-amz-copy-source", "/b/a")], b""));
+        assert_eq!(copy.status, 501);
+        assert_eq!(gateway.handle(&request("PATCH", &format!("/b/k?uploadId={id}"), &[], b"")).status, 405);
+        // Abort removes the upload and everything it holds; aborting again says it is gone.
+        part(&gateway, "k", &id, 1, b"x");
+        assert_eq!(gateway.handle(&request("DELETE", &format!("/b/k?uploadId={id}"), &[], b"")).status, 204);
+        assert_eq!(gateway.handle(&request("DELETE", &format!("/b/k?uploadId={id}"), &[], b"")).status, 404);
+        let uploads = text(&gateway.handle(&request("GET", "/b?uploads", &[], b"")));
+        assert!(!uploads.contains("<Upload>"), "{uploads}");
+    }
+
+    #[test]
+    fn an_assembled_object_over_the_gateways_limit_is_refused_and_the_upload_survives() {
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let handle = Arc::clone(&shared);
+        let gateway = ClusterGateway::new(
+            move || Ok(Box::new(MemoryPlane(Arc::clone(&handle))) as Box<dyn ObjectPlane>),
+            GatewayOptions { max_object_bytes: 8, ..GatewayOptions::default() },
+            "b",
+        );
+        let id = begin(&gateway, "k");
+        let one = etag_header(&part(&gateway, "k", &id, 1, b"12345"));
+        let two = etag_header(&part(&gateway, "k", &id, 2, b"67890"));
+        let refused = gateway.handle(&request("POST", &format!("/b/k?uploadId={id}"), &[], complete_body(&[(1, &one), (2, &two)]).as_bytes()));
+        assert_eq!(refused.status, 400, "{}", text(&refused));
+        assert_eq!(gateway.handle(&request("GET", "/b/k", &[], b"")).status, 404);
+        let fits = gateway.handle(&request("POST", &format!("/b/k?uploadId={id}"), &[], complete_body(&[(1, &one)]).as_bytes()));
+        assert_eq!(fits.status, 200);
+    }
+
+    #[test]
+    fn a_copy_makes_the_destination_hold_the_source() {
+        let (gateway, _) = gateway();
+        put(&gateway, "src", b"payload");
+        let copied = gateway.handle(&request("PUT", "/b/dst", &[("x-amz-copy-source", "/b/src")], b""));
+        assert_eq!(copied.status, 200, "{}", text(&copied));
+        assert!(text(&copied).contains("<CopyObjectResult"), "{}", text(&copied));
+        assert!(between(&text(&copied), "ETag").is_some(), "{}", text(&copied));
+        assert_eq!(gateway.handle(&request("GET", "/b/dst", &[], b"")).body, b"payload");
+        // The source is untouched, and copying over an existing destination replaces it.
+        put(&gateway, "src", b"newer");
+        let over = gateway.handle(&request("PUT", "/b/dst", &[("x-amz-copy-source", "b/src")], b""));
+        assert_eq!(over.status, 200);
+        assert_eq!(gateway.handle(&request("GET", "/b/dst", &[], b"")).body, b"newer");
+        assert_eq!(gateway.handle(&request("GET", "/b/src", &[], b"")).body, b"newer");
+        // A source with escapes is decoded.
+        put(&gateway, "a b", b"spaced");
+        let spaced = gateway.handle(&request("PUT", "/b/d2", &[("x-amz-copy-source", "/b/a%20b")], b""));
+        assert_eq!(spaced.status, 200, "{}", text(&spaced));
+        assert_eq!(gateway.handle(&request("GET", "/b/d2", &[], b"")).body, b"spaced");
+    }
+
+    #[test]
+    fn a_copy_refuses_what_it_cannot_do_and_changes_nothing() {
+        let (gateway, _) = gateway();
+        put(&gateway, "src", b"payload");
+        put(&gateway, "dst", b"keep");
+        let copy = |source: &str, extra: &[(&str, &str)]| {
+            let mut headers = vec![("x-amz-copy-source", source)];
+            headers.extend_from_slice(extra);
+            gateway.handle(&request("PUT", "/b/dst", &headers, b""))
+        };
+        let missing = copy("/b/absent", &[]);
+        assert_eq!(missing.status, 404);
+        assert!(text(&missing).contains("/b/absent"), "the missing thing is the source: {}", text(&missing));
+        assert_eq!(copy("/b/dst", &[]).status, 400, "onto itself");
+        assert_eq!(copy("/b/src?versionId=3", &[]).status, 400, "a version is not served");
+        assert_eq!(copy("/b", &[]).status, 400, "no key");
+        assert_eq!(copy("/b/.multipart/x/meta", &[]).status, 400, "reserved");
+        assert_eq!(copy("/b/src", &[("x-amz-copy-source-if-match", "\"gen-999\"")]).status, 412);
+        assert_eq!(copy("/b/src", &[("x-amz-copy-source-if-none-match", "\"gen-1\"")]).status, 412);
+        assert_eq!(gateway.handle(&request("GET", "/b/dst", &[], b"")).body, b"keep");
+        assert_eq!(copy("/b/src", &[("x-amz-copy-source-if-match", "\"gen-1\"")]).status, 200);
+        assert_eq!(gateway.handle(&request("GET", "/b/dst", &[], b"")).body, b"payload");
+    }
+
+    #[test]
+    fn a_put_with_if_match_replaces_only_that_version() {
+        let (gateway, _) = gateway();
+        let created = put(&gateway, "k", b"one");
+        let etag = etag_header(&created);
+        let conditional = |if_match: &str, body: &[u8]| {
+            gateway.handle(&request("PUT", "/b/k", &[("If-Match", if_match)], body))
+        };
+        assert_eq!(conditional("\"gen-999\"", b"x").status, 412);
+        assert_eq!(gateway.handle(&request("GET", "/b/k", &[], b"")).body, b"one");
+        assert_eq!(conditional(&format!("\"{etag}\""), b"two").status, 200);
+        // The version moved on, so the old etag no longer matches.
+        assert_eq!(conditional(&format!("\"{etag}\""), b"three").status, 412);
+        assert_eq!(conditional("*", b"four").status, 200);
+        assert_eq!(gateway.handle(&request("GET", "/b/k", &[], b"")).body, b"four");
+        // An absent object matches no etag, `*` included.
+        let absent = gateway.handle(&request("PUT", "/b/never", &[("If-Match", "*")], b"x"));
+        assert_eq!(absent.status, 412);
+        assert_eq!(gateway.handle(&request("GET", "/b/never", &[], b"")).status, 404);
+        // A deleted object is absent too.
+        gateway.handle(&request("DELETE", "/b/k", &[], b""));
+        assert_eq!(conditional("*", b"x").status, 412);
+    }
+
+    #[test]
+    fn a_conditional_read_answers_304_or_412_from_the_etag() {
+        let (gateway, _) = gateway();
+        let etag = etag_header(&put(&gateway, "k", b"hello"));
+        let quoted = format!("\"{etag}\"");
+        for method in ["GET", "HEAD"] {
+            let same = gateway.handle(&request(method, "/b/k", &[("If-None-Match", &quoted)], b""));
+            assert_eq!(same.status, 304, "{method}");
+            assert!(same.body.is_empty());
+            assert_eq!(header(&same, "etag"), Some(quoted.as_str()));
+            let other = gateway.handle(&request(method, "/b/k", &[("If-None-Match", "\"gen-999\"")], b""));
+            assert_eq!(other.status, 200, "{method}");
+            let star = gateway.handle(&request(method, "/b/k", &[("If-None-Match", "*")], b""));
+            assert_eq!(star.status, 304, "{method}");
+            let mismatch = gateway.handle(&request(method, "/b/k", &[("If-Match", "\"gen-999\"")], b""));
+            assert_eq!(mismatch.status, 412, "{method}");
+            let ok = gateway.handle(&request(method, "/b/k", &[("If-Match", &quoted)], b""));
+            assert_eq!(ok.status, 200, "{method}");
+        }
+        // The condition is decided before a ranged read as well.
+        let ranged = gateway.handle(&request("GET", "/b/k", &[("Range", "bytes=0-1"), ("If-None-Match", &quoted)], b""));
+        assert_eq!(ranged.status, 304);
+        let ranged = gateway.handle(&request("GET", "/b/k", &[("Range", "bytes=0-1"), ("If-Match", "\"gen-999\"")], b""));
+        assert_eq!(ranged.status, 412);
+        let ranged = gateway.handle(&request("GET", "/b/k", &[("Range", "bytes=0-1")], b""));
+        assert_eq!((ranged.status, ranged.body.as_slice()), (206, b"he".as_slice()));
+        assert_eq!(gateway.handle(&request("GET", "/b/absent", &[("If-None-Match", "*")], b"")).status, 404);
+    }
+
+    #[test]
+    fn a_batch_delete_reports_each_key_and_a_missing_key_is_deleted() {
+        let (gateway, _) = gateway();
+        put(&gateway, "a", b"1");
+        put(&gateway, "b", b"2");
+        let body = "<Delete><Object><Key>a</Key></Object><Object><Key>never</Key></Object><Object><Key>.multipart/x/meta</Key></Object></Delete>";
+        let response = gateway.handle(&request("POST", "/b?delete", &[], body.as_bytes()));
+        assert_eq!(response.status, 200, "{}", text(&response));
+        let result = text(&response);
+        assert_eq!(all_between(&result, "Key").len(), 3, "{result}");
+        assert!(result.contains("<Deleted><Key>a</Key></Deleted>"), "{result}");
+        assert!(result.contains("<Deleted><Key>never</Key></Deleted>"), "{result}");
+        assert!(result.contains("<Error><Key>.multipart/x/meta</Key>"), "{result}");
+        assert_eq!(gateway.handle(&request("GET", "/b/a", &[], b"")).status, 404);
+        assert_eq!(gateway.handle(&request("GET", "/b/b", &[], b"")).status, 200);
+        let malformed = gateway.handle(&request("POST", "/b?delete", &[], b"<nope/>"));
+        assert_eq!(malformed.status, 400);
+        let quiet = gateway.handle(&request("POST", "/b?delete", &[], b"<Delete><Quiet>true</Quiet><Object><Key>b</Key></Object></Delete>"));
+        assert!(!text(&quiet).contains("<Deleted>"), "{}", text(&quiet));
+    }
+
+    #[test]
+    fn a_bucket_is_deleted_only_when_it_holds_no_object() {
+        let (gateway, _) = gateway();
+        assert_eq!(gateway.handle(&request("DELETE", "/b", &[], b"")).status, 204, "an empty bucket");
+        put(&gateway, "k", b"x");
+        let refused = gateway.handle(&request("DELETE", "/b", &[], b""));
+        assert_eq!(refused.status, 409, "{}", text(&refused));
+        assert!(text(&refused).contains("BucketNotEmpty"), "{}", text(&refused));
+        gateway.handle(&request("DELETE", "/b/k", &[], b""));
+        assert_eq!(gateway.handle(&request("DELETE", "/b", &[], b"")).status, 204, "only a tombstone is left");
+        // An upload in progress holds no object of the bucket's.
+        begin(&gateway, "pending");
+        assert_eq!(gateway.handle(&request("DELETE", "/b", &[], b"")).status, 204);
+    }
+
+    #[test]
+    fn the_bucket_list_names_the_gateways_bucket() {
+        let (gateway, shared) = gateway();
+        let listed = gateway.handle(&request("GET", "/", &[], b""));
+        assert_eq!(listed.status, 200);
+        assert!(text(&listed).contains("<Name>b</Name>"), "{}", text(&listed));
+        assert_eq!(gateway.handle(&request("POST", "/", &[], b"")).status, 405);
+        assert!(shared.lock().unwrap().calls.is_empty(), "no cluster call is needed");
+    }
+
+    #[test]
+    fn the_sub_resources_a_client_probes_for_are_answered() {
+        let (gateway, _) = gateway();
+        put(&gateway, "k", b"x");
+        let versioning = gateway.handle(&request("GET", "/b?versioning", &[], b""));
+        assert_eq!(versioning.status, 200);
+        assert!(text(&versioning).contains("<VersioningConfiguration"), "{}", text(&versioning));
+        assert!(!text(&versioning).contains("<Status>"), "versioning is not enabled");
+        let acl = gateway.handle(&request("GET", "/b?acl", &[], b""));
+        assert!(text(&acl).contains("FULL_CONTROL"), "{}", text(&acl));
+        assert_eq!(gateway.handle(&request("GET", "/b/k?acl", &[], b"")).status, 200);
+        let tags = gateway.handle(&request("GET", "/b/k?tagging", &[], b""));
+        assert!(text(&tags).contains("<TagSet>"), "{}", text(&tags));
+        assert_eq!(gateway.handle(&request("GET", "/b/absent?tagging", &[], b"")).status, 404);
+        assert_eq!(gateway.handle(&request("GET", "/b/absent?acl", &[], b"")).status, 404);
+    }
+
+    #[test]
+    fn the_reserved_prefix_is_not_an_object_namespace() {
+        let (gateway, shared) = gateway();
+        for method in ["PUT", "GET", "HEAD", "DELETE"] {
+            let response = gateway.handle(&request(method, "/b/.multipart/x/meta", &[], b"x"));
+            assert_eq!(response.status, 400, "{method}");
+        }
+        // Even a record that reached the plane some other way is not listed.
+        shared.lock().unwrap().objects.insert(
+            ("b".into(), ".multipart/abc/meta".into()),
+            (manifest("b", ".multipart/abc/meta", 1, 1, 1), b"x".to_vec()),
+        );
+        put(&gateway, "visible", b"x");
+        let listing = text(&gateway.handle(&request("GET", "/b?list-type=2", &[], b"")));
+        assert_eq!(all_between(&listing, "Key"), ["visible"], "{listing}");
     }
 }
