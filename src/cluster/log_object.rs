@@ -235,11 +235,35 @@ fn finish_interrupted_switch<M: LogMeta>(
     open: &ObjectExtent,
 ) -> Result<LogChunkReply, LogObjectError> {
     let mut footers: Vec<(u64, u32, Vec<u8>)> = Vec::new();
+    let mut unsealed: Vec<(RemoteReplicaClient, u64)> = Vec::new();
     for endpoint in endpoints {
         let Ok(mut client) = RemoteReplicaClient::connect(endpoint, &options.replica) else { continue };
         if let Ok(reply) = client.log_tail(open.volume_id, open.chunk_id, GENERATION) {
             if reply.sealed {
                 footers.push((reply.length, reply.crc, reply.sha256));
+            } else {
+                unsealed.push((client, reply.length));
+            }
+        }
+    }
+    // A seal that reached fewer than two nodes (the writer died between them, or a node was down)
+    // is completed from the node that has it: every node that holds exactly the sealed length is
+    // sealed too, at this writer's epoch. A node at another length is not touched: it is behind or
+    // ahead, and that is repair's job.
+    if !footers.is_empty() && footers.len() < LOG_QUORUM {
+        if footers.iter().any(|footer| *footer != footers[0]) {
+            return Err(corrupt("the nodes hold different footers for a sealed chunk"));
+        }
+        let (length, _, digest) = footers[0].clone();
+        let with_sha256 = !digest.is_empty();
+        for (client, held) in unsealed.iter_mut() {
+            if *held != length {
+                continue;
+            }
+            match client.log_seal(open.volume_id, open.chunk_id, GENERATION, epoch, with_sha256) {
+                Ok(reply) if reply.length == length => footers.push((reply.length, reply.crc, reply.sha256)),
+                Ok(_) => return Err(corrupt("a node sealed the chunk at another length")),
+                Err(_) => {}
             }
         }
     }
@@ -257,29 +281,61 @@ fn extend(writing: &mut Writing, sent: Instant, ttl: Duration) {
     writing.valid_until = writing.valid_until.max(sent + ttl);
 }
 
+/// Why a switch did not complete, and whether the writer can still append to the open chunk.
+struct SwitchFailure {
+    error: LogObjectError,
+    keep_open: bool,
+}
+
+/// True if any node that answers holds the chunk SEALED. Such a node refuses further bytes.
+fn chunk_has_sealed_node(writing: &Writing, options: &LogObjectOptions) -> bool {
+    writing.endpoints.iter().any(|endpoint| {
+        RemoteReplicaClient::connect(endpoint, &options.replica)
+            .ok()
+            .and_then(|mut client| client.log_tail(writing.volume, writing.chunk, GENERATION).ok())
+            .is_some_and(|reply| reply.sealed)
+    })
+}
+
 fn switch_chunk<M: LogMeta>(
     writing: &mut Writing,
     meta: &mut M,
     bucket: &str,
     key: &str,
     options: &LogObjectOptions,
-) -> Result<(), LogObjectError> {
+) -> Result<(), SwitchFailure> {
     // The cap is checked BEFORE anything is sealed: an object at its limit keeps an open chunk that
     // can still be filled, and refuses the append that does not fit.
     if writing.entries + 1 > options.max_entries {
-        return Err(LogObjectError::EntryCap);
+        return Err(SwitchFailure { error: LogObjectError::EntryCap, keep_open: true });
     }
-    let footer = writing.writer.seal_footer(options.with_sha256).map_err(from_chunk)?;
+    // Nothing is sent to the metadata plane unless the seal returned a footer. A seal that did not
+    // reach two nodes leaves the writer usable if it reached NONE (the chunk is open everywhere);
+    // if it reached one, that node refuses more bytes, so the handle is closed and the next open
+    // completes the seal. Any other error (a node sealed at another length, a newer epoch) ends the
+    // writer: re-open.
+    let footer = match writing.writer.seal_footer(options.with_sha256) {
+        Ok(footer) => footer,
+        Err(error) => {
+            let error = from_chunk(error);
+            let no_node_sealed = matches!(error, LogObjectError::Chunk(ChunkLogError::NoQuorum { .. }))
+                && !chunk_has_sealed_node(writing, options);
+            return Err(SwitchFailure { error, keep_open: no_node_sealed });
+        }
+    };
+    // From here the chunk is sealed on the nodes: any failure closes the handle and the next open
+    // finishes the switch.
+    let closed = |error: LogObjectError| SwitchFailure { error, keep_open: false };
     let sent = Instant::now();
     let reply = meta
         .switch(bucket, key, &options.holder, writing.epoch, &options.group, footer.length, footer.crc, footer.sha256.clone())
-        .map_err(from_meta)?;
-    let open = reply.open.ok_or_else(|| corrupt("a switch answered without the next chunk"))?;
+        .map_err(|error| closed(from_meta(error)))?;
+    let open = reply.open.ok_or_else(|| closed(corrupt("a switch answered without the next chunk")))?;
     if open.object_offset != writing.base + footer.length {
-        return Err(corrupt("the next chunk does not start where the sealed chunk ends"));
+        return Err(closed(corrupt("the next chunk does not start where the sealed chunk ends")));
     }
     let writer = ChunkLogWriter::open(&writing.endpoints, open.volume_id, open.chunk_id, GENERATION, writing.epoch, options.replica.clone())
-        .map_err(from_chunk)?;
+        .map_err(|error| closed(from_chunk(error)))?;
     extend(writing, sent, Duration::from_millis(LogChunkRequest::SWITCH_TERM_MS));
     writing.volume = open.volume_id;
     writing.chunk = open.chunk_id;
@@ -410,13 +466,13 @@ impl LogObject {
             };
             if room == 0 {
                 let writing = self.writing.as_mut().ok_or(LogObjectError::NotOpen)?;
-                if let Err(error) = switch_chunk(writing, meta, &self.bucket, &self.key, &self.options) {
-                    // an object at its cap keeps its open chunk; any other failure after the nodes
-                    // sealed it leaves the writer to re-open, which finishes the switch
-                    if error != LogObjectError::EntryCap {
+                if let Err(failure) = switch_chunk(writing, meta, &self.bucket, &self.key, &self.options) {
+                    // an object at its cap, or a seal that reached no node, keeps its open chunk; any
+                    // other failure leaves the writer to re-open, which finishes the switch
+                    if !failure.keep_open {
                         self.writing = None;
                     }
-                    return Err(error);
+                    return Err(failure.error);
                 }
                 continue;
             }
