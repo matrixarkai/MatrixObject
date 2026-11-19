@@ -206,11 +206,18 @@ switch is refused unless both features are raised.
 
 - **Grant** takes the writer lease of an object and, if no chunk is open, adds one
   empty tail chunk to its manifest, in one commit. A holder that asks again while
-  its lease is live and a chunk is open changes nothing and costs no entry.
+  its lease is live and a chunk is open changes nothing and costs no entry. A grant
+  is refused, with a precondition failure "the object is not a log object", when
+  the object holds any extent that is not a log chunk, so a page-mode object stays
+  a page-mode object. A new object, an existing log object and an object that holds
+  no extent are not affected. A grant for a deleted key builds on the key's
+  tombstone: the generation goes on from the tombstone's, none of the old object's
+  chunks survive, and the new lease has a later epoch, so the old writer is fenced.
 - **Switch** seals the open chunk at its final length and footer and opens the
   next one, in one commit, by the holder of the live lease. It also renews the
   lease: the expiry becomes the later of the old expiry and now plus the term,
-  and the holder and epoch stay.
+  and the holder and epoch stay. A switch is refused in the same way for an object
+  that holds an extent that is not a log chunk.
 - **Renew** extends the leases a writer holds on up to 1,024 objects in one
   commit (outcome version 16). Epochs stay and expiry only moves later. The
   intended policy is a term of 30 to 60 seconds, renewed at half of it. A term is
@@ -464,9 +471,18 @@ through an 8 MiB cache peaked at 13,632,156 bytes.
 - The ordinary object read path refuses an object that holds log chunk extents
   ("object holds log-chunk extents this reader cannot read"). A log object is read
   through the log object reader.
-- A grant is accepted for an object that already holds page extents: it adds a log
-  chunk after them and makes the manifest format 3. The log object reader reads only
-  objects whose extents are all log chunks, so it refuses such an object. Open new
-  objects with the log object writer.
+- The guard that keeps a page-mode object a page-mode object is in the leader
+  commands only. The manifest rules still accept a manifest that holds page extents
+  followed by log chunks (page extents first, then log chunks, and only the last
+  extent unsealed), and the validators of the version 15 outcome check the kind
+  only of the extents they change. Whether to gate the validators as well is an
+  owner decision.
+- A delete does not clear the writer lease of the deleted object: a search of the
+  source found no delete path that touches the lease table. A grant by another
+  holder is refused while that lease is live.
+- A grant for an object that holds no extent is not refused, because such an object
+  has not chosen a kind. An empty format 2 object becoming a log object is not
+  tested; the tests cover a new object, an existing log object, a refused page
+  object and a deleted key.
 - Format 3 objects cannot be read by older builds, and a raised feature cannot be
   lowered. See the irreversibility statement above.
