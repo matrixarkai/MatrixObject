@@ -36,9 +36,10 @@ pub(super) fn commands(service: &MatrixMetaService, now: u64) -> Vec<StagedAlloc
 pub(super) fn all_commands(service: &MatrixMetaService, now: u64) -> Vec<super::MetaRequest> {
     let mut staged = commands(service, now).into_iter().map(super::MetaRequest::StagedAllocation);
     let mut readers = super::read_session_commands::expired(service, now).into_iter();
+    let mut leases = super::log_chunk_commands::expired(service, now).into_iter();
     (0..BATCH).filter_map(|index| if index % 2 == 0 {
-        staged.next().or_else(|| readers.next())
-    } else { readers.next().or_else(|| staged.next()) }).collect()
+        staged.next().or_else(|| readers.next()).or_else(|| leases.next())
+    } else { readers.next().or_else(|| staged.next()).or_else(|| leases.next()) }).collect()
 }
 
 #[cfg(feature = "metadata-consensus")]
@@ -48,6 +49,8 @@ pub(super) fn same_cleanup(left: &super::MetaRequest, right: &super::MetaRequest
             left.action == 9 && right.action == 9 && left.allocation_id == right.allocation_id,
         (super::MetaRequest::ManifestRetention(left), super::MetaRequest::ManifestRetention(right)) =>
             left.action == 7 && right.action == 7 && left.retention_id == right.retention_id,
+        (super::MetaRequest::LogChunk(left), super::MetaRequest::LogChunk(right)) =>
+            left.action == super::log_chunk_commands::ACTION_SWEEP && right.action == left.action && left.drops == right.drops,
         _ => false,
     }
 }

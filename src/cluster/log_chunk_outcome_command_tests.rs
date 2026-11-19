@@ -83,7 +83,7 @@ mod log_chunk_outcome_tests {
         let change = grant_change(service, holder, NOW);
         let after = manifest(1, 0, vec![extent(7, 0, 0, EXTENT_FLAG_TAIL, index)]);
         let outcome =
-            PlacementOutcome::log_chunk_for_tests(service, change, Some(publication(None, after))).unwrap();
+            PlacementOutcome::log_chunk_decision(service, change, Some(publication(None, after))).unwrap();
         commit(service, &outcome).unwrap();
         outcome
     }
@@ -96,7 +96,7 @@ mod log_chunk_outcome_tests {
         closed.flags = EXTENT_FLAG_SEALED;
         closed.footer_crc = 0xdead_beef;
         let after = manifest(before.generation + 1, sealed, vec![closed, extent(8, sealed, 0, EXTENT_FLAG_TAIL, index)]);
-        PlacementOutcome::log_chunk_for_tests(service, switch_change(service, NOW + 1), Some(publication(Some(before), after)))
+        PlacementOutcome::log_chunk_decision(service, switch_change(service, NOW + 1), Some(publication(Some(before), after)))
             .unwrap()
     }
 
@@ -135,13 +135,13 @@ mod log_chunk_outcome_tests {
         let manifest_before = stored(&service).unwrap();
         // the same holder opens again, and gets a new epoch: its previous writer is fenced
         let index = service.placement_commit_index + 1;
-        let again = PlacementOutcome::log_chunk_for_tests(&service, grant_change(&service, "gateway-a", NOW + 5), None).unwrap();
+        let again = PlacementOutcome::log_chunk_decision(&service, grant_change(&service, "gateway-a", NOW + 5), None).unwrap();
         commit(&mut service, &again).unwrap();
         assert_eq!(service.writer_leases.get("bucket", "log").unwrap().epoch, index);
         assert_eq!(stored(&service).unwrap(), manifest_before);
         // an object with no chunk being written cannot take a lease-only grant
         let (mut fresh, _groups) = fixture(1, 0);
-        let lone = PlacementOutcome::log_chunk_for_tests(&fresh, grant_change(&fresh, "gateway-a", NOW), None).unwrap();
+        let lone = PlacementOutcome::log_chunk_decision(&fresh, grant_change(&fresh, "gateway-a", NOW), None).unwrap();
         assert!(commit(&mut fresh, &lone).is_err());
         assert!(fresh.writer_leases.is_empty());
     }
@@ -152,23 +152,23 @@ mod log_chunk_outcome_tests {
         first_grant(&mut service, "gateway-a");
         // while the lease is live, another writer is refused when the outcome is built
         let live = grant_change(&service, "gateway-b", NOW + TTL - 1);
-        assert!(PlacementOutcome::log_chunk_for_tests(&service, live, None).is_err());
+        assert!(PlacementOutcome::log_chunk_decision(&service, live, None).is_err());
         // after it ran out, anyone may take it over
-        let taken = PlacementOutcome::log_chunk_for_tests(&service, grant_change(&service, "gateway-b", NOW + TTL), None).unwrap();
+        let taken = PlacementOutcome::log_chunk_decision(&service, grant_change(&service, "gateway-b", NOW + TTL), None).unwrap();
         commit(&mut service, &taken).unwrap();
         assert_eq!(service.writer_leases.get("bucket", "log").unwrap().holder, "gateway-b");
         // and the old holder is now the one refused
         let stale = grant_change(&service, "gateway-a", NOW + TTL + 1);
-        assert!(PlacementOutcome::log_chunk_for_tests(&service, stale, None).is_err());
+        assert!(PlacementOutcome::log_chunk_decision(&service, stale, None).is_err());
     }
 
     #[test]
     fn an_outcome_decided_from_a_lease_the_state_does_not_hold_fails_and_changes_nothing() {
         let (mut service, _groups) = fixture(1, 0);
         first_grant(&mut service, "gateway-a");
-        let decided = PlacementOutcome::log_chunk_for_tests(&service, grant_change(&service, "gateway-a", NOW + 5), None).unwrap();
+        let decided = PlacementOutcome::log_chunk_decision(&service, grant_change(&service, "gateway-a", NOW + 5), None).unwrap();
         // a different grant lands first, so this one was decided from a lease that is gone
-        let other = PlacementOutcome::log_chunk_for_tests(&service, grant_change(&service, "gateway-a", NOW + 6), None).unwrap();
+        let other = PlacementOutcome::log_chunk_decision(&service, grant_change(&service, "gateway-a", NOW + 6), None).unwrap();
         commit(&mut service, &other).unwrap();
         let snapshot = service.export_snapshot().to_bytes().unwrap();
         let error = commit(&mut service, &decided).unwrap_err();
@@ -178,7 +178,7 @@ mod log_chunk_outcome_tests {
         let mut wrong = grant_change(&service, "gateway-a", NOW + 7);
         let held = wrong.lease_before.clone().unwrap();
         wrong.lease_before = Some(WriterLease { expires_at_ms: held.expires_at_ms + 1, ..held });
-        let outcome = PlacementOutcome::log_chunk_for_tests(&service, wrong, None).unwrap();
+        let outcome = PlacementOutcome::log_chunk_decision(&service, wrong, None).unwrap();
         assert!(commit(&mut service, &outcome).is_err());
         assert_eq!(service.export_snapshot().to_bytes().unwrap(), snapshot);
     }
@@ -191,7 +191,7 @@ mod log_chunk_outcome_tests {
             change.lease_after = Some(lease("gateway-a", epoch, NOW + TTL));
             let after = manifest(1, 0, vec![extent(7, 0, 0, EXTENT_FLAG_TAIL, service.placement_commit_index + 1)]);
             assert!(
-                PlacementOutcome::log_chunk_for_tests(&service, change, Some(publication(None, after))).is_err(),
+                PlacementOutcome::log_chunk_decision(&service, change, Some(publication(None, after))).is_err(),
                 "epoch {epoch}"
             );
         }
@@ -210,11 +210,24 @@ mod log_chunk_outcome_tests {
             let mut extents = vec![closed, extent(8, sealed, 0, EXTENT_FLAG_TAIL, index)];
             mutate(&mut extents);
             let after = manifest(2, extents[0].length, extents);
-            PlacementOutcome::log_chunk_for_tests(&service, change, Some(publication(Some(before.clone()), after)))
+            PlacementOutcome::log_chunk_decision(&service, change, Some(publication(Some(before.clone()), after)))
         };
         let good = switch_change(&service, NOW + 1);
         assert!(build(4096, &|_| {}, good.clone()).is_ok());
-        // the lease may not change under a switch, and it must be live
+        // a switch is also a renewal: the expiry may move later, never earlier, within the bound
+        let mut extended = good.clone();
+        extended.lease_after = Some(lease("gateway-a", index - 1, NOW + 2 * TTL));
+        assert!(build(4096, &|_| {}, extended).is_ok());
+        let mut shortened = good.clone();
+        shortened.lease_after = Some(lease("gateway-a", index - 1, NOW + TTL - 1));
+        assert!(build(4096, &|_| {}, shortened).is_err());
+        let mut too_long = good.clone();
+        too_long.lease_after = Some(lease("gateway-a", index - 1, NOW + 1 + MAX_LEASE_TTL_MS + 1));
+        assert!(build(4096, &|_| {}, too_long).is_err());
+        // the holder and the epoch may not change under a switch, and the lease must be live
+        let mut new_epoch = good.clone();
+        new_epoch.lease_after = Some(lease("gateway-a", index, NOW + 2 * TTL));
+        assert!(build(4096, &|_| {}, new_epoch).is_err());
         let mut moved = good.clone();
         moved.lease_after = Some(lease("gateway-b", index - 1, NOW + TTL));
         assert!(build(4096, &|_| {}, moved).is_err());
@@ -244,7 +257,7 @@ mod log_chunk_outcome_tests {
         recorded.extents[0].length = 100;
         recorded.length = 100;
         recorded.generation = 2;
-        let publish = PlacementOutcome::log_chunk_for_tests(
+        let publish = PlacementOutcome::log_chunk_decision(
             &service,
             grant_change(&service, "gateway-a", NOW + 2),
             Some(publication(stored(&service), recorded.clone())),
@@ -279,7 +292,7 @@ mod log_chunk_outcome_tests {
         let index = service.placement_commit_index + 1;
         let tail = || manifest(1, 0, vec![extent(7, 0, 0, EXTENT_FLAG_TAIL, index)]);
         let ok = |change: LogChunkChange| {
-            PlacementOutcome::log_chunk_for_tests(&service, change, Some(publication(None, tail()))).is_ok()
+            PlacementOutcome::log_chunk_decision(&service, change, Some(publication(None, tail()))).is_ok()
         };
         let good = grant_change(&service, "gateway-a", NOW);
         assert!(ok(good.clone()));
@@ -312,7 +325,7 @@ mod log_chunk_outcome_tests {
         assert!(!ok(bad), "no object");
         // the manifest it publishes
         let build = |after: ObjectManifest| {
-            PlacementOutcome::log_chunk_for_tests(&service, good.clone(), Some(publication(None, after))).is_ok()
+            PlacementOutcome::log_chunk_decision(&service, good.clone(), Some(publication(None, after))).is_ok()
         };
         assert!(build(tail()));
         assert!(!build(ObjectManifest { format_version: 2, ..tail() }), "a grant publishes a chunked manifest");
@@ -323,7 +336,7 @@ mod log_chunk_outcome_tests {
         assert!(!build(ObjectManifest { key: "other".into(), ..tail() }), "another object");
         // a version 15 outcome that is not a log chunk outcome, and a log chunk change on another version
         let mut outcome =
-            PlacementOutcome::log_chunk_for_tests(&service, good.clone(), Some(publication(None, tail()))).unwrap();
+            PlacementOutcome::log_chunk_decision(&service, good.clone(), Some(publication(None, tail()))).unwrap();
         let sound = outcome.clone();
         outcome.version = 2;
         assert!(outcome.to_payload().is_err(), "a log chunk change belongs to version 15");
@@ -365,7 +378,7 @@ mod log_chunk_outcome_tests {
         // a first grant: the object had no lease and no manifest
         let (mut service, groups) = fixture(1, 0);
         let index = service.placement_commit_index + 1;
-        let first = PlacementOutcome::log_chunk_for_tests(
+        let first = PlacementOutcome::log_chunk_decision(
             &service,
             grant_change(&service, "gateway-a", NOW),
             Some(publication(None, manifest(1, 0, vec![extent(7, 0, 0, EXTENT_FLAG_TAIL, index)]))),
@@ -373,7 +386,7 @@ mod log_chunk_outcome_tests {
         .unwrap();
         through_a_draft_then_committed(&mut service, &groups, &first);
         // a second grant to the same holder: the lease changes from one to another
-        let again = PlacementOutcome::log_chunk_for_tests(&service, grant_change(&service, "gateway-a", NOW + 5), None).unwrap();
+        let again = PlacementOutcome::log_chunk_decision(&service, grant_change(&service, "gateway-a", NOW + 5), None).unwrap();
         through_a_draft_then_committed(&mut service, &groups, &again);
         // a switch: the manifest changes and the lease does not
         let switch = switch_outcome(&service, 4096);
@@ -510,5 +523,155 @@ mod log_chunk_outcome_tests {
             ..Default::default()
         };
         assert!(ObjectManifest { format_version: 2, ..manifest(1, 0, vec![page]) }.validate().is_err());
+    }
+
+    // ---- version 16: one entry renews or drops the leases of many objects ----
+
+    use crate::log_chunk_outcome::{LeaseBatch, LeaseRef};
+
+    fn lref(bucket: &str, key: &str, epoch: u64) -> LeaseRef {
+        LeaseRef { bucket: bucket.into(), key: key.into(), epoch }
+    }
+    fn batch_outcome(service: &MatrixMetaService, batch: LeaseBatch) -> PlacementOutcome {
+        let outcome = PlacementOutcome {
+            version: 16,
+            before_index: service.placement_commit_index,
+            after_index: service.placement_commit_index + 1,
+            lease_batch: Some(batch),
+            ..Default::default()
+        };
+        outcome.to_payload().unwrap();
+        outcome
+    }
+    fn renewal(holder: &str, expires: u64, refs: Vec<LeaseRef>) -> LeaseBatch {
+        LeaseBatch { holder: holder.into(), now_ms: NOW, expires_at_ms: expires, renewed: refs, dropped: Vec::new() }
+    }
+    fn drop_batch(now: u64, refs: Vec<LeaseRef>) -> LeaseBatch {
+        LeaseBatch { holder: String::new(), now_ms: now, expires_at_ms: 0, renewed: Vec::new(), dropped: refs }
+    }
+    /// Three objects leased to `gateway-a` at epochs 2, 3, 4 and one to `gateway-b` at epoch 5.
+    fn leased_objects(service: &mut MatrixMetaService) {
+        for (i, key) in ["a", "b", "c"].iter().enumerate() {
+            service.writer_leases.set("bucket", key, &lease("gateway-a", 2 + i as u64, NOW + 1000));
+        }
+        service.writer_leases.set("bucket", "d", &lease("gateway-b", 5, NOW + 1000));
+        service.placement_commit_index = 10;
+    }
+
+    #[test]
+    fn one_entry_renews_many_leases_keeps_their_epochs_and_moves_only_the_expiry() {
+        let (mut service, _groups) = fixture(1, 0);
+        leased_objects(&mut service);
+        let before = service.placement_commit_index;
+        let refs = vec![lref("bucket", "a", 2), lref("bucket", "b", 3), lref("bucket", "c", 4)];
+        let outcome = batch_outcome(&service, renewal("gateway-a", NOW + 30_000, refs));
+        assert_eq!(outcome.version, 16);
+        commit(&mut service, &outcome).unwrap();
+        // exactly one entry for three objects
+        assert_eq!(service.placement_commit_index, before + 1);
+        for (i, key) in ["a", "b", "c"].iter().enumerate() {
+            assert_eq!(service.writer_leases.get("bucket", key).unwrap(), lease("gateway-a", 2 + i as u64, NOW + 30_000));
+        }
+        // another writer's lease is not touched
+        assert_eq!(service.writer_leases.get("bucket", "d").unwrap(), lease("gateway-b", 5, NOW + 1000));
+    }
+
+    #[test]
+    fn a_renewal_of_a_lease_the_writer_does_not_hold_fails_and_changes_nothing() {
+        let (mut service, _groups) = fixture(1, 0);
+        leased_objects(&mut service);
+        let wrong_epoch = batch_outcome(&service, renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "a", 3)]));
+        assert!(commit(&mut service, &wrong_epoch).is_err());
+        let other_holder = batch_outcome(&service, renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "d", 5)]));
+        assert!(commit(&mut service, &other_holder).is_err());
+        let unknown = batch_outcome(&service, renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "zz", 2)]));
+        assert!(commit(&mut service, &unknown).is_err());
+        // one bad entry spoils the batch whole: the good lease before it did not move either
+        let mixed = batch_outcome(&service, renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "a", 2), lref("bucket", "d", 5)]));
+        assert!(commit(&mut service, &mixed).is_err());
+        assert_eq!(service.writer_leases.get("bucket", "a").unwrap(), lease("gateway-a", 2, NOW + 1000));
+        assert_eq!(service.placement_commit_index, 10);
+    }
+
+    #[test]
+    fn a_renewal_never_shortens_a_lease() {
+        let (mut service, _groups) = fixture(1, 0);
+        leased_objects(&mut service);
+        // the lease runs to NOW + 1000; a renewal to NOW + 500 would shorten it
+        let shorter = batch_outcome(&service, renewal("gateway-a", NOW + 500, vec![lref("bucket", "a", 2)]));
+        assert!(commit(&mut service, &shorter).is_err());
+        assert_eq!(service.writer_leases.get("bucket", "a").unwrap(), lease("gateway-a", 2, NOW + 1000));
+    }
+
+    #[test]
+    fn a_drop_removes_only_leases_that_are_over_and_a_later_grant_still_gets_a_later_epoch() {
+        let (mut service, _groups) = fixture(1, 0);
+        leased_objects(&mut service);
+        // not over yet: refused
+        let early = batch_outcome(&service, drop_batch(NOW + 500, vec![lref("bucket", "a", 2)]));
+        assert!(commit(&mut service, &early).is_err());
+        // over: dropped, in one entry for two objects, the third and the other writer's stay
+        let over = batch_outcome(&service, drop_batch(NOW + 1001, vec![lref("bucket", "a", 2), lref("bucket", "b", 3)]));
+        commit(&mut service, &over).unwrap();
+        assert!(service.writer_leases.get("bucket", "a").is_none());
+        assert!(service.writer_leases.get("bucket", "b").is_none());
+        assert!(service.writer_leases.get("bucket", "c").is_some());
+        assert_eq!(service.placement_commit_index, 11);
+        // a stale epoch is refused
+        let stale = batch_outcome(&service, drop_batch(NOW + 2000, vec![lref("bucket", "c", 3)]));
+        assert!(commit(&mut service, &stale).is_err());
+    }
+
+    #[test]
+    fn malformed_lease_batches_are_refused_before_they_can_apply() {
+        let (mut service, _groups) = fixture(1, 0);
+        leased_objects(&mut service);
+        let ok = renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "a", 2)]);
+        let index = service.placement_commit_index;
+        let check = |batch: LeaseBatch| batch.validate(index, index + 1).is_err();
+        assert!(!check(ok.clone()));
+        // neither list, and both lists
+        assert!(check(LeaseBatch { renewed: Vec::new(), ..ok.clone() }));
+        assert!(check(LeaseBatch { dropped: vec![lref("bucket", "b", 3)], ..ok.clone() }));
+        // not ascending, or repeating an object
+        assert!(check(renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "b", 3), lref("bucket", "a", 2)])));
+        assert!(check(renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "a", 2), lref("bucket", "a", 2)])));
+        // an epoch from the future, and epoch zero
+        assert!(check(renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "a", index + 1)])));
+        assert!(check(renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "a", 0)])));
+        // the term: not after now, over the bound
+        assert!(check(renewal("gateway-a", NOW, vec![lref("bucket", "a", 2)])));
+        assert!(check(renewal("gateway-a", NOW + MAX_LEASE_TTL_MS + 1, vec![lref("bucket", "a", 2)])));
+        // a renewal needs a holder; a drop names none and no term
+        assert!(check(renewal("", NOW + 30_000, vec![lref("bucket", "a", 2)])));
+        assert!(check(LeaseBatch { holder: "gateway-a".into(), ..drop_batch(NOW, vec![lref("bucket", "a", 2)]) }));
+        assert!(check(LeaseBatch { expires_at_ms: NOW + 5, ..drop_batch(NOW, vec![lref("bucket", "a", 2)]) }));
+        // the bound on the batch
+        let many: Vec<LeaseRef> = (0..=crate::log_chunk_outcome::MAX_BATCH_LEASES).map(|i| lref("bucket", &format!("k{i:06}"), 2)).collect();
+        assert!(check(renewal("gateway-a", NOW + 30_000, many)));
+        // not version 16, or version 16 without its batch
+        let mut wrong_version = batch_outcome(&service, ok.clone());
+        wrong_version.version = 15;
+        assert!(wrong_version.to_payload().is_err());
+        let mut empty = batch_outcome(&service, ok);
+        empty.lease_batch = None;
+        assert!(empty.to_payload().is_err());
+        // it changes nothing else
+        let mut extra = batch_outcome(&service, renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "a", 2)]));
+        extra.features = Some(Default::default());
+        assert!(extra.to_payload().is_err());
+    }
+
+    #[test]
+    fn a_renewed_lease_survives_a_snapshot() {
+        let (mut service, _groups) = fixture(1, 0);
+        leased_objects(&mut service);
+        let outcome = batch_outcome(&service, renewal("gateway-a", NOW + 30_000, vec![lref("bucket", "a", 2)]));
+        commit(&mut service, &outcome).unwrap();
+        let bytes = service.export_snapshot().to_bytes().unwrap();
+        let mut late = MatrixMetaService::new();
+        late.install_snapshot(crate::MetaSnapshot::from_bytes(&bytes).unwrap()).unwrap();
+        assert_eq!(late.writer_leases.get("bucket", "a").unwrap(), lease("gateway-a", 2, NOW + 30_000));
+        assert_eq!(late.writer_leases.get("bucket", "d").unwrap(), lease("gateway-b", 5, NOW + 1000));
     }
 }

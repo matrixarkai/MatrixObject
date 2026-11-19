@@ -751,6 +751,7 @@ fn read_only(request: &MetaRequest) -> bool {
         MetaRequest::ManifestRetention(command) => command.is_read(),
         MetaRequest::Membership(command) => command.is_read(),
         MetaRequest::Features(command) => command.is_read(),
+        MetaRequest::LogChunk(command) => command.is_read(),
         MetaRequest::ReadManifest { .. }
         | MetaRequest::ReadManifestRoutes { .. }
         | MetaRequest::ReadManifestRoutesWide { .. }
@@ -1048,11 +1049,42 @@ fn propose_batch(
     if queued.is_empty() {
         return Ok(());
     }
+    let (payloads, prepared) = prepare_batch(service, groups, limit, queued)?;
+    if !payloads.is_empty() {
+        match peer.propose_batch(payloads) {
+            Ok(ids) => {
+                for (id, (request, reply)) in ids.into_iter().zip(prepared) {
+                    pending.push_back(Pending { id, request, reply });
+                }
+            }
+            Err(error) => {
+                for (request, _) in prepared {
+                    let _ = request.reply.try_send(Err(refused(&error)));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The payloads of a batch, and the requests they answer.
+type PreparedBatch = (Vec<Vec<u8>>, Vec<(Request, Option<Result<MetaReply, ObjectError>>)>);
+
+/// Decide the queued requests one after another against a draft of the live service, so each one
+/// sees the prefix before it, then restore the live service. This is the whole of what the leader
+/// does between taking requests and proposing them: a test that runs it sees what the leader does.
+fn prepare_batch(
+    service: &mut MatrixMetaService,
+    groups: &super::ChunkGroupCatalog,
+    limit: usize,
+    queued: &mut VecDeque<Request>,
+) -> Result<PreparedBatch, RaftError> {
     for request in queued.iter() {
         request.progress.mark(RequestPhase::Preparing);
     }
     let mut nodes = BTreeSet::new();
     let mut objects = BTreeSet::new();
+    let mut lease_keys: BTreeSet<(String, String)> = BTreeSet::new();
     for request in queued.iter() {
         match &request.request {
             MetaRequest::CopyManifest(command) => {
@@ -1063,6 +1095,9 @@ fn propose_batch(
                     }
                 }
                 objects.insert(crate::ObjectId::new(command.bucket.clone(), command.key.clone()));
+            }
+            MetaRequest::LogChunk(command) if !command.is_read() => {
+                log_chunk_records(service, command, &mut nodes, &mut objects, &mut lease_keys);
             }
             MetaRequest::StagedAllocation(command) if command.action == 4 => {
                 if let Some(outcome) = &command.outcome {
@@ -1123,6 +1158,13 @@ fn propose_batch(
         .filter(|id| service.nodes.contains_key(id))
         .collect();
     let mut draft = PlacementDraft::with_records(service, nodes, objects.into_iter().collect());
+    draft.leases = lease_keys
+        .into_iter()
+        .map(|(bucket, key)| {
+            let held = draft.service.writer_leases.get(&bucket, &key);
+            ((bucket, key), held)
+        })
+        .collect();
     let mut retention_ids = BTreeSet::new();
     let mut renewal_ids = BTreeSet::new();
     for request in queued.iter().take(PROPOSALS_PER_BATCH) {
@@ -1204,21 +1246,7 @@ fn propose_batch(
         bytes += length;
     }
     drop(draft);
-    if !payloads.is_empty() {
-        match peer.propose_batch(payloads) {
-            Ok(ids) => {
-                for (id, (request, reply)) in ids.into_iter().zip(prepared) {
-                    pending.push_back(Pending { id, request, reply });
-                }
-            }
-            Err(error) => {
-                for (request, _) in prepared {
-                    let _ = request.reply.try_send(Err(refused(&error)));
-                }
-            }
-        }
-    }
-    Ok(())
+    Ok((payloads, prepared))
 }
 
 fn prepare(
@@ -1247,6 +1275,14 @@ fn prepare(
                     (outcome.to_payload()?, Some(MetaReply::Features(after)))
                 }
                 None => (Vec::new(), Some(super::features_commands::reply(&service.cluster_features))),
+            });
+        }
+    }
+    if let MetaRequest::LogChunk(command) = request {
+        if !command.is_read() {
+            return Ok(match super::log_chunk_commands::prepare(service, groups, command, super::staged_lease_sweeper::now_ms()?)? {
+                super::log_chunk_commands::Decision::Change(outcome, reply) => (outcome.to_payload()?, Some(reply)),
+                super::log_chunk_commands::Decision::Unchanged(reply) => (Vec::new(), Some(reply)),
             });
         }
     }
@@ -1308,6 +1344,37 @@ fn prepare(
     // Restore before the caller can propose, acknowledge, or handle another request.
     drop(draft);
     Ok((payload, Some(reply)))
+}
+
+/// Everything a log chunk command can change, named before the command is applied to a draft:
+/// the object (its manifest and placement), the nodes of the groups it holds or opens a chunk in
+/// (their capacity moves with the placement), and the writer leases it touches.
+fn log_chunk_records(
+    service: &MatrixMetaService,
+    command: &super::log_chunk_commands::LogChunkRequest,
+    nodes: &mut BTreeSet<String>,
+    objects: &mut BTreeSet<crate::ObjectId>,
+    lease_keys: &mut BTreeSet<(String, String)>,
+) {
+    match command.action {
+        super::log_chunk_commands::ACTION_RENEW => {
+            lease_keys.extend(command.renewals.iter().map(|lease| (lease.bucket.clone(), lease.key.clone())));
+        }
+        super::log_chunk_commands::ACTION_SWEEP => {
+            lease_keys.extend(command.drops.iter().map(|lease| (lease.bucket.clone(), lease.key.clone())));
+        }
+        _ => {
+            let id = crate::ObjectId::new(command.bucket.clone(), command.key.clone());
+            if let Some(placement) = service.placements.get(&id) {
+                nodes.extend(placement.node_ids.iter().cloned());
+            } else if let Some(current) = service.object_manifests.get(&id) {
+                nodes.extend(current.extents.iter().map(|extent| extent.group.clone()));
+            }
+            nodes.insert(command.group.clone());
+            objects.insert(id);
+            lease_keys.insert((command.bucket.clone(), command.key.clone()));
+        }
+    }
 }
 
 /// Undo state for the closed set of placement mutations admitted by `prepare`.
@@ -2761,6 +2828,9 @@ mod tests {
     include!("ranged_manifest_read_tests.rs");
     include!("feature_draft_tests.rs");
     include!("log_chunk_outcome_command_tests.rs");
+    include!("log_chunk_commands_tests.rs");
+    include!("log_chunk_pipeline_tests.rs");
+    include!("log_chunk_cost_probes.rs");
 
     #[test]
     fn compact_read_session_batches_restore_shared_records_before_committing_removal_and_creation() {

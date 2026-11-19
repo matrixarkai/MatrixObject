@@ -212,6 +212,9 @@ pub struct PlacementOutcome {
     /// Version 15 only: a writer lease grant or a chunk switch, with the manifest change it makes.
     #[prost(message, optional, tag = "17")]
     pub log_chunk: Option<crate::log_chunk_outcome::LogChunkChange>,
+    /// Version 16 only: many leases renewed or dropped at once, and nothing else.
+    #[prost(message, optional, tag = "18")]
+    pub lease_batch: Option<crate::log_chunk_outcome::LeaseBatch>,
 }
 fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
@@ -355,6 +358,20 @@ impl PlacementOutcome {
                 || self.read_session_open.is_some() || self.read_session_removal.is_some()
                 || !self.nodes.is_empty() || !self.placements.is_empty() {
                 return Err(invalid("a feature outcome changes unrelated state"));
+            }
+            return Ok(());
+        }
+        if self.lease_batch.is_some() || self.version == 16 {
+            let batch = self.lease_batch.as_ref().filter(|_| self.version == 16)
+                .ok_or_else(|| invalid("a lease batch outcome is version 16 and carries its batch"))?;
+            batch.validate(self.before_index, self.after_index)?;
+            if self.manifest.is_some() || self.retention.is_some() || self.staging.is_some()
+                || self.retention_deadline.is_some() || self.copy_source.is_some()
+                || self.publication_fence.is_some() || self.manifest_append.is_some() || self.reserved.is_some()
+                || self.read_session_open.is_some() || self.read_session_removal.is_some()
+                || self.features.is_some() || self.log_chunk.is_some()
+                || !self.nodes.is_empty() || !self.placements.is_empty() {
+                return Err(invalid("a lease batch outcome changes unrelated state"));
             }
             return Ok(());
         }
@@ -635,6 +652,7 @@ impl PlacementOutcome {
             reserved: None,
             features: None,
             log_chunk: None,
+            lease_batch: None,
         };
         outcome.validate_manifest_binding()?;
         outcome.validate_append_publication(service, true, before_manifest, after_manifest)?;
@@ -728,6 +746,7 @@ impl PlacementOutcome {
             reserved: None,
             features: None,
             log_chunk: None,
+            lease_batch: None,
         };
         outcome.validate_manifest_binding()?;
         outcome.validate_publication(service, true)?;
@@ -911,6 +930,7 @@ impl PlacementOutcome {
             reserved: None,
             features: None,
             log_chunk: None,
+            lease_batch: None,
         })
     }
     pub fn finish(mut self, service: &MatrixMetaService) -> Result<Self, ObjectError> {
@@ -946,10 +966,8 @@ impl PlacementOutcome {
         self.to_payload()?;
         Ok(self)
     }
-    /// The version 15 outcome for `change`, with the manifest change `manifest` makes. Tests only:
-    /// nothing in a build decides one yet.
-    #[cfg(all(test, feature = "metadata-consensus"))]
-    pub(crate) fn log_chunk_for_tests(
+    /// The version 15 outcome for `change`, with the manifest change `manifest` makes.
+    pub(crate) fn log_chunk_decision(
         service: &MatrixMetaService,
         change: crate::log_chunk_outcome::LogChunkChange,
         manifest: Option<ManifestOutcome>,
@@ -1046,6 +1064,17 @@ impl PlacementOutcome {
                 return Err(invalid("cluster feature outcome does not match the current set"));
             }
             service.cluster_features = change.after.as_ref().unwrap().to_features()?;
+            service.placement_commit_index = self.after_index;
+            service.invalidate_snapshot_export_cache();
+            return Ok(());
+        }
+        if let Some(batch) = &self.lease_batch {
+            // checked against exactly the state it was decided from; never skipped
+            if self.before_index != service.placement_commit_index {
+                return Err(invalid("lease batch outcome does not follow the current state"));
+            }
+            batch.check_leases(&service.writer_leases)?;
+            batch.apply_leases(&mut service.writer_leases);
             service.placement_commit_index = self.after_index;
             service.invalidate_snapshot_export_cache();
             return Ok(());

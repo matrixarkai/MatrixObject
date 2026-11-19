@@ -858,6 +858,12 @@ fn apply(
             }
             None => return Ok(super::features_commands::reply(&guard.service.cluster_features)),
         },
+        MetaRequest::LogChunk(command) if !command.is_read() => {
+            match super::log_chunk_commands::prepare(&guard.service, &guard.groups, command, super::staged_lease_sweeper::now_ms()?)? {
+                super::log_chunk_commands::Decision::Change(outcome, reply) => Some((outcome, reply)),
+                super::log_chunk_commands::Decision::Unchanged(reply) => return Ok(reply),
+            }
+        }
         MetaRequest::StagedAllocation(command) if !command.is_read() => {
             if guard.storage.is_none() {
                 return Err(ObjectError::PreconditionFailed("staged allocation requires durable metadata storage".into()));
@@ -1079,6 +1085,7 @@ pub(super) fn decide_allocation(
             reserved: None,
             features: None,
             log_chunk: None,
+            lease_batch: None,
     };
     outcome.to_payload()?;
     Ok((outcome, reply))
@@ -1182,6 +1189,17 @@ pub(super) fn apply_with_groups(
                     Ok(MetaReply::Features(after))
                 }
                 None => Ok(super::features_commands::reply(&service.cluster_features)),
+            };
+        }
+    }
+    if let MetaRequest::LogChunk(command) = &request {
+        if !command.is_read() {
+            return match super::log_chunk_commands::prepare(service, groups, command, super::staged_lease_sweeper::now_ms()?)? {
+                super::log_chunk_commands::Decision::Change(outcome, reply) => {
+                    outcome.apply(service)?;
+                    Ok(reply)
+                }
+                super::log_chunk_commands::Decision::Unchanged(reply) => Ok(reply),
             };
         }
     }
@@ -1434,6 +1452,8 @@ pub(super) fn apply_to_meta(
         MetaRequest::CopyManifest(_) => Err(ObjectError::InvalidArgument("atomic copy requires catalog dispatch".into())),
         MetaRequest::Features(command) if command.is_read() => super::features_commands::read(guard, &command),
         MetaRequest::Features(_) => Err(ObjectError::InvalidArgument("feature changes require catalog dispatch".into())),
+        MetaRequest::LogChunk(command) if command.is_read() => super::log_chunk_commands::read(guard, &command),
+        MetaRequest::LogChunk(_) => Err(ObjectError::InvalidArgument("log chunk changes require catalog dispatch".into())),
         MetaRequest::StagedAllocation(command) => super::staged_allocation_commands::read(guard, &command, max_payload_bytes),
         MetaRequest::ManifestRetention(command) => {
             command.validate()?;

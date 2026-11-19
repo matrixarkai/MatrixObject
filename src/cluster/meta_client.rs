@@ -428,6 +428,29 @@ impl RemoteMetaClient {
             other => Err(unexpected_reply("a cluster feature set", &other)),
         }
     }
+    /// Lease `bucket/key` for log writing to `holder` and, if no chunk is open, open one in `group`.
+    pub fn grant_log_chunk(&mut self, bucket: &str, key: &str, holder: &str, ttl_ms: u64, group: &str) -> Result<super::LogChunkReply, ObjectError> {
+        self.log_chunk_call(super::LogChunkRequest::grant(bucket, key, holder, ttl_ms, group))
+    }
+    /// Seal the chunk being written at its final length and footer and open the next one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn switch_log_chunk(&mut self, bucket: &str, key: &str, holder: &str, epoch: u64, group: &str, sealed_length: u64, footer_crc: u32, footer_sha256: Vec<u8>) -> Result<super::LogChunkReply, ObjectError> {
+        self.log_chunk_call(super::LogChunkRequest::switch(bucket, key, holder, epoch, group, sealed_length, footer_crc, footer_sha256))
+    }
+    /// Renew every lease `holder` names (ascending by object) in one commit.
+    pub fn renew_log_leases(&mut self, holder: &str, ttl_ms: u64, renewals: Vec<crate::log_chunk_outcome::LeaseRef>) -> Result<super::LogChunkReply, ObjectError> {
+        self.log_chunk_call(super::LogChunkRequest::renew(holder, ttl_ms, renewals))
+    }
+    /// The lease and the open chunk of one object, from the committed state.
+    pub fn read_log_chunk(&mut self, bucket: &str, key: &str) -> Result<super::LogChunkReply, ObjectError> {
+        self.log_chunk_call(super::LogChunkRequest::read(bucket, key))
+    }
+    fn log_chunk_call(&mut self, request: super::LogChunkRequest) -> Result<super::LogChunkReply, ObjectError> {
+        match self.call(MetaRequest::LogChunk(request))? {
+            MetaReply::LogChunk(reply) => Ok(reply),
+            other => Err(unexpected_reply("a log chunk reply", &other)),
+        }
+    }
     /// Describe this voter without leader routing or a read barrier.
     pub fn metadata_group_identity(&mut self) -> Result<super::MetaGroupIdentity, ObjectError> {
         match self.call_one(&MetaRequest::GroupIdentity).into_result()? {

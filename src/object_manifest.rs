@@ -45,6 +45,14 @@ pub struct ObjectPageAllocation {
     #[prost(uint32, tag = "3")]
     pub page_count: u32,
 }
+/// The (volume, chunk) that the raft index of an entry names. The pages of an allocation and the
+/// chunk a log chunk grant opens are both named by this, after the index of the entry that creates
+/// them, so no two of them can be equal: a chunk id IS the index of one entry, and an entry
+/// creates either an allocation or a grant.
+pub fn chunk_identity_of_index(index: u64) -> (u64, u64) {
+    (index >> 32, index & 0xffff_ffff)
+}
+
 impl ObjectPageAllocation {
     pub fn validate(&self) -> Result<(), ObjectError> {
         if self.format_version != 1
@@ -65,7 +73,10 @@ impl ObjectPageAllocation {
             ));
         }
         Ok(crate::PageId {
-            chunk_id: ChunkId::new(self.allocation_id >> 32, self.allocation_id & 0xffff_ffff)?,
+            chunk_id: {
+                let (volume, chunk) = chunk_identity_of_index(self.allocation_id);
+                ChunkId::new(volume, chunk)?
+            },
             page_index: u64::from(index),
         })
     }
@@ -515,6 +526,14 @@ impl ManifestOutcome {
             before,
             after: Some(after),
         };
+        value.validate()?;
+        Ok(value)
+    }
+    /// The decision of a publication that may carry a format 3 manifest. Only the commands of
+    /// `log_chunk_commands` call this, and they refuse unless the cluster has raised
+    /// `FEATURE_CHUNK_MANIFEST`; every other writer still goes through `decide`, which refuses.
+    pub(crate) fn decide_chunked(before: Option<ObjectManifest>, after: ObjectManifest) -> Result<Self, ObjectError> {
+        let value = Self { format_version: 1, before, after: Some(after) };
         value.validate()?;
         Ok(value)
     }
