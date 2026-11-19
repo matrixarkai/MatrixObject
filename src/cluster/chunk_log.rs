@@ -16,7 +16,7 @@ use super::log_chunk_store::{LOG_CHUNK_LIMIT, SEALED_MESSAGE, STALE_EPOCH_PREFIX
 use super::log_op::{LogOpReply, LogOpRequest, MAX_OP_DATA};
 use crate::ObjectError;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Nodes that hold one log chunk.
 pub const LOG_REPLICAS: usize = 3;
@@ -405,9 +405,8 @@ impl ChunkLogWriter {
         });
     }
 
-    fn drive(&mut self) -> Result<u64, ChunkLogError> {
-        self.collect_finished()?;
-        let end = self.next;
+    /// Start work on every idle node that is still short of `end` bytes.
+    fn start_lacking(&mut self, end: u64) {
         for index in 0..self.members.len() {
             let member = &self.members[index];
             if member.busy || member.given_up {
@@ -422,6 +421,12 @@ impl ChunkLogWriter {
             }
             self.start(index);
         }
+    }
+
+    fn drive(&mut self) -> Result<u64, ChunkLogError> {
+        self.collect_finished()?;
+        let end = self.next;
+        self.start_lacking(end);
         loop {
             let durable = self.durable_length();
             if durable >= end {
@@ -465,8 +470,31 @@ impl ChunkLogWriter {
         }
     }
 
-    /// Seal the chunk on every node that is reachable. Two must seal for the chunk to count as
-    /// sealed; the rest are repaired later.
+    /// Wait until every node that can still be caught up holds all `end` bytes. A node that is
+    /// still short when the wait ends (it never answered, or its connection failed and would not
+    /// come back) is left as it is: the caller does not seal it. The wait is bounded by the
+    /// connection's read timeout.
+    fn drain(&mut self, end: u64) -> Result<(), ChunkLogError> {
+        let deadline = Instant::now() + self.options.read_timeout;
+        loop {
+            self.collect_finished()?;
+            self.start_lacking(end);
+            if !self.members.iter().any(|m| m.busy) {
+                return Ok(());
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(());
+            }
+            match self.done_rx.recv_timeout(left) {
+                Ok(done) => self.apply(done)?,
+                Err(_) => return Ok(()),
+            }
+        }
+    }
+
+    /// Seal the chunk on every node that holds all of its bytes. Two must seal for the chunk to
+    /// count as sealed; a node that is still short is left open (see `seal_footer`).
     pub fn seal(&mut self, with_sha256: bool) -> Result<u64, ChunkLogError> {
         Ok(self.seal_footer(with_sha256)?.length)
     }
@@ -475,13 +503,25 @@ impl ChunkLogWriter {
     /// SHA-256 of the sealed bytes, as the nodes computed them. The footer is what the metadata
     /// plane records when the object moves to its next chunk. Every node that sealed holds the
     /// same bytes, so a node that answers with a different footer is refused.
+    ///
+    /// A seal is final, so a node is sealed only once it holds every byte the writer has: first
+    /// the nodes that are behind are given the bytes they lack and waited for (a node whose
+    /// appends are still in flight is not sealed at the shorter length it happens to hold), and
+    /// then only a node at exactly the chunk's length is sealed. A node that is down, or that does
+    /// not catch up within the read timeout, is NOT sealed: it is left open and is under-replicated
+    /// until a repair copies the chunk to it, and a reader falls back to the nodes that sealed.
+    /// A node that answers a seal with a length other than the one it was asked to hold has sealed
+    /// something wrong and cannot be undone: that is an error, and no footer is returned.
     pub fn seal_footer(&mut self, with_sha256: bool) -> Result<SealedFooter, ChunkLogError> {
         let end = self.settle()?;
+        self.drain(end)?;
         let mut sealed = 0;
         let mut footer: Option<SealedFooter> = None;
         for index in 0..self.members.len() {
-            self.collect_finished()?;
             let member = &mut self.members[index];
+            if member.busy || member.given_up || member.applied != end {
+                continue;
+            }
             let Some(client) = member.client.as_mut() else { continue };
             match client.log_seal(self.volume, self.chunk, self.generation, self.epoch, with_sha256) {
                 Ok(reply) if reply.length == end => {
@@ -497,7 +537,18 @@ impl ChunkLogWriter {
                     }
                     sealed += 1;
                 }
-                Ok(_) => {}
+                Ok(reply) => {
+                    // some node holds a sealed chunk of another length: that cannot be undone, so
+                    // this writer is finished, no footer is returned, and the chunk must not be
+                    // recorded as sealed anywhere
+                    member.given_up = true;
+                    let error = ChunkLogError::Refused(ObjectError::Corruption(format!(
+                        "a node sealed the chunk at {} bytes, not the {} the writer holds",
+                        reply.length, end
+                    )));
+                    self.fatal = Some(error.clone());
+                    return Err(error);
+                }
                 Err(LogCallError::Transport(_)) => member.client = None,
                 Err(LogCallError::Refused(_)) => {}
                 Err(other) => return Err(other.into()),
@@ -548,32 +599,42 @@ impl ChunkLogReader {
         Ok(self.clients[index].as_mut().expect("just connected"))
     }
 
-    /// Each node's durable length, `None` for one that did not answer, and the quorum length.
+    /// Each node's durable length and the quorum length. A node that did not answer, or that is
+    /// still at an older writer epoch than another node reports, is `None`: it takes no part in
+    /// the quorum length and no read is served from it. A node left at an older epoch missed the
+    /// writer change (it was down, or behind the quorum when the new writer opened), so whatever
+    /// it holds past the point the new writer started from may be bytes that were never
+    /// acknowledged and that the new writer's bytes replaced elsewhere.
     fn lengths(&mut self) -> Result<(Vec<Option<u64>>, u64), ChunkLogError> {
-        let mut durables = Vec::new();
+        let mut answers: Vec<Option<(u64, u64)>> = Vec::new();
         let mut silent = 0;
         for index in 0..self.endpoints.len() {
             let (volume, chunk, generation) = (self.volume, self.chunk, self.generation);
             match self.client(index).and_then(|client| client.log_tail(volume, chunk, generation)) {
-                Ok(reply) => durables.push(Some(reply.durable_length)),
+                Ok(reply) => answers.push(Some((reply.durable_length, reply.epoch))),
                 Err(LogCallError::NotSpoken) => {
                     silent += 1;
-                    durables.push(None);
+                    answers.push(None);
                 }
                 Err(_) => {
                     self.clients[index] = None;
-                    durables.push(None);
+                    answers.push(None);
                 }
             }
         }
         if silent == self.endpoints.len() {
             return Err(ChunkLogError::NotSpoken);
         }
-        let answered: Vec<u64> = durables.iter().flatten().copied().collect();
-        if answered.len() < LOG_QUORUM {
+        let highest = answers.iter().flatten().map(|(_, epoch)| *epoch).max().unwrap_or(0);
+        let durables: Vec<Option<u64>> = answers
+            .iter()
+            .map(|answer| answer.filter(|(_, epoch)| *epoch == highest).map(|(durable, _)| durable))
+            .collect();
+        let eligible: Vec<u64> = durables.iter().flatten().copied().collect();
+        if eligible.len() < LOG_QUORUM {
             return Err(ChunkLogError::NoQuorum { wanted: 1, durable: 0 });
         }
-        let quorum = quorum_length(&answered);
+        let quorum = quorum_length(&eligible);
         Ok((durables, quorum))
     }
 
