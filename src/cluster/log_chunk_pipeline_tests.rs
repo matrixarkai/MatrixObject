@@ -66,7 +66,7 @@ mod log_chunk_pipeline_tests {
     ) {
         let before = full_state(leader);
         let mut queue = queue_of(requests);
-        let (payloads, prepared) = prepare_batch(leader, groups, 1 << 20, &mut queue).unwrap();
+        let (payloads, prepared) = prepare_batch(leader, groups, 1 << 20, &mut queue, None).unwrap();
         assert!(queue.is_empty(), "{name}: the batch did not take every request");
         assert_eq!(full_state(leader), before, "{name}: the draft left something behind in the live service");
         for (_, reply) in &prepared {
