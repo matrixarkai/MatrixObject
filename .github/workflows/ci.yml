@@ -2776,6 +2776,19 @@ jobs:
           grep -q '^running 1 test$' /tmp/page-undo.log
           grep -q '^test result: ok. 1 passed' /tmp/page-undo.log
 
+      - name: a sealed log chunk is read from its file and only an open tail holds its bytes
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib log_chunk_sealed_tests -- --test-threads=1 | tee /tmp/log-chunk-sealed.log
+          grep -q '^test result: ok. 6 passed' /tmp/log-chunk-sealed.log
+      - name: a replica bounds the memory of its log chunks
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib log_chunk_store::limits_tests -- --test-threads=1 | tee /tmp/log-chunk-limits.log
+          grep -q '^test result: ok. 5 passed' /tmp/log-chunk-limits.log
+          cargo test --locked --all-features --test log_chunk_flat_memory -- --test-threads=1 | tee /tmp/log-chunk-memory.log
+          grep -q '^test result: ok. 2 passed' /tmp/log-chunk-memory.log
+
   metadata-consensus:
     name: network metadata consensus
     runs-on: ubuntu-latest

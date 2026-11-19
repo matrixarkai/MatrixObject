@@ -199,7 +199,7 @@ fn opening_cuts_the_long_replicas_and_fences_the_dead_writer() {
     for c in &mut chunks {
         assert_eq!(c.length(), 300);
         assert_eq!(c.epoch(), 2);
-        assert_eq!(c.read(0, 300), &data[..300]);
+        assert_eq!(c.read_vec(0, 300).unwrap(), &data[..300]);
         // the dead writer's next pipelined write is refused on every replica
         assert!(matches!(c.append(1, 300, &data[300..400]), Err(LogError::Fenced { current: 2 })));
     }
