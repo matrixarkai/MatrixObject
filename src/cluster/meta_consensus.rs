@@ -564,7 +564,7 @@ fn run(
                             // Recheck after quorum confirmation. A newly eligible node
                             // returns to the durable proposal path before any reply.
                             match &result {
-                                Ok(true) if empty_expiry(service, &request.request) => {
+                                Ok(true) if empty_expiry(service, groups, Some(&liveness), &request.request) => {
                                     let _ = request.reply.try_send(Ok(MetaReply::Expired { offline_count: 0 }));
                                 }
                                 Ok(true) => queued.push_front(request),
@@ -658,7 +658,7 @@ fn run(
                     }
                 } else if queued.front().is_some_and(|r| matches!(r.request, MetaRequest::ChunkCatalog(_))) {
                     propose_catalog_batch(peer, service, groups, limit, &mut queued, &mut pending)?;
-                } else if queued.front().is_some_and(|r| empty_expiry(service, &r.request)) {
+                } else if queued.front().is_some_and(|r| empty_expiry(service, groups, Some(&liveness), &r.request)) {
                     // A sweep with no candidate changes no state. Confirm the current
                     // quorum without appending an empty application entry.
                     let request = queued.pop_front().unwrap();
@@ -790,11 +790,24 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::CommitObjectPlacementIfCurrent { .. } => false,
     }
 }
-fn empty_expiry(service: &MatrixMetaService, request: &MetaRequest) -> bool {
+/// A sweep with no candidate. With leader liveness the candidates are the stamp's candidates MINUS the nodes the
+/// leader has heard from, exactly as `prepare_with` computes them: an aged replicated stamp of a node that reports
+/// on time must not send the sweep down the proposal path (which would append an entry for nothing).
+fn empty_expiry(
+    service: &MatrixMetaService,
+    groups: &super::ChunkGroupCatalog,
+    live: Option<&LeaderLiveness>,
+    request: &MetaRequest,
+) -> bool {
     match request {
-        MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms } =>
-            super::meta_server::expired_node_ids(service, *ttl_ms, *now_ms)
-                .is_ok_and(|nodes| nodes.is_empty()),
+        MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms } => {
+            super::meta_server::expired_node_ids(service, *ttl_ms, *now_ms).is_ok_and(|nodes| {
+                match live.filter(|live| live.active()) {
+                    Some(live) => filter_expired(live, groups, nodes, *ttl_ms, *now_ms).is_empty(),
+                    None => nodes.is_empty(),
+                }
+            })
+        }
         _ => false,
     }
 }
