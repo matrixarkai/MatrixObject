@@ -21,6 +21,8 @@ thread_local! {
     static SUPPRESS_REPORTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     // MATRIXOBJECT_METASERVER_MAX_OBJECTS for the voters of the next Group built on this thread.
     static OBJECT_CAP: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// Whether the next `Group` created on this thread lets its leader decide expiry from what it has heard.
+    static LEADER_LIVENESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 struct Group {
     zero_fill: Option<u64>,
@@ -192,6 +194,9 @@ impl Group {
         }
         if SUPPRESS_REPORTS.with(|flag| flag.get()) {
             environment.push(("MATRIXOBJECT_METASERVER_SUPPRESS_UNCHANGED_REPORTS", "1"));
+        }
+        if LEADER_LIVENESS.with(|flag| flag.get()) {
+            environment.push(("MATRIXOBJECT_METASERVER_LEADER_LIVENESS", "1"));
         }
         drop(self.reservations[i].take());
         let node = processes::start(env!("CARGO_BIN_EXE_metaserver"), &environment);
@@ -3266,6 +3271,268 @@ fn a_node_that_stops_reporting_is_still_expired_when_reports_are_suppressed() {
         assert!(Instant::now() < until, "a silent node was never expired");
         std::thread::sleep(Duration::from_millis(500));
     }
+}
+
+/// Three real voters whose leader decides who is silent from what it has heard.
+fn liveness_group(roster: Option<String>, catalog: Option<Vec<u8>>, ttl_ms: &str, membership: bool) -> Group {
+    LEADER_LIVENESS.with(|flag| flag.set(true));
+    let group = Group::with_membership_options(roster, Some(ttl_ms.into()), catalog, 0, membership);
+    LEADER_LIVENESS.with(|flag| flag.set(false));
+    group
+}
+
+/// A client that follows the leader, starting with a follower so the first call must route.
+fn failover_client(group: &Group, leader: usize) -> RemoteMetaClient {
+    let mut endpoints: Vec<_> = (0..3)
+        .filter(|i| *i != leader)
+        .map(|i| group.nodes[i].as_ref().unwrap().endpoint.clone())
+        .collect();
+    endpoints.push(group.nodes[leader].as_ref().unwrap().endpoint.clone());
+    RemoteMetaClient::connect_catalog(
+        &endpoints,
+        &MetaClientOptions {
+            read_timeout: Duration::from_secs(3),
+            write_timeout: Duration::from_secs(3),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+const TWO_NODES: &str = "chunk-1@127.0.0.1:9100@rack,chunk-2@127.0.0.1:9101@rack2";
+
+fn wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+#[test]
+fn leader_liveness_costs_no_raft_entries_for_a_node_that_reports_on_time_however_old_its_stamp() {
+    let group = liveness_group(Some("chunk-1@127.0.0.1:9100@rack".into()), None, "6000", true);
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    let first = client
+        .report_chunk_node("chunk-1", "127.0.0.1:9100", 100, 1 << 28, true)
+        .unwrap();
+    assert!(first.online);
+    let steady = applied_index(&mut client);
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(20) {
+        std::thread::sleep(Duration::from_millis(500));
+        let reply = client
+            .report_chunk_node("chunk-1", "127.0.0.1:9100", 101, 1 << 28, true)
+            .unwrap();
+        assert_eq!(reply.last_heartbeat_ms, first.last_heartbeat_ms, "an unchanged report must not advance the stamp");
+        let nodes = client.list_placement_nodes().unwrap();
+        assert!(nodes[0].online, "a node that reported on time was expired after {:?}", start.elapsed());
+    }
+    assert!(wall_ms() - first.last_heartbeat_ms > 18_000, "the replicated stamp should be older than three TTLs");
+    assert_eq!(applied_index(&mut client), steady, "reports that changed nothing appended Raft entries");
+    // A real change is still exactly one entry.
+    let used = 100 + (1u64 << 28) / 20;
+    client
+        .report_chunk_node("chunk-1", "127.0.0.1:9100", used, 1 << 28, true)
+        .unwrap();
+    assert_eq!(applied_index(&mut client), steady + 1);
+}
+
+#[test]
+fn after_a_leader_change_a_reporting_node_stays_online_and_a_silent_one_expires_after_the_grace() {
+    let mut group = liveness_group(Some(TWO_NODES.into()), None, "6000", false);
+    let first_leader = group.leader();
+    let mut client = failover_client(&group, first_leader);
+    for (id, endpoint) in [("chunk-1", "127.0.0.1:9100"), ("chunk-2", "127.0.0.1:9101")] {
+        client.report_chunk_node(id, endpoint, 100, 1 << 28, true).unwrap();
+    }
+    let start = Instant::now();
+    let (mut killed, mut last_report_of_2) = (false, Duration::ZERO);
+    let (mut offline_1, mut offline_2_at) = (0, None);
+    while start.elapsed() < Duration::from_secs(45) && offline_2_at.is_none() {
+        let elapsed = start.elapsed();
+        if !killed && elapsed >= Duration::from_secs(8) {
+            group.kill(first_leader);
+            killed = true;
+        }
+        let _ = client.report_chunk_node("chunk-1", "127.0.0.1:9100", 100, 1 << 28, true);
+        // chunk-2 stops reporting at the moment the leader dies: it is the node that really went away.
+        if elapsed < Duration::from_secs(8)
+            && client.report_chunk_node("chunk-2", "127.0.0.1:9101", 100, 1 << 28, true).is_ok()
+        {
+            last_report_of_2 = elapsed;
+        }
+        if let Ok(nodes) = client.list_placement_nodes() {
+            for node in nodes {
+                match (node.node_id.as_str(), node.online) {
+                    ("chunk-1", false) => offline_1 += 1,
+                    ("chunk-2", false) if offline_2_at.is_none() => offline_2_at = Some(elapsed),
+                    _ => {}
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(killed);
+    assert_eq!(offline_1, 0, "a node that kept reporting through the leader change was expired");
+    let offline_2_at = offline_2_at.expect("a node that really stopped reporting was never expired");
+    assert!(
+        offline_2_at >= last_report_of_2 + Duration::from_millis(5_500),
+        "expired {:?} after its last report, before the TTL",
+        offline_2_at - last_report_of_2
+    );
+    assert!(
+        offline_2_at <= last_report_of_2 + Duration::from_secs(30),
+        "expired only {:?} after its last report",
+        offline_2_at - last_report_of_2
+    );
+    assert_ne!(group.leader(), first_leader);
+}
+
+#[test]
+fn a_node_that_really_dies_is_expired_within_the_ttl_without_any_leader_change() {
+    let group = liveness_group(Some(TWO_NODES.into()), None, "6000", false);
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    let start = Instant::now();
+    let mut last_report_of_2 = Duration::ZERO;
+    let mut offline_2_at = None;
+    while start.elapsed() < Duration::from_secs(30) && offline_2_at.is_none() {
+        let elapsed = start.elapsed();
+        client.report_chunk_node("chunk-1", "127.0.0.1:9100", 100, 1 << 28, true).unwrap();
+        if elapsed < Duration::from_secs(4) {
+            client.report_chunk_node("chunk-2", "127.0.0.1:9101", 100, 1 << 28, true).unwrap();
+            last_report_of_2 = elapsed;
+        }
+        for node in client.list_placement_nodes().unwrap() {
+            assert!(node.node_id != "chunk-1" || node.online, "the reporting node was expired");
+            if node.node_id == "chunk-2" && !node.online && elapsed > Duration::from_secs(1) {
+                offline_2_at = Some(elapsed);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let offline_2_at = offline_2_at.expect("a dead node was never expired");
+    let age = offline_2_at - last_report_of_2;
+    assert!(age >= Duration::from_millis(5_500), "expired {age:?} after its last report, before the TTL");
+    assert!(age <= Duration::from_secs(12), "expired only {age:?} after its last report");
+}
+
+#[test]
+fn a_restarted_follower_catches_up_while_the_leader_keeps_a_reporting_node_online() {
+    let mut group = liveness_group(Some("chunk-1@127.0.0.1:9100@rack".into()), None, "6000", true);
+    let leader = group.leader();
+    let mut client = failover_client(&group, leader);
+    client.report_chunk_node("chunk-1", "127.0.0.1:9100", 100, 1 << 28, true).unwrap();
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let start = Instant::now();
+    let mut restarted = false;
+    let mut killed = false;
+    while start.elapsed() < Duration::from_secs(20) {
+        let elapsed = start.elapsed();
+        if !killed && elapsed >= Duration::from_secs(3) {
+            group.kill(follower);
+            killed = true;
+        }
+        if killed && !restarted && elapsed >= Duration::from_secs(9) {
+            group.start(follower);
+            restarted = true;
+        }
+        client.report_chunk_node("chunk-1", "127.0.0.1:9100", 100, 1 << 28, true).unwrap();
+        assert!(client.list_placement_nodes().unwrap()[0].online, "the node went offline at {elapsed:?}");
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(restarted);
+    // The restarted follower converges on the leader's log position. A follower cannot answer a membership
+    // read (only a leader admits it), so the leader's applied index is asked through the routing client and
+    // the follower's committed index is read from its own log file.
+    let target = applied_index(&mut client);
+    let wal = group.root.join(follower.to_string()).join("metadata.peer.wal");
+    let until = Instant::now() + Duration::from_secs(15);
+    loop {
+        let held = node_regime::checkpoints::committed_index(&wal);
+        if held + 2 >= target {
+            break;
+        }
+        assert!(Instant::now() < until, "the restarted follower holds {held}, the leader has applied {target}");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+#[test]
+fn a_healthy_chunk_group_stays_in_placement_through_a_leader_change_and_leaves_when_its_members_die() {
+    use matrixobjectstore_rs::cluster::{ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity};
+    let config = ChunkGroupConfig {
+        placement_id: "group-a".into(),
+        failure_domain: "rack-a".into(),
+        identity: Some(ChunkGroupIdentity {
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
+            version: 1,
+            group_id: 1,
+            node_id: 1,
+            capacity_bytes: 65536,
+            max_pages: 64,
+            voters: vec![1, 2, 3],
+            peer_endpoints: vec!["127.0.0.1:9101".into(), "127.0.0.1:9102".into(), "127.0.0.1:9103".into()],
+        }),
+        api_endpoints: vec!["127.0.0.1:9201".into(), "127.0.0.1:9202".into(), "127.0.0.1:9203".into()],
+        member_ids: vec!["member-a".into(), "member-b".into(), "member-c".into()],
+    };
+    let catalog = ChunkGroupCatalog::new(vec![config.clone()]).unwrap();
+    let mut group = liveness_group(None, Some(catalog.to_bytes().unwrap()), "6000", false);
+    let first_leader = group.leader();
+    let mut client = failover_client(&group, first_leader);
+    let members = [("member-a", "127.0.0.1:9201"), ("member-b", "127.0.0.1:9202"), ("member-c", "127.0.0.1:9203")];
+    let report_all = |client: &mut RemoteMetaClient| {
+        for (id, endpoint) in members {
+            let _ = client.report_chunk_node(id, endpoint, 123, 65536, true);
+        }
+    };
+    report_all(&mut client);
+    let start = Instant::now();
+    let (mut killed, mut silent_since) = (false, None);
+    let (mut healthy_samples, mut healthy_placements, mut left_placement_early) = (0, 0, 0);
+    let mut group_left_at = None;
+    while start.elapsed() < Duration::from_secs(60) && group_left_at.is_none() {
+        let elapsed = start.elapsed();
+        if !killed && elapsed >= Duration::from_secs(8) {
+            group.kill(first_leader);
+            killed = true;
+        }
+        // Members report until 24 s, then every one of them dies.
+        if elapsed < Duration::from_secs(24) {
+            report_all(&mut client);
+        } else if silent_since.is_none() {
+            silent_since = Some(elapsed);
+        }
+        let listed = client.list_placement_nodes().ok();
+        let online = listed.as_ref().and_then(|nodes| nodes.iter().find(|n| n.node_id == "group-a")).map(|n| n.online);
+        let placed = client.plan_object_placement("bucket", "key", 100, 1).ok().map(|plan| plan.node_ids);
+        if silent_since.is_none() {
+            match (online, placed) {
+                (Some(true), Some(ids)) => {
+                    healthy_samples += 1;
+                    if ids == vec!["group-a".to_string()] {
+                        healthy_placements += 1;
+                    } else {
+                        left_placement_early += 1;
+                    }
+                }
+                (Some(false), _) => left_placement_early += 1,
+                _ => {}
+            }
+        } else if online == Some(false) {
+            group_left_at = Some(elapsed);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(killed);
+    assert_eq!(left_placement_early, 0, "a healthy group left placement while its members reported");
+    assert!(healthy_samples >= 10 && healthy_placements >= 10, "{healthy_samples} samples, {healthy_placements} placements");
+    let left = group_left_at.expect("a group whose members all died never left placement");
+    assert!(left - silent_since.unwrap() >= Duration::from_millis(5_000), "left only {:?} after the members fell silent", left - silent_since.unwrap());
+    assert!(client.plan_object_placement("bucket", "key", 100, 1).map_or(true, |plan| plan.node_ids != vec!["group-a".to_string()]));
 }
 #[path = "node_regime/cluster_gateway_processes.rs"]
 mod cluster_gateway_processes;

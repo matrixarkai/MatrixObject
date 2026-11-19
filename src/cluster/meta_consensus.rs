@@ -126,6 +126,7 @@ impl MetaConsensus {
         stop: Arc<ServerShutdown>,
         limit: usize,
         suppress_ms: u64,
+        liveness_enabled: bool,
     ) -> io::Result<Self> {
         if options.group_id == 0
             || options.node_id == 0
@@ -342,6 +343,7 @@ impl MetaConsensus {
                 limit,
                 checkpoint,
                 suppress_ms,
+                liveness_enabled,
             ) {
                 worker_failed.store(true, Ordering::SeqCst);
                 eprintln!("metadata consensus stopped: {error}");
@@ -421,6 +423,7 @@ fn run(
     limit: usize,
     mut checkpoint: Policy,
     suppress_ms: u64,
+    liveness_enabled: bool,
 ) -> Result<(), RaftError> {
     let ConsensusChannels {
         progress,
@@ -452,6 +455,7 @@ fn run(
     let applied_term = Cell::new(0);
     let mut recovered = false;
     let mut pending_membership: Option<(LogId, Request)> = None;
+    let liveness = LeaderLiveness::new(liveness_enabled);
     while !stop.is_stopped() {
         progress.mark(WorkerPhase::PeerPackets);
         let mut admitted = false;
@@ -467,6 +471,7 @@ fn run(
             peer.tick()?;
             tick = Instant::now();
         }
+        liveness.observe_term(peer.term(), peer.is_leader(), wall_clock_ms());
         let application = RefCell::new(&mut *service);
         progress.mark(WorkerPhase::ApplyReady);
         let output = peer.process_ready_with_snapshot_reader(
@@ -559,7 +564,7 @@ fn run(
                             // Recheck after quorum confirmation. A newly eligible node
                             // returns to the durable proposal path before any reply.
                             match &result {
-                                Ok(true) if empty_expiry(service, &request.request) => {
+                                Ok(true) if empty_expiry(service, groups, Some(&liveness), &request.request) => {
                                     let _ = request.reply.try_send(Ok(MetaReply::Expired { offline_count: 0 }));
                                 }
                                 Ok(true) => queued.push_front(request),
@@ -653,7 +658,7 @@ fn run(
                     }
                 } else if queued.front().is_some_and(|r| matches!(r.request, MetaRequest::ChunkCatalog(_))) {
                     propose_catalog_batch(peer, service, groups, limit, &mut queued, &mut pending)?;
-                } else if queued.front().is_some_and(|r| empty_expiry(service, &r.request)) {
+                } else if queued.front().is_some_and(|r| empty_expiry(service, groups, Some(&liveness), &r.request)) {
                     // A sweep with no candidate changes no state. Confirm the current
                     // quorum without appending an empty application entry.
                     let request = queued.pop_front().unwrap();
@@ -701,8 +706,9 @@ fn run(
                     while queued.front().is_some_and(|r| !read_only(&r.request) && !matches!(r.request, MetaRequest::Membership(_) | MetaRequest::ChunkCatalog(_))) {
                         writes.push_back(queued.pop_front().unwrap());
                     }
-                    propose_batch_suppressing(
+                    propose_batch_live(
                         peer, service, groups, limit, &mut writes, &mut pending, suppress_ms, wall_clock_ms(),
+                        Some(&liveness),
                     )?;
                     writes.append(&mut queued);
                     queued = writes;
@@ -784,11 +790,24 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::CommitObjectPlacementIfCurrent { .. } => false,
     }
 }
-fn empty_expiry(service: &MatrixMetaService, request: &MetaRequest) -> bool {
+/// A sweep with no candidate. With leader liveness the candidates are the stamp's candidates MINUS the nodes the
+/// leader has heard from, exactly as `prepare_with` computes them: an aged replicated stamp of a node that reports
+/// on time must not send the sweep down the proposal path (which would append an entry for nothing).
+fn empty_expiry(
+    service: &MatrixMetaService,
+    groups: &super::ChunkGroupCatalog,
+    live: Option<&LeaderLiveness>,
+    request: &MetaRequest,
+) -> bool {
     match request {
-        MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms } =>
-            super::meta_server::expired_node_ids(service, *ttl_ms, *now_ms)
-                .is_ok_and(|nodes| nodes.is_empty()),
+        MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms } => {
+            super::meta_server::expired_node_ids(service, *ttl_ms, *now_ms).is_ok_and(|nodes| {
+                match live.filter(|live| live.active()) {
+                    Some(live) => filter_expired(live, groups, nodes, *ttl_ms, *now_ms).is_empty(),
+                    None => nodes.is_empty(),
+                }
+            })
+        }
         _ => false,
     }
 }
@@ -969,32 +988,118 @@ fn wall_clock_ms() -> u64 {
         .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
+/// What the leader itself has heard, kept in memory only (never replicated, never snapshotted).
+///
+/// The replicated stamp of a node is "last replicated", which with report suppression can be
+/// arbitrarily old for a node that reports on time. The leader therefore remembers when it last
+/// HEARD each node and lets that, not the stamp, keep a node alive. A node the leader has not
+/// heard from is judged from the moment the leader took over (the grace window), so a new leader
+/// never expires a live node before it has had a full TTL to hear it. Soft state only ever
+/// KEEPS a node alive that the stamp rule would expire; it never expires one the stamp keeps.
+pub(super) struct LeaderLiveness {
+    enabled: bool,
+    /// The term this table belongs to; zero when this process is not the leader.
+    term: std::cell::Cell<u64>,
+    started_ms: std::cell::Cell<u64>,
+    seen: std::cell::RefCell<BTreeMap<String, u64>>,
+}
+
+impl LeaderLiveness {
+    pub(super) fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            term: std::cell::Cell::new(0),
+            started_ms: std::cell::Cell::new(0),
+            seen: std::cell::RefCell::new(BTreeMap::new()),
+        }
+    }
+
+    /// Whether the soft state may be used now: switched on, and this process leads a known term.
+    pub(super) fn active(&self) -> bool {
+        self.enabled && self.term.get() != 0
+    }
+
+    /// Follow leadership. Losing leadership, or a new term, throws everything away: what a former
+    /// leader heard says nothing about what its successor will hear.
+    pub(super) fn observe_term(&self, term: u64, is_leader: bool, now_ms: u64) {
+        if !self.enabled {
+            return;
+        }
+        if !is_leader || term == 0 {
+            self.term.set(0);
+            self.seen.borrow_mut().clear();
+        } else if term != self.term.get() {
+            self.term.set(term);
+            self.started_ms.set(now_ms);
+            self.seen.borrow_mut().clear();
+        }
+    }
+
+    /// Record that `node_id` reported or heartbeated at `now_ms`, whatever became of the request.
+    pub(super) fn note(&self, node_id: &str, now_ms: u64) {
+        if self.active() {
+            self.seen.borrow_mut().insert(node_id.to_string(), now_ms);
+        }
+    }
+
+    fn last_heard(&self, node_id: &str) -> u64 {
+        self.seen.borrow().get(node_id).copied().unwrap_or(self.started_ms.get())
+    }
+
+    /// Heard within `ttl_ms` of `now_ms`, or, if not heard at all, still inside the grace window
+    /// that began when this leader took over.
+    pub(super) fn keeps_alive(&self, node_id: &str, ttl_ms: u64, now_ms: u64) -> bool {
+        self.active() && now_ms.saturating_sub(self.last_heard(node_id)) <= ttl_ms
+    }
+}
+
+/// The nodes the leader will expire from those the stamp rule names: not the ones it has heard
+/// from (or is still giving grace), and never a chunk GROUP node. A group's stamp is projected from
+/// its members' stamps and its availability is already a projection of their online flags, so it
+/// follows a member that really expires instead of being expired by a stamp that report
+/// suppression lets age.
+fn filter_expired(
+    live: &LeaderLiveness,
+    groups: &super::ChunkGroupCatalog,
+    ids: Vec<String>,
+    ttl_ms: u64,
+    now_ms: u64,
+) -> Vec<String> {
+    ids.into_iter()
+        .filter(|id| groups.get(id).is_none() && !live.keeps_alive(id, ttl_ms, now_ms))
+        .collect()
+}
+
 /// The answer to a chunk health report that changes nothing the group replicates, or `None`
 /// when the report must be replicated: the node is online and stays online, its endpoint and
-/// capacity match, its usage moved by at most 1% of capacity, and its replicated stamp is
-/// younger than `suppress_ms`. Anything else (a transition, a new capacity, an unknown node, a
-/// stamp that has aged, a clock that is behind the stamp) takes the ordinary path.
-fn unchanged_report_reply(
+/// capacity match, and its usage moved by at most 1% of capacity. Without leader liveness the
+/// replicated stamp must also be younger than `suppress_ms`; with it the leader's own memory
+/// carries liveness and the stamp may age. Anything else (a transition, a new capacity, an
+/// unknown node, a stamp that has aged, a clock behind the stamp) takes the ordinary path.
+fn unchanged_report_reply_live(
     service: &MatrixMetaService,
     request: &MetaRequest,
     suppress_ms: u64,
     now_ms: u64,
+    live_active: bool,
 ) -> Option<MetaReply> {
     let MetaRequest::ReportChunkNode { node_id, expected_endpoint, used_bytes, capacity_bytes, online } = request
     else {
         return None;
     };
     let node = service.nodes.get(node_id)?;
-    let unchanged = suppress_ms != 0
+    let timely = live_active
+        || (suppress_ms != 0
+            && node.last_heartbeat_ms != 0
+            && now_ms >= node.last_heartbeat_ms
+            && now_ms - node.last_heartbeat_ms < suppress_ms);
+    let unchanged = timely
         && *online
         && node.online
         && node.service_kind == "chunkserver"
         && node.endpoint == *expected_endpoint
         && node.capacity_bytes == *capacity_bytes
-        && used_bytes.abs_diff(node.used_bytes) <= capacity_bytes / 100
-        && node.last_heartbeat_ms != 0
-        && now_ms >= node.last_heartbeat_ms
-        && now_ms - node.last_heartbeat_ms < suppress_ms;
+        && used_bytes.abs_diff(node.used_bytes) <= capacity_bytes / 100;
     unchanged.then(|| MetaReply::PlacementNode(super::PlacementNodeSummary::from_placement_node(node)))
 }
 
@@ -1002,18 +1107,20 @@ fn unchanged_report_reply(
 /// it costs no log entry and no batch slot. Order of the others is kept. A reply is not a
 /// promise of replication: the report changed nothing, and the next change or the keepalive is
 /// replicated as before.
-fn drop_unchanged_reports(
+fn drop_unchanged_reports_live(
     service: &MatrixMetaService,
     queued: &mut VecDeque<Request>,
     suppress_ms: u64,
     now_ms: u64,
+    live: Option<&LeaderLiveness>,
 ) {
-    if suppress_ms == 0 {
+    let live_active = live.is_some_and(|live| live.active());
+    if suppress_ms == 0 && !live_active {
         return;
     }
     let mut kept = VecDeque::with_capacity(queued.len());
     for request in queued.drain(..) {
-        match unchanged_report_reply(service, &request.request, suppress_ms, now_ms) {
+        match unchanged_report_reply_live(service, &request.request, suppress_ms, now_ms, live_active) {
             Some(reply) => {
                 let _ = request.reply.try_send(Ok(reply));
             }
@@ -1023,6 +1130,43 @@ fn drop_unchanged_reports(
     *queued = kept;
 }
 
+#[cfg(test)]
+fn drop_unchanged_reports(
+    service: &MatrixMetaService,
+    queued: &mut VecDeque<Request>,
+    suppress_ms: u64,
+    now_ms: u64,
+) {
+    drop_unchanged_reports_live(service, queued, suppress_ms, now_ms, None);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn propose_batch_live(
+    peer: &mut DurablePeer,
+    service: &mut MatrixMetaService,
+    groups: &super::ChunkGroupCatalog,
+    limit: usize,
+    queued: &mut VecDeque<Request>,
+    pending: &mut VecDeque<Pending>,
+    suppress_ms: u64,
+    now_ms: u64,
+    live: Option<&LeaderLiveness>,
+) -> Result<(), RaftError> {
+    if let Some(live) = live {
+        for request in queued.iter() {
+            match &request.request {
+                MetaRequest::ReportChunkNode { node_id, .. }
+                | MetaRequest::HeartbeatChunkNode { node_id, .. }
+                | MetaRequest::HeartbeatRootNode { node_id, .. } => live.note(node_id, now_ms),
+                _ => {}
+            }
+        }
+    }
+    drop_unchanged_reports_live(service, queued, suppress_ms, now_ms, live);
+    propose_batch_with(peer, service, groups, limit, queued, pending, live)
+}
+
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn propose_batch_suppressing(
     peer: &mut DurablePeer,
@@ -1034,10 +1178,10 @@ fn propose_batch_suppressing(
     suppress_ms: u64,
     now_ms: u64,
 ) -> Result<(), RaftError> {
-    drop_unchanged_reports(service, queued, suppress_ms, now_ms);
-    propose_batch(peer, service, groups, limit, queued, pending)
+    propose_batch_live(peer, service, groups, limit, queued, pending, suppress_ms, now_ms, None)
 }
 
+#[cfg(test)]
 fn propose_batch(
     peer: &mut DurablePeer,
     service: &mut MatrixMetaService,
@@ -1046,10 +1190,22 @@ fn propose_batch(
     queued: &mut VecDeque<Request>,
     pending: &mut VecDeque<Pending>,
 ) -> Result<(), RaftError> {
+    propose_batch_with(peer, service, groups, limit, queued, pending, None)
+}
+
+fn propose_batch_with(
+    peer: &mut DurablePeer,
+    service: &mut MatrixMetaService,
+    groups: &super::ChunkGroupCatalog,
+    limit: usize,
+    queued: &mut VecDeque<Request>,
+    pending: &mut VecDeque<Pending>,
+    live: Option<&LeaderLiveness>,
+) -> Result<(), RaftError> {
     if queued.is_empty() {
         return Ok(());
     }
-    let (payloads, prepared) = prepare_batch(service, groups, limit, queued)?;
+    let (payloads, prepared) = prepare_batch(service, groups, limit, queued, live)?;
     if !payloads.is_empty() {
         match peer.propose_batch(payloads) {
             Ok(ids) => {
@@ -1078,6 +1234,7 @@ fn prepare_batch(
     groups: &super::ChunkGroupCatalog,
     limit: usize,
     queued: &mut VecDeque<Request>,
+    live: Option<&LeaderLiveness>,
 ) -> Result<PreparedBatch, RaftError> {
     for request in queued.iter() {
         request.progress.mark(RequestPhase::Preparing);
@@ -1212,7 +1369,7 @@ fn prepare_batch(
                 .try_send(Err(refused("metadata request expired before proposal")));
             continue;
         }
-        let (outcome, reply) = match prepare(draft.service, &request.request, limit, groups) {
+        let (outcome, reply) = match prepare_with(draft.service, &request.request, limit, groups, live) {
             Ok((outcome, reply)) => (outcome, reply.map(Ok)),
             Err(error) => (Vec::new(), Some(Err(error))),
         };
@@ -1249,11 +1406,22 @@ fn prepare_batch(
     Ok((payloads, prepared))
 }
 
+#[cfg(test)]
 fn prepare(
     service: &mut MatrixMetaService,
     request: &MetaRequest,
     limit: usize,
     groups: &super::ChunkGroupCatalog,
+) -> Result<(Vec<u8>, Option<MetaReply>), ObjectError> {
+    prepare_with(service, request, limit, groups, None)
+}
+
+fn prepare_with(
+    service: &mut MatrixMetaService,
+    request: &MetaRequest,
+    limit: usize,
+    groups: &super::ChunkGroupCatalog,
+    live: Option<&LeaderLiveness>,
 ) -> Result<(Vec<u8>, Option<MetaReply>), ObjectError> {
     let stamped = if matches!(request, MetaRequest::ReportChunkNode { .. }) {
         Some(super::health_report::stamp(request.clone(), service)?)
@@ -1312,11 +1480,17 @@ fn prepare(
         return Ok((decided.to_payload()?, Some(reply)));
     }
 
+    // Set only when the leader's own memory decided who expires: the outcome then names exactly that set.
+    let mut exact: Option<Vec<String>> = None;
     let (nodes, object) = match request {
         MetaRequest::HeartbeatRootNode { node_id, .. }
         | MetaRequest::HeartbeatChunkNode { node_id, .. } => (vec![node_id.clone()], None),
         MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms } => {
-            let nodes = super::meta_server::expired_node_ids(service, *ttl_ms, *now_ms)?;
+            let mut nodes = super::meta_server::expired_node_ids(service, *ttl_ms, *now_ms)?;
+            if let Some(live) = live.filter(|live| live.active()) {
+                nodes = filter_expired(live, groups, nodes, *ttl_ms, *now_ms);
+                exact = Some(nodes.clone());
+            }
             if nodes.is_empty() {
                 // Keep the read barrier, without cloning or logging the whole roster.
                 return Ok((Vec::new(), Some(MetaReply::Expired { offline_count: 0 })));
@@ -1339,7 +1513,14 @@ fn prepare(
     // The worker exclusively owns this service. Keep the entire roster available to
     // validation, but save only records these three mutation kinds can change.
     let draft = PlacementDraft::new(service, nodes, object);
-    let reply = apply_with_groups(draft.service, request.clone(), limit, groups)?;
+    let reply = match &exact {
+        Some(ids) => {
+            let offline_count = draft.service.expire_nodes(ids);
+            groups.project(draft.service, ids);
+            MetaReply::Expired { offline_count }
+        }
+        None => apply_with_groups(draft.service, request.clone(), limit, groups)?,
+    };
     let payload = before.finish(draft.service)?.to_payload()?;
     // Restore before the caller can propose, acknowledge, or handle another request.
     drop(draft);
@@ -2150,6 +2331,138 @@ mod tests {
             }
         }
         assert!(expired, "a window equal to the TTL must let a live node expire, or this test proves nothing");
+    }
+    fn all_ancient(service: &mut MatrixMetaService) {
+        for node in service.nodes.values_mut() {
+            node.online = true;
+            node.last_heartbeat_ms = 1_000;
+        }
+        service.invalidate_snapshot_export_cache();
+    }
+    /// One expiry request through the real proposal path of a single voter.
+    fn expire_through_pipeline(
+        peer: &mut DurablePeer,
+        service: &mut MatrixMetaService,
+        groups: &ChunkGroupCatalog,
+        ttl_ms: u64,
+        now_ms: u64,
+        live: Option<&LeaderLiveness>,
+    ) -> u64 {
+        let (request, rx) = queued(
+            MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms },
+            Instant::now() + Duration::from_secs(30),
+        );
+        let mut requests = VecDeque::from([request]);
+        let mut pending = VecDeque::new();
+        propose_batch_live(peer, service, groups, 65536, &mut requests, &mut pending, 0, now_ms, live).unwrap();
+        peer.process_ready(|id, bytes| apply_committed(service, groups, 65536, &mut pending, id, bytes))
+            .unwrap();
+        match rx.try_recv().unwrap().unwrap() {
+            MetaReply::Expired { offline_count } => offline_count,
+            other => panic!("unexpected reply {other:?}"),
+        }
+    }
+    #[test]
+    fn the_leader_heard_table_keeps_nodes_alive_gives_grace_and_is_thrown_away_with_leadership() {
+        let live = LeaderLiveness::new(true);
+        assert!(!live.active() && !live.keeps_alive("a", 1_000_000, 0), "not the leader: no soft state");
+        live.observe_term(1, true, 1_000);
+        live.note("a", 1_500);
+        assert!(live.keeps_alive("a", 500, 2_000), "heard 500 ms ago with a TTL of 500");
+        assert!(!live.keeps_alive("a", 499, 2_000), "heard 500 ms ago with a TTL of 499");
+        // Never heard: judged from the moment this leader took over, the grace window.
+        assert!(live.keeps_alive("b", 500, 1_400));
+        assert!(!live.keeps_alive("b", 500, 1_501));
+        // The same term again changes nothing.
+        live.observe_term(1, true, 9_999);
+        assert!(live.keeps_alive("a", 500, 2_000));
+        assert!(!live.keeps_alive("b", 500, 1_501));
+        // Losing leadership mid-grace discards everything and stops using it.
+        live.observe_term(1, false, 3_000);
+        assert!(!live.active());
+        assert!(!live.keeps_alive("a", u64::MAX, 3_000));
+        live.note("a", 3_100);
+        // A new term starts empty with a fresh grace window.
+        live.observe_term(3, true, 4_000);
+        assert!(live.active());
+        assert!(live.keeps_alive("a", 100, 4_100));
+        assert!(!live.keeps_alive("a", 100, 4_101), "the old record of a is gone; grace runs from 4_000");
+        // Switched off: never active.
+        let off = LeaderLiveness::new(false);
+        off.observe_term(1, true, 1_000);
+        assert!(!off.active() && !off.keeps_alive("a", u64::MAX, 1_000));
+    }
+    #[test]
+    fn a_node_with_an_ancient_stamp_is_kept_while_the_leader_hears_it_and_given_grace_after_a_takeover() {
+        let (_files, mut peer) = batch_peer();
+        let (mut service, groups) = fixture(2, 1);
+        all_ancient(&mut service);
+        let (ttl, t0) = (15_000, 1_000_000);
+        let live = LeaderLiveness::new(true);
+        live.observe_term(1, true, t0);
+        live.note("member-0-0", t0 + 9_000);
+        // Every stamp is a million milliseconds old, yet nothing expires: member-0-0 was heard a
+        // second ago and the others are inside the grace window.
+        assert_eq!(expire_through_pipeline(&mut peer, &mut service, &groups, ttl, t0 + 10_000, Some(&live)), 0);
+        assert!(service.nodes["member-0-0"].online && service.nodes["member-0-1"].online);
+        // After the grace window only the node that kept being heard survives.
+        live.note("member-0-0", t0 + 20_000);
+        let expired = expire_through_pipeline(&mut peer, &mut service, &groups, ttl, t0 + 25_000, Some(&live));
+        assert!(expired > 0);
+        assert!(service.nodes["member-0-0"].online, "heard 5 s ago");
+        assert!(!service.nodes["member-0-1"].online, "never heard and the grace is over");
+    }
+    #[test]
+    fn a_chunk_group_node_is_never_expired_by_its_own_stamp_and_follows_its_members() {
+        let (_files, mut peer) = batch_peer();
+        let (mut service, groups) = fixture(2, 1);
+        all_ancient(&mut service);
+        let (ttl, t0) = (15_000, 1_000_000);
+        let live = LeaderLiveness::new(true);
+        live.observe_term(1, true, t0);
+        let members: Vec<String> =
+            service.nodes.keys().filter(|id| groups.get(id).is_none()).cloned().collect();
+        assert!(!members.is_empty());
+        for member in &members {
+            live.note(member, t0 + 1_000);
+        }
+        // Every stamp, group stamps included, is ancient; every member is heard.
+        assert_eq!(expire_through_pipeline(&mut peer, &mut service, &groups, ttl, t0 + 10_000, Some(&live)), 0);
+        assert!(groups.groups().all(|g| service.nodes[&g.placement_id].online), "a healthy group left placement");
+        // The members fall silent: they expire after the TTL and the groups follow by projection.
+        assert!(expire_through_pipeline(&mut peer, &mut service, &groups, ttl, t0 + 40_000, Some(&live)) > 0);
+        assert!(members.iter().all(|id| !service.nodes[id].online));
+        assert!(groups.groups().all(|g| !service.nodes[&g.placement_id].online), "a group with no live member stayed online");
+    }
+    #[test]
+    fn without_an_active_leader_table_expiry_is_the_stamp_rule_as_before() {
+        let (_files, mut peer) = batch_peer();
+        let (mut service, groups) = fixture(2, 1);
+        all_ancient(&mut service);
+        let inactive = LeaderLiveness::new(true);
+        let count = expire_through_pipeline(&mut peer, &mut service, &groups, 15_000, 1_000_000, Some(&inactive));
+        assert!(count as usize >= service.nodes.len() - 1, "the stamp rule expires every ancient node: {count}");
+    }
+    #[test]
+    fn with_leader_liveness_an_unchanged_report_is_answered_whatever_the_age_of_the_stamp() {
+        let (mut service, _groups) = fixture(2, 1);
+        steady(&mut service, 1_000);
+        let now = wall_clock_ms();
+        assert!(
+            unchanged_report_reply_live(&service, &report(256), 5_000, now, false).is_none(),
+            "an aged stamp is replicated without leader liveness"
+        );
+        assert!(unchanged_report_reply_live(&service, &report(256), 0, now, true).is_some());
+        assert!(
+            unchanged_report_reply_live(&service, &report(256 + (1 << 30) / 50), 0, now, true).is_none(),
+            "a real change is still replicated"
+        );
+        service.nodes.get_mut("member-0-0").unwrap().online = false;
+        service.invalidate_snapshot_export_cache();
+        assert!(
+            unchanged_report_reply_live(&service, &report(256), 0, now, true).is_none(),
+            "a node coming back is replicated"
+        );
     }
     fn queued(
         request: MetaRequest,

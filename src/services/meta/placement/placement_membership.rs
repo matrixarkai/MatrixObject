@@ -180,6 +180,24 @@ impl MatrixMetaService {
         Ok(expired_node_ids.len() as u64)
     }
 
+    /// Take exactly these nodes offline: the set was decided by the leader, not by the stamps this
+    /// service holds. Unknown and already offline ids are skipped. Returns how many went offline.
+    pub fn expire_nodes(&mut self, ids: &[String]) -> u64 {
+        let mut count = 0;
+        for id in ids {
+            if let Some(node) = self.nodes.get_mut(id) {
+                if node.online {
+                    node.online = false;
+                    count += 1;
+                }
+            }
+        }
+        if count > 0 {
+            self.advance_commit_index();
+        }
+        count
+    }
+
     pub fn remove_node(
         &mut self,
         node_id: &str,

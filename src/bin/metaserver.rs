@@ -25,6 +25,7 @@
 //! | `MATRIXOBJECT_METASERVER_ADDR` | `127.0.0.1:17200` | address to bind; port `0` lets the kernel choose |
 //! | `MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS` | `15000` | automatic expiry TTL, 1000..3600000 ms; `0` turns expiry off. The default is five chunk report intervals |
 //! | `MATRIXOBJECT_METASERVER_SUPPRESS_UNCHANGED_REPORTS` | `0` | `1` answers a chunk health report that changes nothing replicated (same capacity, usage within 1%, replicated stamp younger than a third of the heartbeat TTL) without a log entry; every change and a keepalive every TTL/3 are still replicated. Needs the heartbeat TTL on |
+//! | `MATRIXOBJECT_METASERVER_LEADER_LIVENESS` | `0` | `1` lets the leader decide who is silent from what it has heard, kept in its memory: a node that reports on time costs no log entry however old its replicated stamp is, and a new leader gives every node one TTL of grace. The replicated `last_heartbeat_ms` then means "last replicated". Implies report suppression |
 //! | `MATRIXOBJECT_METASERVER_THREADS` | logical CPUs, clamped to `4..=16` | connections served at once |
 //! | `MATRIXOBJECT_METASERVER_CONNECTIONS_PER_WORKER` | `1024` | persistent API connections shared by each I/O loop |
 //! | `MATRIXOBJECT_METASERVER_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
@@ -388,6 +389,9 @@ fn main() {
                          workload that publishes many objects or appends to log objects"
                     );
                 }
+            }
+            if env_usize("MATRIXOBJECT_METASERVER_LEADER_LIVENESS", 0) != 0 {
+                server.leader_liveness(true);
             }
             if env_usize("MATRIXOBJECT_METASERVER_SUPPRESS_UNCHANGED_REPORTS", 0) != 0 {
                 server.suppress_unchanged_reports(true);
