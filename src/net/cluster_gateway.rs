@@ -123,8 +123,12 @@ pub struct GatewayOptions {
     pub operation_timeout: Duration,
     /// Largest object a whole-object read or write may carry.
     pub max_object_bytes: usize,
-    /// Manifests remembered so a repeated append can skip reading it.
+    /// Manifests remembered so a repeated append can skip reading it: at most this many, ...
     pub cache_entries: usize,
+    /// ... and at most this many bytes of them (by `manifest_weight`), the least recently used
+    /// leaving first. A manifest of 4,000 extents weighs about three quarters of a megabyte, so a
+    /// count alone either wastes the memory or misses a large working set.
+    pub cache_bytes: usize,
     /// Idle metadata connections kept for reuse.
     pub pool_max: usize,
     /// Publish appends as compact digest-bound decisions under a staged allocation. Every
@@ -148,7 +152,8 @@ impl Default for GatewayOptions {
             replica: ReplicaClientOptions::default(),
             operation_timeout: Duration::from_secs(10),
             max_object_bytes: 64 * 1024 * 1024,
-            cache_entries: 64,
+            cache_entries: 4096,
+            cache_bytes: 64 * 1024 * 1024,
             pool_max: 8,
             compact_append: false,
             compact_extents: None,
@@ -552,15 +557,32 @@ pub fn resolve_pool_max(requested: Option<&str>, worker_threads: usize) -> usize
         .max(worker_threads.max(1))
 }
 
+/// A positive number from an environment value, else `default`.
+pub fn resolve_positive(requested: Option<&str>, default: usize) -> usize {
+    requested
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value >= 1)
+        .unwrap_or(default)
+}
+
+/// What a manifest costs in the cache, in bytes: its header plus a fixed allowance per extent
+/// (group name, SHA-256 and the fixed fields are about this much in memory). An estimate that
+/// grows with the extents, which is the part that varies.
+pub(crate) fn manifest_weight(manifest: &ObjectManifest) -> usize {
+    256 + manifest.extents.len() * 192
+}
+
 /// The manifests the gateway remembers so a repeated append can skip reading one: at most a
 /// fixed number, the least recently used leaving first. (Emptying the whole cache when it was
 /// full, as this once did, made every object miss at once whenever the working set exceeded it.)
 #[derive(Default)]
 pub(crate) struct ManifestCache {
-    entries: HashMap<(String, String), (ObjectManifest, u64)>,
+    entries: HashMap<(String, String), (ObjectManifest, u64, usize)>,
     /// Entries by the tick of their last use, oldest first.
     order: std::collections::BTreeMap<u64, (String, String)>,
     tick: u64,
+    /// The summed `manifest_weight` of the entries.
+    bytes: usize,
 }
 
 impl ManifestCache {
@@ -571,7 +593,7 @@ impl ManifestCache {
 
     pub(crate) fn get(&mut self, bucket: &str, key: &str) -> Option<ObjectManifest> {
         let id = (bucket.to_owned(), key.to_owned());
-        let (manifest, used) = self.entries.get_mut(&id)?;
+        let (manifest, used, _) = self.entries.get_mut(&id)?;
         self.order.remove(used);
         self.tick += 1;
         *used = self.tick;
@@ -579,24 +601,37 @@ impl ManifestCache {
         Some(manifest.clone())
     }
 
-    pub(crate) fn insert(&mut self, manifest: ObjectManifest, capacity: usize) {
+    /// Keep `manifest`, dropping the least recently used entries until at most `capacity` entries
+    /// and `max_bytes` bytes remain. A manifest heavier than `max_bytes` by itself is not kept.
+    pub(crate) fn insert(&mut self, manifest: ObjectManifest, capacity: usize, max_bytes: usize) {
         let id = (manifest.bucket.clone(), manifest.key.clone());
-        if let Some((_, used)) = self.entries.remove(&id) {
-            self.order.remove(&used);
+        self.remove(&id.0, &id.1);
+        let weight = manifest_weight(&manifest);
+        if weight > max_bytes {
+            return;
         }
-        while self.entries.len() >= capacity.max(1) {
+        while self.entries.len() >= capacity.max(1) || self.bytes + weight > max_bytes {
             let Some((_, oldest)) = self.order.pop_first() else { break };
-            self.entries.remove(&oldest);
+            if let Some((_, _, freed)) = self.entries.remove(&oldest) {
+                self.bytes -= freed;
+            }
         }
         self.tick += 1;
         self.order.insert(self.tick, id.clone());
-        self.entries.insert(id, (manifest, self.tick));
+        self.entries.insert(id, (manifest, self.tick, weight));
+        self.bytes += weight;
     }
 
     pub(crate) fn remove(&mut self, bucket: &str, key: &str) {
-        if let Some((_, used)) = self.entries.remove(&(bucket.to_owned(), key.to_owned())) {
+        if let Some((_, used, weight)) = self.entries.remove(&(bucket.to_owned(), key.to_owned())) {
             self.order.remove(&used);
+            self.bytes -= weight;
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
     }
 }
 
@@ -686,7 +721,7 @@ impl ClusterGateway {
 
     fn remember(&self, manifest: &ObjectManifest) {
         if let Ok(mut cache) = self.manifests.lock() {
-            cache.insert(manifest.clone(), self.options.cache_entries.max(1));
+            cache.insert(manifest.clone(), self.options.cache_entries.max(1), self.options.cache_bytes);
         }
     }
 
@@ -1475,23 +1510,96 @@ mod tests {
     fn the_manifest_cache_is_bounded_and_drops_the_least_recently_used_first() {
         let mut cache = ManifestCache::default();
         for index in 0..4 {
-            cache.insert(manifest_of(&format!("k{index}"), 1), 4);
+            cache.insert(manifest_of(&format!("k{index}"), 1), 4, usize::MAX);
         }
         // touching k0 makes k1 the oldest
         assert!(cache.get("b", "k0").is_some());
-        cache.insert(manifest_of("k4", 1), 4);
+        cache.insert(manifest_of("k4", 1), 4, usize::MAX);
         assert_eq!(cache.len(), 4);
         assert!(cache.get("b", "k1").is_none(), "the least recently used left");
         for key in ["k0", "k2", "k3", "k4"] {
             assert!(cache.get("b", key).is_some(), "{key} must still be cached");
         }
         // a replaced entry keeps one slot and holds the new value
-        cache.insert(manifest_of("k0", 9), 4);
+        cache.insert(manifest_of("k0", 9), 4, usize::MAX);
         assert_eq!(cache.len(), 4);
         assert_eq!(cache.get("b", "k0").unwrap().generation, 9);
         cache.remove("b", "k0");
         assert!(cache.get("b", "k0").is_none());
         assert_eq!(cache.len(), 3);
+    }
+
+    fn manifest_with_extents(key: &str, extents: usize) -> ObjectManifest {
+        ObjectManifest {
+            extents: (0..extents).map(|_| Default::default()).collect(),
+            ..manifest_of(key, 1)
+        }
+    }
+
+    /// The cache is bounded in bytes as well as entries: a few large manifests push each other out
+    /// long before the entry count is reached, and the byte count always matches what is held.
+    #[test]
+    fn the_manifest_cache_is_bounded_in_bytes_and_the_count_matches_what_it_holds() {
+        let mut cache = ManifestCache::default();
+        let big = manifest_weight(&manifest_with_extents("x", 1000));
+        let budget = big * 3 + 10;
+        for index in 0..10 {
+            cache.insert(manifest_with_extents(&format!("big-{index}"), 1000), 4096, budget);
+            assert!(cache.bytes() <= budget, "{} bytes over a budget of {budget}", cache.bytes());
+        }
+        assert_eq!(cache.len(), 3, "three large manifests fit");
+        for index in 7..10 {
+            assert!(cache.get("b", &format!("big-{index}")).is_some(), "the three newest stay");
+        }
+        assert!(cache.get("b", "big-0").is_none());
+        // many small manifests are still limited by count, not wasted on bytes
+        let mut small = ManifestCache::default();
+        for index in 0..100 {
+            small.insert(manifest_of(&format!("s{index}"), 1), 10, budget);
+        }
+        assert_eq!(small.len(), 10);
+        assert_eq!(small.bytes(), 10 * manifest_weight(&manifest_of("s", 1)));
+        // removal and replacement keep the count exact
+        small.remove("b", "s99");
+        small.insert(manifest_with_extents("s98", 500), 10, budget);
+        let held: usize = (90..99)
+            .filter_map(|index| small.get("b", &format!("s{index}")))
+            .map(|manifest| manifest_weight(&manifest))
+            .sum();
+        assert_eq!(small.bytes(), held, "the counted bytes are the held bytes");
+        // a manifest heavier than the whole budget is not kept, and does not push others out
+        let before = small.len();
+        small.insert(manifest_with_extents("huge", 100_000), 10, budget);
+        assert!(small.get("b", "huge").is_none());
+        assert_eq!(small.len(), before);
+    }
+
+    /// A working set larger than the old 64-entry cap no longer re-reads each manifest.
+    #[test]
+    fn a_working_set_far_larger_than_the_old_default_stays_cached() {
+        let options = GatewayOptions::default();
+        assert!(options.cache_entries >= 4096 && options.cache_bytes >= 32 * 1024 * 1024);
+        let mut cache = ManifestCache::default();
+        let (mut hits, mut requests) = (0u32, 0u32);
+        // 1000 objects appended to round robin, 5 passes
+        for round in 0..5000u64 {
+            let key = format!("object-{}", round % 1000);
+            requests += 1;
+            if cache.get("b", &key).is_some() {
+                hits += 1;
+            }
+            cache.insert(manifest_with_extents(&key, 20), options.cache_entries, options.cache_bytes);
+        }
+        // only the first pass misses (1000 of 5000); with 64 entries every request missed
+        assert_eq!(requests - hits, 1000, "{hits} hits of {requests}");
+    }
+
+    #[test]
+    fn positive_numbers_from_the_environment_fall_back_to_the_default() {
+        assert_eq!(resolve_positive(None, 7), 7);
+        assert_eq!(resolve_positive(Some("0"), 7), 7);
+        assert_eq!(resolve_positive(Some("x"), 7), 7);
+        assert_eq!(resolve_positive(Some(" 12 "), 7), 12);
     }
 
     #[test]
@@ -1507,8 +1615,8 @@ mod tests {
             if cache.get("b", &hot).is_some() {
                 hits += 1;
             }
-            cache.insert(manifest_of(&hot, round), capacity);
-            cache.insert(manifest_of(&format!("cold-{round}"), 1), capacity);
+            cache.insert(manifest_of(&hot, round), capacity, usize::MAX);
+            cache.insert(manifest_of(&format!("cold-{round}"), 1), capacity, usize::MAX);
             assert!(cache.len() <= capacity);
         }
         // emptying the cache when it filled made the hot set miss after every wipe (about every
