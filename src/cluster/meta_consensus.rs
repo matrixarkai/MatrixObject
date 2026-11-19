@@ -1205,7 +1205,7 @@ fn propose_batch_with(
     if queued.is_empty() {
         return Ok(());
     }
-    let (payloads, prepared) = prepare_batch(service, groups, limit, queued)?;
+    let (payloads, prepared) = prepare_batch(service, groups, limit, queued, live)?;
     if !payloads.is_empty() {
         match peer.propose_batch(payloads) {
             Ok(ids) => {
@@ -1234,6 +1234,7 @@ fn prepare_batch(
     groups: &super::ChunkGroupCatalog,
     limit: usize,
     queued: &mut VecDeque<Request>,
+    live: Option<&LeaderLiveness>,
 ) -> Result<PreparedBatch, RaftError> {
     for request in queued.iter() {
         request.progress.mark(RequestPhase::Preparing);
