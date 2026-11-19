@@ -603,6 +603,8 @@ jobs:
             log_object::tests::a_node_that_does_not_speak_log_chunks_stops_the_writer_before_anything_is_granted \
             log_object::tests::an_object_at_its_cap_fills_its_open_chunk_and_refuses_the_append_that_does_not_fit \
             log_object::tests::a_switch_that_never_reached_the_metadata_plane_is_finished_by_the_next_writer \
+            log_object::tests::a_seal_that_reached_one_node_is_completed_by_the_next_writer_and_no_switch_is_sent_without_a_footer \
+            log_object::tests::a_seal_that_reached_no_node_leaves_the_handle_open_and_sends_no_switch \
             log_object::tests::the_error_mapping_names_what_the_metadata_plane_and_the_nodes_say
           do
             cargo test --locked --all-features --lib "$test" -- --test-threads=1 | tee /tmp/log-object.log

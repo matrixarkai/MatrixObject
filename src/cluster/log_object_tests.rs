@@ -551,5 +551,88 @@ fn the_error_mapping_names_what_the_metadata_plane_and_the_nodes_say() {
     assert!(matches!(from_chunk(ChunkLogError::Sealed), LogObjectError::Chunk(ChunkLogError::Sealed)));
 }
 
+/// Wait until every node holds `length` bytes of the chunk durably.
+fn until_every_node_holds(nodes: &[Node], volume: u64, chunk: u64, length: u64) {
+    let until = Instant::now() + Duration::from_secs(30);
+    while !nodes.iter().all(|node| node.tail(volume, chunk).durable_length >= length) {
+        assert!(Instant::now() < until, "the nodes did not all reach {length}");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_seal_that_reached_one_node_is_completed_by_the_next_writer_and_no_switch_is_sent_without_a_footer() {
+    let (_dir, mut nodes) = cluster();
+    let mut meta = FakeMeta::new(endpoints(&nodes));
+    let mut a = LogObject::new("bucket", "log", options("gw-a"));
+    a.open_for_append(&mut meta).unwrap();
+    // the chunk is exactly full: the object moves on when the NEXT byte needs room
+    let first = bytes(1, CHUNK as usize);
+    a.append(&mut meta, &first).unwrap();
+    let extent = meta.objects[&id("log")].extents[0].clone();
+    until_every_node_holds(&nodes, extent.volume_id, extent.chunk_id, CHUNK);
+    // two nodes go away: the seal can reach at most one of them
+    nodes[1].halt();
+    nodes[2].halt();
+    let error = a.append(&mut meta, &bytes(2, 10)).unwrap_err();
+    assert!(matches!(error, LogObjectError::Chunk(ChunkLogError::NoQuorum { .. })), "{error:?}");
+    assert_eq!(meta.switches, 0, "a seal that returned no footer sends no switch");
+    nodes[1].restart();
+    nodes[2].restart();
+    // the first writer's lease runs out; the next writer finds the chunk sealed on one node or on
+    // none, and either way the object goes on from the length the nodes acknowledged
+    meta.expire_lease("bucket", "log");
+    let mut b = LogObject::new("bucket", "log", options("gw-b"));
+    assert_eq!(b.open_for_append(&mut meta).unwrap(), CHUNK);
+    let more = bytes(3, 50_000);
+    b.append(&mut meta, &more).unwrap();
+    let manifest = meta.manifest("bucket", "log").unwrap();
+    assert_eq!(manifest.extents.len(), 2);
+    assert!(manifest.extents[0].flags & EXTENT_FLAG_SEALED != 0);
+    assert_eq!(manifest.extents[0].length, CHUNK);
+    for node in &nodes {
+        assert!(node.tail(extent.volume_id, extent.chunk_id).sealed, "the seal is on every node, completed where it was partial");
+    }
+    let mut reader = reader();
+    let whole = reader.read_range(&mut meta, 0, 2_000_000).unwrap();
+    assert_eq!(whole.len(), CHUNK as usize + 50_000);
+    assert_eq!(whole[..CHUNK as usize], first[..]);
+    assert_eq!(whole[CHUNK as usize..], more[..]);
+}
+
+#[test]
+fn a_seal_that_reached_no_node_leaves_the_handle_open_and_sends_no_switch() {
+    let (_dir, mut nodes) = cluster();
+    let mut meta = FakeMeta::new(endpoints(&nodes));
+    let mut a = LogObject::new("bucket", "log", options("gw-a"));
+    a.open_for_append(&mut meta).unwrap();
+    let first = bytes(4, CHUNK as usize);
+    a.append(&mut meta, &first).unwrap();
+    let extent = meta.objects[&id("log")].extents[0].clone();
+    until_every_node_holds(&nodes, extent.volume_id, extent.chunk_id, CHUNK);
+    for node in nodes.iter_mut() {
+        node.halt();
+    }
+    let error = a.append(&mut meta, &bytes(5, 10)).unwrap_err();
+    assert!(matches!(error, LogObjectError::Chunk(ChunkLogError::NoQuorum { .. })), "{error:?}");
+    assert_eq!(meta.switches, 0, "a seal that returned no footer sends no switch");
+    // nothing was sealed anywhere, so the chunk is open on every node and the handle is kept
+    assert_eq!(a.length(), Some(CHUNK));
+    for node in nodes.iter_mut() {
+        node.restart();
+    }
+    // a new writer takes the object over and goes on: the failed append wrote nothing
+    meta.expire_lease("bucket", "log");
+    let mut b = LogObject::new("bucket", "log", options("gw-b"));
+    assert_eq!(b.open_for_append(&mut meta).unwrap(), CHUNK);
+    let more = bytes(6, 40_000);
+    b.append(&mut meta, &more).unwrap();
+    let mut reader = reader();
+    let whole = reader.read_range(&mut meta, 0, 2_000_000).unwrap();
+    assert_eq!(whole.len(), CHUNK as usize + 40_000);
+    assert_eq!(whole[..CHUNK as usize], first[..]);
+    assert_eq!(whole[CHUNK as usize..], more[..]);
+}
+
 #[path = "log_object_probes.rs"]
 mod probes;
