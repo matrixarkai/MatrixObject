@@ -198,7 +198,7 @@ impl ObjectPageAllocation {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Message)]
+#[derive(Clone, PartialEq, Eq, Hash, Message)]
 pub struct ObjectExtent {
     #[prost(string, tag = "1")]
     pub group: String,
@@ -309,7 +309,7 @@ fn extent_order_ok(extent: &ObjectExtent, after_chunk: bool, is_last: bool) -> b
         _ => is_last || extent.flags & EXTENT_FLAG_SEALED != 0,
     }
 }
-#[derive(Clone, PartialEq, Eq, Message)]
+#[derive(Clone, PartialEq, Eq, Hash, Message)]
 pub struct ObjectManifest {
     #[prost(uint32, tag = "1")]
     pub format_version: u32,

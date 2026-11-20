@@ -17,7 +17,7 @@ impl ReplicaJournalControl {
     pub const STATUS: u32 = 1;
     pub const CHECKPOINT: u32 = 2;
     pub fn validate(&self) -> Result<(), ObjectError> {
-        if ![1, 2].contains(&self.version)
+        if ![1, 2, 3].contains(&self.version)
             || !matches!(self.action, Self::STATUS | Self::CHECKPOINT)
         {
             return Err(invalid());
@@ -58,15 +58,18 @@ pub struct ReplicaJournalStatus {
     pub journal_bytes: u64,
     #[prost(uint64, tag = "9")]
     pub segments: u64,
-    /// Managed retired files still awaiting verified cleanup; version 2 only.
+    /// Managed retired files still awaiting verified cleanup; version 2 or newer.
     #[prost(uint64, tag = "11")]
     pub retired_segments: u64,
-    /// Committed record bytes associated with pending retirement; version 2 only.
+    /// Committed record bytes associated with pending retirement; version 2 or newer.
     #[prost(uint64, tag = "12")]
     pub retired_journal_bytes: u64,
-    /// Physical cleanup or retirement-manifest publication remains pending.
+    /// Background analysis, physical cleanup, or retirement publication is pending.
     #[prost(bool, tag = "13")]
     pub retirement_in_flight: bool,
+    /// Confirmed record traffic for one open segmented journal; version 3 only.
+    #[prost(message, optional, tag = "14")]
+    pub write_statistics: Option<crate::durable_payload::outcome_segments::OutcomeWriteStatistics>,
 }
 impl ReplicaJournalStatus {
     /// Compare a checkpoint reply with a later observation of the same journal.
@@ -82,13 +85,13 @@ impl ReplicaJournalStatus {
         Ok(requested.started_epoch > 0 && self.published_epoch >= requested.started_epoch)
     }
 
-    /// A version-2 observation covers the target checkpoint and all retirement debt.
+    /// A version-2 or newer observation covers the target checkpoint and all retirement debt.
     /// Writers must be quiescent when this is used as an I/O measurement barrier.
     pub fn maintenance_is_complete(&self, requested: &Self) -> Result<bool, ObjectError> {
         let published = self.checkpoint_is_published(requested)?;
-        if self.version != 2 || requested.version != 2 {
+        if self.version < 2 || requested.version < 2 {
             return Err(ObjectError::PreconditionFailed(
-                "full maintenance status requires version 2".into(),
+                "full maintenance status requires version 2 or newer".into(),
             ));
         }
         Ok(published
@@ -102,7 +105,9 @@ impl ReplicaJournalStatus {
     pub const LEGACY: u32 = 1;
     pub const SEGMENTED: u32 = 2;
     pub fn validate(&self) -> Result<(), ObjectError> {
-        if ![1, 2].contains(&self.version)
+        if let Some(stats) = &self.write_statistics { stats.validate()?; }
+        if ![1, 2, 3].contains(&self.version)
+            || (self.write_statistics.is_some() != (self.version == 3 && self.layout == Self::SEGMENTED))
             || (self.version == 1
                 && (self.retired_segments != 0
                     || self.retired_journal_bytes != 0
@@ -237,7 +242,7 @@ mod tests {
         }
         for bytes in [
             vec![],
-            vec![8, 3, 16, 1],
+            vec![8, 4, 16, 1],
             vec![8, 1, 16, 3],
             vec![8, 0x81, 0, 16, 1],
             vec![0; 33],
@@ -264,7 +269,7 @@ mod tests {
         for change in 0..7 {
             let mut bad = status.clone();
             match change {
-                0 => bad.version = 3,
+                0 => bad.version = 4,
                 1 => bad.layout = 3,
                 2 => bad.published_epoch = 3,
                 3 => bad.pending_records = 65,
@@ -291,3 +296,7 @@ mod tests {
 #[cfg(all(test, unix, feature = "replica-server"))]
 #[path = "replica_journal_control_tests.rs"]
 mod server_tests;
+
+#[cfg(test)]
+#[path = "replica_journal_write_statistics_tests.rs"]
+mod write_statistics_tests;

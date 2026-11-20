@@ -7,6 +7,8 @@
 //! relies on log chunks.
 use crate::{ChunkId, ObjectError};
 use prost::Message;
+#[path = "log_protobuf_decode.rs"]
+mod log_protobuf_decode;
 
 pub const OP_APPEND: u32 = 1;
 pub const OP_SEAL: u32 = 2;
@@ -113,10 +115,27 @@ impl LogOpRequest {
         if bytes.len() > MAX_OP_DATA + 256 {
             return Err(ObjectError::InvalidArgument("log chunk operation exceeds its bound".into()));
         }
-        let value = Self::decode(bytes).map_err(|_| ObjectError::Corruption("invalid log chunk operation".into()))?;
-        if value.encode_to_vec() != bytes {
-            return Err(ObjectError::Corruption("noncanonical log chunk operation".into()));
+        let value = match log_protobuf_decode::request(bytes) {
+            Some(value) => value,
+            None => {
+                // Keep malformed-message and noncanonical-message errors distinct.
+                // Only the rejected path uses the general decoder.
+                Self::decode(bytes).map_err(|_| ObjectError::Corruption("invalid log chunk operation".into()))?;
+                return Err(ObjectError::Corruption("noncanonical log chunk operation".into()));
+            }
+        };
+        value.validate().map_err(|_| ObjectError::Corruption("invalid log chunk operation".into()))?;
+        Ok(value)
+    }
+    /// Decode an owned RPC body, reusing its allocation for nonempty data.
+    pub fn from_payload_owned(bytes: Vec<u8>) -> Result<Self, ObjectError> {
+        if bytes.len() > MAX_OP_DATA + 256 {
+            return Self::from_payload(&bytes);
         }
+        let value = match log_protobuf_decode::request_owned(bytes) {
+            Ok(value) => value,
+            Err(bytes) => return Self::from_payload(&bytes),
+        };
         value.validate().map_err(|_| ObjectError::Corruption("invalid log chunk operation".into()))?;
         Ok(value)
     }
@@ -151,10 +170,31 @@ impl LogOpReply {
         if bytes.len() > MAX_OP_DATA + 256 {
             return Err(ObjectError::Corruption("log chunk reply exceeds its bound".into()));
         }
-        let value = Self::decode(bytes).map_err(|_| ObjectError::Corruption("invalid log chunk reply".into()))?;
-        if value.encode_to_vec() != bytes || !(value.sha256.is_empty() || value.sha256.len() == 32) {
+        let value = match log_protobuf_decode::reply(bytes) {
+            Some(value) => value,
+            None => {
+                Self::decode(bytes).map_err(|_| ObjectError::Corruption("invalid log chunk reply".into()))?;
+                return Err(ObjectError::Corruption("noncanonical log chunk reply".into()));
+            }
+        };
+        if !(value.sha256.is_empty() || value.sha256.len() == 32) {
             return Err(ObjectError::Corruption("noncanonical log chunk reply".into()));
         }
         Ok(value)
     }
+    /// Decode an owned RPC body, retaining its data buffer and copying a seal digest.
+    pub fn from_payload_owned(bytes: Vec<u8>) -> Result<Self, ObjectError> {
+        if bytes.len() > MAX_OP_DATA + 256 {
+            return Self::from_payload(&bytes);
+        }
+        let value = match log_protobuf_decode::reply_owned(bytes) {
+            Ok(value) => value,
+            Err(bytes) => return Self::from_payload(&bytes),
+        };
+        if !(value.sha256.is_empty() || value.sha256.len() == 32) {
+            return Err(ObjectError::Corruption("noncanonical log chunk reply".into()));
+        }
+        Ok(value)
+    }
+
 }

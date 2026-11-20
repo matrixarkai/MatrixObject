@@ -74,3 +74,8 @@ matrixraft = { git = "https://github.com/matrixarkai/matrixraft.git", rev = "6ec
 
 [target.'cfg(unix)'.dependencies]
 libc = { version = "0.2", optional = true }
+
+[[example]]
+name = "star_catalog"
+path = "examples/star_catalog.rs"
+required-features = ["meta-server"]

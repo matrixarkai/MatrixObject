@@ -115,6 +115,14 @@ Requirements:
   fallback: a failed staged write is reported as the failure it is, and a failed append
   releases its allocation.
 
+**Next-append reservations.** With reservation enabled, an object becomes hot
+when another append starts within two seconds of its last successful publication.
+The window starts at completion, so an append's own I/O time does not make an
+immediate next append cold. Failed or unconfirmed appends do not refresh activity.
+The gateway remembers at most 4096 objects' completion times and caches at most
+48 reserved allocations. The reservation lease and metadata admission limits
+still apply.
+
 **Tail compaction.** When an object holds `N` extents, the next append goes through
 `append_object_compacting`: the short tail is merged into full pages by compare-and-set, so a
 log object stays appendable past 4096 extents. This is plain publication (the full manifest

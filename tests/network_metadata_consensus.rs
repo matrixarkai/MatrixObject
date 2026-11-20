@@ -2807,7 +2807,8 @@ fn maintenance_repair_stays_excluded_through_metadata_failover_and_total_restart
     drop(chunks[0].take());
     chunks[0] = Some(start_chunk(0, false));
     wait_health(&mut catalog, false, 13);
-    let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
+    // Require every replica here: a quorum write may return after two replies.
+    let mut set = RemoteReplicaSet::connect(&endpoints, 3, 3, &options).unwrap();
     assert_eq!(set.write_chunk(&page, 0, b"ready-to-write").unwrap(), 3);
     wait_health(&mut catalog, false, 14);
     assert_eq!(

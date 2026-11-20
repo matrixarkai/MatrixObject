@@ -42,7 +42,8 @@ fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
 fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
     let mut done = 0;
     while done < buf.len() {
-        let count = std::os::windows::fs::FileExt::seek_read(file, &mut buf[done..], offset + done as u64)?;
+        let count =
+            std::os::windows::fs::FileExt::seek_read(file, &mut buf[done..], offset + done as u64)?;
         if count == 0 {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
@@ -128,6 +129,39 @@ pub fn crc32c_update(crc: u32, data: &[u8]) -> u32 {
     }
     !state
 }
+fn crc32c_update_recovery(crc: u32, data: &[u8]) -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    if data.len() >= 8 && std::arch::is_x86_feature_detected!("sse4.2") {
+        // SAFETY: runtime detection establishes the instruction set before entry.
+        return unsafe { crc32c_update_sse42(crc, data) };
+    }
+    crc32c_update(crc, data)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.2")]
+unsafe fn crc32c_update_sse42(crc: u32, data: &[u8]) -> u32 {
+    use std::arch::x86_64::{_mm_crc32_u64, _mm_crc32_u8};
+    let mut state = u64::from(!crc);
+    let mut words = data.chunks_exact(8);
+    for word in &mut words {
+        state = _mm_crc32_u64(state, u64::from_le_bytes(word.try_into().unwrap()));
+    }
+    let mut state = state as u32;
+    for byte in words.remainder() {
+        state = _mm_crc32_u8(state, *byte);
+    }
+    !state
+}
+
+#[cfg(test)]
+fn crc32c_update_portable(crc: u32, data: &[u8]) -> u32 {
+    crc32c_update(crc, data)
+}
+fn crc32c_recovery(data: &[u8]) -> u32 {
+    crc32c_update_recovery(0, data)
+}
+
 pub fn crc32c(data: &[u8]) -> u32 {
     crc32c_update(0, data)
 }
@@ -162,7 +196,7 @@ impl Header {
         if bytes.len() < LOG_HEADER_LEN || &bytes[..4] != MAGIC {
             return None;
         }
-        if crc32c(&bytes[..36]) != u32::from_le_bytes(bytes[36..40].try_into().ok()?) {
+        if crc32c_recovery(&bytes[..36]) != u32::from_le_bytes(bytes[36..40].try_into().ok()?) {
             return None;
         }
         let header = Self {
@@ -217,7 +251,13 @@ pub struct RecordCache {
 }
 impl RecordCache {
     pub fn new(cap_bytes: usize) -> Self {
-        Self { cap_bytes, bytes: 0, tick: 0, entries: HashMap::new(), order: BTreeMap::new() }
+        Self {
+            cap_bytes,
+            bytes: 0,
+            tick: 0,
+            entries: HashMap::new(),
+            order: BTreeMap::new(),
+        }
     }
     pub fn cap_bytes(&self) -> usize {
         self.cap_bytes
@@ -247,7 +287,9 @@ impl RecordCache {
             return;
         }
         while self.bytes + data.len() > self.cap_bytes {
-            let Some((_, oldest)) = self.order.pop_first() else { break };
+            let Some((_, oldest)) = self.order.pop_first() else {
+                break;
+            };
             if let Some((evicted, _)) = self.entries.remove(&oldest) {
                 self.bytes -= evicted.len();
             }
@@ -380,8 +422,8 @@ impl LogChunk {
                     while done < header.length as usize {
                         let count = piece.len().min(header.length as usize - done);
                         read_exact_at(&file, &mut piece[..count], data_pos + done as u64)?;
-                        record_crc = crc32c_update(record_crc, &piece[..count]);
-                        total_crc = crc32c_update(total_crc, &piece[..count]);
+                        record_crc = crc32c_update_recovery(record_crc, &piece[..count]);
+                        total_crc = crc32c_update_recovery(total_crc, &piece[..count]);
                         done += count;
                     }
                     if record_crc != header.data_crc {
@@ -417,10 +459,17 @@ impl LogChunk {
     }
 
     /// Feed bytes `[start, end)` of the chunk to `each`, read from the file in bounded pieces.
-    fn stream_logical(&self, start: u64, end: u64, mut each: impl FnMut(&[u8])) -> Result<(), LogError> {
+    fn stream_logical(
+        &self,
+        start: u64,
+        end: u64,
+        mut each: impl FnMut(&[u8]),
+    ) -> Result<(), LogError> {
         let mut piece = vec![0u8; REPLAY_PIECE.min((end - start) as usize).max(1)];
         let mut at = start;
-        let first = self.extents.partition_point(|extent| extent.logical + u64::from(extent.len) <= start);
+        let first = self
+            .extents
+            .partition_point(|extent| extent.logical + u64::from(extent.len) <= start);
         for extent in &self.extents[first..] {
             if at >= end {
                 break;
@@ -430,7 +479,11 @@ impl LogChunk {
             let mut pos = from;
             while pos < upto {
                 let count = piece.len().min((upto - pos) as usize);
-                read_exact_at(&self.file, &mut piece[..count], extent.file_pos + (pos - extent.logical))?;
+                read_exact_at(
+                    &self.file,
+                    &mut piece[..count],
+                    extent.file_pos + (pos - extent.logical),
+                )?;
                 each(&piece[..count]);
                 pos += count as u64;
             }
@@ -455,7 +508,12 @@ impl LogChunk {
 
     /// One append record whose data has been checked as it was read; `total_crc` is the running
     /// checksum of the whole chunk with that data added.
-    fn replay_append(&mut self, header: &Header, data_pos: u64, total_crc: u32) -> Result<(), LogError> {
+    fn replay_append(
+        &mut self,
+        header: &Header,
+        data_pos: u64,
+        total_crc: u32,
+    ) -> Result<(), LogError> {
         if header.epoch < self.epoch {
             return Err(corrupt("log chunk epoch goes backwards"));
         }
@@ -463,7 +521,10 @@ impl LogChunk {
             return Err(corrupt("log chunk has a record after its seal"));
         }
         let length = self.length;
-        if header.offset != length || length + u64::from(header.length) > self.max_length || header.length == 0 {
+        if header.offset != length
+            || length + u64::from(header.length) > self.max_length
+            || header.length == 0
+        {
             return Err(corrupt("log chunk append does not continue the chunk"));
         }
         self.extents.push(Extent {
@@ -530,6 +591,10 @@ impl LogChunk {
     pub fn path(&self) -> &Path {
         &self.path
     }
+    pub(crate) fn generation(&self) -> u32 {
+        self.generation
+    }
+
     /// The bytes applied so far (durable only after `commit`).
     pub fn length(&self) -> u64 {
         self.length
@@ -587,7 +652,9 @@ impl LogChunk {
             out.extend_from_slice(&self.data[start as usize..end as usize]);
             return Ok(());
         }
-        let first = self.extents.partition_point(|extent| extent.logical + u64::from(extent.len) <= start);
+        let first = self
+            .extents
+            .partition_point(|extent| extent.logical + u64::from(extent.len) <= start);
         for extent in &self.extents[first..] {
             if extent.logical >= end {
                 break;
@@ -871,3 +938,7 @@ impl LogChunk {
         Ok(sealed)
     }
 }
+
+#[cfg(test)]
+#[path = "log_chunk_crc32c_tests.rs"]
+mod crc32c_tests;

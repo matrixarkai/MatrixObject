@@ -708,10 +708,12 @@ jobs:
             owned_append_keeps_data_writes_bounded_and_recovers_all_replicas \
             star_corpus_scale::star_corpus_workload_verifies_durable_reads_writes_and_appends \
             star_corpus_scale::checkpoint_corpus_measurement::checkpoint_corpus_measurement_drains_both_layouts_and_recovers \
+            star_corpus_scale::checkpoint_corpus_measurement::sized_star_replicas_preserve_capacity_and_page_limits_after_restart \
             star_corpus_scale::checkpoint_interference::checkpoint_interference_preserves_three_durable_append_copies \
             star_recovery_profiles::star_repair_and_append_work_across_local_recovery_profiles \
             segmented_star_replicas_keep_objects_through_metadata_failover_and_full_restart \
-            replica_segment_retirement::segmented_star_retirement_reclaims_files_preserves_cold_objects_and_recovers_all_processes
+            replica_segment_retirement::segmented_star_retirement_reclaims_files_preserves_cold_objects_and_recovers_all_processes \
+            replica_segment_retirement::segmented_star_background_compaction_keeps_cold_objects_without_manual_barriers
           do
             grep -Fxq "test star_append_amplification::${test_name} ... ok" /tmp/star-append-cost.log
           done
@@ -730,8 +732,8 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --all-features --lib journal_control_ -- --test-threads=1 | tee /tmp/journal-control.log
-          grep -q '^test result: ok. 5 passed; 0 failed;' /tmp/journal-control.log
-          for test_name in journal_control_codecs_are_canonical_bounded_and_versioned journal_control_tcp_checkpoint_reports_published_epoch_and_recovers_tail journal_control_memory_refusal_does_not_fence_ordinary_requests journal_control_maintenance_status_tracks_cleanup_without_changing_v1 journal_control_tcp_negotiates_maintenance_without_mutating_status_reads
+          grep -q '^test result: ok. 7 passed; 0 failed;' /tmp/journal-control.log
+          for test_name in journal_control_codecs_are_canonical_bounded_and_versioned journal_control_tcp_checkpoint_reports_published_epoch_and_recovers_tail journal_control_memory_refusal_does_not_fence_ordinary_requests journal_control_maintenance_status_tracks_cleanup_without_changing_v1 journal_control_tcp_negotiates_maintenance_without_mutating_status_reads journal_control_tcp_write_statistics_preserve_old_status_and_reset_after_reopen journal_control_write_statistics_are_scoped_bounded_and_versioned
           do
             grep -Fq "${test_name} ... ok" /tmp/journal-control.log
           done
@@ -753,11 +755,20 @@ jobs:
           set -euo pipefail
           cargo test --locked --all-features --lib durable_payload -- --test-threads=1 | tee /tmp/payload-unit.log
           grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/payload-unit.log
+          grep -Fq 'outcome_segments_checkpoint_cut_orders_owned_positions_and_refuses_invalid_bounds ... ok' /tmp/payload-unit.log
           for test_name in outcome_segments_retention_keeps_shared_payloads_skips_deleted_numbers_and_rolls_over outcome_segments_retention_reader_pins_refuse_publication_without_fencing outcome_segments_retention_interrupted_preparation_and_rollover_leave_old_manifest outcome_segments_retention_uncertain_publication_fences_and_restarts_before_cleanup outcome_segments_retention_retries_marker_only_cleanup_and_quarantines_foreign_identity
           do
             grep -Fq "${test_name} ... ok" /tmp/payload-unit.log
           done
           for test_name in durable_payload_binary_header_and_descriptor_bytes_are_stable durable_payload_sync_and_write_failures_return_no_descriptors_and_fence durable_payload_verified_read_does_not_wait_for_writer_sync stored_outcomes_share_one_sync_and_recover_identical_binary_decisions stored_outcomes_preserve_namespace_fences_in_order stored_outcomes_binary_metadata_and_envelope_bytes_are_stable stored_outcomes_control_records_bind_file_identity_and_absolute_position outcome_segments_rollover_replays_in_order_and_retains_old_ranges outcome_segments_cache_is_bounded_and_evicted_readers_keep_shared_locks outcome_segments_disk_full_is_not_a_configured_capacity_refusal
+          do
+            grep -Fq "${test_name} ... ok" /tmp/payload-unit.log
+          done
+          for test_name in \
+            durable_payload_reused_reads_append_exact_unaligned_ranges_and_validate_arguments \
+            durable_payload_reused_reads_restore_prefix_after_sector_or_padding_damage \
+            durable_payload_reused_full_reads_verify_the_logical_digest \
+            durable_payload_reused_reads_restore_prefix_after_a_short_file_read
           do
             grep -Fq "${test_name} ... ok" /tmp/payload-unit.log
           done
@@ -785,6 +796,7 @@ jobs:
           do
             grep -Fq "${test_name} ... ok" /tmp/payload-allocations.log
           done
+          test "$(grep -c 'reused_read_calls=0 reused_read_bytes=0' /tmp/payload-allocations.log)" -eq 6
 
       - name: immutable replica checkpoints preserve metadata and concurrent writes
         run: |
@@ -793,9 +805,24 @@ jobs:
           grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/replica-catalog.log
           grep -Fq 'checkpoint_catalog_newest_corruption_is_refused_without_fallback_or_repair ... ok' /tmp/replica-catalog.log
           grep -Fq 'checkpoint_recovery_scalar_capture_does_not_pin_live_payloads_or_receipt_maps ... ok' /tmp/replica-catalog.log
+          grep -Fq 'catalog_covered_ranges_reuse_the_provider_buffer_and_clamp_reads ... ok' /tmp/replica-catalog.log
+          grep -Fq 'catalog_covered_ranges_do_not_retain_provider_padding_capacity ... ok' /tmp/replica-catalog.log
+          grep -Fq 'catalog_covered_ranges_refuse_wrong_lengths_and_propagate_io_errors ... ok' /tmp/replica-catalog.log
           grep -Fq 'checkpoint_index_retention_preserves_every_duplicate_extent_record_after_reload ... ok' /tmp/replica-catalog.log
+          grep -Fq 'compaction_reuses_sector_storage_without_mixing_distinct_extents ... ok' /tmp/replica-catalog.log
+          grep -Fq 'compaction_reused_fragment_buffer_handles_unaligned_ranges_across_flushes ... ok' /tmp/replica-catalog.log
+          for test_name in compaction_unions_shared_ranges_and_packs_sparse_pages_without_copying_dead_extent_bytes compaction_budget_preserves_unmoved_spans_and_resumes_a_shared_extent compaction_refuses_damaged_source_before_rebinding_pages compaction_checks_cancellation_before_writing_or_changing_the_catalog compaction_cancelled_after_copy_keeps_the_published_root_recoverable compaction_range_union_handles_aliases_adjacency_and_invalid_bounds
+          do
+            grep -Fq "${test_name} ... ok" /tmp/replica-catalog.log
+          done
           cargo test --locked --all-features --lib segmented_ -- --test-threads=1 | tee /tmp/replica-segmented.log
           grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/replica-segmented.log
+          grep -Fq 'segmented_checkpoint_advances_storage_cut_and_reclaims_quiet_history ... ok' /tmp/replica-segmented.log
+          grep -Fq 'segmented_manual_compaction_evacuates_cold_data_and_metadata_after_readers_leave ... ok' /tmp/replica-segmented.log
+          for test_name in segmented_background_compaction_reclaims_sparse_history_after_reader_deferral segmented_dense_background_analysis_writes_nothing_and_backs_off segmented_checkpoint_requested_during_analysis_has_a_new_durable_epoch segmented_install_uses_published_boundary_after_its_cached_cut_is_retired segmented_install_refuses_an_unproven_retired_cut_with_new_durable_tail segmented_background_poll_does_not_flush_a_pending_foreground_group segmented_server_compacts_without_requests_or_heartbeats segmented_checkpoint_epoch_reservation_refuses_overflow_without_losing_state
+          do
+            grep -Fq "${test_name} ... ok" /tmp/replica-segmented.log
+          done
           for test_name in segmented_replica_background_checkpoint_preserves_concurrent_grouped_tail segmented_replica_install_supersedes_background_checkpoint_and_keeps_new_tail segmented_replica_batch_overflow_keeps_context_for_each_committed_group segmented_journal_recovery_policy_is_applied_after_checkpoint_restore segmented_replica_retirement_preserves_cold_payloads_and_reopens_overwritten_pages
           do
             grep -Fq "${test_name} ... ok" /tmp/replica-segmented.log
@@ -819,7 +846,8 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --all-features --lib compact_append -- --test-threads=1 | tee /tmp/compact-append.log
-          grep -q '^test result: ok. 7 passed' /tmp/compact-append.log
+          grep -q '^test result: ok. 8 passed; 0 failed;' /tmp/compact-append.log
+          grep -Fq 'failed_compact_append_does_not_create_object_activity ... ok' /tmp/compact-append.log
 
       - name: catalog clones share immutable manifests and preserve canonical images
         run: |

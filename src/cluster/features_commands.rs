@@ -4,8 +4,8 @@
 //!
 //! * declare (action 1): a metadata voter records the feature bits it reads. Written by the voter
 //!   itself, so a late joiner and a replay see the same evidence as everyone else.
-//! * raise (action 2): the group agrees to emit `bits`. Refused unless every voter the caller
-//!   names has declared support for every one of them, and unless this build reads them itself.
+//! * raise (action 2): the group agrees to emit `bits`. Refused unless every current journal reader
+//!   has declared support for every one of them, and unless this build reads them itself.
 //!   A bit is never lowered.
 //! * read (action 3): the current set, from the committed state.
 //!
@@ -36,8 +36,8 @@ pub struct FeaturesRequest {
     /// Declare: the bits the voter reads. Raise: the bits to raise. Zero for a read.
     #[prost(uint64, tag = "4")]
     pub bits: u64,
-    /// Raise: every voter of the group, as the caller read them from the membership. Each must
-    /// have declared the bits.
+    /// Raise: the sorted union of committed voters, outgoing voters and learners.
+    /// The consensus service verifies the set against its own membership.
     #[prost(uint64, repeated, tag = "5")]
     pub voters: Vec<u64>,
 }

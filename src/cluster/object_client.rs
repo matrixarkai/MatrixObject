@@ -1086,10 +1086,13 @@ impl RemoteMetaClient {
         } else { manifest.clone() };
         let outcome = match (compact, expected) {
             // a compact append is bound to the prior by digest: validate what it adds
-            (true, Some(prior)) => ManifestOutcome::decide_append(prior, published.clone()),
-            (_, expected) => ManifestOutcome::decide(expected, published.clone()),
+            (true, Some(prior)) => ManifestOutcome::decide_append(prior, published),
+            (_, expected) => ManifestOutcome::decide(expected, published),
         }
         .map_err(before)?;
+        // The outcome owns the candidate; data I/O only borrows it instead of
+        // retaining another full copy of the object prefix.
+        let published = outcome.after.as_ref().unwrap();
         let staged_error = |error| ObjectWriteFailure::BeforePublication {
             error,
             staged: Some(Box::new(published.clone())),
@@ -1177,28 +1180,34 @@ impl RemoteMetaClient {
         self.check_operation_deadline().map_err(&staged_error)?;
         let (publication, unadmitted, outcome) = if compact {
             let allocation_id = owned.expect("compact append requires owned staging").allocation_id;
-            if let Some((pages, ttl_ms)) = self.reserve_next.take() {
+            let (result, unadmitted, outcome) = if let Some((pages, ttl_ms)) = self.reserve_next.take() {
                 let (result, unadmitted, outcome) = self.publish_compact_append_reserving(
                     outcome, allocation_id, options.update_time_ms, pages, ttl_ms);
-                let result = result.map(|(manifest, reserved)| {
+                let result = result.map(|reserved| {
                     self.reservation = reserved;
-                    manifest
                 });
                 (result, unadmitted, outcome)
             } else {
                 self.publish_compact_append_preserving_outcome(outcome, allocation_id, options.update_time_ms)
+            };
+            match result {
+                Ok(()) => return Ok(outcome.after.unwrap()),
+                Err(error) => (Err(error), unadmitted, outcome),
             }
         } else {
             self.publish_preserving_outcome(outcome, owned.map(|allocation| allocation.allocation_id), options.update_time_ms)
         };
         match publication {
             Ok(value) => Ok(value),
-            Err(error) if unadmitted => Err(staged_error(error)),
+            Err(error) if unadmitted => Err(ObjectWriteFailure::BeforePublication {
+                error,
+                staged: Some(Box::new(outcome.after.unwrap())),
+            }),
             Err(error) => {
                 // Never replay publication. Only the exact resulting value proves
                 // current visibility; a failed read or another value stays uncertain.
-                if self.read_manifest(bucket, key).ok().as_ref() == Some(&published) {
-                    Ok(published)
+                if self.read_manifest(bucket, key).ok().as_ref() == outcome.after.as_ref() {
+                    Ok(outcome.after.unwrap())
                 } else {
                     Err(ObjectWriteFailure::PublicationUnconfirmed {
                         error,

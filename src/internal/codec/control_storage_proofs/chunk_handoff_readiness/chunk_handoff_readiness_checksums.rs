@@ -5,18 +5,34 @@ pub(crate) fn chunk_state_handoff_checksum(
     state: &PageState,
     payload_checksum: &str,
 ) -> String {
+    chunk_state_handoff_checksum_from_parts(
+        page_id,
+        state.logical_length,
+        state.write_sequence,
+        payload_checksum,
+        &state.discarded_ranges,
+    )
+}
+
+pub(crate) fn chunk_state_handoff_checksum_from_parts(
+    page_id: &PageId,
+    logical_length: u64,
+    write_sequence: u64,
+    payload_checksum: &str,
+    discarded_ranges: &[DataRange],
+) -> String {
     let mut material = Vec::with_capacity(
         std::mem::size_of::<u64>() * 6
             + encoded_string_len(payload_checksum)
-            + state.discarded_ranges.len() * std::mem::size_of::<u64>() * 2,
+            + discarded_ranges.len() * std::mem::size_of::<u64>() * 2,
     );
     append_chunk_id(&mut material, &page_id.chunk_id);
     append_u64(&mut material, page_id.page_index);
-    append_u64(&mut material, state.logical_length);
-    append_u64(&mut material, state.write_sequence);
+    append_u64(&mut material, logical_length);
+    append_u64(&mut material, write_sequence);
     append_string(&mut material, payload_checksum);
-    append_u64(&mut material, state.discarded_ranges.len() as u64);
-    for range in &state.discarded_ranges {
+    append_u64(&mut material, discarded_ranges.len() as u64);
+    for range in discarded_ranges {
         append_range(&mut material, range);
     }
     etag(&material)

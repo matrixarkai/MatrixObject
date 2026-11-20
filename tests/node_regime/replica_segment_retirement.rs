@@ -61,8 +61,40 @@ fn checkpoint(fixture: &Fixture) {
     }
 }
 
+fn wait_background(fixture: &Fixture, originals: &[BTreeSet<PathBuf>]) {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let mut complete = originals.iter().flatten().all(|path| !path.exists());
+        for endpoint in &fixture.chunk_endpoints {
+            let mut client =
+                RemoteReplicaClient::connect(endpoint, &ReplicaClientOptions::default()).unwrap();
+            let status = client.journal_maintenance_status().unwrap();
+            complete &= !status.checkpoint_in_flight
+                && !status.retirement_in_flight
+                && status.retired_segments == 0;
+        }
+        if complete {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "background compaction did not reclaim the original cold files"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn segmented_star_retirement_reclaims_files_preserves_cold_objects_and_recovers_all_processes() {
+    star_retirement_workload(true);
+}
+
+#[test]
+fn segmented_star_background_compaction_keeps_cold_objects_without_manual_barriers() {
+    star_retirement_workload(false);
+}
+
+fn star_retirement_workload(manual: bool) {
     let mut fixture =
         Fixture::with_retention(true, true, Some(1024 * 1024), Some((24 * 1024 * 1024, 2)));
     let options = ObjectWriteOptions {
@@ -101,6 +133,7 @@ fn segmented_star_retirement_reclaims_files_preserves_cold_objects_and_recovers_
         .all(|pid| *pid != std::process::id() && processes::is_live(*pid)));
     node_regime::sockets::assert_established_two_ways(&pids);
     let mut previous: Vec<_> = fixture.journals.iter().map(|p| segments(p)).collect();
+    let original_segments = previous.clone();
     let mut reclaimed = [false; 3];
     let mut old_leader = None;
     for generation in 0..8 {
@@ -108,7 +141,9 @@ fn segmented_star_retirement_reclaims_files_preserves_cold_objects_and_recovers_
         for n in 0..32 {
             assert_eq!(set.write_chunk(&hot(n), 0, &payload).unwrap(), 3);
         }
-        checkpoint(&fixture);
+        if manual {
+            checkpoint(&fixture);
+        }
         for id in 0..3 {
             let current = segments(&fixture.journals[id]);
             reclaimed[id] |= previous[id].iter().any(|path| !current.contains(path));
@@ -117,8 +152,10 @@ fn segmented_star_retirement_reclaims_files_preserves_cold_objects_and_recovers_
                 RemoteReplicaClient::connect(&fixture.chunk_endpoints[id], &options.replica)
                     .unwrap();
             let status = replica.journal_maintenance_status().unwrap();
-            assert_eq!(status.retired_segments, 0);
-            assert!(!status.retirement_in_flight);
+            if manual {
+                assert_eq!(status.retired_segments, 0);
+                assert!(!status.retirement_in_flight);
+            }
             println!(
                 "RETENTION_SAMPLE generation={} replica={} logical_overwrite_bytes={} managed_segments={} managed_record_bytes={} reclaimed={}",
                 generation + 1, id, (generation + 1) * 16 * 1024 * 1024,
@@ -144,10 +181,26 @@ fn segmented_star_retirement_reclaims_files_preserves_cold_objects_and_recovers_
             client = fixture.client();
         }
     }
-    assert!(
-        reclaimed.iter().all(|v| *v),
-        "every data replica must physically retire history"
-    );
+    if manual {
+        assert!(
+            reclaimed.iter().all(|v| *v),
+            "every data replica must physically retire history"
+        );
+    }
+    if manual {
+        for _ in 0..2 {
+            checkpoint(&fixture);
+            verify_replicas(&fixture, &manifest, &bytes);
+        }
+    } else {
+        wait_background(&fixture, &original_segments);
+    }
+    for files in &original_segments {
+        assert!(
+            files.iter().all(|path| !path.exists()),
+            "a cold object's original data or metadata still pins its first segment"
+        );
+    }
     for path in &fixture.journals {
         let manifest_path = path.with_file_name(format!(
             "{}.segments",
@@ -189,7 +242,11 @@ fn segmented_star_retirement_reclaims_files_preserves_cold_objects_and_recovers_
             .unwrap(),
         3
     );
-    checkpoint(&fixture);
+    if manual {
+        checkpoint(&fixture);
+    } else {
+        wait_background(&fixture, &original_segments);
+    }
     for endpoint in &fixture.chunk_endpoints {
         let mut replica = RemoteReplicaClient::connect(endpoint, &options.replica).unwrap();
         assert_eq!(

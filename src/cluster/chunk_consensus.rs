@@ -1131,6 +1131,7 @@ mod checkpoint_tests {
         service.set_capacity_bytes(capacity).unwrap();
         let (used_bytes, health) = super::super::replica_health::test_parts();
         NodeReplica {
+            resident: None,
             service,
             journal: None,
             journal_checkpoint_after_bytes: 0,

@@ -5,12 +5,15 @@
 //! Each file is a `LogChunk` (see `crate::log_chunk`): its length comes from replaying its own
 //! records, so the node keeps no length table and a restart needs no recovery pass beyond opening
 //! a chunk when something asks for it.
-use super::log_op::{LogOpReply, LogOpRequest, FLAG_SEAL_SHA256, OP_APPEND, OP_READ, OP_SEAL, OP_TAIL, OP_TRUNCATE};
+use super::log_op::{
+    LogOpReply, LogOpRequest, FLAG_SEAL_SHA256, OP_APPEND, OP_READ, OP_SEAL, OP_TAIL, OP_TRUNCATE,
+};
 use crate::log_chunk::{LogChunk, LogError, RecordCache};
 use crate::ObjectError;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// A chunk of one log: the size a writer fills before it switches to the next.
 pub const LOG_CHUNK_LIMIT: u64 = 64 * 1024 * 1024;
@@ -41,6 +44,8 @@ pub struct LogChunkStore {
     /// Syncs completed, one per chunk per group.
     commits: u64,
     syncer: fn(&File) -> std::io::Result<()>,
+    // Release ownership after all cached chunk handles.
+    directory_lock: Option<Arc<File>>,
 }
 
 /// What the committer fsyncs after it has released the replica lock.
@@ -49,6 +54,8 @@ pub struct PendingSync {
     file: File,
     length: u64,
     syncer: fn(&File) -> std::io::Result<()>,
+    // A dropped pending file must stop owning bytes before ownership is released.
+    _directory_lock: Arc<File>,
 }
 
 fn sync_data(file: &File) -> std::io::Result<()> {
@@ -58,13 +65,15 @@ fn sync_data(file: &File) -> std::io::Result<()> {
 /// Make every pending handle durable. Takes no lock: the caller must not hold one.
 pub fn sync_pending(pending: &[PendingSync]) -> Result<(), ObjectError> {
     for one in pending {
-        (one.syncer)(&one.file).map_err(|error| ObjectError::Corruption(format!("log chunk sync failed: {error}")))?;
+        (one.syncer)(&one.file)
+            .map_err(|error| ObjectError::Corruption(format!("log chunk sync failed: {error}")))?;
     }
     Ok(())
 }
 
 /// What a node says when a writer's epoch is behind the chunk's: the client parses the number.
-pub(super) const STALE_EPOCH_PREFIX: &str = "log chunk writer epoch is stale; the chunk is at epoch ";
+pub(super) const STALE_EPOCH_PREFIX: &str =
+    "log chunk writer epoch is stale; the chunk is at epoch ";
 pub(super) const SEALED_MESSAGE: &str = "log chunk is sealed";
 
 pub(super) fn to_object_error(error: LogError) -> ObjectError {
@@ -73,30 +82,54 @@ pub(super) fn to_object_error(error: LogError) -> ObjectError {
             ObjectError::PreconditionFailed(format!("{STALE_EPOCH_PREFIX}{current}"))
         }
         LogError::Sealed => ObjectError::PreconditionFailed(SEALED_MESSAGE.into()),
-        LogError::Overlap => ObjectError::PreconditionFailed("log chunk bytes differ from bytes already held".into()),
-        LogError::Window => ObjectError::PreconditionFailed("log chunk reorder window is full".into()),
-        LogError::SealMismatch => ObjectError::PreconditionFailed("log chunk has records waiting; it cannot seal yet".into()),
+        LogError::Overlap => {
+            ObjectError::PreconditionFailed("log chunk bytes differ from bytes already held".into())
+        }
+        LogError::Window => {
+            ObjectError::PreconditionFailed("log chunk reorder window is full".into())
+        }
+        LogError::SealMismatch => ObjectError::PreconditionFailed(
+            "log chunk has records waiting; it cannot seal yet".into(),
+        ),
         LogError::Bounds(what) => ObjectError::InvalidArgument(format!("log chunk bound: {what}")),
         LogError::Corrupt(message) => ObjectError::Corruption(message),
-        LogError::Io(error) => ObjectError::Corruption(format!("log chunk storage failed: {error}")),
-        LogError::Unavailable => ObjectError::Corruption("log chunk is unavailable after a failed write or sync; reopen to recover".into()),
+        LogError::Io(error) => {
+            ObjectError::Corruption(format!("log chunk storage failed: {error}"))
+        }
+        LogError::Unavailable => ObjectError::Corruption(
+            "log chunk is unavailable after a failed write or sync; reopen to recover".into(),
+        ),
     }
 }
 
 impl LogChunkStore {
+    /// Create a store without claiming its directory. The first operation that opens a chunk
+    /// takes exclusive ownership; pending sync handles retain that ownership.
+    /// Page-only replicas can therefore be constructed without reserving log storage.
     /// `dir` is created if it is missing.
     pub fn open(dir: &Path) -> std::io::Result<Self> {
-        Self::with_limits(dir, MAX_OPEN_LOG_CHUNKS, DEFAULT_TAIL_BUDGET, DEFAULT_RECORD_CACHE_BYTES)
+        Self::with_limits(
+            dir,
+            MAX_OPEN_LOG_CHUNKS,
+            DEFAULT_TAIL_BUDGET,
+            DEFAULT_RECORD_CACHE_BYTES,
+        )
     }
 
     /// At most `max_sealed_open` sealed chunk files open at once, at most `tail_budget` open
     /// tails (each holds its bytes in memory), and `cache_bytes` of sealed-chunk records kept for
     /// reads. The two kinds of chunk are limited apart, so a read of a sealed chunk never waits for
     /// a tail to go.
-    pub fn with_limits(dir: &Path, max_sealed_open: usize, tail_budget: usize, cache_bytes: usize) -> std::io::Result<Self> {
+    pub fn with_limits(
+        dir: &Path,
+        max_sealed_open: usize,
+        tail_budget: usize,
+        cache_bytes: usize,
+    ) -> std::io::Result<Self> {
         std::fs::create_dir_all(dir)?;
         Ok(Self {
             dir: dir.to_path_buf(),
+            directory_lock: None,
             chunks: BTreeMap::new(),
             used: BTreeMap::new(),
             tick: 0,
@@ -116,7 +149,10 @@ impl LogChunkStore {
     }
     /// Open chunks that can still change; each holds all of its bytes in memory.
     pub fn open_tails(&self) -> usize {
-        self.chunks.values().filter(|chunk| chunk.sealed().is_none()).count()
+        self.chunks
+            .values()
+            .filter(|chunk| chunk.sealed().is_none())
+            .count()
     }
     /// Bytes of sealed-chunk records held for reads. Never above the cache bound.
     #[cfg(test)]
@@ -129,7 +165,10 @@ impl LogChunkStore {
     }
     /// Open sealed chunks.
     pub fn open_sealed(&self) -> usize {
-        self.chunks.values().filter(|chunk| chunk.sealed().is_some()).count()
+        self.chunks
+            .values()
+            .filter(|chunk| chunk.sealed().is_some())
+            .count()
     }
     /// Close the least recently used sealed chunk that has nothing waiting for a sync. An open
     /// tail, or any chunk with dirty state, is never closed. False when there was none to close.
@@ -137,7 +176,14 @@ impl LogChunkStore {
         let victim = self
             .used
             .iter()
-              .filter(|(key, _)| Some(**key) != keep && !self.dirty.contains(key) && self.chunks.get(key).is_some_and(|chunk| chunk.sealed().is_some()))
+            .filter(|(key, _)| {
+                Some(**key) != keep
+                    && !self.dirty.contains(key)
+                    && self
+                        .chunks
+                        .get(key)
+                        .is_some_and(|chunk| chunk.sealed().is_some())
+            })
             .min_by_key(|(_, used)| **used)
             .map(|(key, _)| *key);
         let Some(key) = victim else {
@@ -161,14 +207,62 @@ impl LogChunkStore {
         self.dir.join(format!("{volume:016x}-{chunk:016x}.log"))
     }
 
-    fn chunk(&mut self, request: &LogOpRequest, create: bool) -> Result<Option<&mut LogChunk>, ObjectError> {
+    fn claim_directory(&mut self) -> Result<(), ObjectError> {
+        if self.directory_lock.is_some() {
+            return Ok(());
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(self.dir.join(".writer.lock"))
+            .map_err(|error| {
+                ObjectError::Corruption(format!(
+                    "log chunk directory lock cannot be opened: {error}"
+                ))
+            })?;
+        fs2::FileExt::try_lock_exclusive(&file).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock
+                || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+            {
+                ObjectError::PreconditionFailed(
+                    "log chunk directory already has an active owner".into(),
+                )
+            } else {
+                ObjectError::Corruption(format!("log chunk directory lock failed: {error}"))
+            }
+        })?;
+        self.directory_lock = Some(Arc::new(file));
+        Ok(())
+    }
+
+    fn chunk(
+        &mut self,
+        request: &LogOpRequest,
+        create: bool,
+    ) -> Result<Option<&mut LogChunk>, ObjectError> {
         let key = (request.volume, request.chunk);
         if !self.chunks.contains_key(&key) {
             let path = self.path(request.volume, request.chunk);
-            if !create && !path.exists() {
+            // A missing-chunk query neither caches a handle nor reserves storage.
+            if !create
+                && !path.try_exists().map_err(|error| {
+                    ObjectError::Corruption(format!("log chunk lookup failed: {error}"))
+                })?
+            {
                 return Ok(None);
             }
-            let opened = LogChunk::open(&path, request.generation, LOG_CHUNK_LIMIT).map_err(to_object_error)?;
+            self.claim_directory()?;
+            if !create
+                && !path.try_exists().map_err(|error| {
+                    ObjectError::Corruption(format!("owned log chunk lookup failed: {error}"))
+                })?
+            {
+                return Ok(None);
+            }
+            let opened = LogChunk::open(&path, request.generation, LOG_CHUNK_LIMIT)
+                .map_err(to_object_error)?;
             let sealed = opened.sealed().is_some();
             if !sealed && self.open_tails() >= self.tail_budget {
                 // a tail keeps all its bytes: the budget refuses, and nothing is closed for it
@@ -183,7 +277,14 @@ impl LogChunkStore {
         }
         self.tick += 1;
         self.used.insert(key, self.tick);
-        Ok(self.chunks.get_mut(&key))
+        self.claim_directory()?;
+        let chunk = self.chunks.get_mut(&key).expect("opened log chunk exists");
+        if chunk.generation() != request.generation {
+            return Err(ObjectError::PreconditionFailed(
+                "log chunk request names another generation".into(),
+            ));
+        }
+        Ok(Some(chunk))
     }
 
     /// Replace the function that syncs a file (a test makes it slow or failing).
@@ -209,10 +310,19 @@ impl LogChunkStore {
         let mut pending = Vec::with_capacity(keys.len());
         for key in keys {
             if let Some(chunk) = self.chunks.get(&key) {
-                let (file, length) = chunk
-                    .sync_handle()
-                    .map_err(|error| ObjectError::Corruption(format!("log chunk handle failed: {error}")))?;
-                pending.push(PendingSync { key, file, length, syncer: self.syncer });
+                let (file, length) = chunk.sync_handle().map_err(|error| {
+                    ObjectError::Corruption(format!("log chunk handle failed: {error}"))
+                })?;
+                let ownership = self.directory_lock.as_ref().ok_or_else(|| {
+                    ObjectError::Corruption("dirty log chunk has no directory owner".into())
+                })?;
+                pending.push(PendingSync {
+                    key,
+                    file,
+                    length,
+                    syncer: self.syncer,
+                    _directory_lock: Arc::clone(ownership),
+                });
             }
         }
         Ok(pending)
@@ -238,7 +348,11 @@ impl LogChunkStore {
         self.apply_with(request, false)
     }
 
-    fn apply_with(&mut self, request: &LogOpRequest, commit: bool) -> Result<LogOpReply, ObjectError> {
+    fn apply_with(
+        &mut self,
+        request: &LogOpRequest,
+        commit: bool,
+    ) -> Result<LogOpReply, ObjectError> {
         request.validate()?;
         let key = (request.volume, request.chunk);
         let mut dirtied = false;
@@ -254,15 +368,23 @@ impl LogChunkStore {
         Ok(reply)
     }
 
-    fn apply_inner(&mut self, request: &LogOpRequest, commit: bool, dirtied: &mut bool) -> Result<LogOpReply, ObjectError> {
+    fn apply_inner(
+        &mut self,
+        request: &LogOpRequest,
+        commit: bool,
+        dirtied: &mut bool,
+    ) -> Result<LogOpReply, ObjectError> {
         let key = (request.volume, request.chunk);
-        let Some(chunk) = self.chunk(request, request.op != OP_TAIL && request.op != OP_READ)? else {
+        let Some(chunk) = self.chunk(request, request.op != OP_TAIL && request.op != OP_READ)?
+        else {
             // a chunk this replica has never held: it is empty, and asking creates nothing
             return Ok(LogOpReply::default());
         };
         match request.op {
             OP_APPEND => {
-                chunk.append(request.epoch, request.offset, &request.data).map_err(to_object_error)?;
+                chunk
+                    .append(request.epoch, request.offset, &request.data)
+                    .map_err(to_object_error)?;
                 if commit {
                     chunk.commit().map_err(to_object_error)?;
                 } else {
@@ -270,10 +392,14 @@ impl LogChunkStore {
                 }
             }
             OP_SEAL => {
-                chunk.seal(request.epoch, request.flags & FLAG_SEAL_SHA256 != 0).map_err(to_object_error)?;
+                chunk
+                    .seal(request.epoch, request.flags & FLAG_SEAL_SHA256 != 0)
+                    .map_err(to_object_error)?;
             }
             OP_TRUNCATE => {
-                chunk.truncate(request.epoch, request.offset).map_err(to_object_error)?;
+                chunk
+                    .truncate(request.epoch, request.offset)
+                    .map_err(to_object_error)?;
                 if commit {
                     chunk.commit().map_err(to_object_error)?;
                 } else {
@@ -281,26 +407,40 @@ impl LogChunkStore {
                 }
             }
             OP_TAIL | OP_READ => {}
-            _ => return Err(ObjectError::InvalidArgument("unknown log chunk operation".into())),
+            _ => {
+                return Err(ObjectError::InvalidArgument(
+                    "unknown log chunk operation".into(),
+                ))
+            }
         }
         let sealed = chunk.sealed();
         let durable = chunk.durable_length();
         let mut reply = LogOpReply {
             length: chunk.length(),
             // a deferred mutation is answered only after the group's sync, so its length is durable then
-            durable_length: if *dirtied { chunk.length() } else { chunk.durable_length() },
+            durable_length: if *dirtied {
+                chunk.length()
+            } else {
+                chunk.durable_length()
+            },
             epoch: chunk.epoch(),
             sealed: sealed.is_some(),
             crc: chunk.footer_crc(),
-            sha256: sealed.and_then(|s| s.sha256).map(|d| d.to_vec()).unwrap_or_default(),
+            sha256: sealed
+                .and_then(|s| s.sha256)
+                .map(|d| d.to_vec())
+                .unwrap_or_default(),
             data: Vec::new(),
         };
         if request.op == OP_READ {
             // never above the durable length: an applied byte that no sync has covered is invisible
-            let wanted = (request.length as u64).min(durable.saturating_sub(request.offset)) as usize;
+            let wanted =
+                (request.length as u64).min(durable.saturating_sub(request.offset)) as usize;
             let mut data = Vec::new();
             let chunk = self.chunks.get(&key).expect("the chunk was opened above");
-            chunk.read_into(request.offset, wanted, &mut self.cache, &mut data).map_err(to_object_error)?;
+            chunk
+                .read_into(request.offset, wanted, &mut self.cache, &mut data)
+                .map_err(to_object_error)?;
             reply.data = data;
         }
         Ok(reply)
@@ -310,3 +450,11 @@ impl LogChunkStore {
 #[cfg(test)]
 #[path = "log_chunk_store_limits_tests.rs"]
 mod limits_tests;
+
+#[cfg(test)]
+#[path = "log_chunk_generation_fencing_tests.rs"]
+mod generation_fencing_tests;
+
+#[cfg(test)]
+#[path = "log_chunk_directory_ownership_tests.rs"]
+mod directory_ownership_tests;

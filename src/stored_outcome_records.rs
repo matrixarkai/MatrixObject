@@ -774,6 +774,17 @@ impl DurableOutcomeLog {
     ) -> io::Result<Vec<u8>> {
         self.store.read_range(extent, offset, length)
     }
+    /// Append a verified immutable range to a reusable buffer. Errors preserve
+    /// its original bytes and length; only its capacity may change.
+    pub fn read_payload_range_append(
+        &self,
+        extent: &PayloadExtent,
+        offset: u64,
+        length: u64,
+        output: &mut Vec<u8>,
+    ) -> io::Result<()> {
+        self.store.read_range_append(extent, offset, length, output)
+    }
     fn hydrate(&self, batch: &StoredOutcomeBatch) -> io::Result<Vec<RecoveredMutation>> {
         let mut flat = Vec::new();
         for extent in &batch.payloads {

@@ -27,6 +27,7 @@ fn node_in(dir: Option<&Path>, maintenance: bool) -> NodeReplica {
     let health = super::replica_health::ReplicaHealth::new(maintenance, 0, 0);
     let used_bytes = super::replica_health::Used::new(0, std::sync::Arc::clone(&health));
     NodeReplica {
+        resident: None,
         used_bytes,
         service: MatrixReplicaService::new(),
         journal: None,
