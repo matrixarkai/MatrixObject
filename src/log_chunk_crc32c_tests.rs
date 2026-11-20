@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-use super::{crc32c, crc32c_update, crc32c_update_portable, crc32c_update_recovery};
+use super::{crc32c, crc32c_update, crc32c_update_portable, crc32c_update_stored};
 
 fn input(length: usize) -> Vec<u8> {
     let mut state = 0x9e37_79b9u32;
@@ -24,14 +24,14 @@ fn crc32c_known_vector_and_empty_updates_preserve_the_contract() {
 }
 
 #[test]
-fn crc32c_recovery_matches_portable_for_offsets_and_incremental_state() {
+fn crc32c_stored_updates_match_portable_for_offsets_and_incremental_state() {
     let data = input(65536 + 16);
     for offset in 0..16 {
         for length in (0..=160).chain([4095, 4096, 4097, 65535, 65536]) {
             let bytes = &data[offset..offset + length];
             for seed in [0, 0x1234_5678, u32::MAX] {
                 assert_eq!(
-                    crc32c_update_recovery(seed, bytes),
+                    crc32c_update_stored(seed, bytes),
                     crc32c_update_portable(seed, bytes),
                     "offset={offset} length={length} seed={seed}"
                 );
@@ -41,7 +41,7 @@ fn crc32c_recovery_matches_portable_for_offsets_and_incremental_state() {
     for block in [1, 3, 8, 17, 4096] {
         let mut state = 0;
         for bytes in data.chunks(block) {
-            state = crc32c_update_recovery(state, bytes);
+            state = crc32c_update_stored(state, bytes);
         }
         assert_eq!(state, crc32c_update_portable(0, &data));
     }
@@ -72,7 +72,7 @@ fn measure_crc32c_update_backends() {
                 for _ in 0..iterations {
                     let bytes = black_box(&data[..length]);
                     state = if automatic {
-                        crc32c_update_recovery(state, bytes)
+                        crc32c_update_stored(state, bytes)
                     } else {
                         crc32c_update_portable(state, bytes)
                     };
