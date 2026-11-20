@@ -9,6 +9,7 @@ fn a_refusal_that_names_a_changed_manifest_proves_the_publication_was_not_admitt
         ("compact append prior manifest changed", true),
         ("append plan prior manifest changed", true),
         ("object changed before staging", true),
+        ("the metadata outcome could not be applied after preparation; nothing was published: x", true),
         ("metadata leadership changed; write outcome may be committed", false),
         ("the object manifest is corrupt", false),
         ("staged allocation is no longer active", false),

@@ -1281,6 +1281,27 @@ fn propose_batch_with(
     Ok(())
 }
 
+/// Apply the outcome just prepared to the draft, so that the next request is prepared against it.
+/// `index` is the position of the outcome in the batch (the hook below fails one by position in tests).
+fn apply_prepared(service: &mut MatrixMetaService, outcome: &[u8], index: usize) -> Result<(), ObjectError> {
+    #[cfg(test)]
+    {
+        if APPLY_FAULT.with(|fault| fault.get()) == Some(index) {
+            return Err(ObjectError::Corruption(
+                "injected: manifest publication placement binding mismatch".into(),
+            ));
+        }
+    }
+    let _ = index;
+    PlacementOutcome::from_payload(outcome).and_then(|decoded| decoded.apply(service))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Fail the draft apply of the outcome at this position of the batch (tests only).
+    static APPLY_FAULT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
 /// The payloads of a batch, and the requests they answer.
 type PreparedBatch = (
     Vec<Vec<u8>>,
@@ -1496,9 +1517,19 @@ fn prepare_batch(
         // Prepare the next outcome against this prefix, but restore the live
         // service before admission, Ready processing, or any client reply.
         if !outcome.is_empty() {
-            PlacementOutcome::from_payload(&outcome)
-                .and_then(|o| o.apply(draft.service))
-                .map_err(|e| RaftError::Storage(e.to_string()))?;
+            if let Err(error) = apply_prepared(draft.service, &outcome, payloads.len()) {
+                // A prepared outcome that does not apply to the draft is THIS request's failure, never the
+                // worker's: it is refused alone, with an error that says nothing was published (so a client
+                // may retry), and the batch stops here. The failed apply may have left a partial change in the
+                // draft, so nothing more is prepared against it: dropping the draft below restores the live
+                // service exactly as it was before the batch, the outcomes already prepared are proposed, and
+                // the requests still queued are prepared against the clean state in the next round. Before this
+                // the error aborted the whole worker, and with it every request queued behind this one.
+                let _ = request.reply.try_send(Err(ObjectError::PreconditionFailed(format!(
+                    "the metadata outcome could not be applied after preparation; nothing was published: {error}"
+                ))));
+                break;
+            }
         }
         payloads.push(payload);
         prepared.push((request, reply));
@@ -2771,6 +2802,51 @@ mod tests {
             },
             rx,
         )
+    }
+    /// ONE request whose prepared outcome fails its draft apply (here by injection, standing in for the
+    /// "placement binding mismatch" seen with concurrent appends to one object) is refused alone: the worker
+    /// is not aborted (`prepare_batch` returns `Ok`), the outcomes before it are still proposed, the live
+    /// service is exactly as before the batch, the request after it stays queued, and the next round
+    /// prepares it. The failure is a typed, retryable refusal that says nothing was published.
+    #[test]
+    fn a_prepared_outcome_that_fails_its_draft_apply_is_refused_alone_and_the_worker_survives() {
+        let (mut service, groups) = fixture(1, 0);
+        let (_files, peer) = batch_peer();
+        let saved = state(&service);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut queue = VecDeque::new();
+        let mut replies = Vec::new();
+        for (node, endpoint) in [("member-0-0", "127.0.0.1:10003"), ("member-0-1", "127.0.0.1:10004"), ("member-0-2", "127.0.0.1:10005")] {
+            let mut request = heartbeat();
+            if let MetaRequest::HeartbeatChunkNode { node_id, expected_endpoint, .. } = &mut request {
+                *node_id = node.into();
+                *expected_endpoint = endpoint.into();
+            }
+            let (request, reply) = queued(request, deadline);
+            queue.push_back(request);
+            replies.push(reply);
+        }
+        APPLY_FAULT.with(|fault| fault.set(Some(1)));
+        let result = prepare_batch(&mut service, &groups, 65536, &mut queue, None, &peer.membership());
+        APPLY_FAULT.with(|fault| fault.set(None));
+        let (payloads, prepared) = result.expect("a failing apply of one outcome must not abort the worker");
+        assert_eq!((payloads.len(), prepared.len()), (1, 1), "only the outcome before the failure is proposed");
+        match replies[1].try_recv() {
+            Ok(Err(ObjectError::PreconditionFailed(message))) => {
+                assert!(message.contains("nothing was published"), "{message}");
+                assert!(message.contains("placement binding mismatch"), "{message}");
+            }
+            other => panic!("the failing request must be refused with a typed error: {other:?}"),
+        }
+        assert!(replies[0].try_recv().is_err() && replies[2].try_recv().is_err(), "nobody else was answered");
+        assert_eq!(queue.len(), 1, "the request behind the failure stays queued");
+        assert_eq!(state(&service), saved, "the live service is restored exactly");
+        // The next round prepares the remaining request against the clean state.
+        let (payloads, _) = prepare_batch(&mut service, &groups, 65536, &mut queue, None, &peer.membership())
+            .expect("the next round prepares");
+        assert_eq!(payloads.len(), 1);
+        assert!(queue.is_empty());
+        assert_eq!(state(&service), saved);
     }
     #[test]
     fn proposal_batch_preserves_ordered_outcomes_and_commit_only_replies() {
