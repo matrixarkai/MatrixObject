@@ -9,6 +9,7 @@ mod chunked_manifest_tests;
 #[cfg(any(feature = "replica-server", feature = "meta-server"))]
 pub mod durable_payload;
 pub(crate) mod extent_list;
+pub mod chunk_integrity;
 pub mod cluster_features;
 pub mod log_chunk_outcome;
 #[cfg(test)]

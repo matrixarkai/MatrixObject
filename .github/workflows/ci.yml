@@ -3081,6 +3081,66 @@ jobs:
           cargo test --locked --lib chunk_manifest::tests::a_manifest_that_is_not_in_canonical_form_is_refused -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest.log
           grep -q '^running 1 test$' /tmp/chunk-manifest.log
           grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest.log
+      - name: a one-page extent has no digest page and its digest is the digest of its bytes
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_integrity::tests::a_one_page_extent_has_no_digest_page_and_its_digest_is_the_digest_of_its_bytes -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-integrity.log
+          grep -q '^running 1 test$' /tmp/chunk-integrity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-integrity.log
+      - name: a multi-page extent stores one digest page and its digest is the digest of that page
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_integrity::tests::a_multi_page_extent_stores_one_digest_page_and_its_digest_is_the_digest_of_that_page -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-integrity.log
+          grep -q '^running 1 test$' /tmp/chunk-integrity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-integrity.log
+      - name: an extent holds at most 4095 data pages when it has more than one
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_integrity::tests::an_extent_holds_at_most_4095_data_pages_when_it_has_more_than_one -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-integrity.log
+          grep -q '^running 1 test$' /tmp/chunk-integrity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-integrity.log
+      - name: a missing digest page fails the read and is never skipped
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_integrity::tests::a_missing_digest_page_fails_the_read_and_is_never_skipped -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-integrity.log
+          grep -q '^running 1 test$' /tmp/chunk-integrity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-integrity.log
+      - name: a truncated or padded digest page fails the read
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_integrity::tests::a_truncated_or_padded_digest_page_fails_the_read -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-integrity.log
+          grep -q '^running 1 test$' /tmp/chunk-integrity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-integrity.log
+      - name: a wrong or changed digest page fails the read
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_integrity::tests::a_wrong_or_changed_digest_page_fails_the_read -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-integrity.log
+          grep -q '^running 1 test$' /tmp/chunk-integrity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-integrity.log
+      - name: a tampered data page fails a whole read and names the page
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_integrity::tests::a_tampered_data_page_fails_a_whole_read_and_names_the_page -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-integrity.log
+          grep -q '^running 1 test$' /tmp/chunk-integrity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-integrity.log
+      - name: a range read that touches a tampered page fails and one that does not still succeeds
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_integrity::tests::a_range_read_that_touches_a_tampered_page_fails_and_one_that_does_not_still_succeeds -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-integrity.log
+          grep -q '^running 1 test$' /tmp/chunk-integrity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-integrity.log
+      - name: a page of the wrong length fails the read
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_integrity::tests::a_page_of_the_wrong_length_fails_the_read -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-integrity.log
+          grep -q '^running 1 test$' /tmp/chunk-integrity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-integrity.log
+      - name: a one-page extent is verified against the manifest digest and refuses a digest page
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_integrity::tests::a_one_page_extent_is_verified_against_the_manifest_digest_and_refuses_a_digest_page -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-integrity.log
+          grep -q '^running 1 test$' /tmp/chunk-integrity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-integrity.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail
