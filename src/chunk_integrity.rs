@@ -72,9 +72,13 @@ impl fmt::Display for IntegrityError {
 
 impl std::error::Error for IntegrityError {}
 
-impl From<IntegrityError> for ObjectError {
-    fn from(error: IntegrityError) -> Self {
-        ObjectError::Corruption(format!("extent integrity: {error}"))
+impl IntegrityError {
+    /// The corruption error this failure is reported as. An explicit conversion and not a
+    /// `From` impl on purpose: a new `From<_> for ObjectError` makes every `Ok(())?` of code
+    /// that relies on the error type being inferred ambiguous (it broke one in
+    /// `cluster/meta_checkpoint.rs`), and nothing here needs `?` to convert.
+    pub fn into_object_error(self) -> ObjectError {
+        ObjectError::Corruption(format!("extent integrity: {self}"))
     }
 }
 

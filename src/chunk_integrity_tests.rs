@@ -203,7 +203,7 @@ fn an_integrity_failure_is_a_corruption_error_that_names_which_check_failed() {
         IntegrityError::Geometry("a page past the end of the extent"),
     ]
     .into_iter()
-    .map(|error| match ObjectError::from(error) {
+    .map(|error| match error.into_object_error() {
         ObjectError::Corruption(message) => message,
         other => panic!("an integrity failure must be a corruption error, not {other:?}"),
     })
