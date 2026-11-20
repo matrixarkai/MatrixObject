@@ -29,7 +29,7 @@ impl MetaSnapshot {
         let version = magic
             .strip_prefix("MOSRSMETA")
             .and_then(|suffix| suffix.parse::<u64>().ok())
-            .filter(|version| (1..=22).contains(version))
+            .filter(|version| (1..=23).contains(version))
             .ok_or_else(|| {
                 ObjectError::Corruption("metadata snapshot byte magic mismatch".to_string())
             })?;
@@ -38,8 +38,8 @@ impl MetaSnapshot {
                 "metadata snapshot byte magic mismatch".to_string(),
             ));
         }
-        if cursor.stream.is_some() && !(18..=22).contains(&version) {
-            return Err(ObjectError::Corruption("streamed metadata snapshot needs version 18 through 22".into()));
+        if cursor.stream.is_some() && !(18..=23).contains(&version) {
+            return Err(ObjectError::Corruption("streamed metadata snapshot needs version 18 through 23".into()));
         }
         let has_transaction_read_versions = version >= 2;
         let has_tombstone_compaction_counters = version >= 3;
@@ -389,6 +389,16 @@ impl MetaSnapshot {
         } else {
             Default::default()
         };
+        let chunk_catalog = if version >= 23 {
+            let bytes = cursor.read_owned_blob(64 * 1024 * 1024 + 12)?;
+            let catalog = crate::chunk_catalog::ChunkCatalog::from_bytes(&bytes)?;
+            if catalog.is_empty() {
+                return Err(ObjectError::Corruption("metadata snapshot chunk catalog is empty".into()));
+            }
+            catalog
+        } else {
+            Default::default()
+        };
         let checksum = cursor.read_string()?;
         let envelope_digest = cursor.prefix_digest();
         let envelope_checksum = cursor.read_string()?;
@@ -438,6 +448,7 @@ impl MetaSnapshot {
             placement_commit_index,
             cluster_features,
             writer_leases,
+            chunk_catalog,
             checksum,
         };
         if !has_batch_request_receipts

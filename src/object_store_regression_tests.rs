@@ -35207,6 +35207,8 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRSMETA20",
         "MOSRSMETA21",
         "MOSRSMETA22",
+        "MOSRSMETA23",
+        "MOSRSCHUNKS1",
         "MOSRSFEATURES1",
         "MOSRSLEASES1",
         "MOSRSMANIFEST1",
@@ -35372,7 +35374,7 @@ fn every_durable_format_constant_is_accounted_for() {
     );
     assert_eq!(
         found.len(),
-        158,
+        160,
         "the count is pinned as well, so a rename that happens to swap two names cannot pass"
     );
 }
@@ -36771,7 +36773,11 @@ fn the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_
         "the snapshot that carries writer leases must be accepted"
     );
     assert!(
-        magic_rejected("MOSRSMETA23"),
+        !magic_rejected("MOSRSMETA23"),
+        "the snapshot that carries the chunk manifest catalog must be accepted"
+    );
+    assert!(
+        magic_rejected("MOSRSMETA24"),
         "a version after this one must be refused, or a field this build does not know would be \
          read as one of its own"
     );
