@@ -32,11 +32,12 @@ has not been measured or tested.
 | Metadata readers: outcome version 15, snapshot version 22, and the writer lease table restore in the proposal draft | In the tree |
 | Sealed chunk reads from disk through a bounded cache, with a handle limit and an open tail budget | In the tree |
 | Leader commands (grant, switch, renew, sweep), batched renewal (outcome version 16) and the feature gate wiring (feature bit 4) | In the tree, behind the two cluster features |
-| Replica client and quorum log writer and reader | In the tree |
+| Replica client and quorum log writer and reader | In the tree. A reader repeats a failed read-only call once on a fresh connection when a connection it kept was closed by the node |
 | Log object API (open, append, read, take over) | In the tree, behind the two cluster features |
 | Reclaiming the log chunk files of a deleted log object | Not implemented |
 | Repair of a log chunk left under-replicated | Not implemented |
-| End-to-end latency and metadata cost at multi-gigabyte object sizes | Not measured yet |
+| End-to-end harness: ignored tests and scripts that grow a log object past 4 GiB on a private cluster | In the tree. Not run by CI |
+| End-to-end latency and metadata cost at multi-gigabyte object sizes | Measured on a private cluster, single runs, one writer, 64 KiB appends: see [What the end-to-end runs measured](#what-the-end-to-end-runs-measured) |
 
 With neither cluster feature raised, a grant or a switch is refused ("chunk-granular
 manifests are not enabled for this cluster"), so no lease exists and no format 3
@@ -433,19 +434,75 @@ Measured by tests of the sealed read change: the peak heap while opening a seale
 64 MiB chunk fell from 71,303,204 bytes to 524,924 bytes, and reading all 64 MiB
 through an 8 MiB cache peaked at 13,632,156 bytes.
 
+## What the end-to-end runs measured
+
+The ignored tests in `tests/node_regime/log_object_end_to_end.rs`, run by
+`scripts/log_object_e2e/run.sh`, grow a log object on a private cluster of three
+metadata voters and three chunk servers on one machine. Both cluster features are
+raised on that cluster only, and the metadata servers run with the default Raft
+checkpoint interval. One writer appends 64 KiB at a time and waits for each append
+to be acknowledged. The object is grown to 4,362,076,160 bytes (65 chunks of 64 MiB),
+a voter is killed and restarted at 1.62 GiB and a chunk server at 2.84 GiB, the whole
+object is read back and compared with the bytes that were appended, and a second
+writer takes the object over.
+
+These are single runs (four log object runs in all, across fixes of the harness and of
+the reader), on a machine that was shared with other builds: the load average reached
+10 to 16 and 2 to 7 GB of swap were in use for part of the time. They show the
+behaviour of the design at this size. They are not a benchmark, and the tails in
+particular are not clean.
+
+| Measured | Result |
+|---|---|
+| Append latency per 256 MiB window | Median 4.5 to 11.1 ms and 99th percentile 13.5 to 116 ms in every window of every run. No trend with object size from 0.25 GiB to 4.06 GiB. The slowest single append in a window ranged from 0.08 s to 6.5 s |
+| Metadata commit entries per 256 MiB window | 4 in almost every window: the four chunk switches. A window also holds the extra entries of a grant (at the start, and again when a writer reopens the object) or of batched renewals that landed in it, up to three renewals in one window. None are written per append: 0.001 entries per append |
+| Manifest size | 144 bytes at 4 chunks, 2,280 bytes at 65 chunks (about 35 bytes per chunk) |
+| Metadata write-ahead log, summed over the three voters | 7.8 KB after the first 256 MiB, about 514 KB at 4.06 GiB. It did not reach a checkpoint |
+| Voter killed at 1.62 GiB | The append in flight failed, the writer reopened the object at the same offset with no extra bytes, recovery 2.9 to 4.4 s; the voter was back in 3.1 to 4.8 s |
+| Chunk server killed at 2.84 GiB | Down 1.0 to 4.8 s; the 201 appends made while it was down were acknowledged by the other two replicas, the slowest taking 20 to 288 ms |
+| Sealed range read of 16 MiB | 0.67 to 1.6 s cold, 0.07 to 0.32 s warm, bytes correct |
+| Read back and compare the whole 4.06 GiB object | 0 mismatches and no acknowledged byte lost, in 72 to 194 s |
+| Tail rule | The second writer opened the object at exactly the acknowledged length (4,362,076,160 bytes, equal to what the nodes durably held); the first writer was fenced; takeover 0.6 to 0.84 s |
+| Chunk server resident memory | 72 to 81 MB during growth; up to 185 MB on the node that served the whole-object read |
+| Metadata voter resident memory | 6 to 8 MB per voter at 4 GiB, read in the first run only |
+| Processes at the end | All three voters and all three chunk servers were still running |
+
+The log object is not faster in single-writer bytes per second. Each append here is
+64 KiB and is acknowledged by two of three replicas before the next is sent; the runs
+moved 4.06 GiB in 563 to 753 seconds, about 5.5 to 7.4 MiB per second (a run that
+was paused for seven minutes by the machine's other load is left out). What the runs
+show is that the cost of an append does not depend on the size of the object and that
+the metadata plane is touched once per chunk, not once per append.
+
+**A defect the runs found, and its fix.** The first read of the open chunk during the
+whole-object verification failed with no quorum, although all three nodes were up, in
+the two runs that reported it (chunk index 64, position 4,294,967,296) and succeeded on
+a retry. A log object reader keeps a connection to each node between calls; a node
+closes a connection that has sent nothing for its read timeout (30 seconds), and the
+reader treated the first failed request on such a connection as a node that had not
+answered. The verification took 72 to 144 seconds to reach that chunk. The reader now
+repeats a failed tail query or read once on a fresh connection when the connection that
+failed had been used before (only read-only calls: a mutation whose outcome is unknown
+is never sent twice). A run with the change shows no failed read.
+
+**Not shown.** One writer only; appends of 64 KiB only; one run of each kind, so no
+variance; no reader running while the object grows; one voter or one chunk server down
+at a time; no gateway or S3 path writes a log object yet, so nothing here exercises
+one; and no run on a cluster that carries other traffic.
+
 ## Limits and what is not measured
 
-- The metadata cost per GiB appended is about 16 entries for a log object and one
-  entry per page range in page mode. That is a count from the format, not a
-  measurement of a running cluster.
-- Append latency against object size up to 4 GiB, the cost of a ranged read at that
-  size, and a restart and recovery run at that size are pending measurement on a
-  private cluster with both bits raised. No end-to-end latency or object-size
-  measurement exists yet. The number of metadata entries per append is asserted by
-  a test (see the log object section) and has not been measured at multi-gigabyte
-  sizes.
-- Chunk server memory against corpus size, and metadata server memory per GiB
-  appended, are pending measurement.
+- The metadata cost per GiB appended is about 16 entries for a log object (one per
+  64 MiB chunk) and one entry per page range in page mode. The runs above measured 16
+  per GiB for the log object at 64 KiB appends.
+- Append latency against object size was measured up to 4.06 GiB at one append size,
+  with one writer (see above). The cost of a ranged read was measured for one 16 MiB
+  range and for reading the whole object once per run, and a restart and recovery
+  at that size once per kind of node per run. Other append
+  sizes, several writers, readers during growth and objects beyond 4.06 GiB are not
+  measured.
+- Chunk server memory against corpus size was measured only for the one object above;
+  metadata server memory per GiB appended only as the 6 to 8 MB per voter at 4 GiB.
 - A node refuses to open a new tail past its tail budget, and the metadata plane
   refuses a 4,097th entry. Both are errors the caller must handle.
 - Quorum writes acknowledge at two of three replicas. A third replica that falls
