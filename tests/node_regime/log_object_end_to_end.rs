@@ -137,19 +137,27 @@ fn rss_kb(pid: u32) -> u64 {
 fn pids_of(nodes: &[Option<NodeProcess>]) -> Vec<u32> {
     nodes.iter().flatten().map(|node| node.pid).collect()
 }
-/// What became of each metadata voter: still running, or how it ended (exit code or signal) and
-/// the end of what it wrote to stderr. Read after a failed append, when a voter may be gone.
-fn describe_voters(group: &mut Group) -> String {
+/// The metadata servers' Raft WAL checkpoint interval. The product default (64 MiB) unless
+/// E2E_CHECKPOINT_BYTES says otherwise: with `0` the WAL is never truncated and a voter refuses
+/// appends at 512 MiB, which stopped the first page-path baseline and says nothing about the
+/// default configuration.
+fn checkpoint_bytes() -> u64 {
+    std::env::var("E2E_CHECKPOINT_BYTES").ok().and_then(|value| value.parse().ok()).unwrap_or(64 * 1024 * 1024)
+}
+/// What became of each node process of one kind: still running, or how it ended (exit code or
+/// signal) and the end of what it wrote to stderr. Written at the end of every case, so that a
+/// process that went away is never an unexplained absence.
+fn describe_nodes(label: &str, nodes: &mut [Option<NodeProcess>]) -> String {
     use std::io::Read;
     use std::os::unix::process::ExitStatusExt;
     let mut parts = Vec::new();
-    for (id, node) in group.nodes.iter_mut().enumerate() {
+    for (id, node) in nodes.iter_mut().enumerate() {
         let Some(node) = node else {
-            parts.push(format!("voter{id}=stopped_by_the_test"));
+            parts.push(format!("{label}{id}=stopped_by_the_test"));
             continue;
         };
         match node.child.try_wait() {
-            Ok(None) => parts.push(format!("voter{id}=running")),
+            Ok(None) => parts.push(format!("{label}{id}=running")),
             Ok(Some(status)) => {
                 let mut tail = String::new();
                 if let Some(stderr) = node.child.stderr.take() {
@@ -159,9 +167,9 @@ fn describe_voters(group: &mut Group) -> String {
                     let start = text.char_indices().map(|(at, _)| at).find(|at| *at + 700 >= text.len()).unwrap_or(0);
                     tail = text[start..].replace('\n', " | ");
                 }
-                parts.push(format!("voter{id}=exited code={:?} signal={:?} stderr_tail={tail:?}", status.code(), status.signal()));
+                parts.push(format!("{label}{id}=exited code={:?} signal={:?} stderr_tail={tail:?}", status.code(), status.signal()));
             }
-            Err(error) => parts.push(format!("voter{id}=unknown({error})")),
+            Err(error) => parts.push(format!("{label}{id}=unknown({error})")),
         }
     }
     parts.join("; ")
@@ -376,7 +384,7 @@ fn measure_log_object_growth_end_to_end() {
     let mut chunks = Chunks::start_all(&run.0);
     let members: Vec<String> = (0..3).map(|id| format!("member-{id}")).collect();
     let catalog = catalog(&chunks.addresses, false, &members);
-    let mut group = Group::configured_with_timeout(None, None, Some(catalog.to_bytes().unwrap()), 0, false, 5000);
+    let mut group = Group::configured_with_timeout(None, None, Some(catalog.to_bytes().unwrap()), checkpoint_bytes(), false, 5000);
     let mut meta = meta_client(&group, group.leader());
 
     // the operator procedure, on this private cluster only: every voter declares what it reads,
@@ -544,6 +552,8 @@ fn measure_log_object_growth_end_to_end() {
     let facts = manifest_facts(&mut meta, BUCKET, LOG_KEY);
     emit_window(&mut out, "log", &window, acked, config.append_bytes, commit_end, facts, &group, &chunk_pids);
     out.line(format!("E2E_GROWTH_DONE kind=log acknowledged_bytes={acked} run_s={:.1}", run_start.elapsed().as_secs_f64()));
+    out.line(format!("E2E_NODES kind=log after_growth voters: {}", describe_nodes("voter", &mut group.nodes)));
+    out.line(format!("E2E_NODES kind=log after_growth chunkservers: {}", describe_nodes("chunk", &mut chunks.nodes)));
 
     // a sealed read through the chunk servers' cache, cold and then warm; the chunk servers'
     // resident memory is read before and after it and after the whole object was read back
@@ -630,6 +640,8 @@ fn measure_log_object_growth_end_to_end() {
         takeover.elapsed().as_millis()
     ));
 
+    out.line(format!("E2E_NODES kind=log at_end voters: {}", describe_nodes("voter", &mut group.nodes)));
+    out.line(format!("E2E_NODES kind=log at_end chunkservers: {}", describe_nodes("chunk", &mut chunks.nodes)));
     assert_eq!(read_errors, 0, "a read inside the object failed (see E2E_VERIFY_ERROR lines)");
     assert!(!lost_acknowledged, "an acknowledged append was lost");
     assert_eq!(mismatches, 0, "the object holds bytes that were never appended");
@@ -645,10 +657,10 @@ fn measure_page_path_growth_baseline() {
     let base = std::env::temp_dir();
     let run = Directory(base.join(node_regime::run_token("e2e-page-path")));
     std::fs::create_dir(&run.0).unwrap();
-    let chunks = Chunks::start_all(&run.0);
+    let mut chunks = Chunks::start_all(&run.0);
     let members: Vec<String> = (0..3).map(|id| format!("log-member-{id}")).collect();
     let catalog = catalog(&chunks.addresses, true, &members);
-    let mut group = Group::configured_with_timeout(None, None, Some(catalog.to_bytes().unwrap()), 0, false, 5000);
+    let mut group = Group::configured_with_timeout(None, None, Some(catalog.to_bytes().unwrap()), checkpoint_bytes(), false, 5000);
     let group_id = meta_client(&group, group.leader()).metadata_group_identity().unwrap().group_id;
     let mut client = RemoteMetaClient::connect_raft_catalog(
         &group.api_addresses.iter().map(|address| address.to_string()).collect::<Vec<_>>(),
@@ -723,9 +735,8 @@ fn measure_page_path_growth_baseline() {
         "E2E_BASELINE_END object_bytes={object_bytes} extents={extents} manifest_bytes={manifest_bytes} failure={failure:?} run_s={:.1}",
         run_start.elapsed().as_secs_f64()
     ));
-    if !failure.is_empty() {
-        out.line(format!("E2E_BASELINE_VOTERS {}", describe_voters(&mut group)));
-    }
+    out.line(format!("E2E_NODES kind=page voters: {}", describe_nodes("voter", &mut group.nodes)));
+    out.line(format!("E2E_NODES kind=page chunkservers: {}", describe_nodes("chunk", &mut chunks.nodes)));
     // what was accepted reads back: the last bytes of the object, compared with the position function
     if let Some(current) = manifest.as_ref() {
         let tail = (config.append_bytes as u64).min(current.length);
