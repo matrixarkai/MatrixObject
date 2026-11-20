@@ -46,6 +46,11 @@ pub struct PlaneFailure {
     pub error: ObjectError,
     /// Publication was attempted and its result is not confirmed visible.
     pub unconfirmed: bool,
+    /// The extents of the manifest this attempt tried to publish, when the plane knows them (the SDK does for an
+    /// unconfirmed publication). They are the attempt's IDENTITY: pages are allocated per attempt, so the
+    /// committed manifest holds them if and only if this attempt landed, whatever bytes another writer appended.
+    /// Empty when unknown.
+    pub attempted: Vec<crate::object_manifest::ObjectExtent>,
 }
 
 impl From<ObjectError> for PlaneFailure {
@@ -53,6 +58,7 @@ impl From<ObjectError> for PlaneFailure {
         Self {
             error,
             unconfirmed: false,
+            attempted: Vec::new(),
         }
     }
 }
@@ -63,13 +69,80 @@ impl From<ObjectWriteFailure> for PlaneFailure {
             ObjectWriteFailure::BeforePublication { error, .. } => Self {
                 error,
                 unconfirmed: false,
+                attempted: Vec::new(),
             },
-            ObjectWriteFailure::PublicationUnconfirmed { error, .. } => Self {
+            ObjectWriteFailure::PublicationUnconfirmed { error, outcome } => Self {
                 error,
                 unconfirmed: true,
+                attempted: outcome.after.as_ref().map(|after| after.extents.clone()).unwrap_or_default(),
             },
         }
     }
+}
+
+/// The header that names one attempt of an append: 32 hex characters (16 random bytes) chosen by the client, the same
+/// on every retry of that attempt and echoed in the response.
+pub const ATTEMPT_HEADER: &str = "x-amz-attempt-id";
+
+/// Echo the attempt id of a request that carried one, so a client can match the answer to the attempt.
+fn with_attempt(response: Response, attempt: Option<[u8; 16]>) -> Response {
+    match attempt {
+        Some(id) => response.with_header(ATTEMPT_HEADER, id.iter().map(|byte| format!("{byte:02x}")).collect::<String>()),
+        None => response,
+    }
+}
+
+/// How many attempts a gateway remembers for `?append-resolve`.
+const ATTEMPT_TABLE: usize = 4096;
+
+/// What one attempt did, as far as this gateway saw it: the range it wrote and the extents it published (or tried to).
+struct AttemptRecord {
+    bucket: String,
+    key: String,
+    offset: u64,
+    length: u64,
+    extents: Vec<crate::object_manifest::ObjectExtent>,
+}
+
+#[derive(Default)]
+struct AttemptTable {
+    order: std::collections::VecDeque<[u8; 16]>,
+    records: std::collections::HashMap<[u8; 16], AttemptRecord>,
+}
+
+impl AttemptTable {
+    fn record(&mut self, id: [u8; 16], record: AttemptRecord) {
+        if self.records.insert(id, record).is_none() {
+            self.order.push_back(id);
+            while self.order.len() > ATTEMPT_TABLE {
+                if let Some(old) = self.order.pop_front() {
+                    self.records.remove(&old);
+                }
+            }
+        }
+    }
+}
+
+/// The extents that cover `[offset, end)`.
+fn extents_over(extents: &[crate::object_manifest::ObjectExtent], offset: u64, end: u64) -> Vec<crate::object_manifest::ObjectExtent> {
+    extents
+        .iter()
+        .filter(|extent| extent.object_offset < end && extent.object_offset.saturating_add(extent.length) > offset)
+        .cloned()
+        .collect()
+}
+
+fn decode_hex_16(text: &str) -> Option<[u8; 16]> {
+    if text.len() != 32 || !text.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for (index, pair) in text.as_bytes().chunks(2).enumerate() {
+        let high = (pair[0] as char).to_digit(16)?;
+        let low = (pair[1] as char).to_digit(16)?;
+        out[index] = (high * 16 + low) as u8;
+    }
+    Some(out)
 }
 
 /// One connection's worth of cluster operations.
@@ -548,8 +621,8 @@ impl ObjectPlane for SdkPlane {
                 now_ms(),
             )
             .map_err(|failure| match failure {
-                AtomicCopyFailure::Refused(error) => PlaneFailure { error, unconfirmed: false },
-                AtomicCopyFailure::Unconfirmed(error) => PlaneFailure { error, unconfirmed: true },
+                AtomicCopyFailure::Refused(error) => PlaneFailure { error, unconfirmed: false, attempted: Vec::new() },
+                AtomicCopyFailure::Unconfirmed(error) => PlaneFailure { error, unconfirmed: true, attempted: Vec::new() },
             })
     }
     fn publish_unchanged(&mut self, expected: &ObjectManifest) -> Result<ObjectManifest, PlaneFailure> {
@@ -719,6 +792,8 @@ pub struct ClusterGateway {
     connect: Box<Connector>,
     pool: Mutex<Vec<Box<dyn ObjectPlane>>>,
     manifests: Mutex<ManifestCache>,
+    /// The attempts of appends this gateway served that carried an attempt id (`?append-resolve` looks them up).
+    attempts: Mutex<AttemptTable>,
     options: GatewayOptions,
     bucket_hint: String,
 }
@@ -740,6 +815,7 @@ impl ClusterGateway {
             connect: Box::new(connect),
             pool: Mutex::new(Vec::new()),
             manifests: Mutex::new(ManifestCache::default()),
+            attempts: Mutex::new(AttemptTable::default()),
             options,
             bucket_hint: bucket_hint.into(),
         }
@@ -852,6 +928,10 @@ pub enum AppendResolution {
     Landed,
     /// They are not, and the append can never land: retry it as a new append.
     Absent,
+    /// Bytes equal to the append's are at that offset, but nothing proves they are THIS attempt's: another writer's
+    /// identical append at the same offset looks the same. The caller decides from its own record of what it
+    /// acknowledged; this gateway never answers "landed" for it.
+    Ambiguous,
 }
 
 /// 64 hex characters as 32 bytes.
@@ -871,39 +951,43 @@ fn decode_hex_32(text: &str) -> Option<[u8; 32]> {
 impl ClusterGateway {
     /// Settle an append whose outcome is not known (a timeout, a reset, a consensus deadline).
     ///
-    /// The caller names what it sent: the offset, the length and the SHA-256 of the bytes. Every
-    /// append publishes with a compare-and-set on the generation it read, so once the object's
-    /// generation has moved past that read, no attempt that is still in flight can ever publish.
-    /// This either finds that the bytes are already there, or moves the generation itself with a
-    /// publication that keeps the extents exactly as they are, which fences every such attempt.
+    /// "Landed" means THIS ATTEMPT landed, never that equal bytes are there. Every attempt allocates its own pages, so
+    /// the extents it published (`attempted`) are its identity: the committed manifest holds them if and only if the
+    /// attempt landed. Content cannot say that: two writers appending identical bytes at one offset leave one copy,
+    /// and a byte comparison told both of them it landed (a lost write).
     ///
-    /// * the object holds at least `offset + length` bytes: the bytes at the offset are compared
-    ///   with the digest. Equal is [`AppendResolution::Landed`]; different means another append
-    ///   took that offset, and the lost one is dead because the generation has moved on;
-    /// * the object ends before the offset: it was replaced or shrank, so the attempt is dead;
-    /// * the object ends exactly at the offset: nothing has landed. Publish its extents again at
-    ///   the next generation; success fences the attempt (absent), and a refusal because the
-    ///   generation moved sends the resolve round again (the lost attempt, or another writer,
-    ///   committed meanwhile). An object that does not exist is fenced by creating it empty.
+    /// Every append publishes with a compare-and-set on the generation it read, so once the object has moved past
+    /// that read no attempt still in flight can publish. The answers:
     ///
-    /// After `Absent` the caller retries the append as a new request and it lands exactly once.
-    /// An error means the outcome is STILL undecided (a timeout, a metadata outage, an object that
-    /// kept changing): resolve again, and never read it as a refusal of the append.
-    /// The one case the digest cannot tell apart is another writer appending byte-identical data
-    /// at the same offset; a unique value in the payload removes it.
+    /// * `attempted` is known and the manifest holds the attempt's extents over `[offset, offset + length)`:
+    ///   [`AppendResolution::Landed`], exactly, even if later appends followed;
+    /// * `attempted` is known and the object already extends past the offset without them: another append took the
+    ///   offset and the generation moved, so the attempt can never land: `Absent`;
+    /// * `attempted` is unknown (a gateway that never saw the attempt, or a plane that does not report it) and bytes
+    ///   equal to the append's (`evidence_sha256`, or any bytes when none is given) fill the range:
+    ///   [`AppendResolution::Ambiguous`], never "landed";
+    /// * the object ends exactly at the offset: nothing landed there yet. Publish its extents again at the next
+    ///   generation; success fences the attempt (`Absent`), and a refusal because the generation moved sends the
+    ///   resolve round again. An object that does not exist is fenced by creating it empty;
+    /// * the object ends before the offset or the range holds different bytes: `Absent`.
+    ///
+    /// After `Absent` the caller retries the append as a new request and it lands exactly once. An error means the
+    /// outcome is STILL undecided (a timeout, a metadata outage, an object that kept changing): resolve again, and
+    /// never read it as a refusal of the append.
     pub fn resolve_append(
         &self,
         bucket: &str,
         key: &str,
         offset: u64,
         length: u64,
-        sha256: &[u8],
+        attempted: &[crate::object_manifest::ObjectExtent],
+        evidence_sha256: Option<&[u8]>,
     ) -> Result<AppendResolution, ObjectError> {
         let end = offset
             .checked_add(length)
             .filter(|_| length > 0)
             .ok_or_else(|| ObjectError::InvalidArgument("an append resolve needs a nonempty range inside u64".into()))?;
-        if sha256.len() != 32 {
+        if evidence_sha256.is_some_and(|sha| sha.len() != 32) {
             return Err(ObjectError::InvalidArgument("an append resolve needs a 32 byte SHA-256".into()));
         }
         for _ in 0..RESOLVE_ROUNDS {
@@ -916,13 +1000,26 @@ impl ClusterGateway {
                 Err(ObjectError::NotFound(_)) => None,
                 Err(error) => return Err(error),
             };
-            let current = manifest.as_ref().filter(|m| !m.deleted).map_or(0, |m| m.length);
-            if current >= end {
-                let (_, bytes) = self.with_plane(|plane| plane.read_range(bucket, key, offset, length))?;
-                let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
-                return Ok(if digest.as_ref() == sha256 { AppendResolution::Landed } else { AppendResolution::Absent });
-            }
-            if current != offset {
+            let live = manifest.as_ref().filter(|m| !m.deleted);
+            let current = live.map_or(0, |m| m.length);
+            if !attempted.is_empty() {
+                let mine = extents_over(attempted, offset, end);
+                if !mine.is_empty() && live.is_some_and(|m| mine.iter().all(|extent| m.extents.contains(extent))) {
+                    return Ok(AppendResolution::Landed);
+                }
+                if current != offset {
+                    return Ok(AppendResolution::Absent);
+                }
+            } else if current >= end {
+                let present = match evidence_sha256 {
+                    Some(sha) => {
+                        let (_, bytes) = self.with_plane(|plane| plane.read_range(bucket, key, offset, length))?;
+                        ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref() == sha
+                    }
+                    None => true,
+                };
+                return Ok(if present { AppendResolution::Ambiguous } else { AppendResolution::Absent });
+            } else if current != offset {
                 return Ok(AppendResolution::Absent);
             }
             let fenced = match &manifest {
@@ -945,7 +1042,8 @@ impl ClusterGateway {
         ))
     }
 
-    /// `POST /bucket/key?append-resolve&offset=O&length=N&sha256=<hex>`.
+    /// `POST /bucket/key?append-resolve&attempt=<32 hex>&offset=O&length=N[&sha256=<hex>]`. The attempt id is the one
+    /// the append carried in `x-amz-attempt-id`; `sha256` is optional evidence about the bytes.
     fn append_resolve_request(&self, request: &Request, bucket: &str, key: &str) -> Response {
         let resource = format!("/{bucket}/{key}");
         let bad = |message: &str| s3::error_response(s3::S3ErrorCode::InvalidArgument, message, &resource);
@@ -953,14 +1051,31 @@ impl ClusterGateway {
         let (Some(offset), Some(length)) = (number("offset"), number("length")) else {
             return bad("append-resolve needs numeric offset and length parameters");
         };
-        let Some(digest) = request.query_param("sha256").and_then(|value| decode_hex_32(&value)) else {
-            return bad("append-resolve needs a 64 character hex sha256 parameter");
+        let Some(id) = request.query_param("attempt").and_then(|value| decode_hex_16(&value)) else {
+            return bad("append-resolve needs the attempt parameter: the 32 hex characters the append sent in x-amz-attempt-id");
         };
-        match self.resolve_append(bucket, key, offset, length, &digest) {
+        let digest = match request.query_param("sha256") {
+            None => None,
+            Some(value) => match decode_hex_32(&value) {
+                Some(digest) => Some(digest),
+                None => return bad("append-resolve's sha256 parameter must be 64 hex characters"),
+            },
+        };
+        // What this gateway saw of the attempt: only a record for the SAME range of the same object counts.
+        let attempted = self
+            .attempts
+            .lock()
+            .ok()
+            .and_then(|table| {
+                table.records.get(&id).filter(|r| r.bucket == bucket && r.key == key && r.offset == offset && r.length == length).map(|r| r.extents.clone())
+            })
+            .unwrap_or_default();
+        match self.resolve_append(bucket, key, offset, length, &attempted, digest.as_ref().map(|d| d.as_slice())) {
             Ok(resolution) => {
                 let word = match resolution {
                     AppendResolution::Landed => "landed",
                     AppendResolution::Absent => "absent",
+                    AppendResolution::Ambiguous => "ambiguous",
                 };
                 Response::text(200, format!("{word}\n")).with_header("x-append-resolution", word)
             }
@@ -969,6 +1084,24 @@ impl ClusterGateway {
             Err(error @ ObjectError::InvalidArgument(_)) => error_response(error, &resource, false),
             Err(error) => s3::error_response(s3::S3ErrorCode::ServiceUnavailable, &format!("append undecided, resolve again: {error}"), &resource),
         }
+    }
+
+    /// The answer for an append whose bytes are in the object but cannot be proved to be this attempt's.
+    fn append_ambiguous(&self, bucket: &str, key: &str, resource: &str) -> Response {
+        let length = self
+            .with_plane(|plane| plane.read_manifest(bucket, key))
+            .ok()
+            .filter(|manifest| !manifest.deleted)
+            .map_or(0, |manifest| manifest.length);
+        s3::error_response(
+            s3::S3ErrorCode::AppendAmbiguous,
+            &format!(
+                "the outcome of this append is ambiguous: the object holds {length} bytes and bytes equal to this append's may already be at its offset, but nothing proves they are this attempt's (another writer's identical append at the same offset looks the same); decide from your own record of the length you last acknowledged"
+            ),
+            resource,
+        )
+        .with_header("x-amz-append-state", "ambiguous".to_string())
+        .with_header("x-amz-object-size", length.to_string())
     }
 
     fn health(&self, request: &Request) -> Response {
@@ -1119,8 +1252,21 @@ impl ClusterGateway {
             .header("if-none-match")
             .is_some_and(|value| value.trim() == "*");
         let required_etag = request.header("if-match").map(str::to_string);
+        let attempt = match request.header(ATTEMPT_HEADER).map(str::trim).filter(|value| !value.is_empty()) {
+            None => None,
+            Some(value) => match decode_hex_16(value) {
+                Some(id) => Some(id),
+                None => {
+                    return s3::error_response(
+                        s3::S3ErrorCode::InvalidArgument,
+                        &format!("{ATTEMPT_HEADER} must be 32 hex characters (16 bytes), and {value:?} is not"),
+                        &resource,
+                    )
+                }
+            },
+        };
         match offset {
-            Some(offset) => self.append_object(bucket, key, offset, &request.body),
+            Some(offset) => self.append_object(bucket, key, offset, &request.body, attempt),
             None => self.replace_object(
                 bucket,
                 key,
@@ -1215,7 +1361,7 @@ impl ClusterGateway {
     }
 
     /// `PutObject` with a write offset: an append that lands at the end or not at all.
-    fn append_object(&self, bucket: &str, key: &str, offset: u64, body: &[u8]) -> Response {
+    fn append_object(&self, bucket: &str, key: &str, offset: u64, body: &[u8], attempt: Option<[u8; 16]>) -> Response {
         let resource = format!("/{bucket}/{key}");
         const ATTEMPTS: usize = 4;
         let mut last_staged_mismatch: Option<ObjectError> = None;
@@ -1272,18 +1418,38 @@ impl ClusterGateway {
             match outcome {
                 Err(error) => return error_response(error, &resource, false),
                 Ok(Ok(manifest)) => {
+                    self.note_attempt(attempt, bucket, key, offset, body.len() as u64, &manifest.extents);
                     self.remember(&manifest);
-                    return object_written(&manifest);
+                    return with_attempt(object_written(&manifest), attempt);
                 }
                 Ok(Err((failure, decided))) => {
                     self.forget(bucket, key);
+                    self.note_attempt(attempt, bucket, key, offset, body.len() as u64, &failure.attempted);
                     // A write whose outcome is not known is resolved by reading, never by
                     // reporting an error for bytes that may be in the object: the client would
-                    // retry, and its retry would append them a second time.
+                    // retry, and its retry would append them a second time. It is resolved by
+                    // the attempt's own extents (`attempted`), never by comparing bytes: equal
+                    // bytes in the object may be another writer's identical append.
                     if failure.unconfirmed || outcome_may_be_committed(&failure.error) {
-                        if let Some(manifest) = self.resolve_landed_append(bucket, key, offset, body) {
-                            self.remember(&manifest);
-                            return object_written(&manifest);
+                        let sha = ring::digest::digest(&ring::digest::SHA256, body);
+                        match self.resolve_append(bucket, key, offset, body.len() as u64, &failure.attempted, Some(sha.as_ref())) {
+                            Ok(AppendResolution::Landed) => {
+                                if let Ok(manifest) = self.with_plane(|plane| plane.read_manifest(bucket, key)) {
+                                    self.remember(&manifest);
+                                    return with_attempt(object_written(&manifest), attempt);
+                                }
+                            }
+                            Ok(AppendResolution::Ambiguous) => return self.append_ambiguous(bucket, key, &resource),
+                            // Fenced: it did not land and now cannot. The client may retry as a new append.
+                            Ok(AppendResolution::Absent) => {
+                                return s3::error_response(
+                                    s3::S3ErrorCode::ServiceUnavailable,
+                                    &format!("this append did not land and can no longer land (the object was fenced); retry it: {}", failure.error),
+                                    &resource,
+                                )
+                            }
+                            // Still undecided: answer as before.
+                            Err(_) => {}
                         }
                     }
                     if failure.unconfirmed {
@@ -1322,17 +1488,21 @@ impl ClusterGateway {
         )
     }
 
-    /// After an append whose outcome is unknown: did these exact bytes land at `offset`?
-    /// The object must now end at `offset + body.len()` with the body at that range.
-    fn resolve_landed_append(&self, bucket: &str, key: &str, offset: u64, body: &[u8]) -> Option<ObjectManifest> {
-        if body.is_empty() {
-            return None;
+    /// Remember what an attempt that carried an id did, for `?append-resolve`.
+    fn note_attempt(&self, attempt: Option<[u8; 16]>, bucket: &str, key: &str, offset: u64, length: u64, extents: &[crate::object_manifest::ObjectExtent]) {
+        let Some(id) = attempt else { return };
+        if let Ok(mut table) = self.attempts.lock() {
+            table.record(
+                id,
+                AttemptRecord {
+                    bucket: bucket.to_string(),
+                    key: key.to_string(),
+                    offset,
+                    length,
+                    extents: extents_over(extents, offset, offset.saturating_add(length)),
+                },
+            );
         }
-        let (manifest, bytes) = self
-            .with_plane(|plane| plane.read_range(bucket, key, offset, body.len() as u64))
-            .ok()?;
-        (!manifest.deleted && manifest.length == offset + body.len() as u64 && bytes == body)
-            .then_some(manifest)
     }
 
     /// After a whole-object write whose outcome is unknown: is the object now exactly `body`?
@@ -2078,6 +2248,21 @@ mod tests {
         calls: Vec<&'static str>,
         /// Another writer moves the generation under every fence attempt.
         racing_fence: bool,
+        /// Pages are allocated per attempt: the next chunk id the plane hands out.
+        chunks: u64,
+    }
+
+    /// The extent an attempt publishes: its own chunk, which no other attempt shares.
+    fn own_extent(shared: &mut Shared, offset: u64, length: u64) -> crate::object_manifest::ObjectExtent {
+        shared.chunks += 1;
+        crate::object_manifest::ObjectExtent {
+            group: "g".into(),
+            volume_id: 1,
+            chunk_id: shared.chunks,
+            object_offset: offset,
+            length,
+            ..Default::default()
+        }
     }
 
     struct MemoryPlane(Arc<Mutex<Shared>>);
@@ -2121,7 +2306,10 @@ mod tests {
                 return Err(ObjectError::PreconditionFailed("object manifest changed before write".into()).into());
             }
             let generation = current.map_or(1, |m| m.generation + 1);
-            let m = manifest(bucket, key, generation, data.len() as u64, usize::from(!data.is_empty()));
+            let mut m = manifest(bucket, key, generation, data.len() as u64, 0);
+            if !data.is_empty() {
+                m.extents = vec![own_extent(&mut shared, 0, data.len() as u64)];
+            }
             shared.objects.insert(slot, (m.clone(), data.to_vec()));
             Ok(m)
         }
@@ -2140,7 +2328,9 @@ mod tests {
             }
             let mut joined = bytes;
             joined.extend_from_slice(data);
-            let m = manifest(&expected.bucket, &expected.key, current.generation + 1, joined.len() as u64, current.extents.len() + 1);
+            let mut m = manifest(&expected.bucket, &expected.key, current.generation + 1, joined.len() as u64, 0);
+            m.extents = current.extents.clone();
+            m.extents.push(own_extent(&mut shared, current.length, data.len() as u64));
             shared.objects.insert(slot, (m.clone(), joined));
             Ok(m)
         }
@@ -2233,12 +2423,22 @@ mod tests {
             .collect()
     }
 
-    fn resolve_test_append(gateway: &ClusterGateway, offset: u64, data: &[u8]) -> Response {
-        gateway.handle(&request("PUT", "/b/k", &[(WRITE_OFFSET_HEADER, &offset.to_string())], data))
+    /// An attempt id: 32 hex characters.
+    fn attempt(n: u128) -> String {
+        format!("{n:032x}")
     }
 
-    fn resolve(gateway: &ClusterGateway, offset: u64, data: &[u8]) -> Response {
-        let target = format!("/b/k?append-resolve&offset={offset}&length={}&sha256={}", data.len(), sha_hex(data));
+    fn resolve_test_append(gateway: &ClusterGateway, offset: u64, data: &[u8], id: &str) -> Response {
+        gateway.handle(&request(
+            "PUT",
+            "/b/k",
+            &[(WRITE_OFFSET_HEADER, &offset.to_string()), (ATTEMPT_HEADER, id)],
+            data,
+        ))
+    }
+
+    fn resolve(gateway: &ClusterGateway, offset: u64, data: &[u8], id: &str) -> Response {
+        let target = format!("/b/k?append-resolve&attempt={id}&offset={offset}&length={}&sha256={}", data.len(), sha_hex(data));
         gateway.handle(&request("POST", &target, &[], b""))
     }
 
@@ -2250,27 +2450,66 @@ mod tests {
         shared.lock().unwrap().objects[&("b".to_string(), "k".to_string())].0.clone()
     }
 
+    /// "Landed" means THIS ATTEMPT landed: the attempt's own extents are in the manifest. A later append does not
+    /// change that (a comparison of bytes at the end of the object would have said absent), and an attempt this
+    /// gateway never saw is never "landed", however equal the bytes.
     #[test]
-    fn a_resolve_finds_an_append_that_landed_by_its_bytes_and_fences_nothing() {
+    fn a_resolve_finds_the_attempt_that_landed_by_its_extents_and_fences_nothing() {
         let (gateway, shared) = gateway();
-        assert_eq!(resolve_test_append(&gateway, 0, b"aaaa").status, 200);
-        assert_eq!(resolve_test_append(&gateway, 4, b"bbb").status, 200);
-        let response = resolve(&gateway, 4, b"bbb");
+        assert_eq!(resolve_test_append(&gateway, 0, b"aaaa", &attempt(1)).status, 200);
+        assert_eq!(resolve_test_append(&gateway, 4, b"bbb", &attempt(2)).status, 200);
+        let response = resolve(&gateway, 4, b"bbb", &attempt(2));
         assert_eq!((response.status, header(&response, "x-append-resolution")), (200, Some("landed")));
+        // a later append does not unland it
+        assert_eq!(resolve_test_append(&gateway, 7, b"ccc", &attempt(3)).status, 200);
+        assert_eq!(header(&resolve(&gateway, 4, b"bbb", &attempt(2)), "x-append-resolution"), Some("landed"));
         assert!(!shared.lock().unwrap().calls.contains(&"publish_unchanged"), "a landed append needs no fence");
-        // Another writer took the offset with different bytes: absent, and still no fence is needed.
-        let other = resolve(&gateway, 4, b"ccc");
+        // An attempt this gateway never saw, with bytes equal to what is there: ambiguous, NEVER landed.
+        let unseen = resolve(&gateway, 4, b"bbb", &attempt(99));
+        assert_eq!(header(&unseen, "x-append-resolution"), Some("ambiguous"));
+        // Different bytes at the offset: another append took it, and still no fence is needed.
+        let other = resolve(&gateway, 4, b"zzz", &attempt(98));
         assert_eq!(header(&other, "x-append-resolution"), Some("absent"));
         assert!(!shared.lock().unwrap().calls.contains(&"publish_unchanged"));
+    }
+
+    /// THE LOST WRITE. Two writers append identical bytes at one offset; one physical append is possible. The
+    /// writer that took the offset is told landed, the other is told ambiguous (never landed) and the object holds
+    /// the bytes once. With a comparison of bytes both were told landed.
+    #[test]
+    fn two_identical_appends_at_one_offset_are_not_both_told_landed() {
+        let (gateway, shared) = gateway();
+        assert_eq!(resolve_test_append(&gateway, 0, b"xx", &attempt(1)).status, 200);
+        let late = resolve_test_append(&gateway, 0, b"xx", &attempt(2));
+        assert_eq!(late.status, 412, "the second writer is refused: the offset is taken");
+        assert_eq!(bytes_of(&shared), b"xx", "one physical append");
+        assert_eq!(header(&resolve(&gateway, 0, b"xx", &attempt(1)), "x-append-resolution"), Some("landed"));
+        let second = resolve(&gateway, 0, b"xx", &attempt(2));
+        assert_eq!(header(&second, "x-append-resolution"), Some("ambiguous"), "the identical bytes are not its own");
+    }
+
+    /// An append whose outcome is unknown and whose plane reports nothing of the attempt, with equal bytes already
+    /// in the object, is AMBIGUOUS (409 with the current length), not "landed": the client decides from its own
+    /// record, and the bytes are in the object exactly once.
+    #[test]
+    fn an_unknown_outcome_with_equal_bytes_and_no_attempt_identity_is_ambiguous_not_landed() {
+        let (gateway, armed) = timeout_gateway_with(ObjectError::InvalidArgument(RAFT_DEADLINE.into()), true, false);
+        assert_eq!(append(&gateway, "wal", 0, b"abc").status, 200);
+        *armed.lock().unwrap() = true;
+        let response = append(&gateway, "wal", 3, b"de");
+        assert_eq!(response.status, 409, "{}", String::from_utf8_lossy(&response.body));
+        assert_eq!(header(&response, "x-amz-append-state"), Some("ambiguous"));
+        assert_eq!(header(&response, "x-amz-object-size"), Some("5"));
+        assert_eq!(gateway.handle(&request("GET", "/b/wal", &[], b"")).body, b"abcde", "stored once");
     }
 
     #[test]
     fn a_resolve_fences_a_lost_append_so_a_late_attempt_is_refused_and_the_retry_lands_once() {
         let (gateway, shared) = gateway();
-        assert_eq!(resolve_test_append(&gateway, 0, b"aaaa").status, 200);
+        assert_eq!(resolve_test_append(&gateway, 0, b"aaaa", &attempt(1)).status, 200);
         // The lost attempt read this manifest and is still in flight.
         let lost_expected = resolve_manifest_of(&shared);
-        let response = resolve(&gateway, 4, b"bbb");
+        let response = resolve(&gateway, 4, b"bbb", &attempt(2));
         assert_eq!(header(&response, "x-append-resolution"), Some("absent"));
         let fenced = resolve_manifest_of(&shared);
         assert_eq!((fenced.generation, fenced.length), (lost_expected.generation + 1, 4), "only the generation moves");
@@ -2279,35 +2518,35 @@ mod tests {
         let mut plane = MemoryPlane(Arc::clone(&shared));
         assert!(plane.append(lost_expected, b"bbb").is_err());
         assert_eq!(bytes_of(&shared), b"aaaa", "the late attempt must not land");
-        // The caller retries as a NEW append: stored exactly once.
-        assert_eq!(resolve_test_append(&gateway, 4, b"bbb").status, 200);
+        // The caller retries as a NEW attempt: stored exactly once.
+        assert_eq!(resolve_test_append(&gateway, 4, b"bbb", &attempt(3)).status, 200);
         assert_eq!(bytes_of(&shared), b"aaaabbb");
-        assert_eq!(header(&resolve(&gateway, 4, b"bbb"), "x-append-resolution"), Some("landed"));
+        assert_eq!(header(&resolve(&gateway, 4, b"bbb", &attempt(3)), "x-append-resolution"), Some("landed"));
     }
 
     #[test]
     fn a_resolve_of_an_object_that_was_never_created_fences_the_late_first_append() {
         let (other, other_shared) = gateway();
         let (gateway, shared) = gateway();
-        let response = resolve(&gateway, 0, b"xyz");
+        let response = resolve(&gateway, 0, b"xyz", &attempt(1));
         assert_eq!(header(&response, "x-append-resolution"), Some("absent"));
         assert_eq!(resolve_manifest_of(&shared).length, 0, "the key now exists, empty");
         // The late first append builds on 'no object': refused.
         let mut plane = MemoryPlane(Arc::clone(&shared));
         assert!(plane.write("b", "k", None, b"xyz").is_err());
-        assert_eq!(resolve_test_append(&gateway, 0, b"xyz").status, 200);
+        assert_eq!(resolve_test_append(&gateway, 0, b"xyz", &attempt(2)).status, 200);
         assert_eq!(bytes_of(&shared), b"xyz");
         // An append at an offset past a missing object can never land: absent, nothing created.
-        assert_eq!(header(&resolve(&other, 8, b"xyz"), "x-append-resolution"), Some("absent"));
+        assert_eq!(header(&resolve(&other, 8, b"xyz", &attempt(3)), "x-append-resolution"), Some("absent"));
         assert!(other_shared.lock().unwrap().objects.is_empty());
     }
 
     #[test]
     fn a_resolve_gives_up_after_three_rounds_of_a_generation_that_keeps_moving() {
         let (gateway, shared) = gateway();
-        assert_eq!(resolve_test_append(&gateway, 0, b"aaaa").status, 200);
+        assert_eq!(resolve_test_append(&gateway, 0, b"aaaa", &attempt(1)).status, 200);
         shared.lock().unwrap().racing_fence = true;
-        let response = resolve(&gateway, 4, b"bbb");
+        let response = resolve(&gateway, 4, b"bbb", &attempt(2));
         assert_eq!(response.status, 503, "{}", String::from_utf8_lossy(&response.body));
         let calls = shared.lock().unwrap().calls.iter().filter(|c| **c == "publish_unchanged").count();
         assert_eq!(calls, 3, "three bounded rounds, no more");
@@ -2315,18 +2554,24 @@ mod tests {
     }
 
     #[test]
-    fn a_resolve_refuses_malformed_parameters() {
+    fn a_resolve_refuses_malformed_parameters_and_an_append_refuses_a_malformed_attempt_id() {
         let (gateway, _) = gateway();
+        let id = attempt(1);
         for target in [
-            "/b/k?append-resolve",
-            "/b/k?append-resolve&offset=4&length=3",
-            "/b/k?append-resolve&offset=4&length=3&sha256=zz",
-            "/b/k?append-resolve&offset=x&length=3&sha256=00",
+            "/b/k?append-resolve".to_string(),
+            format!("/b/k?append-resolve&offset=4&length=3&sha256={}", sha_hex(b"abc")),
+            format!("/b/k?append-resolve&attempt=zz&offset=4&length=3"),
+            format!("/b/k?append-resolve&attempt={id}&offset=4&length=3&sha256=zz"),
+            format!("/b/k?append-resolve&attempt={id}&offset=x&length=3"),
         ] {
-            assert_eq!(gateway.handle(&request("POST", target, &[], b"")).status, 400, "{target}");
+            assert_eq!(gateway.handle(&request("POST", &target, &[], b"")).status, 400, "{target}");
         }
-        let zero = format!("/b/k?append-resolve&offset=4&length=0&sha256={}", sha_hex(b""));
+        let zero = format!("/b/k?append-resolve&attempt={id}&offset=4&length=0");
         assert_eq!(gateway.handle(&request("POST", &zero, &[], b"")).status, 400, "an empty append has nothing to resolve");
+        for bad in ["zz", "00", &"0".repeat(31), &"g".repeat(32)] {
+            let put = gateway.handle(&request("PUT", "/b/k", &[(WRITE_OFFSET_HEADER, "0"), (ATTEMPT_HEADER, bad)], b"x"));
+            assert_eq!(put.status, 400, "{bad}");
+        }
     }
 
     fn gateway() -> (ClusterGateway, Arc<Mutex<Shared>>) {
@@ -2568,6 +2813,8 @@ mod tests {
         inner: Arc<Mutex<MemoryPlane>>,
         error: ObjectError,
         commit_first: bool,
+        /// Whether the failure carries the extents the attempt published, as the SDK's does.
+        report: bool,
         armed: Arc<Mutex<bool>>,
     }
 
@@ -2588,7 +2835,10 @@ mod tests {
                 return self.inner.lock().unwrap().append(e, d);
             }
             if self.commit_first {
-                self.inner.lock().unwrap().append(e, d)?;
+                let kept = e.extents.len();
+                let committed = self.inner.lock().unwrap().append(e, d)?;
+                let attempted = if self.report { committed.extents[kept..].to_vec() } else { Vec::new() };
+                return Err(PlaneFailure { error: self.error.clone_error(), unconfirmed: false, attempted });
             }
             Err(self.error.clone_error().into())
         }
@@ -2616,6 +2866,10 @@ mod tests {
     /// The first append (or whole-object write) after `arm` fails with `error`; when
     /// `commit_first` the bytes really were written before the failure.
     fn timeout_gateway(error: ObjectError, commit_first: bool) -> (ClusterGateway, Arc<Mutex<bool>>) {
+        timeout_gateway_with(error, commit_first, true)
+    }
+
+    fn timeout_gateway_with(error: ObjectError, commit_first: bool, report: bool) -> (ClusterGateway, Arc<Mutex<bool>>) {
         let inner = Arc::new(Mutex::new(MemoryPlane(Arc::new(Mutex::new(Shared::default())))));
         let armed = Arc::new(Mutex::new(false));
         let handle_armed = Arc::clone(&armed);
@@ -2625,6 +2879,7 @@ mod tests {
                     inner: Arc::clone(&inner),
                     error: error.clone_error(),
                     commit_first,
+                    report,
                     armed: Arc::clone(&handle_armed),
                 }) as Box<dyn ObjectPlane>)
             },

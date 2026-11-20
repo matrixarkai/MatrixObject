@@ -188,3 +188,26 @@ of the tail merge exists. The default remains the plain path.
 The SDK client takes `&mut self`, so the gateway keeps a small pool of metadata connections and
 lends one to each request. Accept threads serve one connection at a time (as the in-process
 door does), so `MATRIXOBJECT_THREADS` bounds concurrent clients.
+
+## Appends that may have landed: attempt ids
+
+An append whose reply was lost (a timeout, a reset, a consensus deadline, a killed gateway) may or may not be in the
+object. The gateway answers "did my append land?" by the attempt, never by the bytes: two writers that append identical
+bytes at one offset leave one copy, and a byte comparison would tell both that theirs landed.
+
+* An append may carry `x-amz-attempt-id`, 32 hex characters (16 random bytes) chosen by the client once per attempt and
+  reused on every retry of that attempt. The gateway echoes it. A malformed id is a 400.
+* Every attempt allocates its own pages, so the extents it publishes are its identity: the committed manifest holds
+  them if and only if the attempt landed, even if later appends followed. When an append's outcome is unknown, the
+  gateway checks that identity; it answers 200 only when the attempt's extents are in the manifest.
+* `POST /bucket/key?append-resolve&attempt=<id>&offset=O&length=N[&sha256=<hex>]` settles an attempt later and answers
+  `landed`, `absent` or `ambiguous` in `x-append-resolution`. `absent` is returned only after the attempt is fenced: the
+  object is published again unchanged at the next generation, so a late copy of the attempt is refused, and the client
+  may retry it as a new append. `ambiguous` means bytes equal to the append's are at that range but this gateway cannot
+  prove they are this attempt's (it never saw the attempt, for instance after a restart); it is never reported as
+  `landed`. The `attempt` parameter is required; `sha256` is optional evidence about the bytes.
+* An append with an unknown outcome that the gateway cannot decide is a 409 `AppendAmbiguous` with
+  `x-amz-append-state: ambiguous` and `x-amz-object-size`. The client decides from its own record of the length it last
+  acknowledged: a client that is the object's only writer can, because the length then proves the bytes are its own.
+* The gateway remembers the last 4096 attempts. After a restart it remembers none, so an attempt it served before is
+  `ambiguous` or `absent` afterwards, never `landed`.

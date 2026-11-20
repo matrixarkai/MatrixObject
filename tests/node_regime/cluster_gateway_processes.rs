@@ -346,9 +346,14 @@ fn sha256_hex(data: &[u8]) -> String {
         .collect()
 }
 
-fn resolve_target(offset: u64, data: &[u8]) -> String {
+/// An attempt id: 32 hex characters, the same on every retry of one attempt.
+fn attempt_id(n: u128) -> String {
+    format!("{n:032x}")
+}
+
+fn resolve_target(offset: u64, data: &[u8], id: &str) -> String {
     format!(
-        "/gateway/log?append-resolve&offset={offset}&length={}&sha256={}",
+        "/gateway/log?append-resolve&attempt={id}&offset={offset}&length={}&sha256={}",
         data.len(),
         sha256_hex(data)
     )
@@ -358,19 +363,27 @@ fn resolve_target(offset: u64, data: &[u8]) -> String {
 /// refused when it finally arrives, and the retry as a new append stored once.
 fn resolve_over_real_processes(cluster: &Cluster) {
     let addr = cluster.addr();
-    for (offset, text) in [(0u64, "alpha"), (5, "beta")] {
+    for (n, (offset, text)) in [(0u64, "alpha"), (5, "beta")].into_iter().enumerate() {
         assert_eq!(
-            cluster.until_ok("PUT", "/gateway/log", &[("x-amz-write-offset-bytes", &offset.to_string())], text.as_bytes()),
+            cluster.until_ok(
+                "PUT",
+                "/gateway/log",
+                &[("x-amz-write-offset-bytes", &offset.to_string()), ("x-amz-attempt-id", &attempt_id(n as u128 + 1))],
+                text.as_bytes()
+            ),
             200
         );
     }
-    // The bytes are there: landed, and nothing is fenced.
-    let (status, headers, _) = http(addr, "POST", &resolve_target(5, b"beta"), &[], b"");
+    // The attempt's own extents are in the manifest: landed, and nothing is fenced. An attempt this gateway
+    // never saw, with the same bytes at the same range, is ambiguous and never landed.
+    let (status, headers, _) = http(addr, "POST", &resolve_target(5, b"beta", &attempt_id(2)), &[], b"");
     assert_eq!((status, header(&headers, "x-append-resolution")), (200, Some("landed")));
+    let (_, headers, _) = http(addr, "POST", &resolve_target(5, b"beta", &attempt_id(77)), &[], b"");
+    assert_eq!(header(&headers, "x-append-resolution"), Some("ambiguous"));
     // Nothing at offset 9: the resolve fences. Only the generation moves.
     let mut client = cluster.meta_client();
     let before = client.read_manifest("gateway", "log").unwrap();
-    let (status, headers, body) = http(addr, "POST", &resolve_target(9, b"gamma"), &[], b"");
+    let (status, headers, body) = http(addr, "POST", &resolve_target(9, b"gamma", &attempt_id(3)), &[], b"");
     assert_eq!(
         (status, header(&headers, "x-append-resolution")),
         (200, Some("absent")),
@@ -387,11 +400,16 @@ fn resolve_over_real_processes(cluster: &Cluster) {
     assert_eq!(http(addr, "GET", "/gateway/log", &[], b"").2, b"alphabeta");
     // The caller retries as a new append: stored exactly once.
     assert_eq!(
-        cluster.until_ok("PUT", "/gateway/log", &[("x-amz-write-offset-bytes", "9")], b"gamma"),
+        cluster.until_ok(
+            "PUT",
+            "/gateway/log",
+            &[("x-amz-write-offset-bytes", "9"), ("x-amz-attempt-id", &attempt_id(4))],
+            b"gamma"
+        ),
         200
     );
     assert_eq!(http(addr, "GET", "/gateway/log", &[], b"").2, b"alphabetagamma");
-    let (_, headers, _) = http(addr, "POST", &resolve_target(9, b"gamma"), &[], b"");
+    let (_, headers, _) = http(addr, "POST", &resolve_target(9, b"gamma", &attempt_id(4)), &[], b"");
     assert_eq!(header(&headers, "x-append-resolution"), Some("landed"));
 }
 
@@ -419,9 +437,17 @@ fn killing_the_gateway_mid_append_then_resolving_through_another_stores_every_ap
         let mut victim = gateway_process(&cluster.endpoints, cluster.group_id, &[]);
         let victim_addr = victim.endpoint.clone();
         let (at, body) = (offset, data.clone());
+        let id = attempt_id(1000 + round as u128);
+        let victim_id = id.clone();
         let sender = std::thread::spawn(move || {
             // The victim dies mid-request, so this panics on the missing response; that is the point.
-            let _ = http(&victim_addr, "PUT", "/gateway/log", &[("x-amz-write-offset-bytes", &at.to_string())], &body);
+            let _ = http(
+                &victim_addr,
+                "PUT",
+                "/gateway/log",
+                &[("x-amz-write-offset-bytes", &at.to_string()), ("x-amz-attempt-id", &victim_id)],
+                &body,
+            );
         });
         random = random.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         std::thread::sleep(Duration::from_millis((random >> 33) % 150));
@@ -430,7 +456,7 @@ fn killing_the_gateway_mid_append_then_resolving_through_another_stores_every_ap
         // Resolve through the survivor until it decides.
         let until = Instant::now() + Duration::from_secs(60);
         let resolution = loop {
-            let (status, headers, reply) = http(&survivor, "POST", &resolve_target(offset, &data), &[], b"");
+            let (status, headers, reply) = http(&survivor, "POST", &resolve_target(offset, &data, &id), &[], b"");
             if status == 200 {
                 break header(&headers, "x-append-resolution").unwrap().to_string();
             }
@@ -444,7 +470,9 @@ fn killing_the_gateway_mid_append_then_resolving_through_another_stores_every_ap
                 "round {round}: the retry as a new append"
             );
         } else {
-            assert_eq!(resolution, "landed", "round {round}");
+            // The survivor never saw this attempt, so it cannot call it landed. The bytes are there and this test
+            // is the object's only writer, so the length proves they are its own (checked below against `expected`).
+            assert_eq!(resolution, "ambiguous", "round {round}");
         }
         expected.extend_from_slice(&data);
         offset += data.len() as u64;
