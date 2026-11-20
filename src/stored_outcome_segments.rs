@@ -208,6 +208,7 @@ impl PayloadRangeReader {
         self.0.read_payload_range(extent, offset, length)
     }
 
+    #[cfg(test)]
     pub(crate) fn read_append(
         &self,
         extent: &PayloadExtent,
