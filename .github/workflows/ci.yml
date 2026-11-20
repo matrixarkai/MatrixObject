@@ -3141,6 +3141,66 @@ jobs:
           cargo test --locked --lib chunk_integrity::tests::a_one_page_extent_is_verified_against_the_manifest_digest_and_refuses_a_digest_page -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-integrity.log
           grep -q '^running 1 test$' /tmp/chunk-integrity.log
           grep -q '^test result: ok. 1 passed' /tmp/chunk-integrity.log
+      - name: a chunk catalog publication takes the next generation
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_catalog::tests::a_first_publication_takes_generation_one_and_the_next_takes_the_next -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog.log
+          grep -q '^running 1 test$' /tmp/chunk-catalog.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog.log
+      - name: a chunk catalog publication decided against another manifest is refused
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_catalog::tests::a_publication_decided_against_another_manifest_is_refused_and_changes_nothing -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog.log
+          grep -q '^running 1 test$' /tmp/chunk-catalog.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog.log
+      - name: two writers of one chunk manifest generation cannot both win
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_catalog::tests::two_writers_of_one_generation_cannot_both_win -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog.log
+          grep -q '^running 1 test$' /tmp/chunk-catalog.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog.log
+      - name: a replay of an applied chunk outcome changes nothing
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_catalog::tests::a_replay_of_an_applied_outcome_changes_nothing -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog.log
+          grep -q '^running 1 test$' /tmp/chunk-catalog.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog.log
+      - name: a chunk manifest delete leaves a tombstone and a create takes the next generation
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_catalog::tests::a_delete_leaves_a_tombstone_and_a_create_takes_the_next_generation -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog.log
+          grep -q '^running 1 test$' /tmp/chunk-catalog.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog.log
+      - name: the chunk catalog admission limit applies when a leader decides and never when a voter applies
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_catalog::tests::the_admission_limit_applies_to_new_objects_when_a_leader_decides_and_never_when_a_voter_applies -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog.log
+          grep -q '^running 1 test$' /tmp/chunk-catalog.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog.log
+      - name: the chunk catalog image round trips and rebuilds its counts
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_catalog::tests::the_image_round_trips_and_rebuilds_the_counts_and_the_order -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog.log
+          grep -q '^running 1 test$' /tmp/chunk-catalog.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog.log
+      - name: a damaged or disordered chunk catalog image is refused
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_catalog::tests::an_image_that_is_out_of_order_duplicated_of_another_version_or_damaged_is_refused -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog.log
+          grep -q '^running 1 test$' /tmp/chunk-catalog.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog.log
+      - name: the chunk catalog image bound refuses a publication and an image
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_catalog::tests::the_image_bound_refuses_a_publication_and_an_image_that_would_pass_it -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog.log
+          grep -q '^running 1 test$' /tmp/chunk-catalog.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog.log
+      - name: a chunk catalog entry put back restores the object, the bytes and the revision
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_catalog::tests::an_entry_put_back_restores_the_object_the_byte_count_and_the_revision -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog.log
+          grep -q '^running 1 test$' /tmp/chunk-catalog.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail
