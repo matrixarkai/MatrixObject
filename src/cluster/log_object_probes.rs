@@ -37,6 +37,7 @@ fn manifest(entries: usize, entry_bytes: u64) -> ObjectManifest {
             group: "group-a".into(),
             volume_id: 1,
             chunk_id: index as u64 + 1,
+            write_sequence: index as u64 + 1,
             object_offset: index as u64 * entry_bytes,
             length: entry_bytes,
             kind: EXTENT_KIND_LOG_CHUNK,
@@ -49,6 +50,7 @@ fn manifest(entries: usize, entry_bytes: u64) -> ObjectManifest {
         group: "group-a".into(),
         volume_id: 1,
         chunk_id: entries as u64,
+        write_sequence: entries as u64,
         object_offset: (entries as u64 - 1) * entry_bytes,
         kind: EXTENT_KIND_LOG_CHUNK,
         flags: EXTENT_FLAG_TAIL,
@@ -73,7 +75,7 @@ fn read_plan_cpu_cost_at_entries() {
     let range: u64 = env("BENCH_RANGE", 4 << 20);
     let reps: usize = env("BENCH_REPS", 20_000);
     let mut reader = LogObjectReader::new("bucket", "log", ReplicaClientOptions::default());
-    reader.manifest = Some(manifest(entries, entry_bytes));
+    reader.install_manifest(manifest(entries, entry_bytes)).unwrap();
     let offset = (entries as u64 - 1) * entry_bytes / 2;
     let started = Instant::now();
     let mut pieces = 0usize;

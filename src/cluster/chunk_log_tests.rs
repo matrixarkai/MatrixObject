@@ -625,20 +625,24 @@ fn native_star_all_replicas_deferred_completion_survives_restart() {
 
 
 /// A bounded frame proxy that drops one selected request or its reply.
-struct FaultProxy {
-    addr: String,
+pub(super) struct FaultProxy {
+    pub(super) addr: String,
     armed: Arc<AtomicBool>,
+    pub(super) operations: Arc<std::sync::Mutex<Vec<u32>>>,
     stop: Arc<AtomicBool>,
     sockets: Arc<std::sync::Mutex<Vec<TcpStream>>>,
     worker: Option<thread::JoinHandle<()>>,
 }
 impl FaultProxy {
-    fn new(target: String, operation: u32, drop_reply: bool) -> Self {
+    pub(super) fn connection_count(&self) -> usize { self.sockets.lock().unwrap().len() / 2 }
+    pub(super) fn new(target: String, operation: u32, drop_reply: bool) -> Self {
         use prost::Message as _;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let armed = Arc::new(AtomicBool::new(true));
+        let operations = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&operations);
         let stop = Arc::new(AtomicBool::new(false));
         let sockets = Arc::new(std::sync::Mutex::new(Vec::<TcpStream>::new()));
         let (fault, stopping, tracked) = (Arc::clone(&armed), Arc::clone(&stop), Arc::clone(&sockets));
@@ -662,6 +666,7 @@ impl FaultProxy {
                     tracked.push(upstream.try_clone().unwrap());
                 }
                 let fault = Arc::clone(&fault);
+                let recorded = Arc::clone(&recorded);
                 scope.spawn(move || {
                     let mut transfer = || -> std::io::Result<()> {
                         loop {
@@ -671,9 +676,10 @@ impl FaultProxy {
                             if size > 8 * 1024 * 1024 { return Err(std::io::ErrorKind::InvalidData.into()); }
                             let mut body = vec![0; size];
                             client.read_exact(&mut body)?;
-                            let selected = header[1] == crate::cluster::wire::RequestCode::LogOp as u8
-                                && LogOpRequest::decode(body.as_slice()).is_ok_and(|request| request.op == operation)
-                                && fault.swap(false, Ordering::SeqCst);
+                            let seen = (header[1] == crate::cluster::wire::RequestCode::LogOp as u8)
+                                .then(|| LogOpRequest::decode(body.as_slice()).ok().map(|request| request.op)).flatten();
+                            if let Some(op) = seen { recorded.lock().unwrap().push(op); }
+                            let selected = seen == Some(operation) && fault.swap(false, Ordering::SeqCst);
                             if selected && !drop_reply { return Ok(()); }
                             upstream.write_all(&header)?;
                             upstream.write_all(&body)?;
@@ -693,7 +699,7 @@ impl FaultProxy {
                 });
             }
         }));
-        Self { addr, armed, stop, sockets, worker: Some(worker) }
+        Self { addr, armed, operations, stop, sockets, worker: Some(worker) }
     }
 }
 impl Drop for FaultProxy {
@@ -772,4 +778,48 @@ fn native_star_all_replicas_retains_a_large_pending_append_until_restart() {
     for node in &nodes { assert_eq!(node.tail().durable_length, end); }
     let mut r = reader(&eps);
     assert_eq!(r.read(prefix.len() as u64, data.len()).unwrap(), data);
+}
+
+
+#[test]
+fn native_log_sealed_read_uses_one_rpc_and_checks_the_expected_footer() {
+    let (_dir, nodes) = cluster();
+    let eps = endpoints(&nodes);
+    let mut w = writer(&eps, 1);
+    let data = bytes(43, 4096);
+    w.append(&data).unwrap();
+    let footer = w.seal_footer(true).unwrap();
+    let proxies: Vec<_> = eps.iter().map(|endpoint| FaultProxy::new(endpoint.clone(), 0, false)).collect();
+    let via: Vec<_> = proxies.iter().map(|proxy| proxy.addr.clone()).collect();
+    let mut reader = reader(&via);
+    assert_eq!(reader.read_sealed(7, 19, &footer).unwrap(), data[7..26]);
+    let operations: Vec<_> = proxies.iter().flat_map(|proxy| proxy.operations.lock().unwrap().clone()).collect();
+    assert_eq!(operations, vec![super::log_op::OP_READ], "healthy sealed reads must not send tail probes");
+    let mut invalid = footer.clone();
+    invalid.crc ^= 1;
+    assert!(reader.read_sealed(7, 19, &invalid).is_err(), "a mismatched metadata footer cannot serve bytes");
+    invalid = footer.clone();
+    invalid.sha256[0] ^= 1;
+    assert!(reader.read_sealed(7, 19, &invalid).is_err(), "a mismatched digest cannot serve bytes");
+    assert_eq!(reader.read_sealed(u64::MAX, 1, &footer).unwrap_err(), ChunkLogError::Refused(ObjectError::InvalidArgument("range overflow".into())));
+}
+
+#[test]
+fn native_log_append_pipeline_refuses_oversized_payloads_before_sending_anything() {
+    use prost::Message as _;
+    let (_dir, nodes) = cluster();
+    let eps = endpoints(&nodes);
+    let proxy = FaultProxy::new(eps[0].clone(), 0, false);
+    let operation = LogOpRequest::append(V, C, 1, 1, 0, bytes(7, 4096));
+    let size = operation.encoded_len();
+    let mut limits = options();
+    limits.max_payload_bytes = size - 1;
+    let mut client = RemoteReplicaClient::connect(&proxy.addr, &limits).unwrap();
+    assert!(matches!(client.log_append_pipelined(std::slice::from_ref(&operation))[0], Err(LogCallError::Refused(ObjectError::InvalidArgument(_)))));
+    assert!(proxy.operations.lock().unwrap().is_empty());
+    assert_eq!(nodes[0].tail().length, 0);
+    limits.max_payload_bytes = size;
+    let mut exact = RemoteReplicaClient::connect(&proxy.addr, &limits).unwrap();
+    assert_eq!(exact.log_append_pipelined(&[operation])[0].as_ref().unwrap().durable_length, 4096);
+    assert_eq!(*proxy.operations.lock().unwrap(), vec![super::log_op::OP_APPEND]);
 }

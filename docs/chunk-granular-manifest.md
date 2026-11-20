@@ -188,7 +188,18 @@ all of them report the same footer; otherwise the seal fails with an error.
   published. A reader can still use the nodes holding a recoverable prefix. Repair of log chunks is a separate path and is not
   implemented (see the limits below).
 
-**Reading.** The reader asks each node for its durable length and its writer epoch.
+**Sealed reads.** A sealed extent already carries its final length, CRC-32C and
+optional SHA-256 in committed metadata. The log-object reader sends one read per
+piece to a replica, validates that its immutable footer matches those values, and
+reuses that replica for later pieces. A refused, incomplete or mismatched response
+tries another replica. This path does not query the three tails, and remains usable
+with one matching live replica. New readers distribute their initial choice among
+replicas and keep a successful peer for connection reuse. Connections are pooled
+per group across chunks. A cached manifest is validated once and ranged reads
+locate their first extent by binary search, then visit only the requested extents.
+Open-tail reads still resolve their safe length.
+
+**Reading an open tail.** The reader asks each node for its durable length and its writer epoch.
 A node whose epoch is below the highest any node reports takes no part in the
 quorum length and serves no read: it missed a change of writer, so what it holds
 past the point the new writer started from may be bytes that were never

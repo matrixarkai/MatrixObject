@@ -2877,6 +2877,12 @@ jobs:
           grep -q '^running 1 test$' /tmp/repair-cursor.log
           grep -q '^test result: ok. 1 passed' /tmp/repair-cursor.log
 
+      - name: sealed log reads use one matching replica and append sizing keeps wire bounds
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib native_log_ -- --test-threads=1 | tee /tmp/native-log-rpc-cost.log
+          grep -q '^test result: ok. 5 passed; 0 failed;' /tmp/native-log-rpc-cost.log
+
       - name: native Star writes and seals require every durable replica
         run: |
           set -euo pipefail

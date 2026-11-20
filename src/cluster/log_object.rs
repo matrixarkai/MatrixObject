@@ -17,7 +17,7 @@
 //! A reader ([`LogObjectReader`]) follows the manifest: a sealed chunk is read from its nodes up to
 //! its recorded length, the open chunk (the live tail) only up to the length two of its nodes hold
 //! durably.
-use super::chunk_log::{ChunkLogError, ChunkLogReader, ChunkLogWriter, LogCallError, LOG_REPLICAS};
+use super::chunk_log::{ChunkLogError, ChunkLogReader, ChunkLogWriter, LogCallError, SealedFooter, LOG_REPLICAS};
 use super::client::{RemoteReplicaClient, ReplicaClientOptions};
 use super::log_chunk_commands::{LogChunkReply, LogChunkRequest, MAX_OBJECT_ENTRIES};
 use super::log_chunk_store::LOG_CHUNK_LIMIT;
@@ -546,7 +546,7 @@ pub struct LogObjectReader {
     options: ReplicaClientOptions,
     manifest: Option<ObjectManifest>,
     endpoints: BTreeMap<String, Vec<String>>,
-    readers: BTreeMap<(u64, u64), ChunkLogReader>,
+    readers: BTreeMap<String, ChunkLogReader>,
 }
 
 struct Piece {
@@ -556,7 +556,7 @@ struct Piece {
     /// Where in the chunk, and how many bytes.
     at: u64,
     length: usize,
-    sealed: bool,
+    footer: Option<SealedFooter>,
 }
 
 impl LogObjectReader {
@@ -567,30 +567,41 @@ impl LogObjectReader {
     /// Read the object's manifest again: chunks sealed and opened since are seen.
     pub fn refresh<M: LogMeta>(&mut self, meta: &mut M) -> Result<(), LogObjectError> {
         let manifest = meta.manifest(&self.bucket, &self.key).map_err(from_meta)?;
+        self.install_manifest(manifest)
+    }
+
+    fn install_manifest(&mut self, manifest: ObjectManifest) -> Result<(), LogObjectError> {
+        if manifest.bucket != self.bucket || manifest.key != self.key {
+            return Err(LogObjectError::Invalid("the manifest names another object".into()));
+        }
+        if manifest.extents.iter().any(|extent| extent.kind != EXTENT_KIND_LOG_CHUNK) {
+            return Err(LogObjectError::Invalid("the object is not a log object".into()));
+        }
+        manifest.validate().map_err(from_meta)?;
         self.manifest = Some(manifest);
         Ok(())
     }
 
     fn reader<M: LogMeta>(&mut self, meta: &mut M, group: &str, volume: u64, chunk: u64) -> Result<&mut ChunkLogReader, LogObjectError> {
-        if !self.readers.contains_key(&(volume, chunk)) {
+        if !self.readers.contains_key(group) {
             if !self.endpoints.contains_key(group) {
                 let endpoints = meta.group_endpoints(group).map_err(from_meta)?;
                 self.endpoints.insert(group.to_string(), endpoints);
             }
             let endpoints = &self.endpoints[group];
-            self.readers.insert((volume, chunk), ChunkLogReader::new(endpoints, volume, chunk, GENERATION, self.options.clone()));
+            self.readers.insert(group.to_string(), ChunkLogReader::new(endpoints, volume, chunk, GENERATION, self.options.clone()));
         }
-        Ok(self.readers.get_mut(&(volume, chunk)).expect("just inserted"))
+        let reader = self.readers.get_mut(group).expect("just inserted");
+        reader.select_chunk(volume, chunk, GENERATION);
+        Ok(reader)
     }
 
     /// Which bytes of which chunks make up `[offset, end)`, from the manifest as it stands.
     fn plan(&self, offset: u64, end: u64) -> Result<Vec<Piece>, LogObjectError> {
         let manifest = self.manifest.as_ref().ok_or(LogObjectError::NotOpen)?;
         let mut pieces = Vec::new();
-        for extent in &manifest.extents {
-            if extent.kind != EXTENT_KIND_LOG_CHUNK {
-                return Err(LogObjectError::Invalid("the object is not a log object".into()));
-            }
+        let first = manifest.extents.partition_point(|extent| extent.object_offset <= offset).saturating_sub(1);
+        for extent in manifest.extents[first..].iter().take_while(|extent| extent.object_offset < end) {
             let sealed = extent.flags & EXTENT_FLAG_SEALED != 0;
             let start = extent.object_offset;
             // the open chunk's length is not in the manifest: the nodes know it
@@ -604,7 +615,7 @@ impl LogObjectReader {
                     chunk: extent.chunk_id,
                     at: from - start,
                     length: (to - from) as usize,
-                    sealed,
+                    footer: sealed.then(|| SealedFooter { length: extent.length, crc: extent.footer_crc, sha256: extent.footer_sha256.clone() }),
                 });
             }
         }
@@ -626,9 +637,12 @@ impl LogObjectReader {
             let mut short = false;
             for piece in &pieces {
                 let reader = self.reader(meta, &piece.group, piece.volume, piece.chunk)?;
-                let bytes = reader.read(piece.at, piece.length).map_err(from_chunk)?;
+                let bytes = match &piece.footer {
+                    Some(footer) => reader.read_sealed(piece.at, piece.length, footer),
+                    None => reader.read(piece.at, piece.length),
+                }.map_err(from_chunk)?;
                 if bytes.len() < piece.length {
-                    if piece.sealed {
+                    if piece.footer.is_some() {
                         return Err(LogObjectError::Chunk(ChunkLogError::NoQuorum { wanted: piece.at + piece.length as u64, durable: piece.at + bytes.len() as u64 }));
                     }
                     short = true;

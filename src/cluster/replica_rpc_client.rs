@@ -1797,7 +1797,7 @@ impl RemoteReplicaClient {
             return refuse("a log append pipeline carries appends only");
         }
         if ops.iter().any(|op| {
-            ReplicaRequest::LogOp(op.clone()).encode_payload().len() > self.max_payload_bytes
+            prost::Message::encoded_len(op) > self.max_payload_bytes
         }) {
             return refuse("a log append exceeds the payload bound");
         }

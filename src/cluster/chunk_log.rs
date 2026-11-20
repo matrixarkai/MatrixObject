@@ -113,9 +113,12 @@ impl std::error::Error for ChunkLogError {}
 
 /// The second largest of the three durable lengths.
 fn quorum_length(durables: &[u64]) -> u64 {
-    let mut sorted: Vec<u64> = durables.to_vec();
-    sorted.sort_unstable_by(|a, b| b.cmp(a));
-    sorted.get(LOG_QUORUM - 1).copied().unwrap_or(0)
+    let (mut largest, mut second) = (0, 0);
+    for &length in durables {
+        if length >= largest { second = largest; largest = length; }
+        else if length > second { second = length; }
+    }
+    second
 }
 
 struct Member {
@@ -602,7 +605,9 @@ pub struct SealedFooter {
     pub sha256: Vec<u8>,
 }
 
-/// Reads a log chunk from its nodes, never above the quorum-durable length.
+static NEXT_READ_REPLICA: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Reads open chunks at their recovery prefix, or immutable bytes through a verified footer.
 pub struct ChunkLogReader {
     endpoints: Vec<String>,
     clients: Vec<Option<RemoteReplicaClient>>,
@@ -610,6 +615,7 @@ pub struct ChunkLogReader {
     volume: u64,
     chunk: u64,
     generation: u32,
+    preferred: usize,
 }
 
 impl ChunkLogReader {
@@ -621,7 +627,15 @@ impl ChunkLogReader {
             volume,
             chunk,
             generation,
+            preferred: NEXT_READ_REPLICA.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % endpoints.len().max(1),
         }
+    }
+
+    /// Retarget the next synchronous read while retaining this group's connections.
+    pub(crate) fn select_chunk(&mut self, volume: u64, chunk: u64, generation: u32) {
+        self.volume = volume;
+        self.chunk = chunk;
+        self.generation = generation;
     }
 
     fn client(&mut self, index: usize) -> Result<&mut RemoteReplicaClient, LogCallError> {
@@ -697,6 +711,44 @@ impl ChunkLogReader {
     /// The length two nodes hold durably.
     pub fn length(&mut self) -> Result<u64, ChunkLogError> {
         Ok(self.lengths()?.1)
+    }
+
+    /// Read immutable bytes using the footer supplied by committed metadata or
+    /// a completed seal. Each piece needs one matching replica, without tail probes.
+    /// A failed or mismatched replica is skipped; successful reads reuse that peer.
+    pub fn read_sealed(&mut self, offset: u64, length: usize, footer: &SealedFooter) -> Result<Vec<u8>, ChunkLogError> {
+        if footer.length > LOG_CHUNK_LIMIT || (!footer.sha256.is_empty() && footer.sha256.len() != 32) {
+            return Err(ChunkLogError::Refused(ObjectError::InvalidArgument("invalid sealed log footer".into())));
+        }
+        let end = offset.checked_add(length as u64).ok_or_else(||
+            ChunkLogError::Refused(ObjectError::InvalidArgument("range overflow".into())))?.min(footer.length);
+        if offset >= end { return Ok(Vec::new()); }
+        let mut out = Vec::with_capacity(((end - offset) as usize).min(LOG_RECORD_BYTES));
+        let mut at = offset;
+        while at < end {
+            let piece = ((end - at) as usize).min(LOG_RECORD_BYTES);
+            let mut got = None;
+            for attempt in 0..self.endpoints.len() {
+                let index = (self.preferred + attempt) % self.endpoints.len();
+                let (volume, chunk, generation) = (self.volume, self.chunk, self.generation);
+                match self.read_call(index, |client| client.log_read(volume, chunk, generation, at, piece as u32)) {
+                    Ok(reply) if reply.sealed && reply.length == footer.length
+                        && reply.durable_length == footer.length && reply.crc == footer.crc
+                        && (footer.sha256.is_empty() || reply.sha256 == footer.sha256)
+                        && reply.data.len() == piece => {
+                            self.preferred = index;
+                            got = Some(reply.data);
+                            break;
+                        }
+                    Ok(_) => {}
+                    Err(_) => self.clients[index] = None,
+                }
+            }
+            let Some(data) = got else { return Err(ChunkLogError::NoQuorum { wanted: at + piece as u64, durable: at }); };
+            out.extend_from_slice(&data);
+            at += piece as u64;
+        }
+        Ok(out)
     }
 
     /// The bytes `[offset, offset + length)`, cut short at the quorum-durable length.

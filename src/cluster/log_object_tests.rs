@@ -155,6 +155,7 @@ impl FakeMeta {
             volume_id,
             chunk_id,
             object_offset: offset,
+            write_sequence: index,
             kind: EXTENT_KIND_LOG_CHUNK,
             flags: EXTENT_FLAG_TAIL,
             ..Default::default()
@@ -687,4 +688,54 @@ fn native_star_all_replicas_interrupted_switch_waits_for_the_third_seal() {
     let mut expected = data;
     expected.push(7);
     assert_eq!(reader().read_range(&mut meta, 0, expected.len()).unwrap(), expected);
+}
+
+
+#[test]
+fn native_log_sealed_range_reads_with_one_live_replica_and_rejects_a_wrong_footer() {
+    let (_dir, mut nodes) = cluster();
+    let mut meta = FakeMeta::new(endpoints(&nodes));
+    let mut object = LogObject::new("bucket", "log", options("gw-a"));
+    object.open_for_append(&mut meta).unwrap();
+    let data = bytes(21, CHUNK as usize + 1);
+    object.append(&mut meta, &data).unwrap();
+    nodes[0].halt();
+    nodes[1].halt();
+    let mut reader = reader();
+    assert_eq!(reader.read_range(&mut meta, 0, CHUNK as usize).unwrap(), data[..CHUNK as usize]);
+    assert_eq!(reader.read_range(&mut meta, 17, 31).unwrap(), data[17..48]);
+    reader.manifest.as_mut().unwrap().extents[0].footer_crc ^= 1;
+    assert!(reader.read_range(&mut meta, 0, 32).is_err(), "one live replica must still match the committed footer");
+}
+
+
+#[test]
+fn native_log_sealed_ranges_reuse_group_connections_across_chunks() {
+    use crate::cluster::chunk_log_tests::FaultProxy;
+    let (_dir, nodes) = cluster();
+    let proxies: Vec<_> = endpoints(&nodes).into_iter().map(|endpoint| FaultProxy::new(endpoint, 0, false)).collect();
+    let mut meta = FakeMeta::new(proxies.iter().map(|proxy| proxy.addr.clone()).collect());
+    let mut object = LogObject::new("bucket", "log", options("gw-a"));
+    object.open_for_append(&mut meta).unwrap();
+    let data = bytes(37, 3 * CHUNK as usize + 1);
+    object.append(&mut meta, &data).unwrap();
+    let connections = proxies.iter().map(|proxy| proxy.connection_count()).sum::<usize>();
+    let before: Vec<_> = proxies.iter().map(|proxy| proxy.operations.lock().unwrap().len()).collect();
+    let mut reader = reader();
+    assert_eq!(reader.read_range(&mut meta, 0, 3 * CHUNK as usize).unwrap(), data[..3 * CHUNK as usize]);
+    assert_eq!(reader.read_range(&mut meta, CHUNK + 13, 17).unwrap(), data[CHUNK as usize + 13..CHUNK as usize + 30]);
+    assert_eq!(proxies.iter().map(|proxy| proxy.connection_count()).sum::<usize>() - connections, 1, "one group connection serves all three sealed chunks");
+    let operations: Vec<_> = proxies.iter().zip(before).flat_map(|(proxy, count)| proxy.operations.lock().unwrap()[count..].to_vec()).collect();
+    assert_eq!(operations, vec![super::super::log_op::OP_READ; 4]);
+}
+
+#[test]
+fn native_log_cached_manifest_rejects_unsorted_ranges_before_reading() {
+    let (_dir, nodes) = cluster();
+    let mut meta = FakeMeta::new(endpoints(&nodes));
+    let mut object = LogObject::new("bucket", "log", options("gw-a"));
+    object.open_for_append(&mut meta).unwrap();
+    object.append(&mut meta, &bytes(9, 2 * CHUNK as usize + 1)).unwrap();
+    meta.objects.get_mut(&id("log")).unwrap().extents.swap(0, 1);
+    assert!(reader().read_range(&mut meta, 0, 32).is_err(), "the indexed read plan must reject a malformed manifest");
 }
