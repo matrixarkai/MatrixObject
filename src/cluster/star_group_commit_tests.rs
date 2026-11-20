@@ -523,7 +523,7 @@ fn shared_sync_offered_backlog_fails_without_mutation() {
     let fixture = Fixture::new();
     base(&fixture);
     let committer = Committer::start(Arc::clone(&fixture.node), MAX_PAYLOAD_BYTES).unwrap();
-    let mut guard = fixture.node.lock().unwrap();
+    let guard = fixture.node.lock().unwrap();
     let before = guard.journal.as_ref().unwrap().sync_count();
     let (done, results) = mpsc::channel();
     let mut workers = Vec::new();
