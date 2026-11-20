@@ -113,6 +113,8 @@ pub enum MetaRequestCode {
     Features = 96,
     /// Lease an object for log writing, switch it to its next chunk, renew leases in a batch.
     LogChunk = 97,
+    /// Publish one chunk manifest: the client's decided outcome, checked again by every voter.
+    PublishChunkManifest = 98,
     /// Read the extents of a manifest that overlap one byte range, its cached digest, and the
     /// routes of the groups those extents name, at one metadata barrier.
     ReadManifestRange = 100,
@@ -160,6 +162,7 @@ impl MetaRequestCode {
             95 => Some(MetaRequestCode::PlanAppendRoutes),
             96 => Some(MetaRequestCode::Features),
             97 => Some(MetaRequestCode::LogChunk),
+            98 => Some(MetaRequestCode::PublishChunkManifest),
             100 => Some(MetaRequestCode::ReadManifestRange),
             _ => None,
         }
@@ -202,6 +205,7 @@ impl MetaRequestCode {
             MetaRequestCode::PlanAppendRoutes,
             MetaRequestCode::Features,
             MetaRequestCode::LogChunk,
+            MetaRequestCode::PublishChunkManifest,
             MetaRequestCode::ReadManifestRange,
         ]
     }

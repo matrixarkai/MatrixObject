@@ -433,6 +433,16 @@ impl RemoteMetaClient {
     pub fn read_log_chunk(&mut self, bucket: &str, key: &str) -> Result<super::LogChunkReply, ObjectError> {
         self.log_chunk_call(super::LogChunkRequest::read(bucket, key))
     }
+    /// Publish a chunk manifest: `outcome` is decided from the manifest this client read (its
+    /// generation and the one it wants next). The reply is the manifest the catalog now holds, which
+    /// is also the answer to a replay of an outcome that already applied. A generation that moved is
+    /// refused, and the caller reads again and decides again.
+    pub fn publish_chunk_manifest(&mut self, outcome: crate::chunk_catalog::ChunkOutcome) -> Result<crate::chunk_manifest::ChunkManifest, ObjectError> {
+        match self.call(MetaRequest::PublishChunkManifest(outcome))? {
+            MetaReply::ChunkManifest(manifest) => Ok(manifest),
+            other => Err(unexpected_reply("a chunk manifest", &other)),
+        }
+    }
     fn log_chunk_call(&mut self, request: super::LogChunkRequest) -> Result<super::LogChunkReply, ObjectError> {
         match self.call(MetaRequest::LogChunk(request))? {
             MetaReply::LogChunk(reply) => Ok(reply),

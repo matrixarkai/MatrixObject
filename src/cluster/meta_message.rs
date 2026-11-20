@@ -210,6 +210,7 @@ pub enum MetaRequest {
     CopyManifest(crate::manifest_copy::ManifestCopyRequest),
     Features(super::features_commands::FeaturesRequest),
     LogChunk(super::log_chunk_commands::LogChunkRequest),
+    PublishChunkManifest(crate::chunk_catalog::ChunkOutcome),
     PlanAppendRoutes(super::append_plan::AppendPlanRequest),
     StagedAllocation(crate::staged_allocation::StagedAllocationRequest),
     ManifestRetention(crate::manifest_retention::ManifestRetentionRequest),
@@ -343,6 +344,7 @@ impl MetaRequest {
             MetaRequest::CopyManifest(_) => MetaRequestCode::CopyManifest,
             MetaRequest::Features(_) => MetaRequestCode::Features,
             MetaRequest::LogChunk(_) => MetaRequestCode::LogChunk,
+            MetaRequest::PublishChunkManifest(_) => MetaRequestCode::PublishChunkManifest,
             MetaRequest::PlanAppendRoutes(_) => MetaRequestCode::PlanAppendRoutes,
             MetaRequest::GroupIdentity => MetaRequestCode::GroupIdentity,
             MetaRequest::HeartbeatRootNode { .. } => MetaRequestCode::HeartbeatRootNode,
@@ -425,6 +427,8 @@ impl MetaRequest {
             MetaRequest::CopyManifest(request) => return request.encode_to_vec(),
             MetaRequest::Features(request) => return request.encode_to_vec(),
             MetaRequest::LogChunk(request) => return request.encode_to_vec(),
+            // An outcome that cannot be framed encodes to nothing, which the server refuses by name.
+            MetaRequest::PublishChunkManifest(outcome) => return outcome.to_bytes().unwrap_or_default(),
             MetaRequest::PlanAppendRoutes(request) => return request.encode_to_vec(),
             MetaRequest::GroupIdentity => {}
             MetaRequest::CommitObjectPlacementIfCurrent {
@@ -668,6 +672,14 @@ impl MetaRequest {
             }
             return Ok(Self::ReadManifestRoutesBatch { objects });
         }
+        if code == MetaRequestCode::PublishChunkManifest {
+            if payload.len() > 2 * 1024 * 1024 + 256 {
+                return Err(ObjectError::Corruption(
+                    "chunk manifest publication exceeds bound".into(),
+                ));
+            }
+            return Ok(Self::PublishChunkManifest(crate::chunk_catalog::ChunkOutcome::from_bytes(payload)?));
+        }
         if code == MetaRequestCode::PublishManifest {
             if payload.len() > 2 * 1024 * 1024 + 256 {
                 return Err(ObjectError::Corruption(
@@ -733,6 +745,7 @@ impl MetaRequest {
             | MetaRequestCode::ReadManifestRoutesBatch
             | MetaRequestCode::ReadManifestRange
             | MetaRequestCode::PublishManifest
+            | MetaRequestCode::PublishChunkManifest
             | MetaRequestCode::CommitObjectPlacementIfCurrent => unreachable!(),
             MetaRequestCode::ReadChunkGroup => MetaRequest::ReadChunkGroup {
                 placement_id: cursor.take_str()?,
@@ -898,6 +911,8 @@ pub enum MetaReply {
     StagedAllocation(crate::staged_allocation::StagedAllocationReply),
     Features(crate::placement_outcome::FeatureTable),
     LogChunk(super::log_chunk_commands::LogChunkReply),
+    /// The manifest a chunk publication left in the catalog.
+    ChunkManifest(crate::chunk_manifest::ChunkManifest),
     AppendPlan(super::append_plan::AppendPlanReply),
     ManifestRetention(crate::manifest_retention::ManifestRetentionReply),
     Manifests(crate::object_manifest::ManifestListPage),
@@ -966,6 +981,7 @@ impl MetaReply {
             Self::StagedAllocation(reply) => reply.encoded_len(),
             Self::Features(reply) => reply.encoded_len(),
             Self::LogChunk(reply) => reply.encoded_len(),
+            Self::ChunkManifest(manifest) => manifest.to_bytes().map_or(0, |bytes| bytes.len()),
             Self::AppendPlan(reply) => reply.encoded_len(),
             Self::PlacementNode(node) => node_payload_len(
                 &node.node_id,
@@ -1034,6 +1050,7 @@ impl MetaReply {
             MetaReply::StagedAllocation(reply) => return reply.encode_to_vec(),
             MetaReply::Features(reply) => return reply.encode_to_vec(),
             MetaReply::LogChunk(reply) => return reply.encode_to_vec(),
+            MetaReply::ChunkManifest(manifest) => return manifest.to_bytes().unwrap_or_default(),
             MetaReply::AppendPlan(reply) => return reply.encode_to_vec(),
             MetaReply::PlacementNode(node) => put_node(&mut out, node),
             MetaReply::RootNodes(nodes) => {
@@ -1085,6 +1102,14 @@ impl MetaReply {
             let value: super::MembershipStatus = super::conditional_requests::decode(payload)?;
             value.validate()?;
             return Ok(Self::Membership(value));
+        }
+        if code == MetaRequestCode::PublishChunkManifest {
+            if payload.len() > 1024 * 1024 + 64 {
+                return Err(ObjectError::Corruption(
+                    "chunk manifest reply exceeds bound".into(),
+                ));
+            }
+            return Ok(Self::ChunkManifest(crate::chunk_manifest::ChunkManifest::from_bytes(payload)?));
         }
         if code == MetaRequestCode::AllocateObjectPages {
             if payload.len() > 32 {
@@ -1285,6 +1310,7 @@ impl MetaReply {
             | MetaRequestCode::CopyManifest
             | MetaRequestCode::Features
             | MetaRequestCode::LogChunk
+            | MetaRequestCode::PublishChunkManifest
             | MetaRequestCode::PlanAppendRoutes
             | MetaRequestCode::GroupIdentity => unreachable!(),
             MetaRequestCode::ChunkCatalog

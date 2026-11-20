@@ -3243,6 +3243,48 @@ jobs:
           cargo test --locked --lib chunk_catalog_snapshot_tests::a_snapshot_with_a_catalog_and_no_lease_still_carries_the_lease_table_and_the_features -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog-snapshot.log
           grep -q '^running 1 test$' /tmp/chunk-catalog-snapshot.log
           grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog-snapshot.log
+      - name: a chunk publication and its reply round trip the wire
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::a_chunk_publication_and_its_reply_round_trip_the_wire_and_a_malformed_one_is_refused -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest-batch.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest-batch.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest-batch.log
+      - name: a batch of chunk publications is applied only when committed
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::a_batch_of_publications_is_prepared_against_the_prefix_and_applied_only_when_committed -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest-batch.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest-batch.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest-batch.log
+      - name: a refused chunk publication is answered alone
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::a_publication_the_catalog_refuses_is_answered_alone_and_the_others_still_commit -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest-batch.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest-batch.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest-batch.log
+      - name: a replayed chunk publication changes nothing
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::a_replayed_publication_changes_nothing_and_answers_with_the_stored_manifest -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest-batch.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest-batch.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest-batch.log
+      - name: a chunk outcome that fails its draft apply is refused alone
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::a_chunk_outcome_that_fails_to_apply_after_preparation_is_refused_alone_and_the_worker_survives -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest-batch.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest-batch.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest-batch.log
+      - name: what the leader accepts every voter applies for a chunk publication
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::what_the_leader_accepts_every_voter_applies_and_what_it_refuses_no_voter_would -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest-batch.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest-batch.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest-batch.log
+      - name: a chunk entry that names more than one kind of change is refused
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::an_entry_that_names_more_than_one_kind_of_change_is_refused_by_every_voter -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest-batch.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest-batch.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest-batch.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail

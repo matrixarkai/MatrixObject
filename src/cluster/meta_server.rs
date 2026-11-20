@@ -843,6 +843,11 @@ fn apply(
         drop(guard);
         return consensus.request(request);
     }
+    if let MetaRequest::PublishChunkManifest(_) = &request {
+        return Err(ObjectError::PreconditionFailed(
+            "chunk manifest publication requires metadata consensus".into(),
+        ));
+    }
     if let MetaRequest::ChunkCatalog(command) = &request {
         if guard.storage.is_none() {
             return Err(ObjectError::PreconditionFailed("catalog update requires durable metadata storage".into()));
@@ -1207,6 +1212,15 @@ pub(super) fn apply_with_groups(
             };
         }
     }
+    if let MetaRequest::PublishChunkManifest(outcome) = &request {
+        return match super::chunk_manifest_command::prepare(service, outcome)? {
+            super::chunk_manifest_command::Decision::Change(outcome, manifest) => {
+                super::chunk_manifest_command::apply(service, &outcome)?;
+                Ok(MetaReply::ChunkManifest(manifest))
+            }
+            super::chunk_manifest_command::Decision::Unchanged(manifest) => Ok(MetaReply::ChunkManifest(manifest)),
+        };
+    }
     if let MetaRequest::LogChunk(command) = &request {
         if !command.is_read() {
             return match super::log_chunk_commands::prepare(service, groups, command, super::staged_lease_sweeper::now_ms()?)? {
@@ -1469,6 +1483,7 @@ pub(super) fn apply_to_meta(
         MetaRequest::Features(_) => Err(ObjectError::InvalidArgument("feature changes require catalog dispatch".into())),
         MetaRequest::LogChunk(command) if command.is_read() => super::log_chunk_commands::read(guard, &command),
         MetaRequest::LogChunk(_) => Err(ObjectError::InvalidArgument("log chunk changes require catalog dispatch".into())),
+        MetaRequest::PublishChunkManifest(_) => Err(ObjectError::InvalidArgument("chunk manifest publication requires durable dispatch".into())),
         MetaRequest::StagedAllocation(command) => super::staged_allocation_commands::read(guard, &command, max_payload_bytes),
         MetaRequest::ManifestRetention(command) => {
             command.validate()?;
