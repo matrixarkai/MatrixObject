@@ -100,6 +100,21 @@ fn durable_payload_fixed_append_and_range_allocations_do_not_grow_with_file() {
         assert_eq!(store.read(&written).unwrap(), suffix);
         let (read, read_calls, read_bytes) = measured(|| store.read_range(&last, 4096, 4096));
         assert_eq!(read.unwrap(), vec![0x31; 4096]);
+        let mut reused = Vec::with_capacity(3 * 4096);
+        reused.extend_from_slice(b"retained-prefix");
+        let (read, reused_calls, reused_bytes) =
+            measured(|| store.read_range_append(&last, 4095, 4097, &mut reused));
+        read.unwrap();
+        assert_eq!(&reused[..b"retained-prefix".len()], b"retained-prefix");
+        assert!(reused[b"retained-prefix".len()..]
+            .iter()
+            .all(|byte| *byte == 0x31));
+        assert_eq!(reused.len(), b"retained-prefix".len() + 4097);
+        assert_eq!(
+            (reused_calls, reused_bytes),
+            (0, 0),
+            "a warmed range destination allocated after {prefix} bytes"
+        );
         assert!(
             append_bytes < 16 * 1024,
             "append allocated {append_bytes} bytes after {prefix} bytes"
@@ -107,7 +122,7 @@ fn durable_payload_fixed_append_and_range_allocations_do_not_grow_with_file() {
         assert!(read_bytes <= 8192, "range allocated {read_bytes} bytes");
         append_sizes.push(append_bytes);
         read_sizes.push(read_bytes);
-        println!("PAYLOAD_ALLOCATION prefix_bytes={prefix} append_calls={append_calls} append_bytes={append_bytes} read_calls={read_calls} read_bytes={read_bytes}");
+        println!("PAYLOAD_ALLOCATION prefix_bytes={prefix} append_calls={append_calls} append_bytes={append_bytes} read_calls={read_calls} read_bytes={read_bytes} reused_read_calls={reused_calls} reused_read_bytes={reused_bytes}");
     }
     assert!(append_sizes.iter().max().unwrap() - append_sizes.iter().min().unwrap() <= 1024);
     assert!(read_sizes.iter().max().unwrap() - read_sizes.iter().min().unwrap() <= 1024);
@@ -277,6 +292,21 @@ fn outcome_segments_append_and_cached_reads_stay_bounded_across_rollovers() {
         header.unwrap();
         let (read, read_calls, read_bytes) = measured(|| log.read_payload_range(&extent, 0, 4096));
         assert_eq!(read.unwrap(), vec![0x31; 4096]);
+        let mut reused = Vec::with_capacity(3 * 4096);
+        reused.extend_from_slice(b"retained-prefix");
+        let (read, reused_calls, reused_bytes) =
+            measured(|| log.read_payload_range_append(&extent, 4095, 4097, &mut reused));
+        read.unwrap();
+        assert_eq!(&reused[..b"retained-prefix".len()], b"retained-prefix");
+        assert_eq!(reused.len(), b"retained-prefix".len() + 4097);
+        assert!(reused[b"retained-prefix".len()..]
+            .iter()
+            .all(|byte| *byte == 0x31));
+        assert_eq!(
+            (reused_calls, reused_bytes),
+            (0, 0),
+            "a warmed segmented range destination allocated after {prefix} bytes"
+        );
         assert_eq!(log.segment_count().unwrap(), before);
         assert!(append_bytes < 128 * 1024);
         assert!(metadata_bytes < 64 * 1024);
@@ -284,7 +314,7 @@ fn outcome_segments_append_and_cached_reads_stay_bounded_across_rollovers() {
         appends.push(append_bytes);
         metadata.push(metadata_bytes);
         reads.push(read_bytes);
-        println!("SEGMENTED_OUTCOME_ALLOCATION prefix_bytes={bytes} segments={before} append_calls={append_calls} append_bytes={append_bytes} metadata_calls={metadata_calls} metadata_bytes={metadata_bytes} read_calls={read_calls} read_bytes={read_bytes}");
+        println!("SEGMENTED_OUTCOME_ALLOCATION prefix_bytes={bytes} segments={before} append_calls={append_calls} append_bytes={append_bytes} metadata_calls={metadata_calls} metadata_bytes={metadata_bytes} read_calls={read_calls} read_bytes={read_bytes} reused_read_calls={reused_calls} reused_read_bytes={reused_bytes}");
     }
     for sizes in [appends, metadata, reads] {
         assert!(sizes.iter().max().unwrap() - sizes.iter().min().unwrap() <= 4096);

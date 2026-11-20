@@ -12,6 +12,8 @@ include!("chunk/cache_reclaim_snapshot.inc.rs");
 include!("chunk/chunk_footprint.rs");
 #[cfg(feature = "replica-server")]
 include!("chunk/journal_append.rs");
+#[cfg(feature = "replica-server")]
+include!("chunk/resident_pages.rs");
 #[cfg(all(test, feature = "replica-server"))]
 #[path = "chunk/journal_append_tests.rs"]
 mod journal_append_tests;

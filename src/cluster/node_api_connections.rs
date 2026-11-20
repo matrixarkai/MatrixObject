@@ -65,6 +65,41 @@ struct Job {
     budget: Budget,
     wake: Option<readiness::Notify>,
 }
+/// A response may finish after its request executor is available again.
+pub(super) enum Response {
+    Immediate(Vec<u8>),
+    Deferred(Box<dyn FnOnce(Completion) + Send>),
+}
+
+/// Retains the input reservation until persistence completes or the task is abandoned.
+pub(super) struct Completion {
+    charge: Option<Charge>,
+    reply: Option<SyncSender<Option<Reply>>>,
+    budget: Budget,
+    wake: Option<readiness::Notify>,
+}
+impl Completion {
+    pub(super) fn finish(mut self, output: Vec<u8>) {
+        drop(self.charge.take());
+        let response = self.budget.reserve(output.len()).map(|charge| Reply {
+            bytes: output,
+            charge,
+        });
+        if let Some(reply) = self.reply.take() {
+            let _ = reply.try_send(response);
+        }
+    }
+}
+impl Drop for Completion {
+    fn drop(&mut self) {
+        // Disconnect before waking: the I/O loop must observe an abandoned task.
+        drop(self.reply.take());
+        drop(self.charge.take());
+        if let Some(wake) = self.wake.take() {
+            wake.notify();
+        }
+    }
+}
 // All I/O loops submit to the same bounded executor queue. A persistent socket
 // stays with its I/O loop, but does not pin its requests to one executor.
 #[derive(Clone)]
@@ -74,11 +109,8 @@ pub(super) struct Dispatch {
 }
 impl Dispatch {
     pub(super) fn new(workers: usize, connections_per_worker: usize) -> Self {
-        let (jobs, receiver) = mpsc::sync_channel(
-            connections_per_worker
-                .max(1)
-                .saturating_mul(workers.max(1)),
-        );
+        let (jobs, receiver) =
+            mpsc::sync_channel(connections_per_worker.max(1).saturating_mul(workers.max(1)));
         Self {
             jobs,
             receiver: Arc::new(Mutex::new(receiver)),
@@ -176,7 +208,9 @@ impl Connection {
                         self.output_written += n;
                         *progressed = true;
                     }
-                    Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
+                    Err(e)
+                        if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) =>
+                    {
                         return true
                     }
                     Err(_) => return false,
@@ -184,8 +218,15 @@ impl Connection {
             }
             if self.output_written == self.output.len() {
                 match self.stream.flush() {
-                    Ok(()) => {},
-                    Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => return true,
+                    Ok(()) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            ErrorKind::WouldBlock | ErrorKind::Interrupted
+                        ) =>
+                    {
+                        return true
+                    }
                     Err(_) => return false,
                 }
                 if self.close_after_write {
@@ -284,7 +325,64 @@ pub(super) fn accept_loop(
     listener: TcpListener,
     requests: &AtomicU64,
     failures: &AtomicU64,
-    mut respond: impl FnMut(u8, &[u8]) -> Vec<u8> + Send,
+    respond: impl FnMut(u8, &[u8]) -> Vec<u8> + Send,
+    stop: Arc<ServerShutdown>,
+    options: Options,
+    dispatch: Dispatch,
+) {
+    accept_loop_with_responders(
+        listener,
+        requests,
+        failures,
+        vec![respond],
+        stop,
+        options,
+        dispatch,
+    );
+}
+
+/// Execution concurrency does not enlarge this loop's connection or byte budgets.
+pub(super) fn accept_loop_with_responders(
+    listener: TcpListener,
+    requests: &AtomicU64,
+    failures: &AtomicU64,
+    responders: Vec<impl FnMut(u8, &[u8]) -> Vec<u8> + Send>,
+    stop: Arc<ServerShutdown>,
+    options: Options,
+    dispatch: Dispatch,
+) {
+    let responders = responders
+        .into_iter()
+        .map(|mut respond| move |code, payload: &[u8]| Response::Immediate(respond(code, payload)))
+        .collect();
+    accept_loop_with_deferred_responders(
+        listener, requests, failures, responders, stop, options, dispatch,
+    );
+}
+
+pub(super) fn accept_loop_with_deferred_responders(
+    listener: TcpListener,
+    requests: &AtomicU64,
+    failures: &AtomicU64,
+    responders: Vec<impl FnMut(u8, &[u8]) -> Response + Send>,
+    stop: Arc<ServerShutdown>,
+    options: Options,
+    dispatch: Dispatch,
+) {
+    let responders = responders.into_iter()
+        .map(|mut respond| move |code, payload: Vec<u8>| respond(code, &payload))
+        .collect();
+    accept_loop_with_owned_deferred_responders(
+        listener, requests, failures, responders, stop, options, dispatch,
+    );
+}
+
+/// The input reservation outlives decoding even when its buffer moves into a request.
+pub(super) fn accept_loop_with_owned_deferred_responders(
+    listener: TcpListener,
+    requests: &AtomicU64,
+    failures: &AtomicU64,
+    responders: Vec<impl FnMut(u8, Vec<u8>) -> Response + Send>,
     stop: Arc<ServerShutdown>,
     options: Options,
     dispatch: Dispatch,
@@ -301,34 +399,37 @@ pub(super) fn accept_loop(
     let jobs = dispatch.jobs;
     let rx = dispatch.receiver;
     std::thread::scope(|scope| {
-        let worker_stop = Arc::clone(&stop);
-        scope.spawn(move || loop {
-            let job = {
-                let receiver = rx.lock().unwrap_or_else(|e| e.into_inner());
+        for mut respond in responders {
+            let worker_stop = Arc::clone(&stop);
+            let rx = Arc::clone(&rx);
+            scope.spawn(move || loop {
+                let job = {
+                    let receiver = rx.lock().unwrap_or_else(|e| e.into_inner());
+                    if worker_stop.is_stopped() {
+                        break;
+                    }
+                    match receiver.recv_timeout(Duration::from_millis(100)) {
+                        Ok(job) => job,
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                };
                 if worker_stop.is_stopped() {
                     break;
                 }
-                match receiver.recv_timeout(Duration::from_millis(100)) {
-                    Ok(job) => job,
-                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                let response = respond(job.code, job.payload);
+                let completion = Completion {
+                    charge: Some(job.charge),
+                    reply: Some(job.reply),
+                    budget: job.budget,
+                    wake: job.wake,
+                };
+                match response {
+                    Response::Immediate(output) => completion.finish(output),
+                    Response::Deferred(submit) => submit(completion),
                 }
-            };
-            if worker_stop.is_stopped() {
-                break;
-            }
-            let output = respond(job.code, &job.payload);
-            drop(job.payload);
-            drop(job.charge);
-            let response = job.budget.reserve(output.len()).map(|charge| Reply {
-                bytes: output,
-                charge,
             });
-            let _ = job.reply.try_send(response);
-            if let Some(wake) = job.wake {
-                wake.notify();
-            }
-        });
+        }
         let mut connections: Vec<Connection> = Vec::new();
         while !stop.is_stopped() {
             let mut progressed = false;
@@ -349,7 +450,9 @@ pub(super) fn accept_loop(
                             Ok(None) => break,
                             Err(_) => continue,
                         };
-                        if let Ok(connection) = Connection::new(stream, active, &options, wake.as_ref()) {
+                        if let Ok(connection) =
+                            Connection::new(stream, active, &options, wake.as_ref())
+                        {
                             connections.push(connection);
                         }
                     }
@@ -398,6 +501,15 @@ mod tests {
     use super::*;
     #[test]
     fn one_io_loop_can_use_idle_request_executors() {
+        exercise_request_executors(2, 1);
+    }
+
+    #[test]
+    fn independent_executors_share_one_io_loop() {
+        exercise_request_executors(1, 2);
+    }
+
+    fn exercise_request_executors(io_loops: usize, executors_per_loop: usize) {
         let dispatch = Dispatch::new(2, 128);
         let stop = Arc::new(ServerShutdown::default());
         let (entered, entered_rx) = mpsc::sync_channel(1);
@@ -405,7 +517,7 @@ mod tests {
         let release_rx = Arc::new(Mutex::new(release_rx));
         let mut handles = Vec::new();
         let mut address = None;
-        for _ in 0..2 {
+        for _ in 0..io_loops {
             // Separate listeners deliberately keep every client on one I/O loop.
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             address.get_or_insert(listener.local_addr().unwrap());
@@ -415,20 +527,27 @@ mod tests {
             let entered = entered.clone();
             let release_rx = Arc::clone(&release_rx);
             handles.push(std::thread::spawn(move || {
-                accept_loop(
+                let responders = (0..executors_per_loop)
+                    .map(|_| {
+                        let entered = entered.clone();
+                        let release_rx = Arc::clone(&release_rx);
+                        move |code, _: &[u8]| {
+                            if code == 1 {
+                                entered.send(()).unwrap();
+                                let _ = release_rx
+                                    .lock()
+                                    .unwrap()
+                                    .recv_timeout(Duration::from_secs(5));
+                            }
+                            vec![code]
+                        }
+                    })
+                    .collect();
+                accept_loop_with_responders(
                     listener,
                     &AtomicU64::new(0),
                     &AtomicU64::new(0),
-                    move |code, _| {
-                        if code == 1 {
-                            entered.send(()).unwrap();
-                            let _ = release_rx
-                                .lock()
-                                .unwrap()
-                                .recv_timeout(Duration::from_secs(5));
-                        }
-                        vec![code]
-                    },
+                    responders,
                     stop,
                     Options {
                         tls: None,
@@ -473,6 +592,152 @@ mod tests {
         assert_eq!(reply, [2]);
         assert_eq!(first_reply, [1]);
     }
+    #[test]
+    fn deferred_completion_retains_budget_and_releases_on_abandonment() {
+        let budget = Budget {
+            used: Arc::new(AtomicUsize::new(0)),
+            limit: 64,
+        };
+        let (reply, receive) = mpsc::sync_channel(1);
+        let completion = Completion {
+            charge: Some(budget.reserve(64).unwrap()),
+            reply: Some(reply),
+            budget: budget.clone(),
+            wake: None,
+        };
+        assert!(budget.reserve(1).is_none());
+        assert!(matches!(receive.try_recv(), Err(TryRecvError::Empty)));
+        completion.finish(vec![7; 32]);
+        assert_eq!(budget.used.load(Ordering::Acquire), 32);
+        let reply = receive.recv().unwrap().unwrap();
+        assert_eq!(reply.bytes, vec![7; 32]);
+        drop(reply);
+        assert_eq!(budget.used.load(Ordering::Acquire), 0);
+        let (reply, receive) = mpsc::sync_channel(1);
+        let completion = Completion {
+            charge: Some(budget.reserve(64).unwrap()),
+            reply: Some(reply),
+            budget: budget.clone(),
+            wake: None,
+        };
+        drop(completion);
+        assert!(matches!(
+            receive.try_recv(),
+            Err(TryRecvError::Disconnected)
+        ));
+        assert_eq!(budget.used.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn deferred_completion_refuses_oversized_reply_and_releases_on_disconnect() {
+        let budget = Budget {
+            used: Arc::new(AtomicUsize::new(0)),
+            limit: 64,
+        };
+        for disconnected in [false, true] {
+            let (reply, receive) = mpsc::sync_channel(1);
+            let completion = Completion {
+                charge: Some(budget.reserve(64).unwrap()),
+                reply: Some(reply),
+                budget: budget.clone(),
+                wake: None,
+            };
+            if disconnected {
+                drop(receive);
+                completion.finish(vec![1; 32]);
+            } else {
+                completion.finish(vec![1; 65]);
+                assert!(receive.recv().unwrap().is_none());
+            }
+            assert_eq!(budget.used.load(Ordering::Acquire), 0);
+        }
+    }
+
+    #[test]
+    fn one_executor_serves_other_connections_before_deferred_completion() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(ServerShutdown::default());
+        let worker_stop = Arc::clone(&stop);
+        let (pending, receive) = mpsc::sync_channel(1);
+        let handle = std::thread::spawn(move || {
+            accept_loop_with_deferred_responders(
+                listener,
+                &AtomicU64::new(0),
+                &AtomicU64::new(0),
+                vec![move |code, _: &[u8]| {
+                    if code == 1 {
+                        let pending = pending.clone();
+                        Response::Deferred(Box::new(move |completion| {
+                            let _ = pending.send(completion);
+                        }))
+                    } else {
+                        Response::Immediate(vec![code])
+                    }
+                }],
+                worker_stop,
+                Options {
+                    tls: None,
+                    max_payload_bytes: 64,
+                    read_timeout: Duration::from_secs(10),
+                    write_timeout: Duration::from_secs(10),
+                    connections_per_worker: 128,
+                },
+                Dispatch::new(1, 128),
+            );
+        });
+        let mut first = TcpStream::connect(address).unwrap();
+        first
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        first
+            .write_all(&[super::super::wire::PROTOCOL_STAMP, 1, 0, 0, 0, 0])
+            .unwrap();
+        let pending = receive.recv_timeout(Duration::from_secs(5));
+        let mut early = [0];
+        let early_reply = first.read(&mut early);
+        let mut second = TcpStream::connect(address).unwrap();
+        second
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        second
+            .write_all(&[super::super::wire::PROTOCOL_STAMP, 2, 0, 0, 0, 0])
+            .unwrap();
+        let mut second_reply = [0];
+        let second_result = second.read_exact(&mut second_reply);
+        if let Ok(completion) = pending {
+            completion.finish(vec![1]);
+        }
+        first
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut first_reply = [0];
+        let first_result = first.read_exact(&mut first_reply);
+        // Also abandon a deferred task; dropping it must wake the pending socket.
+        first
+            .write_all(&[super::super::wire::PROTOCOL_STAMP, 1, 0, 0, 0, 0])
+            .unwrap();
+        let abandoned = receive.recv_timeout(Duration::from_secs(5));
+        drop(abandoned);
+        let closed = first.read(&mut early);
+        stop.stop();
+        handle.join().unwrap();
+        assert!(
+            matches!(early_reply, Err(ref error) if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock))
+        );
+        second_result
+            .expect("one executor must serve a second connection before persistence completes");
+        assert_eq!(second_reply, [2]);
+        first_result.unwrap();
+        assert_eq!(first_reply, [1]);
+        assert_eq!(
+            closed.unwrap(),
+            0,
+            "abandoned completion must disconnect and wake the I/O loop"
+        );
+    }
+
     #[test]
     fn frame_budget_bounds_queued_buffers_and_releases_on_disconnect() {
         let budget = Budget {

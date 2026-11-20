@@ -471,6 +471,20 @@ impl PayloadExtentStore {
         offset: u64,
         length: u64,
     ) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        self.read_range_append(extent, offset, length, &mut bytes)?;
+        Ok(bytes)
+    }
+    /// Append verified bytes to a reusable buffer. On error its original bytes
+    /// and length are unchanged; capacity may grow. At most two padded edge
+    /// sectors occupy temporary space after the caller's original prefix.
+    pub fn read_range_append(
+        &self,
+        extent: &PayloadExtent,
+        offset: u64,
+        length: u64,
+        output: &mut Vec<u8>,
+    ) -> io::Result<()> {
         self.validate_extent(extent)?;
         let end = offset
             .checked_add(length)
@@ -479,34 +493,58 @@ impl PayloadExtentStore {
             return Err(argument("payload read range is outside extent"));
         }
         if length == 0 {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let first = offset / SECTOR_BYTES as u64;
         let last = end.div_ceil(SECTOR_BYTES as u64);
-        let mut bytes = vec![0; ((last - first) * SECTOR_BYTES as u64) as usize];
-        read_at(
-            &self.file,
-            &mut bytes,
-            extent.offset + first * SECTOR_BYTES as u64,
-        )?;
-        for (index, sector) in bytes.chunks_exact(SECTOR_BYTES).enumerate() {
-            let checksum = (first as usize + index) * 32;
-            if digest::digest(&digest::SHA256, sector).as_ref()
-                != &extent.sector_sha256[checksum..checksum + 32]
+        let prefix = output.len();
+        let padded_length = usize::try_from((last - first) * SECTOR_BYTES as u64)
+            .map_err(|_| argument("payload read buffer length overflow"))?;
+        let output_end = prefix
+            .checked_add(padded_length)
+            .ok_or_else(|| argument("payload read buffer end overflow"))?;
+        output
+            .try_reserve_exact(padded_length)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        output.resize(output_end, 0);
+        let result = (|| {
+            let bytes = &mut output[prefix..];
+            read_at(
+                &self.file,
+                bytes,
+                extent.offset + first * SECTOR_BYTES as u64,
+            )?;
+            for (index, sector) in bytes.chunks_exact(SECTOR_BYTES).enumerate() {
+                let checksum = (first as usize + index) * 32;
+                if digest::digest(&digest::SHA256, sector).as_ref()
+                    != &extent.sector_sha256[checksum..checksum + 32]
+                {
+                    return Err(invalid("payload sector checksum mismatch"));
+                }
+            }
+            let skip = (offset % SECTOR_BYTES as u64) as usize;
+            if skip != 0 {
+                bytes.copy_within(skip..skip + length as usize, 0);
+            }
+            if offset == 0
+                && length == extent.length
+                && digest::digest(&digest::SHA256, &bytes[..length as usize]).as_ref()
+                    != extent.sha256.as_slice()
             {
-                return Err(invalid("payload sector checksum mismatch"));
+                return Err(invalid("payload checksum mismatch"));
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                output.truncate(prefix + length as usize);
+                Ok(())
+            }
+            Err(error) => {
+                output.truncate(prefix);
+                Err(error)
             }
         }
-        let skip = (offset % SECTOR_BYTES as u64) as usize;
-        bytes.copy_within(skip..skip + length as usize, 0);
-        bytes.truncate(length as usize);
-        if offset == 0
-            && length == extent.length
-            && digest::digest(&digest::SHA256, &bytes).as_ref() != extent.sha256.as_slice()
-        {
-            return Err(invalid("payload checksum mismatch"));
-        }
-        Ok(bytes)
     }
 }
 fn read_at(file: &File, mut bytes: &mut [u8], mut offset: u64) -> io::Result<()> {

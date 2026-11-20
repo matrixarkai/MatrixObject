@@ -14,25 +14,41 @@ struct Job {
     request: Option<ReplicaRequest>,
     result: Option<ResultReply>,
     wire_bytes: usize,
-    reply: SyncSender<ResultReply>,
+    reply: ReplyTarget,
+    _offer: Option<Offer>,
+}
+
+enum ReplyTarget {
+    Channel(SyncSender<ResultReply>),
+    Deferred(Box<dyn FnOnce(ResultReply) + Send>),
+}
+impl ReplyTarget {
+    fn finish(self, result: ResultReply) {
+        match self {
+            Self::Channel(reply) => {
+                let _ = reply.send(result);
+            }
+            Self::Deferred(reply) => reply(result),
+        }
+    }
 }
 
 pub(super) struct Committer {
     replica: Arc<Mutex<NodeReplica>>,
-    offered_requests: AtomicUsize,
+    offered_requests: Arc<AtomicUsize>,
     sender: Option<SyncSender<Job>>,
     worker: Option<JoinHandle<()>>,
     max_payload_bytes: usize,
 }
 
-struct Offer<'a>(&'a AtomicUsize);
-impl<'a> Offer<'a> {
-    fn new(counter: &'a AtomicUsize) -> Self {
+struct Offer(Arc<AtomicUsize>);
+impl Offer {
+    fn new(counter: &Arc<AtomicUsize>) -> Self {
         counter.fetch_add(1, Ordering::AcqRel);
-        Self(counter)
+        Self(Arc::clone(counter))
     }
 }
-impl Drop for Offer<'_> {
+impl Drop for Offer {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Release);
     }
@@ -54,7 +70,9 @@ pub(super) fn eligible(request: &ReplicaRequest) -> bool {
 }
 
 /// Hand out handles for the chunks this group dirtied. Called with the replica lock held.
-fn take_log_syncs(guard: &mut NodeReplica) -> Result<Vec<crate::cluster::log_chunk_store::PendingSync>, ObjectError> {
+fn take_log_syncs(
+    guard: &mut NodeReplica,
+) -> Result<Vec<crate::cluster::log_chunk_store::PendingSync>, ObjectError> {
     match guard.log_chunks.as_mut() {
         Some(store) if store.has_dirty() => store.take_pending_syncs(),
         _ => Ok(Vec::new()),
@@ -63,13 +81,18 @@ fn take_log_syncs(guard: &mut NodeReplica) -> Result<Vec<crate::cluster::log_chu
 
 /// Make the handles durable with the replica lock RELEASED (a slow sync must not make the heartbeat
 /// skip its beat), then take the lock only to note the lengths, or to fail the node.
-fn finish_log_syncs(replica: &Mutex<NodeReplica>, pending: Vec<crate::cluster::log_chunk_store::PendingSync>) -> Result<(), ObjectError> {
+fn finish_log_syncs(
+    replica: &Mutex<NodeReplica>,
+    pending: Vec<crate::cluster::log_chunk_store::PendingSync>,
+) -> Result<(), ObjectError> {
     if pending.is_empty() {
         return Ok(());
     }
     let outcome = crate::cluster::log_chunk_store::sync_pending(&pending);
     let Ok(mut guard) = replica.lock() else {
-        return Err(ObjectError::Corruption("replica state lock is poisoned".into()));
+        return Err(ObjectError::Corruption(
+            "replica state lock is poisoned".into(),
+        ));
     };
     match outcome {
         Ok(()) => {
@@ -94,20 +117,28 @@ fn mutation_count(request: &ReplicaRequest) -> usize {
 }
 
 impl Committer {
+    #[cfg(test)]
     pub(super) fn start(
         replica: Arc<Mutex<NodeReplica>>,
         max_payload_bytes: usize,
     ) -> std::io::Result<Arc<Self>> {
-        // Waiting request executors retain their existing bounded input charges.
-        // A rendezvous channel adds no separately buffered queue of payloads.
-        let (sender, receiver) = mpsc::sync_channel(0);
+        Self::start_with_deferred(replica, max_payload_bytes, false)
+    }
+
+    pub(super) fn start_with_deferred(
+        replica: Arc<Mutex<NodeReplica>>,
+        max_payload_bytes: usize,
+        deferred: bool,
+    ) -> std::io::Result<Arc<Self>> {
+        // Deferred jobs retain the originating connection's bounded input charge.
+        let (sender, receiver) = mpsc::sync_channel(if deferred { MAX_GROUP_REQUESTS } else { 0 });
         let worker_replica = Arc::clone(&replica);
         let worker = std::thread::Builder::new()
             .name("star-journal-sync".into())
             .spawn(move || run(receiver, worker_replica, max_payload_bytes))?;
         Ok(Arc::new(Self {
             replica,
-            offered_requests: AtomicUsize::new(0),
+            offered_requests: Arc::new(AtomicUsize::new(0)),
             sender: Some(sender),
             worker: Some(worker),
             max_payload_bytes,
@@ -166,12 +197,53 @@ impl Committer {
                 request: Some(request),
                 result: None,
                 wire_bytes,
-                reply,
+                reply: ReplyTarget::Channel(reply),
+                _offer: None,
             })
             .map_err(|_| self.stopped("replica journal worker stopped"))?;
         receive.recv().map_err(|_| {
             self.stopped("replica journal worker stopped before confirming persistence")
         })?
+    }
+
+    /// Submit without waiting for durability; the callback runs only after sync.
+    /// Queue saturation still blocks admission, retaining the connection byte charge.
+    pub(super) fn submit(
+        &self,
+        request: ReplicaRequest,
+        wire_bytes: usize,
+        reply: impl FnOnce(ResultReply) + Send + 'static,
+    ) {
+        if wire_bytes > self.max_payload_bytes
+            || !eligible(&request)
+            || mutation_count(&request) > MAX_GROUP_MUTATIONS
+        {
+            reply(Err(ObjectError::InvalidArgument(
+                "invalid grouped replica request".into(),
+            )));
+            return;
+        }
+        if self
+            .worker
+            .as_ref()
+            .is_none_or(|worker| worker.is_finished())
+        {
+            reply(Err(self.stopped("replica journal worker stopped")));
+            return;
+        }
+        let job = Job {
+            request: Some(request),
+            result: None,
+            wire_bytes,
+            reply: ReplyTarget::Deferred(Box::new(reply)),
+            _offer: Some(Offer::new(&self.offered_requests)),
+        };
+        if let Err(error) = self.sender.as_ref().unwrap().send(job) {
+            error
+                .0
+                .reply
+                .finish(Err(self.stopped("replica journal worker stopped")));
+        }
     }
 
     fn stopped(&self, message: &str) -> ObjectError {
@@ -191,6 +263,35 @@ impl Drop for Committer {
     }
 }
 
+fn collect_ready(
+    receiver: &Receiver<Job>,
+    jobs: &mut Vec<Job>,
+    max_payload_bytes: usize,
+) -> Option<Job> {
+    let mut bytes = jobs[0].wire_bytes;
+    let mut mutations = mutation_count(jobs[0].request.as_ref().unwrap());
+    while jobs.len() < MAX_GROUP_REQUESTS {
+        let Ok(job) = receiver.try_recv() else {
+            break;
+        };
+        let next_mutations =
+            mutations.saturating_add(mutation_count(job.request.as_ref().unwrap()));
+        if next_mutations > MAX_GROUP_MUTATIONS {
+            return Some(job);
+        }
+        let Some(next) = bytes
+            .checked_add(job.wire_bytes)
+            .filter(|next| *next <= max_payload_bytes)
+        else {
+            return Some(job);
+        };
+        bytes = next;
+        mutations = next_mutations;
+        jobs.push(job);
+    }
+    None
+}
+
 fn run(receiver: Receiver<Job>, replica: Arc<Mutex<NodeReplica>>, max_payload_bytes: usize) {
     let mut pending = None;
     let mut jobs = Vec::with_capacity(MAX_GROUP_REQUESTS);
@@ -199,36 +300,16 @@ fn run(receiver: Receiver<Job>, replica: Arc<Mutex<NodeReplica>>, max_payload_by
             Some(job) => job,
             None => return,
         };
-        let mut bytes = first.wire_bytes;
-        let mut mutations = mutation_count(first.request.as_ref().unwrap());
         jobs.push(first);
-        // Drain only requests already offered by executors. No batch-fill delay
-        // is imposed on an idle node. Arrivals during sync belong to a later group.
-        while jobs.len() < MAX_GROUP_REQUESTS {
-            let Ok(job) = receiver.try_recv() else {
-                break;
-            };
-            let next_mutations =
-                mutations.saturating_add(mutation_count(job.request.as_ref().unwrap()));
-            if next_mutations > MAX_GROUP_MUTATIONS {
-                pending = Some(job);
-                break;
-            }
-            let Some(next) = bytes
-                .checked_add(job.wire_bytes)
-                .filter(|next| *next <= max_payload_bytes)
-            else {
-                pending = Some(job);
-                break;
-            };
-            bytes = next;
-            mutations = next_mutations;
-            jobs.push(job);
-        }
-        commit_jobs(
+        commit_jobs_with_ready(
             &replica,
             &mut jobs,
             max_payload_bytes,
+            |jobs| {
+                // Requests offered while the previous owner held the state lock
+                // can share this synchronization. Collection never waits for arrivals.
+                pending = collect_ready(&receiver, jobs, max_payload_bytes);
+            },
             finish_deferred_journal,
         );
     }
@@ -250,14 +331,26 @@ fn apply_queued(
     }
 }
 
+#[cfg(all(test, unix))]
 fn commit_jobs(
     replica: &Mutex<NodeReplica>,
     jobs: &mut Vec<Job>,
     max_payload_bytes: usize,
     sync: impl FnOnce(&mut NodeReplica) -> Result<(), ObjectError>,
 ) {
+    commit_jobs_with_ready(replica, jobs, max_payload_bytes, |_| {}, sync);
+}
+
+fn commit_jobs_with_ready(
+    replica: &Mutex<NodeReplica>,
+    jobs: &mut Vec<Job>,
+    max_payload_bytes: usize,
+    ready: impl FnOnce(&mut Vec<Job>),
+    sync: impl FnOnce(&mut NodeReplica) -> Result<(), ObjectError>,
+) {
     let (mut failure, pending) = match replica.lock() {
         Ok(mut guard) => {
+            ready(jobs);
             let before = guard
                 .journal
                 .as_ref()
@@ -269,7 +362,8 @@ fn commit_jobs(
                     max_payload_bytes,
                 ));
             }
-            let outcome = finish_mutations(&mut guard, before, sync).and_then(|()| take_log_syncs(&mut guard));
+            let outcome = finish_mutations(&mut guard, before, sync)
+                .and_then(|()| take_log_syncs(&mut guard));
             match outcome {
                 Ok(pending) => (None, pending),
                 Err(error) => {
@@ -278,7 +372,10 @@ fn commit_jobs(
                 }
             }
         }
-        Err(_) => (Some("replica state lock is poisoned".to_string()), Vec::new()),
+        Err(_) => (
+            Some("replica state lock is poisoned".to_string()),
+            Vec::new(),
+        ),
     };
     if failure.is_none() {
         if let Err(error) = finish_log_syncs(replica, pending) {
@@ -293,7 +390,7 @@ fn commit_jobs(
             Some(message) => Err(ObjectError::Corruption(message.clone())),
             None => job.result.take().unwrap(),
         };
-        let _ = job.reply.send(result);
+        job.reply.finish(result);
     }
 }
 

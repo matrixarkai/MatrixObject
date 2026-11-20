@@ -14,6 +14,19 @@ pub(super) trait ReplicaJournalBackend: Send {
         status.version = 2;
         Ok(status)
     }
+    fn write_statistics_status(&self) -> io::Result<ReplicaJournalStatus> {
+        let mut status = self.maintenance_status()?;
+        status.version = 3;
+        Ok(status)
+    }
+    fn enable_page_backing(
+        &mut self,
+    ) -> io::Result<std::sync::Arc<super::replica_page_backing::LivePageBacking>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "page backing needs a segmented journal",
+        ))
+    }
     fn requires_context(&self) -> bool {
         false
     }
@@ -21,6 +34,19 @@ pub(super) trait ReplicaJournalBackend: Send {
         None
     }
     fn check_health(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+    fn background_maintenance(&self) -> bool {
+        false
+    }
+    fn poll_background(
+        &mut self,
+        _service: &MatrixReplicaService,
+        _interval: u64,
+    ) -> io::Result<()> {
+        self.check_health()
+    }
+    fn cancel_background(&mut self) -> io::Result<()> {
         Ok(())
     }
     /// Where this journal records a failure of its background work, for a reader that must not
@@ -50,6 +76,14 @@ pub(super) trait ReplicaJournalBackend: Send {
     }
     fn checkpoint_for_install(&mut self, service: &MatrixReplicaService) -> io::Result<()> {
         self.checkpoint(service)
+    }
+    fn checkpoint_page_install(
+        &mut self,
+        service: &MatrixReplicaService,
+        _page: &crate::PageId,
+        _state: &crate::PageState,
+    ) -> io::Result<()> {
+        self.checkpoint_for_install(service)
     }
     #[cfg(test)]
     fn sync_count(&self) -> u64;

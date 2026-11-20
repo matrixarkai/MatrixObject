@@ -115,49 +115,37 @@ struct CachedAppendPlan {
     routes: Vec<super::ChunkGroupRoute>,
 }
 
-/// The SHA-256 digest of the last manifest this client hashed, so that an append, which
-/// needs the digest of the manifest it extends and then of the one it produces, hashes each
-/// manifest once. A hit requires the same identity, generation, length, extent count, format
-/// and the same first and last extents; a manifest that differs anywhere else is still safe
-/// because the metaserver checks both digests against what it stores.
+#[path = "manifest_fingerprint.rs"]
+mod manifest_fingerprint;
+
+/// Memoized wire digest and chain checkpoints, bound to every manifest field.
+/// Lookups scan the full manifest using an allocation-free cache fingerprint;
+/// they avoid rebuilding the wire hash chain and its checkpoints on a hit.
 #[derive(Debug, Default)]
 pub(crate) struct ManifestDigestMemo {
     entry: Option<(DigestKey, crate::object_manifest::StoredDigest)>,
 }
 #[derive(Debug, PartialEq, Eq)]
-struct DigestKey {
-    bucket: String,
-    key: String,
-    format_version: u32,
-    generation: u64,
-    length: u64,
-    deleted: bool,
-    extents: usize,
-    first: Option<crate::object_manifest::ObjectExtent>,
-    last: Option<crate::object_manifest::ObjectExtent>,
-}
-impl DigestKey {
-    fn of(manifest: &crate::object_manifest::ObjectManifest) -> Self {
-        Self {
-            bucket: manifest.bucket.clone(),
-            key: manifest.key.clone(),
-            format_version: manifest.format_version,
-            generation: manifest.generation,
-            length: manifest.length,
-            deleted: manifest.deleted,
-            extents: manifest.extents.len(),
-            first: manifest.extents.first().cloned(),
-            last: manifest.extents.last().cloned(),
-        }
-    }
-}
+struct DigestKey([u8; 32]);
 impl ManifestDigestMemo {
-    pub(crate) fn lookup(&self, manifest: &crate::object_manifest::ObjectManifest) -> Option<crate::object_manifest::StoredDigest> {
+    fn lookup_verified(&self, manifest: &manifest_fingerprint::VerifiedManifest<'_>)
+        -> Option<crate::object_manifest::StoredDigest> {
         let (key, stored) = self.entry.as_ref()?;
-        (*key == DigestKey::of(manifest)).then(|| stored.clone())
+        (key.0 == manifest.key()).then(|| stored.clone())
     }
-    pub(crate) fn remember(&mut self, manifest: &crate::object_manifest::ObjectManifest, stored: crate::object_manifest::StoredDigest) {
-        self.entry = Some((DigestKey::of(manifest), stored));
+    fn remember_verified(&mut self, manifest: &manifest_fingerprint::VerifiedManifest<'_>,
+        stored: crate::object_manifest::StoredDigest) {
+        self.entry = Some((DigestKey(manifest.key()), stored));
+    }
+    #[cfg(test)]
+    fn lookup(&self, manifest: &crate::object_manifest::ObjectManifest)
+        -> Option<crate::object_manifest::StoredDigest> {
+        self.lookup_verified(&manifest_fingerprint::VerifiedManifest::new(manifest))
+    }
+    #[cfg(test)]
+    fn remember(&mut self, manifest: &crate::object_manifest::ObjectManifest,
+        stored: crate::object_manifest::StoredDigest) {
+        self.remember_verified(&manifest_fingerprint::VerifiedManifest::new(manifest), stored);
     }
 }
 
@@ -417,8 +405,8 @@ impl RemoteMetaClient {
     pub fn declare_voter_features(&mut self, voter: u64, bits: u64) -> Result<crate::cluster_features::ClusterFeatures, ObjectError> {
         self.feature_call(super::FeaturesRequest::declare(voter, bits))
     }
-    /// Raise `bits`. Refused unless every voter in `voters` (the whole membership, ascending) has
-    /// declared every one of them.
+    /// Raise `bits`. Supply the sorted union of current voters, outgoing voters and learners.
+    /// The metadata leader requires that exact reader set and support from every member.
     pub fn raise_cluster_features(&mut self, bits: u64, voters: Vec<u64>) -> Result<crate::cluster_features::ClusterFeatures, ObjectError> {
         self.feature_call(super::FeaturesRequest::raise(bits, voters))
     }
@@ -2017,7 +2005,9 @@ impl RemoteMetaClient {
         outcome: crate::object_manifest::ManifestOutcome, update_time_ms: u64)
         -> Result<crate::object_manifest::ObjectManifest, ObjectError> {
         outcome.validate()?;
-        self.publish_compact_append_preserving_outcome(outcome, allocation_id, update_time_ms).0
+        let (result, _, outcome) =
+            self.publish_compact_append_preserving_outcome(outcome, allocation_id, update_time_ms);
+        result.map(|()| outcome.after.unwrap())
     }
 
     /// `ManifestAppend::decide` using the remembered digest of the prior manifest, and
@@ -2031,10 +2021,12 @@ impl RemoteMetaClient {
         let before = outcome.before.as_ref()
             .ok_or_else(|| ObjectError::Corruption("append requires a prior manifest".into()))?;
         let after = outcome.after.as_ref().unwrap();
-        let prior = self.manifest_stored_digest(before);
+        let verified_before = manifest_fingerprint::VerifiedManifest::new(before);
+        let prior = self.manifest_stored_digest_verified(&verified_before);
         // The chain of the result is the prior chain extended by the new extents when the
         // result keeps every prior extent; otherwise `decide_with_digests` refuses it.
-        let kept = after.extents.starts_with(&before.extents);
+        let verified_after = verified_before.extended(after);
+        let kept = verified_after.is_some();
         let chain = if kept {
             prior.chain.extended(&after.extents[before.extents.len()..])
         } else {
@@ -2043,7 +2035,9 @@ impl RemoteMetaClient {
         let result = crate::object_manifest::StoredDigest { digest: chain.digest(after), chain };
         let append = crate::manifest_append::ManifestAppend::decide_with_digests_checked(
             outcome, prior.digest, result.digest.clone(), kept)?;
-        self.manifest_digests.remember(after, result);
+        // Successful compact publication proves the result preserves the prefix.
+        // Hash only its suffix; both manifests remain immutably borrowed here.
+        self.manifest_digests.remember_verified(&verified_after.unwrap(), result);
         Ok(append)
     }
 
@@ -2057,11 +2051,18 @@ impl RemoteMetaClient {
     /// The chain and digest of `manifest`, from the memo when it is for this very manifest.
     fn manifest_stored_digest(&mut self, manifest: &crate::object_manifest::ObjectManifest)
         -> crate::object_manifest::StoredDigest {
-        if let Some(stored) = self.manifest_digests.lookup(manifest) {
+        let verified = manifest_fingerprint::VerifiedManifest::new(manifest);
+        self.manifest_stored_digest_verified(&verified)
+    }
+
+    fn manifest_stored_digest_verified(&mut self,
+        verified: &manifest_fingerprint::VerifiedManifest<'_>)
+        -> crate::object_manifest::StoredDigest {
+        if let Some(stored) = self.manifest_digests.lookup_verified(verified) {
             return stored;
         }
-        let stored = crate::object_manifest::StoredDigest::of(manifest);
-        self.manifest_digests.remember(manifest, stored.clone());
+        let stored = crate::object_manifest::StoredDigest::of(verified.manifest());
+        self.manifest_digests.remember_verified(verified, stored.clone());
         stored
     }
 
@@ -2071,7 +2072,7 @@ impl RemoteMetaClient {
     pub(super) fn publish_compact_append_reserving(&mut self,
         outcome: crate::object_manifest::ManifestOutcome, allocation_id: u64, update_time_ms: u64,
         next_pages: u32, next_ttl_ms: u64)
-        -> (Result<(crate::object_manifest::ObjectManifest, Option<crate::staged_allocation::StagedAllocation>), ObjectError>, bool,
+        -> (Result<Option<crate::staged_allocation::StagedAllocation>, ObjectError>, bool,
             crate::object_manifest::ManifestOutcome) {
         let append = match self.decide_compact_append(&outcome) {
             Ok(value) => value, Err(error) => return (Err(error), true, outcome),
@@ -2088,16 +2089,18 @@ impl RemoteMetaClient {
             MetaReply::StagedAllocation(value) if value.version == 5
                 && value.committed_allocation_id == allocation_id && value.manifest_sha256 == digest => {
                 // No allocation means the append is published and the table had no room.
-                Ok((outcome.after.as_ref().unwrap().clone(), value.allocation))
+                Ok(value.allocation)
             }
             _ => Err(ObjectError::Corruption("unexpected compact append acknowledgement".into())),
         });
         (result, unadmitted, outcome)
     }
 
+    /// Acknowledgement validates publication; the caller moves the candidate on success.
+    /// The complete outcome stays available for every failure and uncertain acknowledgement.
     pub(super) fn publish_compact_append_preserving_outcome(&mut self,
         outcome: crate::object_manifest::ManifestOutcome, allocation_id: u64, update_time_ms: u64)
-        -> (Result<crate::object_manifest::ObjectManifest, ObjectError>, bool,
+        -> (Result<(), ObjectError>, bool,
             crate::object_manifest::ManifestOutcome) {
         let append = match self.decide_compact_append(&outcome) {
             Ok(value) => value, Err(error) => return (Err(error), true, outcome),
@@ -2112,7 +2115,7 @@ impl RemoteMetaClient {
         let result = reply.into_result().and_then(|reply| match reply {
             MetaReply::StagedAllocation(value) if value.version == 3
                 && value.committed_allocation_id == allocation_id && value.manifest_sha256 == digest =>
-                Ok(outcome.after.as_ref().unwrap().clone()),
+                Ok(()),
             _ => Err(ObjectError::Corruption("unexpected compact append acknowledgement".into())),
         });
         (result, unadmitted, outcome)
@@ -3509,6 +3512,45 @@ mod digest_memo_tests {
     }
     fn digest(m: &ObjectManifest) -> Vec<u8> {
         crate::read_session_outcome::manifest_sha256(m).unwrap()
+    }
+
+    #[test]
+    fn manifest_digest_binding_refuses_interior_changes() {
+        let base = manifest(3, 5);
+        let mut memo = ManifestDigestMemo::default();
+        memo.remember(&base, StoredDigest::of(&base));
+        let mut changed = base.clone();
+        changed.extents[2].data_sha256[0] ^= 1;
+        changed.validate().unwrap();
+        assert!(memo.lookup(&changed).is_none(), "an interior extent change must invalidate the digest memo");
+    }
+
+    #[test]
+    fn manifest_digest_binding_covers_every_interior_extent_field() {
+        let base = manifest(3, 5);
+        let mut memo = ManifestDigestMemo::default();
+        memo.remember(&base, StoredDigest::of(&base));
+        for field in 0..14 {
+            let mut changed = base.clone();
+            let extent = &mut changed.extents[2];
+            match field {
+                0 => extent.group.push('x'),
+                1 => extent.volume_id += 1,
+                2 => extent.chunk_id += 10,
+                3 => extent.page_index += 1,
+                4 => extent.object_offset += 1,
+                5 => extent.page_offset += 1,
+                6 => extent.length += 1,
+                7 => extent.write_sequence += 1,
+                8 => extent.data_checksum ^= 1,
+                9 => extent.data_sha256[0] ^= 1,
+                10 => extent.kind += 1,
+                11 => extent.flags ^= 1,
+                12 => extent.footer_crc ^= 1,
+                _ => extent.footer_sha256.push(1),
+            }
+            assert!(memo.lookup(&changed).is_none(), "interior field {field} must invalidate the memo");
+        }
     }
 
     #[test]

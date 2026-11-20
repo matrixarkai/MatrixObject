@@ -240,16 +240,20 @@ pub use meta_wire::{MetaRequestCode, META_CODE_BASE};
 #[cfg(feature = "replica-server")]
 mod replica_checkpoint_catalog;
 #[cfg(feature = "replica-server")]
+mod replica_checkpoint_compaction;
+#[cfg(feature = "replica-server")]
 mod replica_checkpoint_index;
 #[cfg(feature = "replica-server")]
 mod replica_checkpoint_recovery;
 #[cfg(feature = "replica-server")]
 mod replica_checkpoint_spans;
 #[cfg(feature = "replica-server")]
+mod replica_page_backing;
+#[cfg(feature = "replica-server")]
+mod replica_payload_relocation;
 mod log_op;
 #[cfg(feature = "replica-server")]
 mod log_chunk_store;
-#[cfg(feature = "replica-server")]
 pub use log_op::{LogOpReply, LogOpRequest};
 #[cfg(feature = "replica-server")]
 mod chunk_log;

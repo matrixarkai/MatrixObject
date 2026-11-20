@@ -11,7 +11,8 @@ fn job(request: ReplicaRequest, wire_bytes: usize) -> (Job, Receiver<ResultReply
             request: Some(request),
             result: None,
             wire_bytes,
-            reply,
+            reply: ReplyTarget::Channel(reply),
+            _offer: None,
         },
         receive,
     )
@@ -447,4 +448,194 @@ fn shared_sync_stopped_worker_prevents_idle_writes() {
     assert!(fixture.node.lock().unwrap().health.failed());
     assert!(fixture.request(ReplicaRequest::Ping).is_err());
     assert_eq!(std::fs::read(&fixture.path).unwrap(), disk);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn shared_sync_includes_requests_offered_while_waiting_for_replica_lock() {
+    let fixture = Fixture::new();
+    let guard = fixture.node.lock().unwrap();
+    let before = guard.journal.as_ref().unwrap().sync_count();
+    let (send, receive) = mpsc::sync_channel(8);
+    let (first, first_reply) = job(write(0, 0, b"data", 0), 128);
+    send.send(first).unwrap();
+    let node = Arc::clone(&fixture.node);
+    let (started, thread_id) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let tid = std::fs::read_link("/proc/thread-self").unwrap();
+        started.send(tid.file_name().unwrap().to_owned()).unwrap();
+        run(receive, node, MAX_PAYLOAD_BYTES);
+    });
+    let tid = thread_id.recv_timeout(Duration::from_secs(5)).unwrap();
+    let wait_path = std::path::Path::new("/proc/self/task")
+        .join(tid)
+        .join("wchan");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // The first request is already queued and no producer is contending on the
+    // channel. Its worker can only park here waiting for the held replica lock.
+    while !std::fs::read_to_string(&wait_path)
+        .unwrap()
+        .contains("futex")
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker did not wait for replica lock"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let mut replies = vec![first_reply];
+    for index in 1..4 {
+        let (request, reply) = job(write(index, 0, b"data", 0), 128);
+        send.send(request).unwrap();
+        replies.push(reply);
+    }
+    drop(send);
+    assert!(replies
+        .iter()
+        .all(|reply| matches!(reply.try_recv(), Err(mpsc::TryRecvError::Empty))));
+    assert_eq!(guard.journal.as_ref().unwrap().sync_count(), before);
+    drop(guard);
+    for reply in replies {
+        assert!(matches!(
+            reply.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Ok(ReplicaReply::Applied)
+        ));
+    }
+    worker.join().unwrap();
+    {
+        let mut guard = fixture.node.lock().unwrap();
+        assert_eq!(guard.journal.as_ref().unwrap().sync_count(), before + 1);
+        guard.journal = None;
+    }
+    let mut recovered = MatrixReplicaService::new();
+    recovered.set_keep_ec_sidecar(false);
+    drop(ReplicaJournal::open(&fixture.path, &mut recovered).unwrap());
+    for index in 0..4 {
+        let mut key = page();
+        key.page_index = index;
+        assert_eq!(recovered.read_chunk(&key, 0, 4).unwrap().data, b"data");
+        assert_eq!(recovered.head_chunk(&key).unwrap().write_sequence, 1);
+    }
+}
+
+#[test]
+fn shared_sync_offered_backlog_fails_without_mutation() {
+    let fixture = Fixture::new();
+    base(&fixture);
+    let committer = Committer::start(Arc::clone(&fixture.node), MAX_PAYLOAD_BYTES).unwrap();
+    let mut guard = fixture.node.lock().unwrap();
+    let before = guard.journal.as_ref().unwrap().sync_count();
+    let (done, results) = mpsc::channel();
+    let mut workers = Vec::new();
+    for _ in 0..16 {
+        let committer = Arc::clone(&committer);
+        let done = done.clone();
+        workers.push(std::thread::spawn(move || {
+            done.send(committer.request(write(0, 4, b"tail", 1), 128))
+                .unwrap();
+        }));
+    }
+    drop(done);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while committer.offered_requests.load(Ordering::Acquire) != 16
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::yield_now();
+    }
+    let all_offered = committer.offered_requests.load(Ordering::Acquire) == 16;
+    guard.health.fail();
+    drop(guard);
+    assert!(all_offered, "request executors did not offer their backlog");
+    for _ in 0..16 {
+        assert!(matches!(
+            results
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("failed backlog stalled"),
+            Err(ObjectError::Corruption(_))
+        ));
+    }
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert_eq!(committer.offered_requests.load(Ordering::Acquire), 0);
+    let guard = fixture.node.lock().unwrap();
+    assert_eq!(guard.journal.as_ref().unwrap().sync_count(), before);
+    assert_eq!(
+        guard.service.read_chunk(&page(), 0, 4).unwrap().data,
+        b"base"
+    );
+    assert_eq!(guard.service.head_chunk(&page()).unwrap().write_sequence, 1);
+    drop(guard);
+    assert!(fixture.request(ReplicaRequest::Ping).is_err());
+}
+
+#[test]
+fn shared_sync_deferred_admission_groups_more_jobs_than_executors() {
+    let fixture = Fixture::new();
+    base(&fixture);
+    let mut guard = fixture.node.lock().unwrap();
+    guard.max_pages = 17;
+    let before = guard.journal.as_ref().unwrap().sync_count();
+    let committer =
+        Committer::start_with_deferred(Arc::clone(&fixture.node), MAX_PAYLOAD_BYTES, true).unwrap();
+    let mut receivers = Vec::new();
+    for index in 1..=16 {
+        let (send, receive) = mpsc::sync_channel(1);
+        // A single producer can offer all sixteen while the replica lock is busy.
+        committer.submit(write(index, 0, b"data", 0), 256, move |result| {
+            let _ = send.send(result);
+        });
+        receivers.push(receive);
+    }
+    assert_eq!(committer.offered_requests.load(Ordering::Acquire), 16);
+    for receive in &receivers {
+        assert!(matches!(receive.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    }
+    drop(guard);
+    for receive in receivers {
+        assert!(matches!(
+            receive.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Ok(ReplicaReply::Applied)
+        ));
+    }
+    drop(committer);
+    let mut guard = fixture.node.lock().unwrap();
+    assert_eq!(guard.journal.as_ref().unwrap().sync_count(), before + 1);
+    guard.journal = None;
+    drop(guard);
+    let mut recovered = MatrixReplicaService::new();
+    recovered.set_keep_ec_sidecar(false);
+    drop(ReplicaJournal::open(&fixture.path, &mut recovered).unwrap());
+    for index in 1..=16 {
+        let mut id = page();
+        id.page_index = index;
+        assert_eq!(recovered.read_chunk(&id, 0, 4).unwrap().data, b"data");
+    }
+}
+
+#[test]
+fn shared_sync_deferred_callback_waits_for_sync_and_observes_failure() {
+    let fixture = Fixture::new();
+    base(&fixture);
+    let (send, receive) = mpsc::sync_channel(1);
+    let mut jobs = vec![Job {
+        request: Some(write(0, 4, b"tail", 1)),
+        result: None,
+        wire_bytes: 256,
+        reply: ReplyTarget::Deferred(Box::new(move |result| {
+            let _ = send.send(result);
+        })),
+        _offer: None,
+    }];
+    commit_jobs(&fixture.node, &mut jobs, MAX_PAYLOAD_BYTES, |_| {
+        assert!(matches!(receive.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        Err(ObjectError::Corruption(
+            "injected journal sync failure".into(),
+        ))
+    });
+    assert!(matches!(
+        receive.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Err(ObjectError::Corruption(_))
+    ));
+    assert!(fixture.node.lock().unwrap().health.failed());
 }

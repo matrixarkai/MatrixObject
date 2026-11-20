@@ -4,6 +4,10 @@ use super::*;
 use matrixobjectstore_rs::cluster::RemoteReplicaSet;
 use std::sync::mpsc;
 
+#[cfg(target_os = "linux")]
+#[path = "star_mixed_corpus_measurement.rs"]
+mod mixed_corpus_measurement;
+
 const BYTES: usize = 4096;
 const PAYLOAD: [u8; BYTES] = [0x31; BYTES];
 const SUFFIX: [u8; BYTES] = [0x7b; BYTES];
@@ -120,7 +124,7 @@ fn measured_phase(
                 PAYLOAD
             );
             ready.send(()).unwrap();
-            start_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            start_rx.recv_timeout(Duration::from_secs(180)).unwrap();
             let mut samples = Vec::with_capacity(operations);
             let mut written = Vec::new();
             for index in 0..operations {
@@ -156,7 +160,7 @@ fn measured_phase(
             }
             // Keep connections and their cleanup outside the measured phase.
             done.send(()).unwrap();
-            finish_rx.recv_timeout(Duration::from_secs(120)).unwrap();
+            finish_rx.recv_timeout(Duration::from_secs(300)).unwrap();
             (samples, written)
         }));
     }
@@ -293,12 +297,36 @@ fn run_storage_workload(
     operations_to_measure: &[Operation],
     segmented: Option<bool>,
 ) {
+    run_sized_storage_workload(
+        corpora,
+        concurrency,
+        operations,
+        group_commit,
+        operations_to_measure,
+        segmented,
+        ReplicaLimits::default(),
+    );
+}
+
+fn run_sized_storage_workload(
+    corpora: &[usize],
+    concurrency: &[usize],
+    operations: usize,
+    group_commit: bool,
+    operations_to_measure: &[Operation],
+    segmented: Option<bool>,
+    limits: ReplicaLimits,
+) {
     for &corpus in corpora {
-        assert!((1..=32768).contains(&corpus));
+        assert!((1..=262144).contains(&corpus));
+        assert!(((corpus * BYTES) as u64) < limits.capacity_bytes);
+        assert!(corpus < limits.max_pages);
         // Matching phases have exactly the same prior benchmark traffic at
         // every background size. Earlier corpus cases cannot contaminate them.
         let mut fixture = match segmented {
-            Some(enabled) => Fixture::with_storage(group_commit, enabled, Some(1024 * 1024)),
+            Some(enabled) => {
+                Fixture::with_limits(group_commit, enabled, Some(1024 * 1024), None, limits)
+            }
             None => Fixture::with_group_commit(group_commit),
         };
         let mut seeded = 0;

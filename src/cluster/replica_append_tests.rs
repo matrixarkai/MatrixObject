@@ -26,6 +26,7 @@ impl Fixture {
         let (used_bytes, health) = super::replica_health::test_parts();
         Self {
             node: Arc::new(Mutex::new(NodeReplica {
+                resident: None,
                 service,
                 journal: Some(Box::new(journal)),
                 used_bytes,

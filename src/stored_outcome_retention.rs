@@ -4,6 +4,13 @@
 use super::*;
 use std::{collections::BTreeSet, sync::MutexGuard};
 
+#[cfg(feature = "replica-server")]
+pub(crate) struct CompactionSegment {
+    pub number: u64,
+    pub store_id: [u8; 16],
+    pub length: u64,
+}
+
 pub(super) struct ReadPin<'a>(&'a std::sync::atomic::AtomicUsize);
 impl Drop for ReadPin<'_> {
     fn drop(&mut self) {
@@ -27,6 +34,114 @@ impl Drop for PreparedRetention<'_> {
 }
 
 impl SegmentedOutcomeLog {
+    #[cfg(feature = "replica-server")]
+    pub(crate) fn checkpoint_read_pin(&self) -> io::Result<impl Drop + '_> {
+        self.pin()
+    }
+
+    /// Sample a bounded batch before the replay tail. This runs in maintenance,
+    /// never while capturing foreground replica state.
+    #[cfg(feature = "replica-server")]
+    pub(crate) fn compaction_candidates(
+        &self,
+        through: &StoredOutcomePosition,
+        after: Option<u64>,
+        limit: usize,
+    ) -> io::Result<Vec<CompactionSegment>> {
+        self.read_metadata(through)?;
+        let index = self
+            .index
+            .read()
+            .map_err(|_| invalid("segment index is poisoned"))?;
+        let cut = *index
+            .by_id
+            .get(&through.store_id)
+            .ok_or_else(|| invalid("compaction cut is not owned"))?;
+        let mut entries = Vec::new();
+        if after.is_none_or(|number| number < cut) {
+            entries.extend(
+                index
+                    .entries
+                    .range((
+                        after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
+                        std::ops::Bound::Excluded(cut),
+                    ))
+                    .take(limit)
+                    .map(|(_, entry)| entry),
+            );
+        }
+        if entries.is_empty() && after.is_some() {
+            entries.extend(
+                index
+                    .entries
+                    .range(..cut)
+                    .take(limit)
+                    .map(|(_, entry)| entry),
+            );
+        }
+        entries
+            .into_iter()
+            .map(|entry| {
+                if entry.sealed_length <= SECTOR_BYTES as u64 {
+                    return Err(invalid("invalid sealed compaction segment"));
+                }
+                Ok(CompactionSegment {
+                    number: entry.number,
+                    store_id: entry
+                        .store_id
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| invalid("invalid compaction segment identity"))?,
+                    length: entry.sealed_length,
+                })
+            })
+            .collect()
+    }
+
+    /// Intersect a validated catalog interval with a small candidate batch.
+    #[cfg(feature = "replica-server")]
+    pub(crate) fn compaction_catalog_ranges(
+        &self,
+        first: &StoredOutcomePosition,
+        last: &StoredOutcomePosition,
+        candidates: &[CompactionSegment],
+    ) -> io::Result<Vec<([u8; 16], u64, u64)>> {
+        self.read_metadata(first)?;
+        self.read_metadata(last)?;
+        let index = self
+            .index
+            .read()
+            .map_err(|_| invalid("segment index is poisoned"))?;
+        let start = index.by_id[&first.store_id];
+        let end = index.by_id[&last.store_id];
+        if start > end || (start == end && first.offset > last.offset) {
+            return Err(invalid("reversed compaction catalog interval"));
+        }
+        let mut ranges = Vec::new();
+        for candidate in candidates {
+            if candidate.number < start || candidate.number > end {
+                continue;
+            }
+            let from = if candidate.number == start {
+                first.offset
+            } else {
+                SECTOR_BYTES as u64
+            };
+            let to = if candidate.number == end {
+                last.offset
+                    .checked_add(last.length)
+                    .ok_or_else(|| invalid("catalog end overflow"))?
+            } else {
+                candidate.length
+            };
+            if from >= to || to > candidate.length {
+                return Err(invalid("invalid compaction catalog bounds"));
+            }
+            ranges.push((candidate.store_id, from, to));
+        }
+        Ok(ranges)
+    }
+
     pub(crate) fn check_health(&self) -> io::Result<()> {
         self.healthy()
     }

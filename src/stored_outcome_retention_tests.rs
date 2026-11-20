@@ -103,6 +103,36 @@ fn retain<'a>(
     .unwrap()
 }
 
+#[cfg(feature = "replica-server")]
+#[test]
+fn outcome_segments_owned_payload_reader_finishes_after_source_retirement() {
+    let (dir, records) = fixture(4);
+    let log = dir.open();
+    let extent = &records[1].batch.payloads[0];
+    let reader = {
+        let _pin = log.checkpoint_read_pin().unwrap();
+        log.payload_range_reader(&extent.store_id).unwrap()
+    };
+    assert!(!log.retention_readers_active());
+    let stats = retain(&log, &records).publish().unwrap();
+    assert_eq!(stats.removed, 1);
+    assert_eq!(stats.pending, 1);
+    assert_eq!(log.retained_segment_count().unwrap(), 2);
+    assert!(segment_path(&dir.path(), 1).exists());
+    assert!(!segment_path(&dir.path(), 2).exists());
+    assert!(log.payload_range_reader(&extent.store_id).is_err());
+    assert_eq!(reader.read(extent, 3, 17).unwrap(), vec![2; 17]);
+    let mut output = b"prefix".to_vec();
+    reader.read_append(extent, 5, 11, &mut output).unwrap();
+    assert_eq!(output, [b"prefix".as_slice(), &[2; 11]].concat());
+    assert!(reader.read(&records[0].batch.payloads[0], 0, 1).is_err());
+    drop(reader);
+    let stats = log.cleanup_retired().unwrap();
+    assert_eq!(stats.removed, 1);
+    assert_eq!(stats.pending, 0);
+    assert!(!segment_path(&dir.path(), 1).exists());
+}
+
 #[test]
 fn outcome_segments_retention_keeps_shared_payloads_skips_deleted_numbers_and_rolls_over() {
     let (dir, records) = fixture(4);

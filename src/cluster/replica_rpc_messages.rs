@@ -521,6 +521,13 @@ impl ReplicaRequest {
     /// out differently from this reader, and every field this reader did take came out of
     /// the wrong place -- a page address read one field short still parses into a valid
     /// `PageId`, naming a page nobody asked about.
+    pub(crate) fn decode_owned(code: RequestCode, payload: Vec<u8>) -> Result<Self, ObjectError> {
+        if code == RequestCode::LogOp {
+            return super::log_op::LogOpRequest::from_payload_owned(payload).map(Self::LogOp);
+        }
+        Self::decode(code, &payload)
+    }
+
     pub fn decode(code: RequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
         if code == RequestCode::JournalControl {
             return Ok(Self::JournalControl(
@@ -1077,6 +1084,13 @@ impl ReplicaReply {
     /// The request kind is an argument rather than a byte on the response, because a reply
     /// whose shape is read from the reply itself can be read as the wrong shape. The caller
     /// knows what it asked.
+    pub(crate) fn decode_owned(code: RequestCode, payload: Vec<u8>) -> Result<Self, ObjectError> {
+        if code == RequestCode::LogOp {
+            return super::log_op::LogOpReply::from_payload_owned(payload).map(Self::LogOp);
+        }
+        Self::decode(code, &payload)
+    }
+
     pub fn decode(code: RequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
         if code == RequestCode::JournalControl {
             return Ok(Self::JournalStatus(

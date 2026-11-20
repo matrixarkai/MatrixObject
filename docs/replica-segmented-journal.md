@@ -18,6 +18,8 @@ export MATRIXOBJECT_REPLICA_SEGMENTED_OUTCOMES=true
 export MATRIXOBJECT_REPLICA_CHECKPOINT_BYTES=8388608
 export MATRIXOBJECT_REPLICA_GROUP_COMMIT=true
 export MATRIXOBJECT_REPLICA_LOCAL_RECOVERY=peers
+export MATRIXOBJECT_REPLICA_RESIDENT_PAYLOAD_BYTES=67108864
+export MATRIXOBJECT_REPLICA_RESIDENT_PAGE_ENTRIES=4096
 chunkserver
 ```
 
@@ -39,6 +41,35 @@ and scalar replica metadata share one data synchronization before acknowledgment
 A larger group is split, retaining the exact scalar context of each sub-group.
 Checkpoint fragments do not count as queued foreground mutations. Recovery retains
 the uncheckpointed mutation bytes when calculating the next checkpoint threshold.
+
+## Bounded payload residency
+
+`MATRIXOBJECT_REPLICA_RESIDENT_PAYLOAD_BYTES` defaults to `0`, which retains
+full residency. A positive value bounds the allocated capacities of page data
+vectors after synchronized request completion. The separate
+`MATRIXOBJECT_REPLICA_RESIDENT_PAGE_ENTRIES` limit defaults to `4096` and also
+counts empty pages. These settings require segmented standalone storage and
+`MATRIXOBJECT_REPLICA_LOCAL_RECOVERY=peers`. The API fields are
+`ReplicaNodeOptions::resident_payload_bytes` and `resident_page_entries`.
+
+Recovery loads page metadata and immutable span locations without hydrating
+payloads. Capacity checks, page limits, inventory, heads and heartbeat usage
+include cold pages. A cold range read captures its metadata and source file
+owners under serialization, then performs verified payload I/O outside the node
+mutex. A captured read retains its version across later writes and checkpoint
+relocation. Normal reads reject discarded ranges; raw repair transfers retain
+the complete state-checksum contract.
+
+Mutations can materialize one cold working page. Grouped writes synchronize
+before eviction when admission needs space, and eviction checks the resident
+version against synchronized durable metadata. Page repair preserves sibling
+catalog entries and can replace a corrupt cold payload without reading it.
+
+The allocation budget covers resident page vectors. Request frames, reply and
+response-cache buffers, staged repair data, one-page mutation working buffers,
+metadata indexes and the separate log-chunk API require their own accounting.
+It is not an RSS limit. Replication and acknowledgment policies remain deployment
+settings; use three replicas with three durable write acknowledgments for Star.
 
 ## Publication and recovery
 
@@ -74,8 +105,16 @@ rollback requires an independently retained compatible deployment snapshot. The
 default journal layout and its stored format are unchanged.
 
 Background checkpoints retain their captured replay position. Recovery folds
-subsequent mutations as metadata and materializes only the resulting pages.
-It verifies the newest published checkpoint; corruption is refused rather than
+subsequent mutations as metadata. Full-residency recovery materializes the
+resulting pages; bounded-residency recovery leaves their payloads cold.
+The captured position is the later of the last durable mutation and the previous
+published checkpoint. The worker folds through that boundary before publication,
+including any intervening mutations. This lets repeated quiet checkpoints advance
+past obsolete storage-only records. Boundary capture uses the in-memory segment
+order and performs no file reads or catalog traversal under the replica mutex.
+A completed worker advances the cached boundary only when no newer durable
+mutation has arrived; otherwise the newer mutation remains the next replay cut.
+Recovery verifies the newest published checkpoint; corruption is refused rather than
 silently falling back to an older checkpoint. File identity, exclusive ownership,
 segment bounds, payload sector digests, and resulting page checksums are checked.
 
@@ -120,21 +159,77 @@ and cleanup progress. `maintenance_is_complete` waits for its checkpoint, queued
 mutations, and already scheduled retirement work. For an I/O measurement, stop
 writers, drain existing checkpoint and retirement work, request a final checkpoint,
 then wait for this predicate on every data replica. Status reads do not append
-journal records. A maintenance barrier does not guarantee compaction or deletion
-of partly live segments, nor force collection through pinned readers.
+journal records. A maintenance barrier completes its requested pass; it does not
+certify that every eligible segment was visited or fully evacuated, and cannot
+force collection through pinned readers.
+
+## Background and manual compaction
+
+With automatic checkpoints enabled, an idle maintenance worker can compact partly
+live files once the configured retention threshold is reached. It does not depend
+on requests or metadata heartbeats. It uses a nonblocking attempt to acquire the
+replica lock and leaves queued foreground groups for their existing committer.
+An explicit checkpoint can force a fresh attempt. The worker samples up to 64 sealed segments before the replay
+tail, rotating its sampling cursor between passes. It selects one file whose
+conservative live physical ranges occupy at most half its committed body. The
+cursor is an in-memory maintenance hint and starts again after recovery.
+Whole-record metadata charging can defer files whose remaining metadata is spread
+across many otherwise obsolete batches.
+
+A copying pass can be followed by another attempt after one second; an unproductive
+scan or a busy reader defers analysis for 30 seconds. Existing collection backoff
+also defers retries. An analysis-only pass that finds no work writes no journal records and does
+not advance the published checkpoint epoch. Version-2 status counts that analysis
+as maintenance in flight. A manual request arriving during analysis reserves a
+separate epoch; repeated requests coalesce, and completion waits for a real root.
+
+A pass copies at most 8 MiB of live payload. Overlapping and shared source ranges
+are copied once and packed together into existing 1 MiB binary protobuf payload
+fragments. Large extents can be evacuated across repeated passes; unmoved ranges
+retain their old descriptors. Logical page offsets, zero-filled holes, checksums,
+sequences, namespaces, and receipt state remain unchanged.
+
+The copying worker reuses its 1 MiB fragment buffer with an 8 KiB allowance for
+verified padded edge sectors, plus one 4 KiB sector buffer. Small-range cache keys
+include the source extent and sector offset. Verified range reads append directly
+to the destination; errors preserve its original bytes and length. Touched sector
+digests, padding, and complete-payload digests retain their existing checks. This
+removes temporary range buffers, not catalog or descriptor allocations.
+
+Recovery and catalog reads reuse the verified provider buffer when a single span
+covers the requested range. Oversized provider allocations are compacted before
+return so padded sectors do not inflate resident page capacity. Reads spanning
+multiple fragments or zero-filled holes retain their existing assembly path.
+Final page checksum and state validation still run during materialization.
+
+The index tracks actual extent-metadata record positions, including multiple valid
+records describing the same payload. Compaction rewrites affected page records,
+index nodes and ancestor paths, streamed page catalogs, and cached descriptor
+locations. A read pin protects old records until the replacement checkpoint root
+is published. Cancellation leaves unpublished storage fragments, not a new logical
+state. The sparse manifest still has to commit before any old file is unlinked.
+
+The payload-copy budget does not bound catalog traversal, metadata rewrites, or
+total I/O. Manual maintenance resets both collection backoffs, but a single pass
+can leave eligible files or live ranges for a later pass. Dense candidates can be
+deferred without copying. These maintenance
+constants do not change segment capacity, foreground batching, or the default
+journal layout.
 
 ## Current limits
 
-This is a test layout, not the default production layout. Only wholly unneeded
-segments are reclaimed. Partly live segments are not compacted, so this does not
-establish a strict retained-byte or space-amplification bound.
+This is a test layout, not the default production layout. Automatic retirement
+reclaims wholly unneeded segments; background and manual compaction can evacuate
+partly live files. This does not establish a strict retained-byte or space-amplification bound.
 Changed-page work grows with its span count and tree path; scalar metadata and
 namespace/receipt maps still serialize completely. Bulk installs currently
-synchronize individual payload fragments. Live payloads remain resident in the
-existing service, and startup materializes them.
+synchronize individual payload fragments. Full residency remains the default.
+With bounded residency enabled, cold mutations still materialize one working
+page and touched-page span folding can grow with mutation history. Page repair
+can rebuild catalog metadata proportional to the live corpus.
 
-A bounded payload cache, partly live segment compaction, and measurements under
-sustained corpus growth are required before default activation.
+Measured compaction costs and sustained hot/cold corpus-growth measurements are
+required before default activation.
 Local multi-process tests establish functional recovery, not multi-host performance,
 flat append latency, or a QPS improvement.
 
@@ -143,6 +238,7 @@ flat append latency, or a QPS improvement.
 Run these commands in Linux or WSL with a single Cargo build job:
 
 ```sh
+cargo test --locked --all-features --lib -j1 resident_cache_ -- --test-threads=1
 cargo test --locked --all-features --lib -j1 replica_checkpoint_ -- --test-threads=1
 cargo test --locked --all-features --lib -j1 segmented_ -- --test-threads=1
 cargo test --locked --all-features --test durable_payload_allocations -j1 -- --test-threads=1
@@ -228,6 +324,31 @@ incremental index and does not measure its behavior. Safe reclamation, bounded
 payload caching, and sustained measurements remain necessary before default
 activation.
 
+## Large live-corpus measurement
+
+The explicit `measure_segmented_star_io_at_large_live_corpora` case measures
+64, 256, and 1024 MiB of live background payload per data replica. Each size uses
+fresh three-metadata and three-data processes, three acknowledged copies,
+16 clients, and 512 requests per read, write, or append phase. It retains the
+1 MiB checkpoint stress threshold. The fixture advertises the same 1536 MiB
+capacity and 524288-page limit to metadata, data processes, and restarted nodes.
+These are benchmark settings, not deployment defaults.
+
+Each phase reports acknowledgement latency, checkpoint drain, request and cycle
+QPS, data CPU ticks, kernel I/O, and the sum of the three data-process RSS values.
+RSS includes shared mappings in each process and is not heap-allocation traffic.
+The current implementation still retains every live payload in memory. Restart
+verification reads the first and last background pages and retained foreground
+results from every replica; measured reads verify their complete payloads.
+
+```sh
+cargo test --locked --release --all-features --test network_metadata_consensus -j1 measure_segmented_star_io_at_large_live_corpora -- --ignored --nocapture --test-threads=1
+```
+
+This case alone does not establish sustained throughput, multi-host behavior,
+bounded resident memory, or flat append latency. Record host contention with the
+results and use source-matched release binaries for measurements.
+
 ## Legacy checkpoint stream buffering
 
 The legacy checkpoint writer coalesces fragmented encoder reads in a fixed 64 KiB
@@ -236,3 +357,12 @@ synchronizing the file, and atomically publishing it. Flush errors propagate to
 the replica's existing failure fence. This changes neither stored bytes nor the
 full-corpus payload rewrite; it targets small-write syscall overhead. The table
 above predates this buffering change.
+
+
+## Catalog metadata residency
+
+The payload-byte and resident-page limits apply to the working payload cache,
+not the complete node heap. Durable page catalogs, payload locators, checkpoint
+indexes and allocator retention also consume memory as page count grows.
+Budget these structures separately when selecting node capacity; a small payload
+cache alone does not establish a bound on total process memory.

@@ -36,6 +36,7 @@ pub(super) fn collect_checkpoint(
     state: &mut CheckpointState,
     minimum: usize,
     publication: &Mutex<u64>,
+    backing: Option<&super::super::replica_page_backing::LivePageBacking>,
     epoch: u64,
     check: &dyn Fn() -> io::Result<()>,
 ) -> io::Result<()> {
@@ -56,7 +57,17 @@ pub(super) fn collect_checkpoint(
         .publication
         .as_ref()
         .ok_or_else(|| invalid("collection has no published root"))?;
-    let keep = index.protected_segments(log, &state.catalog, commit, position, check)?;
+    let mut keep = index.protected_segments_indexed(
+        log,
+        &state.catalog,
+        commit,
+        position,
+        &state.dirty_pages,
+        check,
+    )?;
+    if let Some(backing) = backing {
+        keep.extend(backing.protected_segments()?);
+    }
     let cut = commit
         .through
         .as_ref()

@@ -10,20 +10,37 @@ use std::time::Duration;
 use std::{
     io::{Read, Write},
     os::{fd::AsRawFd, unix::net::UnixStream},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
+#[cfg(unix)]
+struct WakeState {
+    socket: Arc<UnixStream>,
+    pending: AtomicBool,
+}
 #[derive(Clone)]
 pub(super) struct Notify {
     #[cfg(unix)]
-    socket: Arc<UnixStream>,
+    state: Arc<WakeState>,
 }
 impl Notify {
     pub(super) fn notify(&self) {
         #[cfg(unix)]
         {
-            let _ = (&*self.socket).write(&[1]);
+            // One unread completion already schedules the I/O loop. Keep the
+            // latch set until the consumer takes it, even if a drain consumes
+            // the socket byte for a concurrent completion.
+            if !self.state.pending.swap(true, Ordering::AcqRel) {
+                let _ = (&*self.state.socket).write(&[1]);
+            }
         }
+    }
+    #[cfg(unix)]
+    fn take_pending(&self) -> bool {
+        self.state.pending.swap(false, Ordering::AcqRel)
     }
 }
 pub(super) struct SocketReadiness {
@@ -42,7 +59,12 @@ impl SocketReadiness {
             stop.track_wake(&socket);
             Ok(Self {
                 receive,
-                notify: Notify { socket },
+                notify: Notify {
+                    state: Arc::new(WakeState {
+                        socket,
+                        pending: AtomicBool::new(false),
+                    }),
+                },
             })
         }
         #[cfg(not(unix))]
@@ -53,6 +75,16 @@ impl SocketReadiness {
     }
     pub(super) fn notifier(&self) -> Notify {
         self.notify.clone()
+    }
+    #[cfg(unix)]
+    fn drain_notifications(&self) {
+        let mut bytes = [0; 128];
+        for _ in 0..8 {
+            match (&self.receive).read(&mut bytes) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
     }
     pub(super) fn wait<'a>(
         &self,
@@ -66,6 +98,10 @@ impl SocketReadiness {
         }
         #[cfg(unix)]
         {
+            if self.notify.take_pending() {
+                self.drain_notifications();
+                return true;
+            }
             let mut descriptors = Vec::new();
             let mut add = |fd, events| {
                 descriptors.push(libc::pollfd {
@@ -103,14 +139,11 @@ impl SocketReadiness {
                 // A failed readiness facility must not turn into an unbounded spin.
                 stop.wait_for(Duration::from_millis(1));
             }
-            let mut bytes = [0; 128];
-            for _ in 0..8 {
-                match (&self.receive).read(&mut bytes) {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {}
-                }
-            }
-            result > 0
+            // Clear before draining. A producer racing with this drain leaves
+            // its latch set for the next wait even if its byte is consumed.
+            let notified = self.notify.take_pending();
+            self.drain_notifications();
+            result > 0 || notified
         }
         #[cfg(not(unix))]
         {
@@ -120,3 +153,7 @@ impl SocketReadiness {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "socket_readiness_wakeup_tests.rs"]
+mod wakeup_tests;

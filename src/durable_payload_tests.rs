@@ -42,6 +42,101 @@ fn flip(path: &Path, offset: u64) {
     file.write_all(&byte).unwrap();
     file.sync_all().unwrap();
 }
+
+#[test]
+fn durable_payload_reused_reads_append_exact_unaligned_ranges_and_validate_arguments() {
+    let dir = Directory::new();
+    let store = PayloadExtentStore::open(dir.path(), DEFAULT_CAPACITY_BYTES).unwrap();
+    let data: Vec<_> = (0..10003).map(|n| (n % 251) as u8).collect();
+    let extent = store.append(&data).unwrap();
+    let prefix = b"retained-prefix";
+    let mut output = Vec::with_capacity(data.len() + 2 * SECTOR_BYTES + prefix.len());
+    output.extend_from_slice(prefix);
+    let buffer = output.as_ptr();
+    for (offset, length) in [
+        (0, 0),
+        (0, data.len()),
+        (1, 1),
+        (1, 8193),
+        (4095, 4097),
+        (4096, 4096),
+        (data.len() - 1, 1),
+        (data.len(), 0),
+    ] {
+        output.truncate(prefix.len());
+        store
+            .read_range_append(&extent, offset as u64, length as u64, &mut output)
+            .unwrap();
+        assert_eq!(&output[..prefix.len()], prefix);
+        assert_eq!(&output[prefix.len()..], &data[offset..offset + length]);
+        assert_eq!(output.as_ptr(), buffer);
+    }
+    output.truncate(prefix.len());
+    for (offset, length) in [(extent.length + 1, 0), (extent.length, 1), (u64::MAX, 1)] {
+        assert!(store
+            .read_range_append(&extent, offset, length, &mut output)
+            .is_err());
+        assert_eq!(output, prefix);
+    }
+    let mut foreign = extent.clone();
+    foreign.store_id[0] ^= 1;
+    assert!(store
+        .read_range_append(&foreign, 0, 0, &mut output)
+        .is_err());
+    assert_eq!(output, prefix);
+}
+
+#[test]
+fn durable_payload_reused_reads_restore_prefix_after_sector_or_padding_damage() {
+    for damaged in [0, 4096, 3 * SECTOR_BYTES as u64 - 1] {
+        let dir = Directory::new();
+        let store = PayloadExtentStore::open(dir.path(), DEFAULT_CAPACITY_BYTES).unwrap();
+        let extent = store.append(&vec![0x31; 9000]).unwrap();
+        flip(&dir.path(), extent.offset + damaged);
+        let mut output = b"original".to_vec();
+        let error = store
+            .read_range_append(&extent, 0, extent.length, &mut output)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(output, b"original");
+    }
+}
+
+#[test]
+fn durable_payload_reused_full_reads_verify_the_logical_digest() {
+    let dir = Directory::new();
+    let store = PayloadExtentStore::open(dir.path(), DEFAULT_CAPACITY_BYTES).unwrap();
+    let data = vec![0x52; 9000];
+    let mut extent = store.append(&data).unwrap();
+    extent.sha256[0] ^= 1;
+    let mut output = b"original".to_vec();
+    let error = store
+        .read_range_append(&extent, 0, extent.length, &mut output)
+        .unwrap_err();
+    assert_eq!(error.to_string(), "payload checksum mismatch");
+    assert_eq!(output, b"original");
+    store.read_range_append(&extent, 1, 7, &mut output).unwrap();
+    assert_eq!(&output[b"original".len()..], &data[1..8]);
+}
+
+#[test]
+fn durable_payload_reused_reads_restore_prefix_after_a_short_file_read() {
+    let dir = Directory::new();
+    let store = PayloadExtentStore::open(dir.path(), DEFAULT_CAPACITY_BYTES).unwrap();
+    let extent = store.append(&vec![0x31; 9000]).unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(dir.path())
+        .unwrap()
+        .set_len(extent.offset + 4096)
+        .unwrap();
+    let mut output = b"original".to_vec();
+    let error = store
+        .read_range_append(&extent, 0, extent.length, &mut output)
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    assert_eq!(output, b"original");
+}
 #[test]
 fn durable_payload_batch_syncs_once_and_binary_descriptors_recover() {
     let dir = Directory::new();

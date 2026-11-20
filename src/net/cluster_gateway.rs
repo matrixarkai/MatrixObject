@@ -199,8 +199,16 @@ pub struct SdkPlane {
 pub struct CompactState(
     std::sync::atomic::AtomicU8,
     /// Allocations reserved by the last append to each object, with when they were stored.
-    std::sync::Mutex<std::collections::HashMap<(String, String), (crate::staged_allocation::StagedAllocation, std::time::Instant)>>,
-    /// When each object was last appended to, for the objects appended to lately: a reservation
+    std::sync::Mutex<
+        std::collections::HashMap<
+            (String, String),
+            (
+                crate::staged_allocation::StagedAllocation,
+                std::time::Instant,
+            ),
+        >,
+    >,
+    /// When each object's last successful append completed: a reservation
     /// is made only for an object that is being appended to repeatedly.
     std::sync::Mutex<std::collections::HashMap<(String, String), std::time::Instant>>,
     /// The read leases of this gateway, shared by every connection: in a fenced catalog every
@@ -221,23 +229,30 @@ const RECENT_APPENDS_CAP: usize = 4096;
 const RESERVATION_TTL_MS: u64 = 10_000;
 
 impl CompactState {
-    /// Whether this object was appended to within [`HOT_WINDOW`], and note that it is being
-    /// appended to now. The map is bounded: when it is full the entries older than the window are
-    /// dropped, and if it is still full it is emptied, which only makes objects cold.
-    pub(crate) fn note_append(&self, bucket: &str, key: &str) -> bool {
-        let Ok(mut map) = self.2.lock() else { return false };
-        let now = std::time::Instant::now();
-        let hot = map
-            .get(&(bucket.to_owned(), key.to_owned()))
-            .is_some_and(|last| now.duration_since(*last) < HOT_WINDOW);
+    fn append_is_hot_at(&self, bucket: &str, key: &str, now: Instant) -> bool {
+        let Ok(map) = self.2.lock() else { return false };
+        map.get(&(bucket.to_owned(), key.to_owned()))
+            .and_then(|last| now.checked_duration_since(*last))
+            .is_some_and(|elapsed| elapsed < HOT_WINDOW)
+    }
+
+    /// Record successful publication, so I/O time does not consume the next
+    /// append's activity window and failed attempts do not create activity.
+    /// Keep the map bounded even when all remembered objects are recent.
+    fn record_append_at(&self, bucket: &str, key: &str, now: Instant) {
+        let Ok(mut map) = self.2.lock() else { return };
+        let key = (bucket.to_owned(), key.to_owned());
+        if let Some(last) = map.get_mut(&key) {
+            *last = (*last).max(now);
+            return;
+        }
         if map.len() >= RECENT_APPENDS_CAP {
-            map.retain(|_, last| now.duration_since(*last) < HOT_WINDOW);
+            map.retain(|_, last| now.saturating_duration_since(*last) < HOT_WINDOW);
             if map.len() >= RECENT_APPENDS_CAP {
                 map.clear();
             }
         }
-        map.insert((bucket.to_owned(), key.to_owned()), now);
-        hot
+        map.insert(key, now);
     }
 
     /// The allocation the last append to this object reserved, if it is still for the manifest
@@ -303,7 +318,9 @@ impl SdkPlane {
         let pages = data.len().div_ceil(self.options.write.page_bytes.max(1)).max(1) as u32;
         // Reserve the next allocation only for an object appended to repeatedly: a cold object
         // would leave a reservation nobody uses in the metadata plane's table until it expires.
-        let hot = self.compact.note_append(&expected.bucket, &expected.key);
+        let hot = self
+            .compact
+            .append_is_hot_at(&expected.bucket, &expected.key, Instant::now());
         let reserve_next = self.options.reserve_next && hot;
         let reserved = if self.options.reserve_next {
             self.compact.take_reservation(expected, pages, self.options.staged_ttl_ms.min(RESERVATION_TTL_MS))
@@ -348,7 +365,11 @@ impl SdkPlane {
             self.client.append_staged_object_compact(&allocation, expected.clone(), data, &options)
         };
         match result {
-            Ok(manifest) => Ok(manifest),
+            Ok(manifest) => {
+                self.compact
+                    .record_append_at(&expected.bucket, &expected.key, Instant::now());
+                Ok(manifest)
+            }
             Err(failure) => {
                 let failure: PlaneFailure = failure.into();
                 if !failure.unconfirmed && !outcome_may_be_committed(&failure.error) {
@@ -1777,18 +1798,33 @@ mod tests {
     #[test]
     fn an_object_is_hot_only_when_it_was_appended_to_lately_and_the_memory_is_bounded() {
         let state = CompactState::default();
-        assert!(!state.note_append("b", "k"), "the first append to an object is cold");
-        assert!(state.note_append("b", "k"), "the next one, at once, is hot");
-        assert!(!state.note_append("b", "other"), "another object is cold");
+        let now = Instant::now();
+        assert!(
+            !state.append_is_hot_at("b", "k", now),
+            "the first append to an object is cold"
+        );
+        state.record_append_at("b", "k", now);
+        assert!(
+            state.append_is_hot_at("b", "k", now),
+            "the next one, at once, is hot"
+        );
+        assert!(
+            !state.append_is_hot_at("b", "other", now),
+            "another object is cold"
+        );
         // an append older than the window no longer makes the next one hot
         state.2.lock().unwrap().insert(
             ("b".into(), "k".into()),
-            std::time::Instant::now().checked_sub(HOT_WINDOW + std::time::Duration::from_millis(50)).unwrap(),
+            now.checked_sub(HOT_WINDOW + Duration::from_millis(50))
+                .unwrap(),
         );
-        assert!(!state.note_append("b", "k"), "an old append is cold");
+        assert!(
+            !state.append_is_hot_at("b", "k", now),
+            "an old append is cold"
+        );
         // the memory is bounded however many objects are appended to
         for index in 0..RECENT_APPENDS_CAP * 3 {
-            state.note_append("b", &format!("object-{index}"));
+            state.record_append_at("b", &format!("object-{index}"), now);
         }
         assert!(state.2.lock().unwrap().len() <= RECENT_APPENDS_CAP);
     }
@@ -1924,6 +1960,81 @@ mod tests {
         // emptying the cache when it filled made the hot set miss after every wipe (about every
         // 64 inserts); least-recently-used misses only while the hot set is first loaded
         assert!(hits * 100 >= requests * 95, "hot set hit {hits} of {requests}");
+    }
+
+    #[test]
+    fn append_activity_window_starts_when_successful_publication_completes() {
+        let state = CompactState::default();
+        let started = Instant::now();
+        let completed = started + HOT_WINDOW * 3;
+        assert!(!state.append_is_hot_at("b", "k", started));
+        assert!(!state.append_is_hot_at("b", "k", completed));
+        assert!(
+            state.2.lock().unwrap().is_empty(),
+            "checking activity cannot warm an object"
+        );
+        state.record_append_at("b", "k", completed);
+        assert!(state.append_is_hot_at("b", "k", completed + HOT_WINDOW - Duration::from_nanos(1)));
+        assert!(!state.append_is_hot_at("b", "k", completed + HOT_WINDOW));
+        assert!(
+            !state.append_is_hot_at("b", "k", started),
+            "an older observation is conservative"
+        );
+    }
+
+    #[test]
+    fn append_activity_keeps_the_latest_completion_when_recording_is_delayed() {
+        let state = CompactState::default();
+        let earlier = Instant::now();
+        let later = earlier + HOT_WINDOW;
+        for index in 0..RECENT_APPENDS_CAP {
+            state.record_append_at("b", &format!("object-{index}"), later);
+        }
+        state.record_append_at("b", "object-0", earlier);
+        assert!(state.append_is_hot_at(
+            "b",
+            "object-0",
+            later + HOT_WINDOW - Duration::from_nanos(1)
+        ));
+        assert_eq!(
+            state.2.lock().unwrap().len(),
+            RECENT_APPENDS_CAP,
+            "updating an existing object cannot empty a full activity map"
+        );
+    }
+
+    #[test]
+    fn failed_compact_append_does_not_create_object_activity() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let client = RemoteMetaClient::connect(
+            &endpoint,
+            &MetaClientOptions {
+                connect_timeout: Duration::from_millis(100),
+                read_timeout: Duration::from_millis(100),
+                write_timeout: Duration::from_millis(100),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (connection, _) = listener.accept().unwrap();
+        connection.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(connection);
+        drop(listener);
+        let state = Arc::new(CompactState::default());
+        state.0.store(1, std::sync::atomic::Ordering::Relaxed);
+        let mut plane = SdkPlane::new(
+            client,
+            GatewayOptions {
+                compact_append: true,
+                reserve_next: true,
+                ..Default::default()
+            },
+            Arc::clone(&state),
+        );
+        assert!(plane.append_compact_path(&manifest_at(1), b"x").is_err());
+        assert!(state.2.lock().unwrap().is_empty());
+        assert!(!state.append_is_hot_at("b", "k", Instant::now()));
     }
 
     #[test]

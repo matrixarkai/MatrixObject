@@ -170,3 +170,80 @@ fn journal_control_memory_refusal_does_not_fence_ordinary_requests() {
     assert!(client.checkpoint_journal().is_err());
     assert_eq!(client.ping().unwrap(), 0);
 }
+#[test]
+fn journal_control_tcp_write_statistics_preserve_old_status_and_reset_after_reopen() {
+    for segmented in [false, true] {
+        let dir = Directory::new();
+        let path = dir.0.join("statistics-journal");
+        let start = || {
+            let options = ReplicaNodeOptions {
+                local_recovery_sidecar: false,
+                ..Default::default()
+            };
+            if segmented {
+                ReplicaNodeServer::bind_with_segmented_journal("127.0.0.1:0", options, &path)
+            } else {
+                ReplicaNodeServer::bind_with_journal("127.0.0.1:0", options, &path)
+            }
+            .unwrap()
+        };
+        let (running, mut client) = run(start());
+        let before = client.journal_write_statistics().unwrap();
+        assert_eq!(before.version, 3);
+        assert_eq!(before.write_statistics.is_some(), segmented);
+        let page = PageId {
+            chunk_id: ChunkId::new(1, 99).unwrap(),
+            page_index: 0,
+        };
+        client
+            .write_chunk(page.clone(), 0, &vec![0x33; 4096])
+            .unwrap();
+        let after = client.journal_write_statistics().unwrap();
+        if segmented {
+            let delta = after
+                .write_statistics
+                .as_ref()
+                .unwrap()
+                .checked_delta(before.write_statistics.as_ref().unwrap())
+                .unwrap();
+            assert_eq!(delta.foreground_batches, 1);
+            assert_eq!(delta.foreground_decisions, 1);
+            assert_eq!(delta.foreground_payload_bytes, 4096);
+            assert_eq!(delta.foreground_record_bytes, 8192);
+        }
+        assert!(client.journal_status().unwrap().write_statistics.is_none());
+        assert!(client
+            .journal_maintenance_status()
+            .unwrap()
+            .write_statistics
+            .is_none());
+        let requested = client.checkpoint_journal_with_write_statistics().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let status = client.journal_write_statistics().unwrap();
+            if status.maintenance_is_complete(&requested).unwrap() {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+        drop(client);
+        drop(running);
+        let (running, mut client) = run(start());
+        let reopened = client.journal_write_statistics().unwrap();
+        if segmented {
+            assert_eq!(reopened.journal_id, after.journal_id);
+            let reset = reopened.write_statistics.as_ref().unwrap();
+            assert_eq!(reset.foreground_batches, 0);
+            assert!(reset
+                .checked_delta(after.write_statistics.as_ref().unwrap())
+                .is_err());
+        }
+        assert_eq!(
+            client.read_chunk(&page, 0, 4096).unwrap().data,
+            vec![0x33; 4096]
+        );
+        drop(client);
+        drop(running);
+    }
+}

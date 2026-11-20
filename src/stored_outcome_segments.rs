@@ -56,11 +56,16 @@ struct SegmentManifest {
     #[prost(message, repeated, tag = "5")]
     retired: Vec<SegmentEntry>,
 }
+#[path = "stored_outcome_write_statistics.rs"]
+mod write_statistics;
+pub use write_statistics::OutcomeWriteStatistics;
+
 struct Writer {
     count: u64,
     manifest_length: u64,
     tail_hash: [u8; 32],
     active: Arc<DurableOutcomeLog>,
+    write_statistics: OutcomeWriteStatistics,
 }
 /// A committed metadata prefix captured without copying the segment index.
 /// Later appends and rollovers are excluded. Only one segment handle is pinned.
@@ -173,7 +178,7 @@ struct ManifestAppend {
 /// appends synchronize the selected segment once. Rollover also synchronizes a
 /// new empty segment and persists a fixed-size chained manifest record before
 /// any mutation is written there. Old positions remain valid across rollover.
-/// This does not reclaim files or replace the server's journal/checkpoint path.
+/// Checkpoint-aware replica backends can retire unreachable sealed files.
 pub struct SegmentedOutcomeLog {
     path: PathBuf,
     _anchor: PayloadExtentStore,
@@ -184,6 +189,35 @@ pub struct SegmentedOutcomeLog {
     reader_gate: Mutex<()>,
     readers: AtomicUsize,
     collection: Mutex<()>,
+}
+
+/// One selected segment stays open until this reader is dropped. Reads never
+/// resolve another segment through the owner's changing manifest.
+#[cfg(feature = "replica-server")]
+#[derive(Clone)]
+pub(crate) struct PayloadRangeReader(Arc<DurableOutcomeLog>);
+
+#[cfg(feature = "replica-server")]
+impl PayloadRangeReader {
+    pub(crate) fn read(
+        &self,
+        extent: &PayloadExtent,
+        offset: u64,
+        length: u64,
+    ) -> io::Result<Vec<u8>> {
+        self.0.read_payload_range(extent, offset, length)
+    }
+
+    pub(crate) fn read_append(
+        &self,
+        extent: &PayloadExtent,
+        offset: u64,
+        length: u64,
+        output: &mut Vec<u8>,
+    ) -> io::Result<()> {
+        self.0
+            .read_payload_range_append(extent, offset, length, output)
+    }
 }
 fn sibling(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
@@ -583,6 +617,7 @@ impl SegmentedOutcomeLog {
                 manifest_length: recovered.length,
                 tail_hash: recovered.tail_hash,
                 active: Arc::clone(&active),
+                write_statistics: OutcomeWriteStatistics::new()?,
             }),
             index: RwLock::new(Index {
                 entries,
@@ -632,6 +667,14 @@ impl SegmentedOutcomeLog {
             .map_err(|_| invalid("segment index is poisoned"))?;
         Ok(index.entries.len() + index.retired.len())
     }
+    /// Confirmed record traffic for this open instance, without walking files.
+    /// Sampling can wait behind an append; quiesce writers for interval measurements.
+    pub fn write_statistics(&self) -> io::Result<OutcomeWriteStatistics> {
+        self.healthy()?;
+        let writer = self.writer.lock().map_err(|_| invalid("segment writer is poisoned"))?;
+        self.healthy()?;
+        Ok(writer.write_statistics.clone())
+    }
     pub fn append_page(&self, outcome: &PageOutcome) -> io::Result<StoredRecordMetadata> {
         self.append_decided_batch(&[DecidedMutation::Page(outcome)])
     }
@@ -675,7 +718,10 @@ impl SegmentedOutcomeLog {
             .active
             .append_with_sync_metadata(mutations, metadata, |f| sync.take().unwrap()(f))
         {
-            Ok(record) => return Ok(record),
+            Ok(record) => {
+                writer.write_statistics.observe(&record);
+                return Ok(record);
+            },
             Err(error)
                 if error
                     .get_ref()
@@ -757,7 +803,9 @@ impl SegmentedOutcomeLog {
                 .active
                 .append_with_sync_metadata(mutations, metadata, |f| sync.take().unwrap()(f))
         })();
-        if rollover.is_err() {
+        if let Ok(record) = &rollover {
+            writer.write_statistics.observe(record);
+        } else {
             self.failed.store(true, Ordering::Release);
         }
         rollover
@@ -832,6 +880,83 @@ impl SegmentedOutcomeLog {
         self.handle(&extent.store_id)?
             .read_payload_range(extent, offset, length)
     }
+
+    /// Capture every source needed by a read while its catalog locators remain
+    /// protected by a checkpoint read pin. Once captured, these file owners can
+    /// finish verified I/O without holding the publication pin. Physical cleanup
+    /// waits only for owners of the selected file to release their handles.
+    #[cfg(feature = "replica-server")]
+    pub(crate) fn payload_range_reader(&self, store_id: &[u8]) -> io::Result<PayloadRangeReader> {
+        let _pin = self.pin()?;
+        Ok(PayloadRangeReader(self.handle(store_id)?))
+    }
+    /// Keep the source segment pinned while appending verified bytes. Errors
+    /// preserve the caller's original bytes and length.
+    pub fn read_payload_range_append(
+        &self,
+        extent: &PayloadExtent,
+        offset: u64,
+        length: u64,
+        output: &mut Vec<u8>,
+    ) -> io::Result<()> {
+        let _pin = self.pin()?;
+        self.handle(&extent.store_id)?
+            .read_payload_range_append(extent, offset, length, output)
+    }
+    /// Choose a boundary from already validated journal positions without file
+    /// I/O. The checkpoint worker verifies record contents while folding through
+    /// the chosen cut. Segment numbers, rather than random identities, order it.
+    pub(crate) fn checkpoint_cut(
+        &self,
+        mutation: Option<&StoredOutcomePosition>,
+        publication: Option<&StoredOutcomePosition>,
+    ) -> io::Result<Option<StoredOutcomePosition>> {
+        self.healthy()?;
+        let index = self
+            .index
+            .read()
+            .map_err(|_| invalid("segment index is poisoned"))?;
+        let mut latest: Option<&StoredOutcomePosition> = None;
+        let mut latest_key = None;
+        for position in [mutation, publication].into_iter().flatten() {
+            let number = *index
+                .by_id
+                .get(&position.store_id)
+                .ok_or_else(|| invalid("checkpoint cut is not owned"))?;
+            let entry = &index.entries[&number];
+            let limit = if entry.sealed_length == 0 {
+                index.active.length()
+            } else {
+                entry.sealed_length
+            };
+            let end = position
+                .offset
+                .checked_add(position.length)
+                .ok_or_else(|| invalid("checkpoint cut overflows"))?;
+            if position.version != 1
+                || position.store_id.len() != 16
+                || position.offset < SECTOR_BYTES as u64
+                || position.offset % SECTOR_BYTES as u64 != 0
+                || position.length == 0
+                || position.length % SECTOR_BYTES as u64 != 0
+                || end > limit
+            {
+                return Err(invalid("checkpoint cut is outside committed records"));
+            }
+            let key = (number, position.offset);
+            if latest_key == Some(key)
+                && latest.is_some_and(|previous| previous.length != position.length)
+            {
+                return Err(invalid("checkpoint cuts disagree on record length"));
+            }
+            if latest_key.map_or(true, |previous| key > previous) {
+                latest_key = Some(key);
+                latest = Some(position);
+            }
+        }
+        Ok(latest.cloned())
+    }
+
     /// Walk a committed prefix captured at entry, excluding a supplied last-applied record.
     /// Metadata is checked; payload integrity is established only by read/replay.
     pub fn metadata_cursor_after(
@@ -1002,3 +1127,5 @@ mod tests;
 
 #[path = "stored_outcome_retention.rs"]
 mod retention;
+#[cfg(feature = "replica-server")]
+pub(crate) use retention::CompactionSegment;
