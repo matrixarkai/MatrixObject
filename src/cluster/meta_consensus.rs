@@ -1262,7 +1262,8 @@ fn propose_batch_with(
     if queued.is_empty() {
         return Ok(());
     }
-    let (payloads, prepared) = prepare_batch(service, groups, limit, queued, live)?;
+    let (payloads, prepared) =
+        prepare_batch(service, groups, limit, queued, live, &peer.membership())?;
     if !payloads.is_empty() {
         match peer.propose_batch(payloads) {
             Ok(ids) => {
@@ -1295,6 +1296,7 @@ fn prepare_batch(
     limit: usize,
     queued: &mut VecDeque<Request>,
     live: Option<&LeaderLiveness>,
+    membership: &matrixraft::peer_runtime::MembershipState,
 ) -> Result<PreparedBatch, RaftError> {
     for request in queued.iter() {
         request.progress.mark(RequestPhase::Preparing);
@@ -1463,7 +1465,7 @@ fn prepare_batch(
             continue;
         }
         let admission = if let MetaRequest::Features(command) = &request.request {
-            feature_admission::check_feature_request(draft.service, command, &peer.membership())
+            feature_admission::check_feature_request(draft.service, command, membership)
         } else {
             Ok(())
         };
