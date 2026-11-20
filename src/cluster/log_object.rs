@@ -17,7 +17,7 @@
 //! A reader ([`LogObjectReader`]) follows the manifest: a sealed chunk is read from its nodes up to
 //! its recorded length, the open chunk (the live tail) only up to the length two of its nodes hold
 //! durably.
-use super::chunk_log::{ChunkLogError, ChunkLogReader, ChunkLogWriter, LogCallError, LOG_QUORUM};
+use super::chunk_log::{ChunkLogError, ChunkLogReader, ChunkLogWriter, LogCallError, LOG_REPLICAS};
 use super::client::{RemoteReplicaClient, ReplicaClientOptions};
 use super::log_chunk_commands::{LogChunkReply, LogChunkRequest, MAX_OBJECT_ENTRIES};
 use super::log_chunk_store::LOG_CHUNK_LIMIT;
@@ -216,7 +216,7 @@ fn probe_group(endpoints: &[String], options: &ReplicaClientOptions) -> Result<(
             Err(other) => return Err(from_chunk(other.into())),
         }
     }
-    if reachable < LOG_QUORUM {
+    if reachable < LOG_REPLICAS {
         return Err(LogObjectError::Chunk(ChunkLogError::NoQuorum { wanted: 1, durable: reachable as u64 }));
     }
     Ok(())
@@ -246,11 +246,11 @@ fn finish_interrupted_switch<M: LogMeta>(
             }
         }
     }
-    // A seal that reached fewer than two nodes (the writer died between them, or a node was down)
+    // A seal that did not reach every node (the writer died between them, or a node was down)
     // is completed from the node that has it: every node that holds exactly the sealed length is
     // sealed too, at this writer's epoch. A node at another length is not touched: it is behind or
     // ahead, and that is repair's job.
-    if !footers.is_empty() && footers.len() < LOG_QUORUM {
+    if !footers.is_empty() && footers.len() < LOG_REPLICAS {
         if footers.iter().any(|footer| *footer != footers[0]) {
             return Err(corrupt("the nodes hold different footers for a sealed chunk"));
         }
@@ -267,7 +267,7 @@ fn finish_interrupted_switch<M: LogMeta>(
             }
         }
     }
-    if footers.len() < LOG_QUORUM {
+    if footers.len() < LOG_REPLICAS {
         return Err(LogObjectError::Chunk(ChunkLogError::NoQuorum { wanted: 1, durable: footers.len() as u64 }));
     }
     if footers.iter().any(|footer| *footer != footers[0]) {
@@ -310,7 +310,7 @@ fn switch_chunk<M: LogMeta>(
         return Err(SwitchFailure { error: LogObjectError::EntryCap, keep_open: true });
     }
     // Nothing is sent to the metadata plane unless the seal returned a footer. A seal that did not
-    // reach two nodes leaves the writer usable if it reached NONE (the chunk is open everywhere);
+    // reach all three nodes leaves the writer usable if it reached NONE (the chunk is open everywhere);
     // if it reached one, that node refuses more bytes, so the handle is closed and the next open
     // completes the seal. Any other error (a node sealed at another length, a newer epoch) ends the
     // writer: re-open.
@@ -394,7 +394,8 @@ impl LogObject {
         Ok(length)
     }
 
-    /// Where the next byte goes: everything below it is held by two nodes of the open chunk.
+    /// Where the next byte goes, including bytes retained after an incomplete append.
+    /// Call `settle` to confirm that every replica has made this length durable.
     pub fn length(&self) -> Option<u64> {
         self.writing.as_ref().map(|w| w.base + w.writer.length())
     }
@@ -440,7 +441,7 @@ impl LogObject {
         Ok(())
     }
 
-    /// Append `data`; returns the object length once two nodes hold every byte of it durably.
+    /// Append `data`; returns the object length once all three nodes hold every byte durably.
     /// The data is cut at chunk boundaries and the object moves to its next chunk as needed. On a
     /// `Chunk(NoQuorum)` error the bytes are kept and count toward the length: call [`settle`].
     ///
@@ -448,7 +449,7 @@ impl LogObject {
     pub fn append<M: LogMeta>(&mut self, meta: &mut M, data: &[u8]) -> Result<u64, LogObjectError> {
         let Some(writing) = self.writing.as_ref() else { return Err(LogObjectError::NotOpen) };
         if data.is_empty() {
-            return Ok(writing.base + writing.writer.durable_length());
+            return self.settle();
         }
         if Instant::now() >= writing.valid_until {
             // the lease may have run out and been taken: do not write on a belief
@@ -491,8 +492,12 @@ impl LogObject {
         Ok(writing.base + writing.writer.length())
     }
 
-    /// Wait until two nodes hold every byte appended so far.
+    /// Wait until all three nodes hold every byte appended so far.
     pub fn settle(&mut self) -> Result<u64, LogObjectError> {
+        if self.writing.as_ref().is_some_and(|writing| Instant::now() >= writing.valid_until) {
+            self.writing = None;
+            return Err(LogObjectError::LostLease);
+        }
         let writing = self.writing.as_mut().ok_or(LogObjectError::NotOpen)?;
         match writing.writer.settle() {
             Ok(_) => Ok(writing.base + writing.writer.length()),

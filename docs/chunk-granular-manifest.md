@@ -96,14 +96,12 @@ epochs only go up. A replica refuses any write whose epoch is below the highest
 it has seen for that chunk. That moves the single-writer and offset checks onto
 the chunk owner and off the metadata plane.
 
-**Tail length at open.** A writer that opens a chunk decides where it ends from
-what the replicas hold. When the metadata plane recorded a length at a chunk
-switch it wins. Otherwise, with strong writes (all three replicas hold every
-acknowledged byte), the tail is the shortest replica length. With quorum writes
-(two of three), the tail is the second longest length when all three answer, the
-longest of two when two answer, and the rule refuses when only one answers.
-Replicas that hold more are truncated to the decided length, at the new epoch,
-before any append. A sealed replica fixes the chunk at its sealed length.
+**Tail length at open.** Recovery keeps the earlier two-copy rule so previously
+acknowledged data is not shortened to an older third replica. With three answers,
+the recovered length is the second longest durable length; with two answers it is
+the shorter of the two. One answer is insufficient. Nodes holding a longer tail
+are truncated at the new epoch. New appends and seals require all three durable
+replicas; an under-replicated recovered prefix needs repair before they succeed.
 
 **Chunk identity.** A new tail chunk is named after the raft index of the entry
 that opens it, with the same function a page allocation uses to name its chunk.
@@ -156,24 +154,29 @@ A log chunk lives on three nodes. The client side has a writer, which appends to
 the three nodes of one chunk, and a reader.
 
 **Writing.** A writer holding the chunk's epoch sends every record to all three
-nodes. A record is acknowledged to the caller once two nodes report it durable.
+nodes. A record is acknowledged only after all three report it durable (`N=3, W=3`).
 Each node reports where the bytes landed (its applied and durable lengths), so the
 writer never guesses: a node that lost an offset, answered late or came back after
 a restart is brought up from the bytes the writer still holds, starting at the
-length that node reports. The writer sends records of at most 1 MiB and keeps up
-to 32 MiB of bytes a node may still need. A node further behind than that cannot
-be caught up from the writer and is given up on.
+length that node reports. The writer sends records of at most 1 MiB and retains
+pending bytes until all three replicas report them durable. The 64 MiB chunk limit
+bounds that buffer. A replica behind the recovered prefix needs repair; its absence
+cannot release pending bytes or complete a write.
 
 **The quorum-durable length.** It is the second largest durable length among the
-three nodes. Every acknowledged byte lies below it, and a reader never goes above
-it: a byte held by one node only has not been acknowledged and may be discarded.
+three nodes. Recovery and reads retain this rule for data produced by older
+two-copy clients; changing it to the shortest replica could discard previously
+acknowledged data. New writes wait for the shortest of all three durable lengths.
+A byte held by one node only is outside the recovery prefix and may be discarded.
+If a replica is behind that recovered prefix, new writes fail until it is repaired;
+opening the writer preserves the existing data rather than shortening it.
 
 **Sealing.** A seal is final, so a node is sealed only once it holds every byte the
 writer has. The writer first waits for the nodes that lag to be given the bytes
 they lack, bounded by the connection's read timeout, and then seals only the nodes
 that hold exactly the chunk's length. A node whose appends are still in flight is
 not sealed at the shorter length it happens to hold. The footer (length, CRC-32C
-and, when asked for, SHA-256) is returned only when at least two nodes sealed and
+and, when asked for, SHA-256) is returned only when all three nodes sealed and
 all of them report the same footer; otherwise the seal fails with an error.
 
 - A node that answers a seal with a length other than the one it was asked to hold
@@ -181,8 +184,8 @@ all of them report the same footer; otherwise the seal fails with an error.
   footer is returned, the writer is finished, and the chunk must not be recorded as
   sealed.
 - A node that is down, or that does not catch up within the read timeout, is not
-  sealed. It is left open and is under-replicated, and a reader falls back to the
-  nodes that sealed. Repair of log chunks is a separate path and is not
+  sealed. It is left open, the seal reports an error, and no metadata switch is
+  published. A reader can still use the nodes holding a recoverable prefix. Repair of log chunks is a separate path and is not
   implemented (see the limits below).
 
 **Reading.** The reader asks each node for its durable length and its writer epoch.
@@ -262,7 +265,7 @@ up to the 64 MiB limit and the other values can be set.
    node that answers unknown-verb stops the writer with a "does not speak log
    chunks" error before any grant is sent, because a grant is a metadata commit and
    cannot be taken back. A node that cannot be reached is skipped, and fewer than
-   two reachable nodes is an error;
+   three reachable nodes is an error;
 3. sends one grant, which takes the lease and, if the object is new, creates it as a
    log object, and opens the chunk being written at the lease's epoch;
 4. returns the object's length, which is where the next byte goes. After a writer
@@ -270,8 +273,10 @@ up to the 64 MiB limit and the other values can be set.
 
 **Appending.** An append is cut at chunk boundaries and goes to the three nodes of
 the open chunk. No metadata command is sent for it. It returns the object length
-once two nodes hold every byte durably; if the quorum is not reached the bytes are
-kept and `settle` waits for them. A handle stops writing, with a lost-lease error,
+once all three nodes hold every byte durably; if any required replica is missing,
+the bytes are kept and `settle` retries them. An empty append also settles pending
+bytes instead of returning a shorter durable length. `settle` and empty appends
+refuse to resend bytes after the handle's lease expires. A handle stops writing, with a lost-lease error,
 when its own view of the lease has run out. That view is measured from the moment
 the request that granted or renewed the lease was sent, so a writer never believes
 in a lease longer than the metadata plane does.
@@ -298,12 +303,10 @@ footer.
 **Recovering an interrupted switch.** A writer can die after it sealed the chunk and
 before the switch reached the metadata plane, so that the manifest still names the
 sealed chunk as the open one. The next writer, when it opens, finds the chunk sealed
-and reads the tail of every reachable node. If two nodes report the same sealed
-footer it sends the switch with it. If fewer than two do (a seal that reached only
-one node), it seals, at its own epoch, every node that holds exactly the sealed
-length, and then sends the switch if two nodes hold the same footer. A node at any
-other length is not touched. Nodes that report different footers, or fewer than two
-sealed nodes, are an error.
+and reads the tail of every reachable node. It completes the seal at its own
+epoch on every unsealed node holding exactly the sealed length. Only three
+matching sealed footers permit the metadata switch. A node at another length is
+left for repair; mismatched footers or fewer than three sealed replicas are errors.
 
 **Renewal.** An append that finds the lease past half its term renews it with one
 command. A writer that holds many objects renews all their leases in one command.
@@ -446,10 +449,15 @@ a voter is killed and restarted at 1.62 GiB and a chunk server at 2.84 GiB, the 
 object is read back and compared with the bytes that were appended, and a second
 writer takes the object over.
 
+The measurements below used the earlier two-copy completion policy (`N=3, W=2`).
+They do not measure the current three-copy client. Current three-copy throughput,
+latency and recovery measurements must be collected separately; a stopped member
+blocks success until it returns or is repaired.
+
 These are single runs (four log object runs in all, across fixes of the harness and of
 the reader), on a machine that was shared with other builds: the load average reached
 10 to 16 and 2 to 7 GB of swap were in use for part of the time. They show the
-behaviour of the design at this size. They are not a benchmark, and the tails in
+behaviour of that earlier client at this size. They are not a benchmark, and the tails in
 particular are not clean.
 
 | Measured | Result |
@@ -496,7 +504,7 @@ one; and no run on a cluster that carries other traffic.
   64 MiB chunk) and one entry per page range in page mode. The runs above measured 16
   per GiB for the log object at 64 KiB appends.
 - Append latency against object size was measured up to 4.06 GiB at one append size,
-  with one writer (see above). The cost of a ranged read was measured for one 16 MiB
+  with one writer using the earlier two-copy completion rule (see above). The cost of a ranged read was measured for one 16 MiB
   range and for reading the whole object once per run, and a restart and recovery
   at that size once per kind of node per run. Other append
   sizes, several writers, readers during growth and objects beyond 4.06 GiB are not
@@ -505,11 +513,10 @@ one; and no run on a cluster that carries other traffic.
   metadata server memory per GiB appended only as the 6 to 8 MB per voter at 4 GiB.
 - A node refuses to open a new tail past its tail budget, and the metadata plane
   refuses a 4,097th entry. Both are errors the caller must handle.
-- Quorum writes acknowledge at two of three replicas. A third replica that falls
-  behind must catch up or be replaced before it serves a write again.
+- New log writes require all three replicas. A missing replica prevents success,
+  and an older two-copy prefix remains readable while its third copy needs repair.
 - A chunk can be left unsealed on a lagging node: a node that is down or does not
-  catch up when the chunk is sealed stays open and under-replicated, and there is
-  no automatic repair for log chunks yet. When a writer completes an interrupted
+  catch up keeps the seal incomplete, and there is no automatic repair for log chunks yet. When a writer completes an interrupted
   switch it does not touch a node at any other length.
 - Not tested at the log object level: a writer that keeps appending on the same
   handle after a seal that reached no node (the tests show the handle is kept open

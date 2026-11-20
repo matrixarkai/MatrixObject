@@ -39,8 +39,11 @@ struct Node {
 }
 impl Node {
     fn start(dir: &Path, addr: &str) -> Self {
+        Self::start_with_options(dir, addr, ReplicaNodeOptions::default())
+    }
+    fn start_with_options(dir: &Path, addr: &str, options: ReplicaNodeOptions) -> Self {
         std::fs::create_dir_all(dir).unwrap();
-        let server = ReplicaNodeServer::bind_with_journal(addr, ReplicaNodeOptions::default(), &dir.join("journal")).unwrap();
+        let server = ReplicaNodeServer::bind_with_journal(addr, options, &dir.join("journal")).unwrap();
         let addr = server.local_addr().unwrap().to_string();
         let stop = server.shutdown_handle();
         let worker = thread::spawn(move || server.serve());
@@ -101,7 +104,7 @@ fn until_all_hold(w: &mut ChunkLogWriter, nodes: &[Node], total: u64) {
 }
 
 #[test]
-fn pipelined_appends_are_acknowledged_by_two_nodes_and_read_back() {
+fn pipelined_appends_are_acknowledged_by_three_nodes_and_read_back() {
     let (_dir, nodes) = cluster();
     let eps = endpoints(&nodes);
     let mut w = writer(&eps, 1);
@@ -111,6 +114,7 @@ fn pipelined_appends_are_acknowledged_by_two_nodes_and_read_back() {
         expected.extend_from_slice(&piece);
         let acked = w.append(&piece).unwrap();
         assert!(acked >= expected.len() as u64, "an append returns only once it is acknowledged");
+        assert!(nodes.iter().all(|node| node.tail().durable_length >= acked), "success requires all three durable replicas");
     }
     let total = expected.len() as u64;
     assert_eq!(w.durable_length(), total);
@@ -136,28 +140,23 @@ fn a_large_append_is_split_into_records_at_the_right_offsets() {
 }
 
 #[test]
-fn one_node_down_two_of_three_still_acknowledge_and_it_catches_up_after_a_restart() {
+fn one_node_down_prevents_success_and_pending_bytes_catch_up_after_restart() {
     let (_dir, mut nodes) = cluster();
     let eps = endpoints(&nodes);
-    nodes[2].halt();
     let mut w = writer(&eps, 1);
-    let mut expected = Vec::new();
-    for i in 0..5u8 {
-        let piece = bytes(i, 100 * 1024);
-        expected.extend_from_slice(&piece);
-        w.append(&piece).unwrap();
-    }
-    let total = expected.len() as u64;
-    assert_eq!(reader(&eps).read(0, expected.len()).unwrap(), expected);
-    // the third node comes back at the same address, empty of everything it missed
-    let (dir, addr) = (nodes[2].dir.clone(), nodes[2].addr.clone());
-    nodes[2] = Node::start(&dir, &addr);
-    assert_eq!(nodes[2].tail().length, 0);
-    let more = bytes(77, 50 * 1024);
+    let mut expected = bytes(1, 1000);
+    w.append(&expected).unwrap();
+    nodes[2].halt();
+    let more = bytes(2, 100 * 1024);
     expected.extend_from_slice(&more);
-    w.append(&more).unwrap();
-    until_all_hold(&mut w, &nodes, expected.len() as u64);
-    assert_eq!(nodes[2].tail().length, total + more.len() as u64);
+    assert_eq!(w.append(&more), Err(ChunkLogError::NoQuorum { wanted: expected.len() as u64, durable: 1000 }));
+    assert_eq!(w.durable_length(), 1000);
+    assert_eq!(w.append(&[]), Err(ChunkLogError::NoQuorum { wanted: expected.len() as u64, durable: 1000 }));
+    assert_eq!(nodes[0].tail().durable_length, expected.len() as u64);
+    assert_eq!(nodes[1].tail().durable_length, expected.len() as u64);
+    nodes[2].restart();
+    assert_eq!(w.settle().unwrap(), expected.len() as u64);
+    for node in &nodes { assert_eq!(node.tail().durable_length, expected.len() as u64); }
     assert_eq!(reader(&eps).read(0, expected.len()).unwrap(), expected);
 }
 
@@ -173,58 +172,35 @@ fn with_two_nodes_down_nothing_is_acknowledged() {
     assert!(matches!(error, ChunkLogError::NoQuorum { wanted: 2000, durable: 1000 }), "{error:?}");
 }
 
-fn slow_proxy(target: String, delay: Duration) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
-    thread::spawn(move || {
-        for connection in listener.incoming() {
-            let Ok(client) = connection else { break };
-            let Ok(upstream) = TcpStream::connect(&target) else { continue };
-            let (mut client_in, mut client_out) = (client.try_clone().unwrap(), client);
-            let (mut up_in, mut up_out) = (upstream.try_clone().unwrap(), upstream);
-            thread::spawn(move || {
-                let mut buffer = [0u8; 65536];
-                loop {
-                    match client_in.read(&mut buffer) {
-                        Ok(0) | Err(_) => break,
-                        Ok(count) => {
-                            thread::sleep(delay);
-                            if up_out.write_all(&buffer[..count]).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-                let _ = up_out.shutdown(Shutdown::Both);
-            });
-            thread::spawn(move || {
-                let _ = std::io::copy(&mut up_in, &mut client_out);
-                let _ = client_out.shutdown(Shutdown::Both);
-            });
-        }
-    });
-    addr
-}
 
 #[test]
-fn a_slow_node_does_not_hold_back_the_acknowledgement_and_still_converges() {
+fn native_star_all_replicas_append_waits_for_the_third_durable_replica() {
     let (_dir, nodes) = cluster();
     let mut eps = endpoints(&nodes);
-    // a delay so long that waiting for this node would take 1.5 s per append: even on a
-    // loaded disk, four acknowledged appends that took less than 3 s did not wait for it
-    eps[2] = slow_proxy(nodes[2].addr.clone(), Duration::from_millis(1500));
+    let gate = Arc::new(AtomicBool::new(true));
+    eps[2] = gated_proxy(nodes[2].addr.clone(), Arc::clone(&gate));
     let mut w = writer(&eps, 1);
-    let started = Instant::now();
-    let mut expected = Vec::new();
-    for i in 0..4u8 {
-        let piece = bytes(i, 64 * 1024);
-        expected.extend_from_slice(&piece);
-        w.append(&piece).unwrap();
-    }
-    let elapsed = started.elapsed();
-    assert!(elapsed < Duration::from_secs(3), "four acknowledged appends took {elapsed:?} behind a 1.5 s node");
-    until_all_hold(&mut w, &nodes, expected.len() as u64);
-    assert_eq!(reader(&endpoints(&nodes)).read(0, expected.len()).unwrap(), expected);
+    let data = bytes(7, 64 * 1024);
+    gate.store(false, Ordering::SeqCst);
+    thread::scope(|scope| {
+        let _release = ReleaseGate(Arc::clone(&gate));
+        let (sent, answer) = std::sync::mpsc::channel();
+        let data = &data;
+        let worker = scope.spawn(move || { let result = w.append(data); sent.send(result).unwrap(); w });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while nodes[..2].iter().any(|node| node.tail().durable_length < data.len() as u64) {
+            assert!(Instant::now() < deadline, "the first two replicas did not persist the append");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(matches!(answer.recv_timeout(Duration::from_millis(100)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)), "two replicas must not complete a write");
+        assert_eq!(nodes[2].tail().length, 0);
+        gate.store(true, Ordering::SeqCst);
+        assert_eq!(answer.recv_timeout(Duration::from_secs(10)).unwrap().unwrap(), data.len() as u64);
+        let w = worker.join().unwrap();
+        assert_eq!(w.durable_length(), data.len() as u64);
+    });
+    for node in &nodes { assert_eq!(node.tail().durable_length, data.len() as u64); }
+    assert_eq!(reader(&endpoints(&nodes)).read(0, data.len()).unwrap(), data);
 }
 
 #[test]
@@ -454,32 +430,32 @@ fn gated_proxy(target: String, open: Arc<AtomicBool>) -> String {
 // deterministic one: a node that came back empty after the chunk was written has never held
 // the bytes, so sealing it would leave a replica sealed at length 0 while the chunk is longer.
 #[test]
-fn a_seal_leaves_open_a_node_that_never_held_the_bytes_instead_of_sealing_it_short() {
-    let (_dir, mut nodes) = cluster();
+fn native_star_all_replicas_preserves_legacy_two_copy_data_until_repair() {
+    let (_dir, nodes) = cluster();
     let eps = endpoints(&nodes);
-    nodes[2].halt();
-    let mut first = writer(&eps, 1);
-    let data = bytes(1, 100 * 1024);
-    first.append(&data).unwrap();
-    drop(first);
-    // the third node comes back empty: it never held a byte the first writer acknowledged
-    let (dir, addr) = (nodes[2].dir.clone(), nodes[2].addr.clone());
-    nodes[2] = Node::start(&dir, &addr);
-    assert_eq!(nodes[2].tail().length, 0);
-    let mut second = writer(&eps, 2);
-    let more = bytes(2, 20 * 1024);
-    let end = (data.len() + more.len()) as u64;
-    assert_eq!(second.append(&more).unwrap(), end);
-    let footer = second.seal_footer(true).unwrap();
-    assert_eq!(footer.length, end);
-    for index in 0..2 {
-        let tail = nodes[index].tail();
-        assert!(tail.sealed, "node {index} is not sealed");
-        assert_eq!(tail.length, end, "node {index} sealed at a different length");
+    let mut expected = bytes(1, 100 * 1024);
+    // Reproduce data persisted by an older two-copy writer without using the new SDK.
+    for endpoint in &eps[..2] {
+        let mut client = RemoteReplicaClient::connect(endpoint, &options()).unwrap();
+        client.log_call(LogOpRequest::append(V, C, 1, 1, 0, expected.clone())).unwrap();
     }
-    let behind = nodes[2].tail();
-    assert!(!behind.sealed, "the node that never held the bytes was sealed at {} of {end} bytes", behind.length);
-    assert_eq!(behind.length, 0);
+    let mut w = writer(&eps, 2);
+    assert_eq!(w.length(), expected.len() as u64, "recovery must retain the two-copy prefix");
+    assert_eq!(reader(&eps).read(0, expected.len()).unwrap(), expected);
+    let more = bytes(2, 20 * 1024);
+    expected.extend_from_slice(&more);
+    assert!(matches!(w.append(&more), Err(ChunkLogError::NoQuorum { .. })));
+    assert!(matches!(w.seal_footer(true), Err(ChunkLogError::NoQuorum { .. })));
+    for node in &nodes { assert!(!node.tail().sealed, "an incomplete write must not seal any replica"); }
+    assert_eq!(nodes[2].tail().length, 0);
+    // Peer repair supplies the old prefix and pending bytes at the active epoch.
+    let mut repair = RemoteReplicaClient::connect(&eps[2], &options()).unwrap();
+    repair.log_call(LogOpRequest::append(V, C, 1, 2, 0, expected.clone())).unwrap();
+    assert_eq!(w.settle().unwrap(), expected.len() as u64);
+    let footer = w.seal_footer(true).unwrap();
+    assert_eq!(footer.length, expected.len() as u64);
+    for node in &nodes { assert!(node.tail().sealed); assert_eq!(node.tail().length, footer.length); }
+    assert_eq!(reader(&eps).read(0, expected.len()).unwrap(), expected);
 }
 
 // A node whose appends are still in flight when the seal starts must be waited for, then sealed
@@ -491,27 +467,26 @@ fn a_seal_waits_for_a_node_that_lags_and_no_node_seals_short() {
     let gate = Arc::new(AtomicBool::new(true));
     eps[2] = gated_proxy(nodes[2].addr.clone(), Arc::clone(&gate));
     let mut w = writer(&eps, 1);
-    // hold the third node's incoming bytes: the first two acknowledge, the third lags
-    gate.store(false, Ordering::SeqCst);
     let data = bytes(7, 300_000);
-    assert_eq!(w.append(&data).unwrap(), data.len() as u64);
-    assert!(nodes[2].tail().length < data.len() as u64, "the third node must be behind for this test to mean anything");
-    // let it go only after the seal has begun
-    let release = {
-        let gate = Arc::clone(&gate);
-        thread::spawn(move || {
-            thread::sleep(Duration::from_millis(300));
-            gate.store(true, Ordering::SeqCst);
-        })
-    };
-    let footer = w.seal_footer(true).unwrap();
-    release.join().unwrap();
-    assert_eq!(footer.length, data.len() as u64);
-    for (index, node) in nodes.iter().enumerate() {
-        let tail = node.tail();
-        assert!(tail.sealed, "node {index} is not sealed");
-        assert_eq!(tail.length, data.len() as u64, "node {index} sealed at a different length");
-    }
+    w.append(&data).unwrap();
+    gate.store(false, Ordering::SeqCst);
+    thread::scope(|scope| {
+        let _release = ReleaseGate(Arc::clone(&gate));
+        let (sent, answer) = std::sync::mpsc::channel();
+        let worker = scope.spawn(move || sent.send(w.seal_footer(true)).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while nodes[..2].iter().any(|node| !node.tail().sealed) {
+            assert!(Instant::now() < deadline, "the first two replicas did not seal");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!nodes[2].tail().sealed);
+        assert_eq!(nodes[2].tail().length, data.len() as u64);
+        assert!(matches!(answer.recv_timeout(Duration::from_millis(100)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)));
+        gate.store(true, Ordering::SeqCst);
+        assert_eq!(answer.recv_timeout(Duration::from_secs(10)).unwrap().unwrap().length, data.len() as u64);
+        worker.join().unwrap();
+    });
+    for node in &nodes { assert!(node.tail().sealed); assert_eq!(node.tail().length, data.len() as u64); }
 }
 
 // A node that was down while a newer writer took the chunk comes back at the older epoch, holding
@@ -532,9 +507,14 @@ fn a_reader_takes_nothing_from_a_node_left_at_an_older_writer_epoch() {
     drop(first);
     // the third node is down while a second writer takes the chunk and writes its own bytes
     nodes[2].halt();
-    let mut second = writer(&eps, 2);
+    let second = writer(&eps, 2);
     let mine = bytes(2, 20 * 1024);
-    second.append(&mine).unwrap();
+    // Reproduce the older two-copy writer policy at the new epoch.
+    for endpoint in &eps[..2] {
+        let mut client = RemoteReplicaClient::connect(endpoint, &options()).unwrap();
+        client.log_call(LogOpRequest::append(V, C, 1, 2, base.len() as u64, mine.clone())).unwrap();
+    }
+    drop(second);
     // it comes back still at the older epoch, holding bytes the second writer never saw
     let (dir, addr) = (nodes[2].dir.clone(), nodes[2].addr.clone());
     nodes[2] = Node::start(&dir, &addr);
@@ -583,4 +563,213 @@ fn the_node_messages_the_client_classifies_are_the_ones_the_node_sends() {
     // whatever the message says, a failed connection is a transport failure
     let stale_but_transport = to_object_error(LogError::Fenced { current: 7 });
     assert!(matches!(LogCallError::from_object(stale_but_transport, true), LogCallError::Transport(_)));
+}
+
+
+struct ReleaseGate(Arc<AtomicBool>);
+impl Drop for ReleaseGate {
+    fn drop(&mut self) { self.0.store(true, Ordering::SeqCst); }
+}
+
+#[test]
+fn native_star_all_replicas_seal_requires_three_and_retries_after_restart() {
+    let (_dir, mut nodes) = cluster();
+    let eps = endpoints(&nodes);
+    let mut w = writer(&eps, 1);
+    let data = bytes(9, 4096);
+    w.append(&data).unwrap();
+    nodes[2].halt();
+    assert!(matches!(w.seal_footer(true), Err(ChunkLogError::NoQuorum { .. })));
+    assert!(nodes[0].tail().sealed && nodes[1].tail().sealed);
+    nodes[2].restart();
+    assert!(!nodes[2].tail().sealed);
+    assert_eq!(w.seal_footer(true).unwrap().length, data.len() as u64);
+    for node in &nodes { assert!(node.tail().sealed); }
+}
+
+#[test]
+fn native_star_all_replicas_reconnect_refuses_a_newer_epoch() {
+    let (_dir, mut nodes) = cluster();
+    let eps = endpoints(&nodes);
+    let mut w = writer(&eps, 1);
+    w.append(&bytes(1, 1000)).unwrap();
+    nodes[2].halt();
+    assert!(matches!(w.append(&bytes(2, 1000)), Err(ChunkLogError::NoQuorum { .. })));
+    nodes[2].restart();
+    let mut other = RemoteReplicaClient::connect(&eps[2], &options()).unwrap();
+    other.log_truncate(V, C, 1, 2, 1000).unwrap();
+    assert_eq!(w.settle().unwrap_err(), ChunkLogError::StaleEpoch { current: 2 });
+    assert_eq!(w.append(&bytes(3, 1000)).unwrap_err(), ChunkLogError::StaleEpoch { current: 2 });
+    assert_eq!(nodes[2].tail().length, 1000);
+    assert_eq!(nodes[0].tail().length, 2000);
+}
+
+#[test]
+fn native_star_all_replicas_deferred_completion_survives_restart() {
+    let dir = Directory::new();
+    let mut nodes: Vec<_> = (0..3).map(|index| {
+        Node::start_with_options(&dir.0.join(format!("deferred-{index}")), "127.0.0.1:0",
+            ReplicaNodeOptions { journal_deferred_completion: true, ..Default::default() })
+    }).collect();
+    let eps = endpoints(&nodes);
+    let mut w = writer(&eps, 1);
+    let data = bytes(13, 2 * super::chunk_log::LOG_RECORD_BYTES + 17);
+    assert_eq!(w.append(&data).unwrap(), data.len() as u64);
+    for node in &mut nodes {
+        assert_eq!(node.tail().durable_length, data.len() as u64);
+        node.restart();
+        assert_eq!(node.tail().durable_length, data.len() as u64);
+    }
+    assert_eq!(reader(&eps).read(0, data.len()).unwrap(), data);
+}
+
+
+/// A bounded frame proxy that drops one selected request or its reply.
+struct FaultProxy {
+    addr: String,
+    armed: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    sockets: Arc<std::sync::Mutex<Vec<TcpStream>>>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+impl FaultProxy {
+    fn new(target: String, operation: u32, drop_reply: bool) -> Self {
+        use prost::Message as _;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let armed = Arc::new(AtomicBool::new(true));
+        let stop = Arc::new(AtomicBool::new(false));
+        let sockets = Arc::new(std::sync::Mutex::new(Vec::<TcpStream>::new()));
+        let (fault, stopping, tracked) = (Arc::clone(&armed), Arc::clone(&stop), Arc::clone(&sockets));
+        let worker = thread::spawn(move || thread::scope(|scope| {
+            while !stopping.load(Ordering::SeqCst) {
+                let (mut client, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(1));
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+                let Ok(mut upstream) = TcpStream::connect(&target) else { continue };
+                client.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                upstream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                {
+                    let mut tracked = tracked.lock().unwrap();
+                    if stopping.load(Ordering::SeqCst) { break; }
+                    tracked.push(client.try_clone().unwrap());
+                    tracked.push(upstream.try_clone().unwrap());
+                }
+                let fault = Arc::clone(&fault);
+                scope.spawn(move || {
+                    let mut transfer = || -> std::io::Result<()> {
+                        loop {
+                            let mut header = [0u8; 6];
+                            client.read_exact(&mut header)?;
+                            let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                            if size > 8 * 1024 * 1024 { return Err(std::io::ErrorKind::InvalidData.into()); }
+                            let mut body = vec![0; size];
+                            client.read_exact(&mut body)?;
+                            let selected = header[1] == crate::cluster::wire::RequestCode::LogOp as u8
+                                && LogOpRequest::decode(body.as_slice()).is_ok_and(|request| request.op == operation)
+                                && fault.swap(false, Ordering::SeqCst);
+                            if selected && !drop_reply { return Ok(()); }
+                            upstream.write_all(&header)?;
+                            upstream.write_all(&body)?;
+                            upstream.read_exact(&mut header)?;
+                            let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                            if size > 8 * 1024 * 1024 { return Err(std::io::ErrorKind::InvalidData.into()); }
+                            body.resize(size, 0);
+                            upstream.read_exact(&mut body)?;
+                            if selected { return Ok(()); }
+                            client.write_all(&header)?;
+                            client.write_all(&body)?;
+                        }
+                    };
+                    let _ = transfer();
+                    let _ = client.shutdown(Shutdown::Both);
+                    let _ = upstream.shutdown(Shutdown::Both);
+                });
+            }
+        }));
+        Self { addr, armed, stop, sockets, worker: Some(worker) }
+    }
+}
+impl Drop for FaultProxy {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        for socket in self.sockets.lock().unwrap().iter() { let _ = socket.shutdown(Shutdown::Both); }
+        if let Some(worker) = self.worker.take() { let _ = worker.join(); }
+    }
+}
+
+#[test]
+fn native_star_all_replicas_retries_an_initial_fence_before_counting_an_older_tail() {
+    let (_dir, nodes) = cluster();
+    let eps = endpoints(&nodes);
+    let base = bytes(1, 128);
+    writer(&eps, 1).append(&base).unwrap();
+    let mut old = RemoteReplicaClient::connect(&eps[2], &options()).unwrap();
+    old.log_call(LogOpRequest::append(V, C, 1, 1, base.len() as u64, bytes(99, 64))).unwrap();
+    drop(old);
+    let proxy = FaultProxy::new(eps[2].clone(), super::log_op::OP_TRUNCATE, false);
+    let mut via = eps.clone();
+    via[2] = proxy.addr.clone();
+    let mut w = writer(&via, 2);
+    assert!(!proxy.armed.load(Ordering::SeqCst));
+    assert_eq!(w.length(), base.len() as u64);
+    assert_eq!(nodes[2].tail().epoch, 1);
+    assert_eq!(nodes[2].tail().length, 192);
+    let more = bytes(7, 64);
+    assert_eq!(w.append(&more).unwrap(), 192);
+    let mut expected = base;
+    expected.extend_from_slice(&more);
+    for endpoint in &eps {
+        let mut client = RemoteReplicaClient::connect(endpoint, &options()).unwrap();
+        let tail = client.log_tail(V, C, 1).unwrap();
+        assert_eq!(tail.epoch, 2);
+        assert_eq!(tail.durable_length, 192);
+        assert_eq!(client.log_call(LogOpRequest::read(V, C, 1, 0, 192)).unwrap().data, expected);
+    }
+}
+
+#[test]
+fn native_star_all_replicas_lost_seal_reply_is_recovered_without_rewriting_bytes() {
+    let (_dir, nodes) = cluster();
+    let eps = endpoints(&nodes);
+    let proxy = FaultProxy::new(eps[2].clone(), super::log_op::OP_SEAL, true);
+    let mut via = eps.clone();
+    via[2] = proxy.addr.clone();
+    let mut w = writer(&via, 1);
+    let data = bytes(11, 4096);
+    w.append(&data).unwrap();
+    assert!(matches!(w.seal_footer(true), Err(ChunkLogError::NoQuorum { .. })));
+    assert!(!proxy.armed.load(Ordering::SeqCst));
+    for node in &nodes { assert!(node.tail().sealed); }
+    let files: Vec<_> = nodes.iter().map(|node| node.dir.join("logchunks").join(format!("{V:016x}-{C:016x}.log"))).collect();
+    let before: Vec<_> = files.iter().map(|path| std::fs::read(path).unwrap()).collect();
+    let footer = w.seal_footer(true).unwrap();
+    assert_eq!(footer.length, data.len() as u64);
+    for (path, bytes) in files.iter().zip(before) { assert_eq!(std::fs::read(path).unwrap(), bytes, "seal retry must not write another record"); }
+    assert_eq!(reader(&eps).read(0, data.len()).unwrap(), data);
+}
+
+
+#[test]
+fn native_star_all_replicas_retains_a_large_pending_append_until_restart() {
+    let (_dir, mut nodes) = cluster();
+    let eps = endpoints(&nodes);
+    let mut w = writer(&eps, 1);
+    let prefix = bytes(1, 4096);
+    w.append(&prefix).unwrap();
+    nodes[2].halt();
+    let data = bytes(17, 33 * 1024 * 1024);
+    let end = (prefix.len() + data.len()) as u64;
+    assert!(matches!(w.append(&data), Err(ChunkLogError::NoQuorum { wanted, .. }) if wanted == end));
+    nodes[2].restart();
+    assert_eq!(w.settle().unwrap(), end, "retained bytes must survive the earlier lag threshold");
+    for node in &nodes { assert_eq!(node.tail().durable_length, end); }
+    let mut r = reader(&eps);
+    assert_eq!(r.read(prefix.len() as u64, data.len()).unwrap(), data);
 }

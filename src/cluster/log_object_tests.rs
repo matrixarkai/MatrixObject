@@ -372,11 +372,12 @@ fn a_node_that_was_down_is_caught_up_and_a_new_writer_starts_at_the_acknowledged
     let mut expected = bytes(3, 100_000);
     a.append(&mut meta, &expected).unwrap();
     nodes[2].halt();
-    // two of three nodes hold each append: it is acknowledged
+    // Two replicas retain the pending bytes, but cannot complete a new append.
     let more = bytes(4, 150_000);
-    a.append(&mut meta, &more).unwrap();
+    assert!(matches!(a.append(&mut meta, &more), Err(LogObjectError::Chunk(ChunkLogError::NoQuorum { .. }))));
     expected.extend_from_slice(&more);
     nodes[2].restart();
+    assert_eq!(a.settle().unwrap(), expected.len() as u64);
     meta.expire_lease("bucket", "log");
     let mut b = LogObject::new("bucket", "log", options("gw-b"));
     assert_eq!(b.open_for_append(&mut meta).unwrap(), 250_000, "no acknowledged byte is lost and none is added");
@@ -636,3 +637,54 @@ fn a_seal_that_reached_no_node_leaves_the_handle_open_and_sends_no_switch() {
 
 #[path = "log_object_probes.rs"]
 mod probes;
+
+
+#[test]
+fn native_star_all_replicas_expired_handles_do_not_resend_pending_bytes() {
+    let (_dir, mut nodes) = cluster();
+    let mut meta = FakeMeta::new(endpoints(&nodes));
+    for empty_append in [false, true] {
+        let key = if empty_append { "empty-append-expired" } else { "settle-expired" };
+        let mut object = LogObject::new("bucket", key, options("gw-a"));
+        object.open_for_append(&mut meta).unwrap();
+        object.append(&mut meta, &bytes(1, 1000)).unwrap();
+        let (volume, chunk, _) = object.open_chunk().unwrap();
+        nodes[2].halt();
+        assert!(matches!(object.append(&mut meta, &bytes(2, 1000)), Err(LogObjectError::Chunk(ChunkLogError::NoQuorum { .. }))));
+        object.writing.as_mut().unwrap().valid_until = Instant::now() - Duration::from_secs(1);
+        nodes[2].restart();
+        let result = if empty_append { object.append(&mut meta, &[]) } else { object.settle() };
+        assert_eq!(result.unwrap_err(), LogObjectError::LostLease);
+        assert!(object.writing.is_none());
+        assert_eq!(nodes[2].tail(volume, chunk).length, 1000, "expired retries must not send the pending suffix");
+    }
+}
+
+
+#[test]
+fn native_star_all_replicas_interrupted_switch_waits_for_the_third_seal() {
+    let (_dir, mut nodes) = cluster();
+    let mut meta = FakeMeta::new(endpoints(&nodes));
+    let mut first = LogObject::new("bucket", "log", options("gw-a"));
+    first.open_for_append(&mut meta).unwrap();
+    let data = bytes(31, CHUNK as usize);
+    first.append(&mut meta, &data).unwrap();
+    let (volume, chunk, _) = first.open_chunk().unwrap();
+    nodes[2].halt();
+    assert!(matches!(first.append(&mut meta, &[7]), Err(LogObjectError::Chunk(ChunkLogError::NoQuorum { .. }))));
+    assert_eq!(meta.switches, 0);
+    assert!(nodes[0].tail(volume, chunk).sealed && nodes[1].tail(volume, chunk).sealed);
+    meta.expire_lease("bucket", "log");
+    let mut next = LogObject::new("bucket", "log", options("gw-b"));
+    assert!(matches!(next.open_for_append(&mut meta), Err(LogObjectError::Chunk(ChunkLogError::NoQuorum { .. }))));
+    assert_eq!(meta.switches, 0, "two sealed replicas must not publish a completed switch");
+    nodes[2].restart();
+    assert!(!nodes[2].tail(volume, chunk).sealed);
+    assert_eq!(next.open_for_append(&mut meta).unwrap(), CHUNK);
+    assert_eq!(meta.switches, 1);
+    for node in &nodes { assert!(node.tail(volume, chunk).sealed); }
+    next.append(&mut meta, &[7]).unwrap();
+    let mut expected = data;
+    expected.push(7);
+    assert_eq!(reader().read_range(&mut meta, 0, expected.len()).unwrap(), expected);
+}

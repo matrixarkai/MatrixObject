@@ -402,7 +402,7 @@ fn measure_log_object_growth_end_to_end() {
     let mut acked = object.open_for_append(&mut meta).unwrap();
     assert_eq!(acked, 0, "a new log object starts empty");
     out.line(format!(
-        "E2E_CONFIG kind=log total_bytes={} append_bytes={} interval_bytes={} chunk_bytes={chunk_bytes} mode={} meta_restart_at={} chunk_restart_at={}",
+        "E2E_CONFIG kind=log write_replicas=3 durable_write_replicas=3 total_bytes={} append_bytes={} interval_bytes={} chunk_bytes={chunk_bytes} mode={} meta_restart_at={} chunk_restart_at={}",
         config.total_bytes,
         config.append_bytes,
         config.interval_bytes,
@@ -494,14 +494,37 @@ fn measure_log_object_growth_end_to_end() {
                 // than what was acknowledged.
                 let error_text = format!("{error:?}");
                 out.line(format!("E2E_RESTART kind=append_error at_bytes={acked} error={error_text:?}"));
+                // A three-copy write cannot progress while a member is down. Bring
+                // it back before waiting for the retained suffix or reopening.
+                if let Some(down) = chunk_down.take() {
+                    let restarted = Instant::now();
+                    chunks.start(0);
+                    out.line(format!(
+                        "E2E_RESTART kind=chunkserver phase=restarted node=0 down_ms={} appends_while_down={} max_append_us_while_down={} at_bytes={} restart_ms={}",
+                        down.killed.elapsed().as_millis(), down.appends, down.max_us,
+                        down.at_bytes, restarted.elapsed().as_millis()
+                    ));
+                    assert_eq!(down.appends, 0, "a missing replica must not produce successful three-copy appends");
+                    chunk_restarted = true;
+                }
                 let recovery = Instant::now();
                 let mut attempts = 0u32;
                 loop {
+                    if let Ok(confirmed) = object.settle() {
+                        assert!(confirmed >= acked && confirmed <= acked + length as u64);
+                        out.line(format!("E2E_RESTART kind=settled_all_replicas at_bytes={acked} confirmed_at={confirmed} recovery_ms={}", recovery.elapsed().as_millis()));
+                        acked = confirmed;
+                        break;
+                    }
                     attempts += 1;
                     assert!(attempts < 240, "the object never recovered after: {error_text}");
                     std::thread::sleep(Duration::from_millis(500));
                     meta = meta_client(&group, group.leader());
                     if let Ok(reopened) = object.open_for_append(&mut meta) {
+                        // Recovery can discover an older two-copy prefix. Do not
+                        // report it as a three-copy success until every node agrees.
+                        let Ok(confirmed) = object.settle() else { continue };
+                        assert_eq!(confirmed, reopened);
                         if reopened < acked {
                             lost_acknowledged = true;
                             out.line(format!("E2E_LOSS acknowledged={acked} reopened_at={reopened}"));
@@ -631,6 +654,7 @@ fn measure_log_object_growth_end_to_end() {
             }
         }
     };
+    assert_eq!(second_writer.settle().unwrap(), reopened, "takeover confirms all three durable replicas");
     let probe = stream_piece(reopened, 4096);
     let probe_total = second_writer.append(&mut meta, &probe).unwrap();
     let fenced = object.append(&mut meta, b"late").is_err();
