@@ -55,25 +55,12 @@ use super::s3_multipart as mp;
 use super::s3_versions as versions;
 use crate::{BucketCorsPolicy, MatrixObjectStore, ObjectError, ObjectMetadata, PutOptions};
 
-/// Default `Content-Type` recorded for a body that arrives without one.
-pub const DEFAULT_CONTENT_TYPE: &str = "application/octet-stream";
+pub use super::s3_limits::{
+    DEFAULT_CONTENT_TYPE, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, WRITE_OFFSET_HEADER,
+};
 
 /// Header prefix carrying caller-supplied object metadata.
 pub const USER_METADATA_PREFIX: &str = "x-amz-meta-";
-
-/// Offset a `PutObject` body is expected to land at, which turns the put into an append.
-///
-/// Spelled as S3 spells it. S3 Express One Zone takes this header on `PutObject` and appends
-/// when it is present, so answering it widens what this door covers of S3 rather than adding
-/// a verb of its own -- which matters here, because there is no HTTP mode of this server that
-/// answers anything other than S3.
-pub const WRITE_OFFSET_HEADER: &str = "x-amz-write-offset-bytes";
-
-/// Most keys one bucket listing will answer with, when the caller names no limit.
-pub const DEFAULT_LIST_LIMIT: usize = 1_000;
-
-/// Most keys one bucket listing will answer with, whatever the caller asks for.
-pub const MAX_LIST_LIMIT: usize = 10_000;
 
 /// Most buckets `GET /` will answer with.
 pub const MAX_BUCKET_PAGE: usize = 10_000;

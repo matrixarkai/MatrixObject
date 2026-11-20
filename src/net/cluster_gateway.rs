@@ -36,7 +36,7 @@ mod s3_verbs;
 pub const MAX_OBJECT_EXTENTS: usize = 4096;
 
 /// Offset header, spelled as the in-process door spells it.
-pub const WRITE_OFFSET_HEADER: &str = super::service::WRITE_OFFSET_HEADER;
+pub const WRITE_OFFSET_HEADER: &str = super::s3_limits::WRITE_OFFSET_HEADER;
 
 const LIST_PAGE: u32 = 32;
 
@@ -1459,7 +1459,7 @@ impl ClusterGateway {
         let resume = continuation.clone().or_else(|| start_after.clone());
         let max_keys = match request.query_param("max-keys") {
             Some(raw) => match raw.parse::<usize>() {
-                Ok(parsed) => parsed.clamp(1, super::service::MAX_LIST_LIMIT),
+                Ok(parsed) => parsed.clamp(1, super::s3_limits::MAX_LIST_LIMIT),
                 Err(_) => {
                     return s3::error_response(
                         s3::S3ErrorCode::InvalidArgument,
@@ -1468,7 +1468,7 @@ impl ClusterGateway {
                     )
                 }
             },
-            None => super::service::DEFAULT_LIST_LIMIT,
+            None => super::s3_limits::DEFAULT_LIST_LIMIT,
         };
         let walked = self.with_plane(|plane| {
             let mut entries: Vec<s3::ListEntry> = Vec::new();
@@ -1635,7 +1635,7 @@ fn object_headers(response: &mut Response, manifest: &ObjectManifest) {
         .push(("etag".into(), format!("\"{}\"", etag_of(manifest.generation))));
     response
         .headers
-        .push(("content-type".into(), super::service::DEFAULT_CONTENT_TYPE.into()));
+        .push(("content-type".into(), super::s3_limits::DEFAULT_CONTENT_TYPE.into()));
     response.headers.push(("accept-ranges".into(), "bytes".into()));
     response
         .headers
