@@ -303,6 +303,60 @@ fn a_node_that_does_not_know_the_verb_is_a_typed_answer_and_costs_one_exchange()
     assert_eq!(reader(&eps).read(0, 10).unwrap_err(), ChunkLogError::NotSpoken);
 }
 
+/// A proxy in front of one node that remembers every connection it carries, so a test can cut
+/// them all at once: what a node does to a connection that sat idle for its read timeout.
+fn severable_proxy(target: String) -> (String, Arc<std::sync::Mutex<Vec<TcpStream>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let carried: Arc<std::sync::Mutex<Vec<TcpStream>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = Arc::clone(&carried);
+    thread::spawn(move || {
+        for connection in listener.incoming() {
+            let Ok(client) = connection else { break };
+            let Ok(upstream) = TcpStream::connect(&target) else { continue };
+            kept.lock().unwrap().push(client.try_clone().unwrap());
+            let (mut client_in, mut client_out) = (client.try_clone().unwrap(), client);
+            let (mut up_in, mut up_out) = (upstream.try_clone().unwrap(), upstream);
+            thread::spawn(move || {
+                let _ = std::io::copy(&mut client_in, &mut up_out);
+                let _ = up_out.shutdown(Shutdown::Both);
+            });
+            thread::spawn(move || {
+                let _ = std::io::copy(&mut up_in, &mut client_out);
+                let _ = client_out.shutdown(Shutdown::Both);
+            });
+        }
+    });
+    (addr, carried)
+}
+
+// A reader keeps its connections between calls. A node closes a connection that stays idle for its
+// read timeout, so a reader that is used again after a long pause finds every connection dead; that
+// must cost a reconnect, not the answer. Before the reader retried a call that failed on a kept
+// connection, every node counted as silent and the call reported no quorum with all three up.
+#[test]
+fn a_reader_whose_connections_were_closed_while_idle_reconnects_and_still_answers() {
+    let (_dir, nodes) = cluster();
+    let eps = endpoints(&nodes);
+    let mut w = writer(&eps, 1);
+    let data = bytes(9, 100 * 1024);
+    w.append(&data).unwrap();
+    until_all_hold(&mut w, &nodes, data.len() as u64);
+
+    let proxies: Vec<(String, Arc<std::sync::Mutex<Vec<TcpStream>>>)> = eps.iter().map(|e| severable_proxy(e.clone())).collect();
+    let via: Vec<String> = proxies.iter().map(|(addr, _)| addr.clone()).collect();
+    let mut r = reader(&via);
+    assert_eq!(r.length().unwrap(), data.len() as u64, "the first call opens a connection to every node");
+
+    for (_, carried) in &proxies {
+        for stream in carried.lock().unwrap().drain(..) {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+    }
+    assert_eq!(r.length().unwrap(), data.len() as u64, "every kept connection is dead; the nodes are all up");
+    assert_eq!(r.read(0, data.len()).unwrap(), data);
+}
+
 #[test]
 fn a_reader_never_goes_above_the_quorum_durable_length() {
     let (_dir, nodes) = cluster();

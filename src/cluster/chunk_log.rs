@@ -599,6 +599,23 @@ impl ChunkLogReader {
         Ok(self.clients[index].as_mut().expect("just connected"))
     }
 
+    /// One read-only call to node `index`. A connection kept from an earlier call can have been
+    /// closed by the node while it sat idle (a node closes a connection that sends nothing for
+    /// its read timeout); the first request on it then fails, which says nothing about the node.
+    /// So a transport failure on a connection that was already in use is repeated once on a
+    /// fresh one. Only for calls that change nothing (a tail query, a read): a mutation whose
+    /// outcome is unknown must never be sent twice.
+    fn read_call<T>(&mut self, index: usize, call: impl Fn(&mut RemoteReplicaClient) -> Result<T, LogCallError>) -> Result<T, LogCallError> {
+        let reused = self.clients[index].is_some();
+        match self.client(index).and_then(&call) {
+            Err(LogCallError::Transport(_)) if reused => {
+                self.clients[index] = None;
+                self.client(index).and_then(&call)
+            }
+            other => other,
+        }
+    }
+
     /// Each node's durable length and the quorum length. A node that did not answer, or that is
     /// still at an older writer epoch than another node reports, is `None`: it takes no part in
     /// the quorum length and no read is served from it. A node left at an older epoch missed the
@@ -610,7 +627,7 @@ impl ChunkLogReader {
         let mut silent = 0;
         for index in 0..self.endpoints.len() {
             let (volume, chunk, generation) = (self.volume, self.chunk, self.generation);
-            match self.client(index).and_then(|client| client.log_tail(volume, chunk, generation)) {
+            match self.read_call(index, |client| client.log_tail(volume, chunk, generation)) {
                 Ok(reply) => answers.push(Some((reply.durable_length, reply.epoch))),
                 Err(LogCallError::NotSpoken) => {
                     silent += 1;
@@ -658,7 +675,7 @@ impl ChunkLogReader {
                     continue;
                 }
                 let (volume, chunk, generation) = (self.volume, self.chunk, self.generation);
-                match self.client(index).and_then(|client| client.log_read(volume, chunk, generation, at, piece as u32)) {
+                match self.read_call(index, |client| client.log_read(volume, chunk, generation, at, piece as u32)) {
                     Ok(reply) if reply.data.len() == piece => {
                         got = Some(reply.data);
                         break;
