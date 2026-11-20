@@ -3005,6 +3005,12 @@ jobs:
           cargo test --locked --lib cluster::chunk_log_tests::a_reader_takes_nothing_from_a_node_left_at_an_older_writer_epoch -- --exact --test-threads=1 2>&1 | tee /tmp/log-client.log
           grep -q '^running 1 test$' /tmp/log-client.log
           grep -q '^test result: ok. 1 passed' /tmp/log-client.log
+      - name: a log chunk reader whose connections were closed while idle reconnects and still answers
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::chunk_log_tests::a_reader_whose_connections_were_closed_while_idle_reconnects_and_still_answers -- --exact --test-threads=1 2>&1 | tee /tmp/log-client.log
+          grep -q '^running 1 test$' /tmp/log-client.log
+          grep -q '^test result: ok. 1 passed' /tmp/log-client.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail
