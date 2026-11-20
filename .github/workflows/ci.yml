@@ -3039,6 +3039,48 @@ jobs:
           cargo test --locked --lib cluster::chunk_log_tests::a_reader_whose_connections_were_closed_while_idle_reconnects_and_still_answers -- --exact --test-threads=1 2>&1 | tee /tmp/log-client.log
           grep -q '^running 1 test$' /tmp/log-client.log
           grep -q '^test result: ok. 1 passed' /tmp/log-client.log
+      - name: a chunk manifest names a small object as one paged extent of one page
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_manifest::tests::a_small_object_is_one_paged_extent_of_one_page -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest.log
+      - name: a chunk manifest names a large object by runs of an allocation, not by pages
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_manifest::tests::a_large_object_is_one_extent_per_run_of_an_allocation_not_one_per_page -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest.log
+      - name: a paged chunk extent never reaches past its allocation
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_manifest::tests::a_paged_extent_never_reaches_past_its_allocation -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest.log
+      - name: two chunk extents of one object never name the same page
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_manifest::tests::two_extents_of_one_object_never_name_the_same_page -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest.log
+      - name: a log chunk extent starts at zero and only the last may be open
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_manifest::tests::a_log_chunk_starts_at_zero_and_only_the_last_may_be_open -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest.log
+      - name: a framed chunk manifest is checked for magic, checksum and canonical form
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_manifest::tests::the_framed_bytes_are_checked_for_magic_checksum_and_canonical_form -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest.log
+      - name: a chunk manifest that is not in canonical form is refused
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_manifest::tests::a_manifest_that_is_not_in_canonical_form_is_refused -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail
