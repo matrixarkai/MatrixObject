@@ -1924,6 +1924,60 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
 
+      - name: Appends that land after each other extend the last extent instead of adding one
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::appends_that_land_after_each_other_extend_the_last_extent_instead_of_adding_one -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: The extent list of an append-only object grows per extent of data and not per append
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::the_extent_list_of_an_append_only_object_grows_per_extent_of_data_and_not_per_append -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: A merged extent has one payload entry for its whole range and its digest
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_merged_extent_has_one_payload_entry_for_its_whole_range_and_its_digest -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: A refused append after a merge puts the extended extent and its payload back
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_refused_append_after_a_merge_puts_the_extended_extent_and_its_payload_back -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: A bucket that keeps versions never merges an append into the extent a version names
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_bucket_that_keeps_versions_never_merges_an_append_into_the_extent_a_version_names -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: Appends of two objects that take turns in a chunk do not merge
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::appends_of_two_objects_that_take_turns_in_a_chunk_do_not_merge -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
+
       - name: A refused put leaves an upload in flight intact
         run: |
           set -o pipefail

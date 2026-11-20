@@ -321,7 +321,10 @@ pub(crate) enum PutTargetedPrevious {
 ///   from the previous object UNCHANGED (the code reads each off `previous`), so
 ///   there is nothing to restore;
 /// * `update_time_ms` -- the caller's, recorded here;
-/// * `extents` -- EXTENDED, so its old length is enough;
+/// * `extents` -- EXTENDED, so its old length is enough, EXCEPT for the last extent
+///   the object already had: an append that lands right after it extends it in place
+///   (`merge_first_appended_extent_into_tail`), changing its length and the payload
+///   entry that names it, so both are recorded here and put back;
 /// * `deleted` -- an append refuses a deleted object above, and writes `false`,
 ///   which is what it already was.
 ///
@@ -330,6 +333,9 @@ pub(crate) enum PutTargetedPrevious {
 pub(crate) struct AppendedObjectUndo {
     /// Truncate the extent list back to this many entries.
     extents_len: usize,
+    /// The last extent the object had, and the payload entry at its offset, as they were:
+    /// an append may have extended both, and putting them back is a no-op when it did not.
+    tail: Option<(ObjectExtent, StoredPayload)>,
     length: u64,
     etag_digest_bits: u64,
     has_etag: bool,

@@ -161,7 +161,7 @@ impl MatrixObjectStore {
         let object_id = ObjectId::new(bucket.to_string(), key.to_string());
         // BORROWED, not cloned. This is the whole point of the variant.
         let previous = self.object(&object_id);
-        // ---- AND NO PAYLOAD ENTRIES, because an append destroys none.
+        // ---- AND NO PAYLOAD ENTRIES IN `previous_payloads`, because an append destroys none.
         //
         // `previous_payloads` exists for a mutation that STALES the extents it replaces:
         // `mark_extents_stale` removes the payload entry for each one, and the entry holds
@@ -169,6 +169,13 @@ impl MatrixObjectStore {
         // append calls `mark_extents_stale` nowhere -- its callers are retention,
         // noncurrent versions, a lock transition, a multipart delete and a replacing put --
         // so there is nothing for it to carry.
+        //
+        // ONE ENTRY IS REWRITTEN, NOT DESTROYED: when the append lands right after the
+        // object's last extent it extends that extent and the payload entry at its offset
+        // (`merge_first_appended_extent_into_tail`). That entry sits below the chunk's old
+        // `next_offset`, so the retain below keeps it with its NEW value; the undo therefore
+        // carries the last extent and its entry in `AppendedObjectUndo::tail`, inline and
+        // without an allocation, and puts both back.
         //
         // The restore is unchanged in effect. `restore_targeted_payloads` first RETAINS,
         // dropping entries at or past the chunk's `next_offset` as it was before the
@@ -185,6 +192,11 @@ impl MatrixObjectStore {
             None => PutTargetedPrevious::Absent,
             Some(previous) => PutTargetedPrevious::Appended(AppendedObjectUndo {
                 extents_len: previous.extents.len(),
+                tail: previous.extents.last().and_then(|extent| {
+                    self.payloads
+                        .get(&extent.chunk_id, extent.offset())
+                        .map(|payload| (extent.clone(), payload.clone()))
+                }),
                 length: previous.length,
                 etag_digest_bits: previous.etag_digest_bits,
                 has_etag: previous.has_etag,
@@ -276,6 +288,16 @@ impl MatrixObjectStore {
                             Some(mut previous) => {
                                 let mut extents = previous.extents.to_vec();
                                 extents.truncate(appended.extents_len);
+                                // The last extent the object had may have been extended in
+                                // place by the append: put it back as it was, with its
+                                // payload entry. Writing back what was never changed is
+                                // harmless, and an object that was empty has no tail.
+                                if let Some((tail, payload)) = appended.tail {
+                                    if let Some(slot) = extents.last_mut() {
+                                        *slot = tail.clone();
+                                    }
+                                    self.payloads.insert(tail.chunk_id.clone(), tail.offset(), payload);
+                                }
                                 previous.extents = extents.into();
                                 previous.length = appended.length;
                                 previous.etag_digest_bits = appended.etag_digest_bits;

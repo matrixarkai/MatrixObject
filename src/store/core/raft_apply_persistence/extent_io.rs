@@ -97,6 +97,66 @@ impl MatrixObjectStore {
         Ok(extents)
     }
 
+    /// Extends the object's last extent with the first extent an append just allocated, when the
+    /// two are one contiguous byte range of one chunk, and returns the extended extent.
+    ///
+    /// `allocate_extents` places each piece at the first chunk with room, at its write cursor, so
+    /// one writer appending to one object lands every append right after the one before: without
+    /// this the object's extent list grows by one entry per append. Merging keeps it at one entry
+    /// per `max_extent_bytes` of appended data, which is also what `allocate_extents` would have
+    /// produced for the same bytes written at once.
+    ///
+    /// What the merge keeps true, because the snapshot validator checks it: the payload entry at
+    /// the last extent's offset becomes the whole merged range (its length, and its digest resumed
+    /// over the appended bytes, which is exactly the digest of the concatenation), and the entry
+    /// the allocation inserted for the merged piece is removed, so there is one entry per extent
+    /// and none left behind for `mark_extents_stale` to miss. The merged length never exceeds
+    /// `max_extent_bytes`, so no extent is longer than the allocator could have made it.
+    ///
+    /// Nothing is merged when the bucket keeps versions (the superseded metadata still names the
+    /// old, shorter extent and its payload entry), or when either extent has no payload entry of
+    /// the length it names.
+    fn merge_first_appended_extent_into_tail(
+        &mut self,
+        tail: Option<&ObjectExtent>,
+        appended: &mut Vec<ObjectExtent>,
+        data: &[u8],
+        bucket_keeps_versions: bool,
+    ) -> Result<Option<ObjectExtent>, ObjectError> {
+        let (Some(tail), Some(first)) = (tail, appended.first().cloned()) else {
+            return Ok(None);
+        };
+        if bucket_keeps_versions
+            || tail.chunk_id != first.chunk_id
+            || tail.end() != first.offset()
+            || tail.length().saturating_add(first.length()) > self.options.max_extent_bytes
+        {
+            return Ok(None);
+        }
+        let Some(tail_payload) = self.payloads.get(&tail.chunk_id, tail.offset()).cloned() else {
+            return Ok(None);
+        };
+        if tail_payload.len != tail.length() {
+            return Ok(None);
+        }
+        let merged = ObjectExtent::new(
+            tail.chunk_id.clone(),
+            tail.offset(),
+            tail.length() + first.length(),
+        )?;
+        appended.remove(0);
+        self.payloads.remove(&first.chunk_id, first.offset());
+        self.payloads.insert(
+            tail.chunk_id.clone(),
+            tail.offset(),
+            StoredPayload {
+                len: merged.length(),
+                etag_fnv1a64: fnv1a64_resumed(tail_payload.etag_fnv1a64, &data[..first.length() as usize]),
+            },
+        );
+        Ok(Some(merged))
+    }
+
     /// Takes the first freed range that fits, so an overwrite reuses the space
     /// its previous version left instead of growing the chunk. Returns `None`
     /// unless the store was asked for this.

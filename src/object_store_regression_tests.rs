@@ -40150,6 +40150,167 @@ fn a_retained_idempotency_key_carries_no_slack() {
 }
 
 #[test]
+fn appends_that_land_after_each_other_extend_the_last_extent_instead_of_adding_one() {
+    // test_options() has max_extent_bytes 4: four one-byte appends fill one extent
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    for byte in *b"abcd" {
+        store.append_object("bucket", "log", vec![byte], "text/plain").unwrap();
+    }
+    let head = store.head_object("bucket", "log").unwrap();
+    assert_eq!(head.length, 4);
+    assert_eq!(head.extents.len(), 1, "four one-byte appends are one extent of four bytes, not four extents");
+    assert_eq!(head.extents[0].length(), 4);
+    // the fifth byte would take the extent past max_extent_bytes: it starts a new one
+    store.append_object("bucket", "log", b"e".to_vec(), "text/plain").unwrap();
+    let head = store.head_object("bucket", "log").unwrap();
+    assert_eq!(head.extents.len(), 2);
+    assert_eq!((head.extents[0].length(), head.extents[1].length()), (4, 1));
+    assert_eq!(store.get_object("bucket", "log").unwrap().data, b"abcde");
+}
+
+#[test]
+fn the_extent_list_of_an_append_only_object_grows_per_extent_of_data_and_not_per_append() {
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    let mut expected = Vec::new();
+    for n in 0..64u8 {
+        store.append_object("bucket", "log", vec![n], "text/plain").unwrap();
+        expected.push(n);
+    }
+    let head = store.head_object("bucket", "log").unwrap();
+    // 64 bytes at 4 per extent: 16 extents, where one extent per append was 64
+    assert_eq!(head.extents.len(), 16, "an append-only object holds one extent per max_extent_bytes of data");
+    assert_eq!(store.get_object("bucket", "log").unwrap().data, expected);
+}
+
+#[test]
+fn a_merged_extent_has_one_payload_entry_for_its_whole_range_and_its_digest() {
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    for byte in *b"abcdef" {
+        store.append_object("bucket", "log", vec![byte], "text/plain").unwrap();
+    }
+    let head = store.head_object("bucket", "log").unwrap();
+    assert_eq!(head.extents.len(), 2);
+    for extent in head.extents.iter() {
+        let payload = store
+            .payloads
+            .get(&extent.chunk_id, extent.offset())
+            .expect("every extent has a payload entry at its offset");
+        assert_eq!(payload.len, extent.length());
+    }
+    assert_eq!(store.payloads.len(), head.extents.len(), "no entry is left behind for a piece that was merged");
+    let first = &head.extents[0];
+    assert_eq!(
+        store.payloads.get(&first.chunk_id, first.offset()).unwrap().etag_fnv1a64,
+        fnv1a64(b"abcd"),
+        "the merged entry's digest is the digest of the whole range"
+    );
+    // the snapshot of such a store validates, and the object's etag is the whole object's digest
+    let bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
+    StoreSnapshot::from_bytes(&bytes).unwrap().validate().unwrap();
+    let mut whole = MatrixObjectStore::new(test_options()).unwrap();
+    whole.create_bucket("bucket").unwrap();
+    let written_at_once = whole.put_object("bucket", "log", b"abcdef".to_vec(), "text/plain").unwrap();
+    assert_eq!(head.etag(), written_at_once.etag());
+}
+
+#[test]
+fn a_refused_append_after_a_merge_puts_the_extended_extent_and_its_payload_back() {
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store.append_object("bucket", "log", b"a".to_vec(), "text/plain").unwrap();
+    store.append_object("bucket", "log", b"b".to_vec(), "text/plain").unwrap();
+    let before = store.head_object("bucket", "log").unwrap();
+    assert_eq!(before.extents.len(), 1, "the two appends are one extent");
+    let before_bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
+    let before_metadata = store.metadata_state_fingerprint();
+
+    // refused after the allocation and the merge have already happened
+    let rejected = store.append_object_with_options(
+        "bucket",
+        "log",
+        b"c".to_vec(),
+        "text/plain",
+        PutOptions { expected_checksum: Some("fnv1a64:0000000000000000".to_string()), ..PutOptions::default() },
+    );
+    assert!(rejected.is_err(), "an append with a wrong expected checksum must be refused");
+
+    let after = store.head_object("bucket", "log").unwrap();
+    assert_eq!(after.extents.len(), 1);
+    assert_eq!(after.extents[0].length(), 2, "the extent is back at the length it had");
+    let tail = &after.extents[0];
+    assert_eq!(store.payloads.get(&tail.chunk_id, tail.offset()).unwrap().len, 2, "and so is its payload entry");
+    assert_eq!(store.payloads.len(), 1);
+    assert_eq!(store.export_snapshot().unwrap().to_bytes().unwrap(), before_bytes);
+    assert_eq!(store.metadata_state_fingerprint(), before_metadata);
+    // the store still appends correctly afterwards
+    store.append_object("bucket", "log", b"c".to_vec(), "text/plain").unwrap();
+    assert_eq!(store.get_object("bucket", "log").unwrap().data, b"abc");
+    assert_eq!(store.head_object("bucket", "log").unwrap().extents.len(), 1);
+}
+
+#[test]
+fn a_bucket_that_keeps_versions_never_merges_an_append_into_the_extent_a_version_names() {
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store.set_bucket_versioning("bucket", true).unwrap();
+    store.append_object("bucket", "log", b"a".to_vec(), "text/plain").unwrap();
+    store.append_object("bucket", "log", b"b".to_vec(), "text/plain").unwrap();
+    let head = store.head_object("bucket", "log").unwrap();
+    assert_eq!(head.extents.len(), 2, "the superseded version still names the one-byte extent");
+    assert_eq!(store.get_object("bucket", "log").unwrap().data, b"ab");
+    let bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
+    StoreSnapshot::from_bytes(&bytes).unwrap().validate().unwrap();
+}
+
+#[test]
+#[ignore = "local measurement: append cost against object size; run with --ignored --nocapture"]
+fn probe_append_cost_by_object_size() {
+    // 256-byte appends to one object, in windows of 2,048: the extents the object holds and the
+    // mean time of an append in each window. With one extent per append the list an append
+    // rebuilds grows with the object and the time with it; with merging it stays at one extent
+    // per `max_extent_bytes`.
+    let mut options = test_options();
+    options.page_size = 4096;
+    options.chunk_size = 1 << 20;
+    options.max_extent_bytes = 1 << 20;
+    let mut store = MatrixObjectStore::new(options).unwrap();
+    store.create_bucket("bucket").unwrap();
+    let record = vec![7u8; 256];
+    let window = 2048usize;
+    for step in 0..8usize {
+        let started = std::time::Instant::now();
+        for _ in 0..window {
+            store.append_object("bucket", "log", record.clone(), "text/plain").unwrap();
+        }
+        let per_append_us = started.elapsed().as_micros() as f64 / window as f64;
+        let head = store.head_object("bucket", "log").unwrap();
+        println!(
+            "E1_PROBE appends={} object_bytes={} extents={} mean_us_per_append={:.1}",
+            (step + 1) * window,
+            head.length,
+            head.extents.len(),
+            per_append_us
+        );
+    }
+}
+
+#[test]
+fn appends_of_two_objects_that_take_turns_in_a_chunk_do_not_merge() {
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store.append_object("bucket", "one", b"a".to_vec(), "text/plain").unwrap();
+    store.append_object("bucket", "two", b"x".to_vec(), "text/plain").unwrap();
+    store.append_object("bucket", "one", b"b".to_vec(), "text/plain").unwrap();
+    // the second byte of "one" is not next to its first: another object's byte sits between
+    assert_eq!(store.head_object("bucket", "one").unwrap().extents.len(), 2);
+    assert_eq!(store.get_object("bucket", "one").unwrap().data, b"ab");
+    assert_eq!(store.get_object("bucket", "two").unwrap().data, b"x");
+}
+
+#[test]
 fn an_append_that_fails_after_mutating_leaves_the_store_unchanged() {
     // The append path has the same shape as the put path -- capture, open a
     // page-service mutation batch, and on every error abort the batch and

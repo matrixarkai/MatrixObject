@@ -115,7 +115,15 @@ impl MatrixObjectStore {
                 ObjectError::InvalidArgument("object append length overflow".to_string())
             })?;
         self.check_bucket_quota_for_put(&object_id, length)?;
-        let appended_extents = self.allocate_extents(&data)?;
+        let mut appended_extents = self.allocate_extents(&data)?;
+        // An append that lands right after the object's last extent extends it, so the list
+        // grows per `max_extent_bytes` of data and not per append.
+        let merged_tail = self.merge_first_appended_extent_into_tail(
+            previous.as_ref().and_then(|metadata| metadata.extents.last()),
+            &mut appended_extents,
+            &data,
+            self.bucket_versioning.contains(object_id.bucket.as_str()),
+        )?;
         // ---- BUILT AT ITS FINAL CAPACITY, AND THE `extents.into()` BELOW IS NOW A MOVE.
         //
         // It was not before. This note used to say the conversion was a move because
@@ -131,14 +139,20 @@ impl MatrixObjectStore {
         // before the change: the conversion allocated and copied 64,024 bytes per added
         // entry, one of three such copies making up half of all per-entry allocation.
         //
-        // The list still grows by two per append and is still rebuilt in full here, so this
-        // path remains O(extents) per append -- one of the terms that make an append-only
-        // log quadratic to build. This removes one of its three copies, not the term.
+        // The list is still rebuilt in full here, but it no longer grows per append: an append
+        // that lands right after the last extent extended it (`merged_tail`), so the list has
+        // one entry per `max_extent_bytes` of data and this copy is O(that), not O(appends).
         let previous_extents = previous
             .as_ref()
             .map_or(&[][..], |metadata| metadata.extents.as_slice());
         let mut extents = Vec::with_capacity(previous_extents.len() + appended_extents.len());
-        extents.extend_from_slice(previous_extents);
+        match merged_tail {
+            Some(merged) => {
+                extents.extend_from_slice(&previous_extents[..previous_extents.len() - 1]);
+                extents.push(merged);
+            }
+            None => extents.extend_from_slice(previous_extents),
+        }
         extents.extend(appended_extents);
         debug_assert_eq!(
             extents.len(),
