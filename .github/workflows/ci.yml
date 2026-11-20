@@ -732,8 +732,8 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --all-features --lib journal_control_ -- --test-threads=1 | tee /tmp/journal-control.log
-          grep -q '^test result: ok. 5 passed; 0 failed;' /tmp/journal-control.log
-          for test_name in journal_control_codecs_are_canonical_bounded_and_versioned journal_control_tcp_checkpoint_reports_published_epoch_and_recovers_tail journal_control_memory_refusal_does_not_fence_ordinary_requests journal_control_maintenance_status_tracks_cleanup_without_changing_v1 journal_control_tcp_negotiates_maintenance_without_mutating_status_reads
+          grep -q '^test result: ok. 7 passed; 0 failed;' /tmp/journal-control.log
+          for test_name in journal_control_codecs_are_canonical_bounded_and_versioned journal_control_tcp_checkpoint_reports_published_epoch_and_recovers_tail journal_control_memory_refusal_does_not_fence_ordinary_requests journal_control_maintenance_status_tracks_cleanup_without_changing_v1 journal_control_tcp_negotiates_maintenance_without_mutating_status_reads journal_control_tcp_write_statistics_preserve_old_status_and_reset_after_reopen journal_control_write_statistics_are_scoped_bounded_and_versioned
           do
             grep -Fq "${test_name} ... ok" /tmp/journal-control.log
           done
@@ -846,7 +846,8 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --all-features --lib compact_append -- --test-threads=1 | tee /tmp/compact-append.log
-          grep -q '^test result: ok. 7 passed' /tmp/compact-append.log
+          grep -q '^test result: ok. 8 passed; 0 failed;' /tmp/compact-append.log
+          grep -Fq 'failed_compact_append_does_not_create_object_activity ... ok' /tmp/compact-append.log
 
       - name: catalog clones share immutable manifests and preserve canonical images
         run: |
