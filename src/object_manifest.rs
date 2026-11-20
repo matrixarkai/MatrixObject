@@ -1579,7 +1579,7 @@ fn digest(bytes: &[u8]) -> u64 {
         (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
     })
 }
-fn frame<T: Message>(magic: &[u8; 4], value: &T, limit: usize) -> Result<Vec<u8>, ObjectError> {
+pub(crate) fn frame<T: Message>(magic: &[u8; 4], value: &T, limit: usize) -> Result<Vec<u8>, ObjectError> {
     if value.encoded_len() > limit {
         return Err(invalid("manifest encoding exceeds size bound"));
     }
@@ -1590,7 +1590,7 @@ fn frame<T: Message>(magic: &[u8; 4], value: &T, limit: usize) -> Result<Vec<u8>
     bytes.extend_from_slice(&digest(&bytes).to_le_bytes());
     Ok(bytes)
 }
-fn unframe<T: Message + Default>(
+pub(crate) fn unframe<T: Message + Default>(
     magic: &[u8; 4],
     bytes: &[u8],
     limit: usize,
