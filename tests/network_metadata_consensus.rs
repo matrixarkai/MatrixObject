@@ -3067,6 +3067,10 @@ mod star_append_amplification;
 #[path = "node_regime/log_append_extent_cap.rs"]
 mod log_append_extent_cap;
 
+#[cfg(feature = "replica-server")]
+#[path = "node_regime/log_object_end_to_end.rs"]
+mod log_object_end_to_end;
+
 
 #[test]
 fn zero_filled_metadata_wals_keep_every_committed_placement_across_leader_loss_and_restart() {
