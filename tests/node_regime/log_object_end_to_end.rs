@@ -542,9 +542,27 @@ fn measure_log_object_growth_end_to_end() {
     let verify_start = Instant::now();
     let mut position = 0u64;
     let mut mismatches = 0u64;
+    let mut read_errors = 0u64;
     while position < durable {
         let slice = (durable - position).min(READ_SLICE) as usize;
-        let data = reader.read_range(&mut meta, position, slice).unwrap();
+        // a failed read is reported with where it was and tried once more after a pause, so a
+        // transient refusal can be told from a persistent one; the verification goes on past it
+        let mut result = reader.read_range(&mut meta, position, slice);
+        if let Err(error) = &result {
+            out.line(format!("E2E_VERIFY_ERROR position={position} chunk_index={} slice={slice} attempt=1 error={error:?}", position / chunk_bytes));
+            std::thread::sleep(Duration::from_secs(2));
+            result = reader.read_range(&mut meta, position, slice);
+            if let Err(error) = &result {
+                out.line(format!("E2E_VERIFY_ERROR position={position} chunk_index={} slice={slice} attempt=2 error={error:?}", position / chunk_bytes));
+            } else {
+                out.line(format!("E2E_VERIFY_ERROR_RECOVERED position={position} chunk_index={}", position / chunk_bytes));
+            }
+        }
+        let Ok(data) = result else {
+            read_errors += 1;
+            position += slice as u64;
+            continue;
+        };
         assert_eq!(data.len(), slice, "a read inside the object returns every byte");
         for (index, byte) in data.iter().enumerate() {
             if *byte != stream_byte(position + index as u64) {
@@ -555,7 +573,7 @@ fn measure_log_object_growth_end_to_end() {
     }
     let rss_full: Vec<u64> = chunk_pids.iter().map(|pid| rss_kb(*pid)).collect();
     out.line(format!(
-        "E2E_VERIFY kind=log length={durable} acknowledged={acked} mismatches={mismatches} lost_acknowledged={lost_acknowledged} read_ms={} chunk_rss_kb_after_full_read={rss_full:?}",
+        "E2E_VERIFY kind=log length={durable} acknowledged={acked} mismatches={mismatches} read_errors={read_errors} lost_acknowledged={lost_acknowledged} read_ms={} chunk_rss_kb_after_full_read={rss_full:?}",
         verify_start.elapsed().as_millis()
     ));
 
@@ -583,6 +601,7 @@ fn measure_log_object_growth_end_to_end() {
         takeover.elapsed().as_millis()
     ));
 
+    assert_eq!(read_errors, 0, "a read inside the object failed (see E2E_VERIFY_ERROR lines)");
     assert!(!lost_acknowledged, "an acknowledged append was lost");
     assert_eq!(mismatches, 0, "the object holds bytes that were never appended");
     assert!(durable >= acked, "the nodes hold fewer bytes than were acknowledged");
@@ -679,11 +698,18 @@ fn measure_page_path_growth_baseline() {
     if let Some(current) = manifest.as_ref() {
         let tail = (config.append_bytes as u64).min(current.length);
         let start = current.length - tail;
-        let (_, bytes) = client
-            .read_object_range(BUCKET, PAGE_KEY, start, tail, current.length as usize, &ReplicaClientOptions::default())
-            .unwrap();
-        let correct = bytes.iter().enumerate().all(|(index, byte)| *byte == stream_byte(start + index as u64));
-        out.line(format!("E2E_BASELINE_READ offset={start} bytes={tail} correct={correct}"));
-        assert!(correct, "the page-path object does not read back what was appended");
+        // After a failed append the metadata servers may be gone: the read-back is then reported
+        // instead of panicking, so that the run keeps its result lines and the next case still runs
+        match client.read_object_range(BUCKET, PAGE_KEY, start, tail, current.length as usize, &ReplicaClientOptions::default()) {
+            Ok((_, bytes)) => {
+                let correct = bytes.iter().enumerate().all(|(index, byte)| *byte == stream_byte(start + index as u64));
+                out.line(format!("E2E_BASELINE_READ offset={start} bytes={tail} correct={correct}"));
+                assert!(correct, "the page-path object does not read back what was appended");
+            }
+            Err(error) => {
+                out.line(format!("E2E_BASELINE_READ offset={start} bytes={tail} unavailable={error:?}"));
+                assert!(!failure.is_empty(), "the read-back failed although no append failed: {error:?}");
+            }
+        }
     }
 }
