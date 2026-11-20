@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 #[cfg(any(feature = "replica-server", feature = "meta-server"))]
 mod checkpoint_fragment;
+pub mod chunk_catalog;
 pub mod chunk_manifest;
 pub mod chunk_namespace_fence;
 #[cfg(test)]
