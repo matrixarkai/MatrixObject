@@ -2877,16 +2877,28 @@ jobs:
           grep -q '^running 1 test$' /tmp/repair-cursor.log
           grep -q '^test result: ok. 1 passed' /tmp/repair-cursor.log
 
-      - name: three real nodes acknowledge pipelined log appends by quorum and read them back
+      - name: sealed log reads use one matching replica and append sizing keeps wire bounds
         run: |
           set -euo pipefail
-          cargo test --locked --lib cluster::chunk_log_tests::pipelined_appends_are_acknowledged_by_two_nodes_and_read_back -- --exact --test-threads=1 2>&1 | tee /tmp/log-client.log
+          cargo test --locked --lib native_log_ -- --test-threads=1 | tee /tmp/native-log-rpc-cost.log
+          grep -q '^test result: ok. 5 passed; 0 failed;' /tmp/native-log-rpc-cost.log
+
+      - name: native Star writes and seals require every durable replica
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib native_star_all_replicas_ -- --test-threads=1 | tee /tmp/native-star-all-replicas.log
+          grep -q '^test result: ok. 10 passed; 0 failed;' /tmp/native-star-all-replicas.log
+
+      - name: three real nodes all persist pipelined log appends before success
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::chunk_log_tests::pipelined_appends_are_acknowledged_by_three_nodes_and_read_back -- --exact --test-threads=1 2>&1 | tee /tmp/log-client.log
           grep -q '^running 1 test$' /tmp/log-client.log
           grep -q '^test result: ok. 1 passed' /tmp/log-client.log
-      - name: one node down still acknowledges, and it catches up after a restart
+      - name: one node down prevents success until pending bytes catch up after restart
         run: |
           set -euo pipefail
-          cargo test --locked --lib cluster::chunk_log_tests::one_node_down_two_of_three_still_acknowledge_and_it_catches_up_after_a_restart -- --exact --test-threads=1 2>&1 | tee /tmp/log-client.log
+          cargo test --locked --lib cluster::chunk_log_tests::one_node_down_prevents_success_and_pending_bytes_catch_up_after_restart -- --exact --test-threads=1 2>&1 | tee /tmp/log-client.log
           grep -q '^running 1 test$' /tmp/log-client.log
           grep -q '^test result: ok. 1 passed' /tmp/log-client.log
       - name: a stale writer epoch is a typed error that ends the writer
@@ -3018,7 +3030,7 @@ jobs:
       - name: a log chunk seal leaves open a node that never held the bytes
         run: |
           set -euo pipefail
-          cargo test --locked --lib cluster::chunk_log_tests::a_seal_leaves_open_a_node_that_never_held_the_bytes_instead_of_sealing_it_short -- --exact --test-threads=1 2>&1 | tee /tmp/log-client.log
+          cargo test --locked --lib cluster::chunk_log_tests::native_star_all_replicas_preserves_legacy_two_copy_data_until_repair -- --exact --test-threads=1 2>&1 | tee /tmp/log-client.log
           grep -q '^running 1 test$' /tmp/log-client.log
           grep -q '^test result: ok. 1 passed' /tmp/log-client.log
       - name: a log chunk seal waits for a node that lags and no node seals short
