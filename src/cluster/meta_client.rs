@@ -2525,6 +2525,7 @@ fn refusal_proves_not_admitted(error: &ObjectError) -> bool {
             "compact append prior manifest changed",
             "append plan prior manifest changed",
             "object changed before staging",
+            "could not be applied after preparation; nothing was published",
         ]
         .iter()
         .any(|known| message.contains(known)),
