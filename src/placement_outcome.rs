@@ -226,6 +226,11 @@ fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
 }
 
+/// A publication whose expected prior state is no longer the stored one: the writer lost a race.
+fn stale_expected() -> ObjectError {
+    ObjectError::PreconditionFailed("object manifest changed before publication".into())
+}
+
 /// The leader's decision, taken while it prepares a delete: forget the tombstone only when ALL hold. The cluster has
 /// raised `FEATURE_FORGET_PREFIX` (every voter reads the field); the delete is the plain one of a LIVE object (no
 /// staging, no copy); its key lies under a configured never-reused prefix; and nothing in state (a retained
@@ -746,6 +751,12 @@ impl PlacementOutcome {
     ) -> Result<Self, ObjectError> {
         manifest.validate()?;
         let after = manifest.after.as_ref().unwrap();
+        // THE EXPECTED STATE FIRST. A writer that read the object before another writer published it holds a
+        // stale `before`; the placement record in `service` already follows the NEWER manifest, so the binding
+        // check below would fail and call a lost race "placement binding mismatch" (a Corruption, which the
+        // SDK cannot tell from a publication that might have landed: an unconfirmed 503). A lost race is a
+        // precondition failure, in the SDK's "not admitted" list, so the writer re-reads and retries.
+        if !service.object_manifests.matches_expected(&after.object_id(), manifest.before.as_ref()) { return Err(stale_expected()); }
         let before = service
             .placements
             .get(&after.object_id())

@@ -2211,6 +2211,61 @@ mod tests {
         assert_eq!(reply, Some(MetaReply::Expired { offline_count: 0 }));
         assert_eq!(state(&service), saved);
     }
+    /// Two writers publish the next generation of ONE object in one batch (or in two consecutive ones): the first
+    /// wins, and the second, which still expects the generation the first replaced, is a PRECONDITION failure
+    /// that the SDK reads as "not published, re-read and retry". It was reported as a Corruption, "manifest
+    /// publication placement binding mismatch", because the placement record already followed the first
+    /// writer's manifest and the binding was checked before the expected state: a lost race looked like a
+    /// publication that might have landed (an unconfirmed 503), the failure seen with concurrent writers to one key.
+    #[test]
+    fn a_writer_that_lost_the_race_for_its_object_gets_a_precondition_failure_not_a_binding_mismatch() {
+        use crate::object_manifest::{ManifestOutcome, ObjectManifest};
+        let (mut service, groups) = fixture(1, 0);
+        let (_files, peer) = batch_peer();
+        let manifest = |generation| ObjectManifest {
+            format_version: 2,
+            bucket: "bucket".into(),
+            key: "contended".into(),
+            generation,
+            ..Default::default()
+        };
+        let first = manifest(1);
+        PlacementOutcome::publish_manifest(&service, ManifestOutcome::decide(None, first.clone()).unwrap(), 0)
+            .unwrap()
+            .apply(&mut service)
+            .unwrap();
+        let writer = || MetaRequest::PublishManifest {
+            outcome: ManifestOutcome::decide(Some(first.clone()), manifest(2)).unwrap(),
+            update_time_ms: 0,
+        };
+        // the same batch
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut queue = VecDeque::new();
+        let (a, _reply_a) = queued(writer(), deadline);
+        let (b, _reply_b) = queued(writer(), deadline);
+        queue.push_back(a);
+        queue.push_back(b);
+        let (payloads, prepared) = prepare_batch(&mut service, &groups, 65536, &mut queue, None, &peer.membership()).unwrap();
+        assert_eq!((payloads.len(), prepared.len()), (2, 2));
+        assert!(matches!(prepared[0].1, Some(Ok(_))), "the first writer is admitted");
+        match &prepared[1].1 {
+            Some(Err(ObjectError::PreconditionFailed(message))) => {
+                assert!(message.contains("object manifest changed before publication"), "{message}")
+            }
+            other => panic!("the writer that lost the race must get a precondition failure: {other:?}"),
+        }
+        // consecutive batches: the first writer's outcome is committed, then the second writer arrives
+        let committed = PlacementOutcome::from_payload(&Entry::decode(payloads[0].as_slice()).unwrap().outcome).unwrap();
+        committed.apply(&mut service).unwrap();
+        let (late, _reply) = queued(writer(), deadline);
+        let mut queue = VecDeque::from([late]);
+        let (_, prepared) = prepare_batch(&mut service, &groups, 65536, &mut queue, None, &peer.membership()).unwrap();
+        assert!(
+            matches!(&prepared[0].1, Some(Err(ObjectError::PreconditionFailed(message))) if message.contains("object manifest changed before publication")),
+            "{:?}",
+            prepared[0].1
+        );
+    }
     #[test]
     fn preparation_restores_rejections_errors_and_unwinding() {
         let (mut service, groups) = fixture(2, 1);
