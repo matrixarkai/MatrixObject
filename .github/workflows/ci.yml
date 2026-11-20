@@ -3146,7 +3146,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --lib log_chunk_sealed_tests -- --test-threads=1 | tee /tmp/log-chunk-sealed.log
-          grep -q '^test result: ok. 6 passed' /tmp/log-chunk-sealed.log
+          grep -q '^test result: ok. 7 passed' /tmp/log-chunk-sealed.log
       - name: a replica bounds the memory of its log chunks
         run: |
           set -euo pipefail

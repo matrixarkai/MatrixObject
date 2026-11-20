@@ -129,7 +129,8 @@ pub fn crc32c_update(crc: u32, data: &[u8]) -> u32 {
     }
     !state
 }
-fn crc32c_update_recovery(crc: u32, data: &[u8]) -> u32 {
+// Dispatch only while validating persistent bytes; append-time checksums stay portable.
+fn crc32c_update_stored(crc: u32, data: &[u8]) -> u32 {
     #[cfg(target_arch = "x86_64")]
     if data.len() >= 8 && std::arch::is_x86_feature_detected!("sse4.2") {
         // SAFETY: runtime detection establishes the instruction set before entry.
@@ -158,8 +159,8 @@ unsafe fn crc32c_update_sse42(crc: u32, data: &[u8]) -> u32 {
 fn crc32c_update_portable(crc: u32, data: &[u8]) -> u32 {
     crc32c_update(crc, data)
 }
-fn crc32c_recovery(data: &[u8]) -> u32 {
-    crc32c_update_recovery(0, data)
+fn crc32c_stored_record(data: &[u8]) -> u32 {
+    crc32c_update_stored(0, data)
 }
 
 pub fn crc32c(data: &[u8]) -> u32 {
@@ -196,7 +197,8 @@ impl Header {
         if bytes.len() < LOG_HEADER_LEN || &bytes[..4] != MAGIC {
             return None;
         }
-        if crc32c_recovery(&bytes[..36]) != u32::from_le_bytes(bytes[36..40].try_into().ok()?) {
+        if crc32c_stored_record(&bytes[..36]) != u32::from_le_bytes(bytes[36..40].try_into().ok()?)
+        {
             return None;
         }
         let header = Self {
@@ -422,8 +424,8 @@ impl LogChunk {
                     while done < header.length as usize {
                         let count = piece.len().min(header.length as usize - done);
                         read_exact_at(&file, &mut piece[..count], data_pos + done as u64)?;
-                        record_crc = crc32c_update_recovery(record_crc, &piece[..count]);
-                        total_crc = crc32c_update_recovery(total_crc, &piece[..count]);
+                        record_crc = crc32c_update_stored(record_crc, &piece[..count]);
+                        total_crc = crc32c_update_stored(total_crc, &piece[..count]);
                         done += count;
                     }
                     if record_crc != header.data_crc {
@@ -664,7 +666,7 @@ impl LogChunk {
                 None => {
                     let mut bytes = vec![0u8; extent.record_len as usize];
                     read_exact_at(&self.file, &mut bytes, extent.file_pos)?;
-                    if crc32c(&bytes) != extent.data_crc {
+                    if crc32c_stored_record(&bytes) != extent.data_crc {
                         return Err(corrupt(format!(
                             "log chunk record at {} has damaged data",
                             extent.file_pos - LOG_HEADER_LEN as u64
