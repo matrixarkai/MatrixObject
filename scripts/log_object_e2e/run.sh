@@ -7,6 +7,8 @@
 # E2E_INTERVAL_BYTES, E2E_MODE=closed|open, E2E_RATE_PER_S, E2E_META_RESTART_AT,
 # E2E_CHUNK_RESTART_AT, E2E_BASELINE=1 (also run the baseline; default on), E2E_TARGET_DIR.
 set -eu
+# a launcher started from a non-login shell has no cargo on its PATH; the build below needs it
+export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
 GO_FILE="${E2E_GO_FILE:-/root/cgm_work/e2e_go}"
 if [ ! -e "$GO_FILE" ]; then
   echo "run: $GO_FILE does not exist; not building, not running"
