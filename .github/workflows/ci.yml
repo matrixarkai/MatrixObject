@@ -81,7 +81,7 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --lib \
-            tests::the_readme_describes_the_continuous_integration_it_has -- --exact \
+            repo_guard_tests::the_readme_describes_the_continuous_integration_it_has -- --exact \
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the_readme_describes_the_continuous_integration_it_has did not run"; exit 1; }
@@ -105,7 +105,7 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --lib \
-            tests::the_repository_carries_what_an_outside_contributor_needs -- --exact \
+            repo_guard_tests::the_repository_carries_what_an_outside_contributor_needs -- --exact \
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the_repository_carries_what_an_outside_contributor_needs did not run"; exit 1; }
@@ -2094,7 +2094,7 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --lib \
-            tests::every_rust_source_carries_the_licence_header -- --exact \
+            repo_guard_tests::every_rust_source_carries_the_licence_header -- --exact \
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::every_rust_source_carries_the_licence_header did not run"; exit 1; }
@@ -2470,7 +2470,7 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --lib \
-            tests::every_binary_the_readme_tells_a_reader_to_run_exists -- --exact \
+            repo_guard_tests::every_binary_the_readme_tells_a_reader_to_run_exists -- --exact \
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::every_binary_the_readme_tells_a_reader_to_run_exists did not run"; exit 1; }
@@ -3216,10 +3216,10 @@ jobs:
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail
-          cargo test --locked --lib tests::every_guard_the_workflow_pins_by_name_exists -- --exact --ignored | tee /tmp/library-guard.log
+          cargo test --locked --lib repo_guard_tests::every_guard_the_workflow_pins_by_name_exists -- --exact --ignored | tee /tmp/library-guard.log
           grep -q '^running 1 test$' /tmp/library-guard.log
           grep -q '^test result: ok. 1 passed' /tmp/library-guard.log
-          cargo test --locked --all-features --lib tests::every_guard_the_workflow_pins_by_name_exists -- --exact --ignored | tee /tmp/library-guard.log
+          cargo test --locked --all-features --lib repo_guard_tests::every_guard_the_workflow_pins_by_name_exists -- --exact --ignored | tee /tmp/library-guard.log
           grep -q '^running 1 test$' /tmp/library-guard.log
           grep -q '^test result: ok. 1 passed' /tmp/library-guard.log
       - name: rust distributed readiness fences checksums

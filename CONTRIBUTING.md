@@ -24,7 +24,7 @@ processes. Run them in separate invocations so children cannot briefly inherit
 file locks held by unrelated parallel library tests:
 
 ```bash
-cargo test --locked --lib tests::every_guard_the_workflow_pins_by_name_exists -- --exact --ignored
+cargo test --locked --lib repo_guard_tests::every_guard_the_workflow_pins_by_name_exists -- --exact --ignored
 cargo test --locked --all-features --lib stored_outcomes_ -- --ignored --test-threads=1
 cargo test --locked --all-features --lib outcome_segments_ -- --ignored --test-threads=1
 ```

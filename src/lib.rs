@@ -355,3 +355,6 @@ pub mod cluster;
 #[cfg(test)]
 #[path = "object_store_regression_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod repo_guard_tests;
