@@ -2669,16 +2669,10 @@ jobs:
           cargo test --locked --all-features --lib cluster::reclaim_loop::tests::a_setting_that_is_out_of_range_or_not_a_number_is_refused_not_defaulted -- --exact --test-threads=1 2>&1 | tee /tmp/reclaim-loop.log
           grep -q '^running 1 test$' /tmp/reclaim-loop.log
           grep -q '^test result: ok. 1 passed' /tmp/reclaim-loop.log
-      - name: chunk objects with the sweep off refuse to start without the acknowledgement
+      - name: a door with the sweep off refuses to start without the acknowledgement
         run: |
           set -euo pipefail
-          cargo test --locked --all-features --lib cluster::reclaim_loop::tests::chunk_objects_with_the_sweep_off_refuse_to_start_unless_the_leak_is_acknowledged -- --exact --test-threads=1 2>&1 | tee /tmp/reclaim-loop.log
-          grep -q '^running 1 test$' /tmp/reclaim-loop.log
-          grep -q '^test result: ok. 1 passed' /tmp/reclaim-loop.log
-      - name: a door without chunk objects never runs the sweep
-        run: |
-          set -euo pipefail
-          cargo test --locked --all-features --lib cluster::reclaim_loop::tests::a_door_that_does_not_store_chunk_objects_never_runs_the_sweep -- --exact --test-threads=1 2>&1 | tee /tmp/reclaim-loop.log
+          cargo test --locked --all-features --lib cluster::reclaim_loop::tests::a_door_with_the_sweep_off_refuses_to_start_unless_the_leak_is_acknowledged -- --exact --test-threads=1 2>&1 | tee /tmp/reclaim-loop.log
           grep -q '^running 1 test$' /tmp/reclaim-loop.log
           grep -q '^test result: ok. 1 passed' /tmp/reclaim-loop.log
       - name: the reclaim loop frees after the grace, survives a failed open and refuses while page objects exist
@@ -2693,6 +2687,18 @@ jobs:
           cargo test --locked --all-features --lib net::chunk_plane::tests::a_chunk_manifest_is_shown_with_one_identity_per_extent_and_two_writes_never_share_one -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-plane.log
           grep -q '^running 1 test$' /tmp/chunk-plane.log
           grep -q '^test result: ok. 1 passed' /tmp/chunk-plane.log
+      - name: the refusal over an older data directory names it and says there is no migration
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::reclaim_loop::tests::the_refusal_over_an_older_data_directory_names_it_and_says_there_is_no_migration -- --exact --test-threads=1 2>&1 | tee /tmp/older-data.log
+          grep -q '^running 1 test$' /tmp/older-data.log
+          grep -q '^test result: ok. 1 passed' /tmp/older-data.log
+      - name: a door refuses to start over an older data directory and starts once it holds none
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --test network_metadata_consensus a_door_refuses_to_start_over_an_older_data_directory_and_starts_once_it_holds_none -- --exact | tee /tmp/older-data-cluster.log
+          grep -q '^running 1 test$' /tmp/older-data-cluster.log
+          grep -q '^test result: ok. 1 passed' /tmp/older-data-cluster.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail
