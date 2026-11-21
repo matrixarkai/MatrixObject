@@ -69,6 +69,9 @@ struct Entry {
     outcome: Vec<u8>,
     #[prost(bytes = "vec", tag = "3")]
     catalog_outcome: Vec<u8>,
+    /// A chunk manifest publication (version 3): the client's decided outcome, framed.
+    #[prost(bytes = "vec", tag = "4")]
+    chunk_outcome: Vec<u8>,
 }
 struct Request {
     request: MetaRequest,
@@ -688,6 +691,8 @@ fn run(
                     }
                 } else if queued.front().is_some_and(|r| matches!(r.request, MetaRequest::ChunkCatalog(_))) {
                     propose_catalog_batch(peer, service, groups, limit, &mut queued, &mut pending)?;
+                } else if queued.front().is_some_and(|r| matches!(r.request, MetaRequest::PublishChunkManifest(_))) {
+                    propose_chunk_manifest_batch(peer, service, &mut queued, &mut pending)?;
                 } else if queued.front().is_some_and(|r| empty_expiry(service, groups, Some(&liveness), &r.request)) {
                     // A sweep with no candidate changes no state. Confirm the current
                     // quorum without appending an empty application entry.
@@ -733,7 +738,7 @@ fn run(
                 } else {
                     // A later write must not pass reads already admitted to this queue.
                     let mut writes = VecDeque::new();
-                    while queued.front().is_some_and(|r| !read_only(&r.request) && !matches!(r.request, MetaRequest::Membership(_) | MetaRequest::ChunkCatalog(_))) {
+                    while queued.front().is_some_and(|r| !read_only(&r.request) && !matches!(r.request, MetaRequest::Membership(_) | MetaRequest::ChunkCatalog(_) | MetaRequest::PublishChunkManifest(_))) {
                         writes.push_back(queued.pop_front().unwrap());
                     }
                     propose_batch_live(
@@ -812,6 +817,7 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::CopyManifest(_)
         | MetaRequest::AllocateObjectPages { .. }
         | MetaRequest::PublishManifest { .. }
+        | MetaRequest::PublishChunkManifest(_)
         | MetaRequest::HeartbeatRootNode { .. }
         | MetaRequest::ReportChunkNode { .. }
         | MetaRequest::HeartbeatChunkNode { .. }
@@ -852,8 +858,9 @@ fn apply_committed(
     if !bytes.is_empty() {
         let entry = Entry::decode(bytes).map_err(|e| RaftError::Storage(e.to_string()))?;
         let valid_kind = match entry.version {
-            1 => entry.catalog_outcome.is_empty(),
-            2 => entry.outcome.is_empty() && !entry.catalog_outcome.is_empty(),
+            1 => entry.catalog_outcome.is_empty() && entry.chunk_outcome.is_empty(),
+            2 => entry.outcome.is_empty() && !entry.catalog_outcome.is_empty() && entry.chunk_outcome.is_empty(),
+            3 => entry.outcome.is_empty() && entry.catalog_outcome.is_empty() && !entry.chunk_outcome.is_empty(),
             _ => false,
         };
         if !valid_kind || entry.encode_to_vec() != bytes {
@@ -864,6 +871,12 @@ fn apply_committed(
         if !entry.catalog_outcome.is_empty() {
             super::chunk_catalog_outcome::ChunkCatalogOutcome::from_payload(&entry.catalog_outcome)
                 .and_then(|outcome| outcome.apply(service, groups))
+                .map_err(storage)?;
+        }
+        if !entry.chunk_outcome.is_empty() {
+            // The leader proved this applies when it prepared it, so a failure here is a defect.
+            crate::chunk_catalog::ChunkOutcome::from_bytes(&entry.chunk_outcome)
+                .and_then(|outcome| super::chunk_manifest_command::apply(service, &outcome))
                 .map_err(storage)?;
         }
         if !entry.outcome.is_empty() {
@@ -950,6 +963,7 @@ fn propose_catalog_batch(
             };
         // Refusals derived from this speculative prefix wait behind its commit too.
         let payload = Entry {
+            chunk_outcome: Vec::new(),
             version: if outcome.is_some() { 2 } else { 1 },
             outcome: Vec::new(),
             catalog_outcome: match &outcome {
@@ -992,6 +1006,121 @@ fn propose_catalog_batch(
                         request,
                         reply: Some(reply),
                     });
+                }
+            }
+            Err(error) => {
+                for (request, _) in prepared {
+                    let _ = request.reply.try_send(Err(refused(&error)));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Fail the draft apply of the chunk publication at this position of the batch (tests only).
+    static CHUNK_APPLY_FAULT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Propose a run of chunk manifest publications, each prepared against the ones before it.
+///
+/// A publication the catalog refuses (a generation that moved, a full catalog) is refused alone.
+/// One whose prepared outcome then fails to apply to the draft is refused alone too, with an error
+/// that says nothing was published, and the run stops there: the requests behind it are prepared
+/// again against a clean state in the next round. Neither case aborts the worker. Dropping the
+/// draft puts the live catalog back exactly, so nothing is visible until the entries commit.
+fn propose_chunk_manifest_batch(
+    peer: &mut DurablePeer,
+    service: &mut MatrixMetaService,
+    queued: &mut VecDeque<Request>,
+    pending: &mut VecDeque<Pending>,
+) -> Result<(), RaftError> {
+    let mut draft = super::chunk_manifest_command::ChunkDraft::new(service);
+    let mut payloads: Vec<Vec<u8>> = Vec::new();
+    let mut prepared: Vec<(Request, Result<MetaReply, ObjectError>)> = Vec::new();
+    let mut bytes = 0usize;
+    for _ in 0..PROPOSALS_PER_BATCH {
+        if !queued
+            .front()
+            .is_some_and(|r| matches!(r.request, MetaRequest::PublishChunkManifest(_)))
+        {
+            break;
+        }
+        let request = queued.pop_front().unwrap();
+        if request.deadline <= Instant::now() {
+            let _ = request
+                .reply
+                .try_send(Err(refused("chunk manifest request expired before proposal")));
+            continue;
+        }
+        request.progress.mark(RequestPhase::Preparing);
+        let MetaRequest::PublishChunkManifest(outcome) = &request.request else {
+            unreachable!()
+        };
+        let (outcome, reply) = match super::chunk_manifest_command::prepare(draft.service(), outcome) {
+            Ok(super::chunk_manifest_command::Decision::Change(outcome, manifest)) => {
+                (Some(outcome), Ok(MetaReply::ChunkManifest(manifest)))
+            }
+            Ok(super::chunk_manifest_command::Decision::Unchanged(manifest)) => {
+                (None, Ok(MetaReply::ChunkManifest(manifest)))
+            }
+            Err(error) => (None, Err(error)),
+        };
+        // A replay or a refusal proposes an entry with nothing in it, so its reply waits behind the
+        // commit of the prefix it was decided against, as a catalog report's does.
+        let payload = Entry {
+            chunk_outcome: match &outcome {
+                Some(outcome) => outcome.to_bytes().map_err(storage)?,
+                None => Vec::new(),
+            },
+            version: if outcome.is_some() { 3 } else { 1 },
+            outcome: Vec::new(),
+            catalog_outcome: Vec::new(),
+        }
+        .encode_to_vec();
+        if !prepared.is_empty() && bytes.saturating_add(payload.len()) > PACKET_LIMIT / 2 {
+            queued.push_front(request);
+            break;
+        }
+        if payload.len() > PACKET_LIMIT / 2 {
+            let _ = request
+                .reply
+                .try_send(Err(refused("chunk manifest proposal exceeds byte limit")));
+            continue;
+        }
+        if let Some(outcome) = &outcome {
+            #[cfg(test)]
+            let injected = CHUNK_APPLY_FAULT.with(|fault| fault.get()) == Some(payloads.len());
+            #[cfg(not(test))]
+            let injected = false;
+            let applied = if injected {
+                Err(ObjectError::Corruption("injected: chunk manifest apply failure".into()))
+            } else {
+                draft.apply(outcome)
+            };
+            if let Err(error) = applied {
+                // The same rule as for the placement outcomes: this request alone is refused, with
+                // an error that says nothing was published, and nothing more is prepared against
+                // the draft.
+                let _ = request.reply.try_send(Err(ObjectError::PreconditionFailed(format!(
+                    "the chunk manifest outcome could not be applied after preparation; nothing was published: {error}"
+                ))));
+                break;
+            }
+        }
+        request.progress.mark(RequestPhase::ProposalCompletion);
+        bytes += payload.len();
+        payloads.push(payload);
+        prepared.push((request, reply));
+    }
+    drop(draft);
+    if !payloads.is_empty() {
+        match peer.propose_batch(payloads) {
+            Ok(ids) => {
+                for (id, (request, reply)) in ids.into_iter().zip(prepared) {
+                    pending.push_back(Pending { id, request, reply: Some(reply) });
                 }
             }
             Err(error) => {
@@ -1497,6 +1626,7 @@ fn prepare_batch(
             Err(error) => (Vec::new(), Some(Err(error))),
         };
         let payload = Entry {
+            chunk_outcome: Vec::new(),
             version: 1,
             catalog_outcome: Vec::new(),
             outcome: outcome.clone(),
@@ -3278,6 +3408,7 @@ mod tests {
         let first = decide(&service, &groups, &next, true);
         let encode = |outcome: &ChunkCatalogOutcome| {
             Entry {
+            chunk_outcome: Vec::new(),
                 version: 2,
                 outcome: Vec::new(),
                 catalog_outcome: outcome.to_payload().unwrap(),
@@ -3397,6 +3528,7 @@ mod tests {
         let mut pending = VecDeque::new();
         let encode = |outcome: &PlacementOutcome| {
             Entry {
+            chunk_outcome: Vec::new(),
                 version: 1,
                 catalog_outcome: Vec::new(),
                 outcome: outcome.to_payload().unwrap(),
@@ -3627,6 +3759,7 @@ mod tests {
     include!("log_chunk_commands_tests.rs");
     include!("log_chunk_pipeline_tests.rs");
     include!("log_chunk_cost_probes.rs");
+    include!("chunk_manifest_batch_tests.rs");
 
     #[test]
     fn compact_read_session_batches_restore_shared_records_before_committing_removal_and_creation()
