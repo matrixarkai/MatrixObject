@@ -336,8 +336,10 @@ jobs:
       - name: live catalog state and committed recovery
         run: |
           set -o pipefail
-          cargo test --locked --all-features --lib live_catalog -- --test-threads=1 | tee /tmp/live-catalog.log
-          grep -q 'test result: ok. 2 passed' /tmp/live-catalog.log
+          cargo test --locked --all-features --lib cluster::chunk_groups::tests::live_catalog_state_roundtrips_without_replacing_inventory_or_regressing_reports -- --exact --test-threads=1 | tee /tmp/live-catalog.log
+          grep -q 'test result: ok. 1 passed' /tmp/live-catalog.log
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::live_catalog_outcomes_apply_atomically_and_recover_after_checkpoint -- --exact --test-threads=1 | tee /tmp/live-catalog.log
+          grep -q 'test result: ok. 1 passed' /tmp/live-catalog.log
           cargo test --locked --all-features --lib cluster::meta_server::chunk_group_tests::live_membership_health_restores_from_local_snapshot_and_streamed_checkpoint -- --exact | tee /tmp/live-catalog.log
           grep -q 'test result: ok. 1 passed' /tmp/live-catalog.log
       - name: retained chunk membership fences and joint health
