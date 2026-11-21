@@ -838,6 +838,36 @@ impl ClusterGateway {
         )
     }
 
+    /// Build a compact SDK gateway after durably enabling its publication fence.
+    /// Every metadata voter and journal reader must support compact publication.
+    /// The first connection is retained, and every connection shares the enabled state,
+    /// so creating a new object works when a previous process enabled the fence.
+    pub fn over_sdk_with_publication_fence<F>(open: F, options: GatewayOptions, bucket_hint: impl Into<String>) -> Result<Self, ObjectError>
+    where
+        F: Fn() -> Result<RemoteMetaClient, ObjectError> + Send + Sync + 'static,
+    {
+        if !options.compact_append || options.compact_extents.is_some() {
+            return Err(ObjectError::InvalidArgument("compact publication needs compact append without plain extent merging".into()));
+        }
+        let mut first = open()?;
+        first.enable_publication_fence()?;
+        let compact = Arc::new(CompactState::default());
+        compact.0.store(1, std::sync::atomic::Ordering::Release);
+        let first = std::sync::Mutex::new(Some(first));
+        let sdk_options = options.clone();
+        Ok(Self::new(
+            move || {
+                let client = match first.lock().ok().and_then(|mut first| first.take()) {
+                    Some(client) => client,
+                    None => open()?,
+                };
+                Ok(Box::new(SdkPlane::new(client, sdk_options.clone(), Arc::clone(&compact))) as Box<dyn ObjectPlane>)
+            },
+            options,
+            bucket_hint,
+        ))
+    }
+
     /// Connection options for a metadata client, from one timeout.
     pub fn meta_options(timeout: Duration) -> MetaClientOptions {
         MetaClientOptions {
@@ -1907,6 +1937,28 @@ fn error_response(error: ObjectError, resource: &str, missing_is_bucket: bool) -
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn compact_sdk_startup_rejects_plain_options_before_opening() {
+        for options in [GatewayOptions::default(), GatewayOptions { compact_append: true, compact_extents: Some(2), ..Default::default() }] {
+            let result = ClusterGateway::over_sdk_with_publication_fence(
+                || panic!("incompatible options must be refused before opening"),
+                options,
+                "test",
+            );
+            assert!(matches!(result, Err(ObjectError::InvalidArgument(_))));
+        }
+    }
+
+    #[test]
+    fn compact_sdk_startup_reports_an_unreachable_metadata_client() {
+        let result = ClusterGateway::over_sdk_with_publication_fence(
+            || Err(ObjectError::NotFound("startup metadata".into())),
+            GatewayOptions { compact_append: true, ..Default::default() },
+            "test",
+        );
+        assert!(matches!(result, Err(ObjectError::NotFound(message)) if message == "startup metadata"));
+    }
 
     #[test]
     fn reserve_next_default_follows_the_gateway_mode() {

@@ -77,6 +77,13 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Compact SDK startup validates its publication options
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib compact_sdk_startup_ -- --test-threads=1 | tee /tmp/compact-sdk-startup.log
+          grep -q '^running 2 tests$' /tmp/compact-sdk-startup.log
+          grep -q '^test result: ok. 2 passed' /tmp/compact-sdk-startup.log
+
       - name: The README describes the CI it has
         run: |
           set -o pipefail
@@ -3596,6 +3603,13 @@ jobs:
           cargo test --locked --features metadata-consensus --test network_metadata_consensus metadata_checkpoints_restore_placements_roster_and_lagging_processes -- --exact | tee /tmp/node-checkpoint.log
           grep -q '^running 1 test$' /tmp/node-checkpoint.log
           grep -q '^test result: ok. 1 passed' /tmp/node-checkpoint.log
+
+      - name: Compact SDK startup works with an existing publication fence
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --test network_metadata_consensus compact_sdk_startup_ -- --test-threads=1 | tee /tmp/compact-sdk-network-startup.log
+          grep -q '^running 1 test$' /tmp/compact-sdk-network-startup.log
+          grep -q '^test result: ok. 1 passed' /tmp/compact-sdk-network-startup.log
 
   chunk-consensus:
     name: network chunk consensus
