@@ -11,7 +11,7 @@ pub const DEFAULT_CONTENT_TYPE: &str = "application/octet-stream";
 /// when it is present, so answering it widens what this door covers of S3 rather than adding
 /// a verb of its own -- which matters here, because there is no HTTP mode of this server that
 /// answers anything other than S3.
-pub const WRITE_OFFSET_HEADER: &str = "x-amz-write-offset-bytes";
+pub use matrixobject_client::wire::WRITE_OFFSET_HEADER;
 
 /// Most keys one bucket listing will answer with, when the caller names no limit.
 pub const DEFAULT_LIST_LIMIT: usize = 1_000;

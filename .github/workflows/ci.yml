@@ -59,6 +59,32 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
 
+  # The client SDK is a crate of its own with its own lock file and no dependencies, so the root
+  # build above never compiles it alone: it is reached there only as a dependency of the gateway.
+  # This job builds and tests it exactly as someone who downloads it would, and packages it.
+  client-sdk:
+    name: cargo build / test / package (client SDK)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/matrixobject-client
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+
+      - name: cargo build, warnings denied
+        run: cargo build --locked
+        env:
+          RUSTFLAGS: "-D warnings"
+
+      - name: unit tests
+        run: cargo test --locked --lib wire::tests
+
+      - name: cargo package (verify the published tarball builds)
+        run: cargo package --locked
+
   guards:
     name: format and rollback guards
     runs-on: ubuntu-latest
