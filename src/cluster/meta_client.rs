@@ -1105,6 +1105,33 @@ impl RemoteMetaClient {
         })
     }
 
+    /// How many page-granular objects the metadata plane holds that are not deleted, in any bucket.
+    /// The reclaim sweep asks before every round: the pages of such an object are named by no chunk
+    /// manifest, so the sweep would take them for garbage.
+    pub fn count_page_objects(&mut self) -> Result<u64, ObjectError> {
+        let mut after = String::new();
+        let mut after_bucket = String::new();
+        let mut live = 0u64;
+        loop {
+            let page = self.list_manifests_request(crate::object_manifest::ManifestListRequest {
+                version: 3,
+                bucket: String::new(),
+                after: after.clone(),
+                limit: 32,
+                expected_revision: Vec::new(),
+                after_bucket: after_bucket.clone(),
+            })?;
+            live += page.entries.iter().filter(|entry| !entry.deleted).count() as u64;
+            match (page.has_more, page.entries.last()) {
+                (true, Some(last)) => {
+                    after = last.key.clone();
+                    after_bucket = last.bucket.clone();
+                }
+                _ => return Ok(live),
+            }
+        }
+    }
+
     fn list_manifests_request(
         &mut self, request: crate::object_manifest::ManifestListRequest,
     ) -> Result<crate::object_manifest::ManifestListPage, ObjectError> {

@@ -183,6 +183,40 @@ of the tail merge exists. The default remains the plain path.
 * **Not yet covered.** Data-node failure through the gateway, a metadata checkpoint setting,
   request authentication, and streaming of large whole-object reads.
 
+## Reclaiming the pages no manifest names
+
+With `MATRIXOBJECT_CLUSTER_CHUNK_OBJECTS=1` a door stores objects as chunk manifests, and the pages of a
+deleted object, of an overwritten generation and of a writer that died before publishing are named by no
+manifest. The door runs a sweep that frees them, in a thread of its own process, with no setting needed:
+
+| variable | default | meaning |
+|---|---|---|
+| `MATRIXOBJECT_RECLAIM` | `on` | `off` is the only way to turn it off |
+| `MATRIXOBJECT_RECLAIM_GRACE_MS` | `3600000` | a page must stay unnamed this long before it is freed; 60000 to 604800000. Keep it longer than a write takes from its first page to its publication |
+| `MATRIXOBJECT_RECLAIM_INTERVAL_MS` | a quarter of the grace | time between rounds, 1000 up to the grace |
+| `MATRIXOBJECT_RECLAIM_ACK_LEAK` | unset | `1` lets a chunk-object door start with `MATRIXOBJECT_RECLAIM=off` |
+
+A door that stores chunk objects with the sweep off **refuses to start** unless the leak is acknowledged. A
+value that is out of range or not a number is refused, never replaced by the default.
+
+Known limits:
+
+* **N doors make N scans.** No door is elected to sweep. Every door that runs one reads the page inventory of
+  every group and the whole chunk catalog each round. That is safe, because a discard is conditional on the
+  page still having its first-write sequence and the catalog is read again just before each one, but it is
+  repeated work. Electing one sweeper is a follow-up.
+* **A restart delays freeing, never advances it.** What a sweeper has seen is in memory, so a restarted door
+  starts every grace clock again.
+* **It refuses while a page-granular object exists.** The sweep takes a page that no chunk manifest names for
+  garbage, so it would free the pages of an object published the page-granular way. A round that finds one
+  that is not deleted frees nothing and forgets what it had seen. A door must still be able to start, so
+  this is a refusal per round: a `WARNING` on the error stream with the number of page objects the first
+  time and then every tenth round, and a counter, `reclaim_refused_page_objects`, so a sweep that never
+  runs can be seen. **The default is only valid once no page-granular object exists**; until then keep
+  `MATRIXOBJECT_CLUSTER_CHUNK_OBJECTS` off.
+* **The digest check is integrity, not access control.** A manifest that names a page keeps it alive;
+  publishing assumes trusted cluster clients.
+
 ## Concurrency
 
 The SDK client takes `&mut self`, so the gateway keeps a small pool of metadata connections and

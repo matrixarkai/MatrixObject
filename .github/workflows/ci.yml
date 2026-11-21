@@ -3462,6 +3462,36 @@ jobs:
           cargo test --locked --all-features --lib cluster::consensus_errors::tests::every_expiry_and_leadership_message_in_the_workers_is_recognised -- --exact --test-threads=1 2>&1 | tee /tmp/consensus-errors.log
           grep -q '^running 1 test$' /tmp/consensus-errors.log
           grep -q '^test result: ok. 1 passed' /tmp/consensus-errors.log
+      - name: the sweep runs by default with an hour of grace
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::reclaim_loop::tests::the_sweep_runs_by_default_with_an_hour_of_grace_and_a_quarter_of_it_between_rounds -- --exact --test-threads=1 2>&1 | tee /tmp/reclaim-loop.log
+          grep -q '^running 1 test$' /tmp/reclaim-loop.log
+          grep -q '^test result: ok. 1 passed' /tmp/reclaim-loop.log
+      - name: a reclaim setting out of range or not a number is refused
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::reclaim_loop::tests::a_setting_that_is_out_of_range_or_not_a_number_is_refused_not_defaulted -- --exact --test-threads=1 2>&1 | tee /tmp/reclaim-loop.log
+          grep -q '^running 1 test$' /tmp/reclaim-loop.log
+          grep -q '^test result: ok. 1 passed' /tmp/reclaim-loop.log
+      - name: chunk objects with the sweep off refuse to start without the acknowledgement
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::reclaim_loop::tests::chunk_objects_with_the_sweep_off_refuse_to_start_unless_the_leak_is_acknowledged -- --exact --test-threads=1 2>&1 | tee /tmp/reclaim-loop.log
+          grep -q '^running 1 test$' /tmp/reclaim-loop.log
+          grep -q '^test result: ok. 1 passed' /tmp/reclaim-loop.log
+      - name: a door without chunk objects never runs the sweep
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::reclaim_loop::tests::a_door_that_does_not_store_chunk_objects_never_runs_the_sweep -- --exact --test-threads=1 2>&1 | tee /tmp/reclaim-loop.log
+          grep -q '^running 1 test$' /tmp/reclaim-loop.log
+          grep -q '^test result: ok. 1 passed' /tmp/reclaim-loop.log
+      - name: the reclaim loop frees after the grace, survives a failed open and refuses while page objects exist
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --test network_metadata_consensus the_reclaim_loop_frees_after_the_grace_survives_a_failed_open_and_refuses_while_page_objects_exist -- --exact | tee /tmp/reclaim-loop-cluster.log
+          grep -q '^running 1 test$' /tmp/reclaim-loop-cluster.log
+          grep -q '^test result: ok. 1 passed' /tmp/reclaim-loop-cluster.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail
