@@ -105,6 +105,12 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Ordered staged data plans
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::object_client::staged_append_pair_tests:: -- --test-threads=1 2>&1 | tee /tmp/ordered-staged-data.log
+          grep -q '^test result: ok. 3 passed; 0 failed' /tmp/ordered-staged-data.log
+
       - name: Compact SDK startup validates its publication options
         run: |
           set -euo pipefail
@@ -3609,6 +3615,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install protocol build tools
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler autoconf automake libtool
+      - name: Ordered staged publication and record packing
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --test network_metadata_consensus ordered_staged_appends:: -- --test-threads=1 2>&1 | tee /tmp/ordered-staged-publication.log
+          grep -q '^test result: ok. 4 passed; 0 failed' /tmp/ordered-staged-publication.log
+
       - name: process quorum preserves outcomes across leader loss and total restart
         run: |
           set -o pipefail

@@ -3,8 +3,10 @@
 #![cfg(all(target_os = "linux", feature = "metadata-consensus"))]
 mod node_regime;
 use matrixobjectstore_rs::cluster::{
-    CommittedPlacement, MetaClientOptions, MetaNodeOptions, MetaNodeServer, MetaRaftOptions,
-    RemoteMetaClient,
+    MetaRequest, MetaRequestCode,
+    ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, CommittedPlacement, MetaClientOptions,
+    MetaNodeOptions, MetaNodeServer, MetaRaftOptions, ObjectWriteFailure, ObjectWriteOptions,
+    RemoteMetaClient, RemoteReplicaClient, ReplicaClientOptions, StagedObjectAppend,
 };
 use node_regime::processes::{self, NodeProcess};
 use std::{
@@ -4464,3 +4466,6 @@ fn the_reclaim_loop_frees_after_the_grace_survives_a_failed_open_and_refuses_whi
     assert_eq!(client.read_chunk_object("chunk", "live", &options).unwrap().1, bytes(3 * 4096, 1));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[path = "node_regime/ordered_staged_appends.rs"]
+mod ordered_staged_appends;
