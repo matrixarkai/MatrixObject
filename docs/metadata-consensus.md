@@ -674,3 +674,24 @@ it carries no Raft peer or bootstrap fields. Metadata-routed object reads and
 writes dispatch to the corresponding client without changing versions 1 or 2.
 API endpoints remain explicitly configured, and group inventories retain the
 seven-member bound.
+
+
+## Reusing metadata peer connections
+
+After all voters in a metadata group run receivers that support framed peer
+streams, set `MATRIXOBJECT_RAFT_STREAMS=1` on each metaserver. Leave the setting
+off during a mixed-receiver rollout. Without this opt-in, a sender opens a
+connection for each peer packet. For Star data groups, this setting controls the
+metadata quorum's peer traffic.
+
+Each sender caches at most one connection per configured destination, using the
+configured plain or TLS transport. A receiver waits up to five seconds between
+complete frames. The sender reuses a connection only within four seconds of its
+last successful frame and checks for a completed remote close before sending.
+A replacement connection uses the original delivery deadline, including time
+already spent in the queue.
+
+A failed connection or frame write retires that stream. The transport does not
+replay a packet after an uncertain write; Raft handles retransmission through its
+own protocol state. This bounds connection setup during steady traffic while
+preserving the existing mutation and quorum rules.
