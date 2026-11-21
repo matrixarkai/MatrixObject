@@ -730,6 +730,12 @@ jobs:
           cargo test --locked --all-features --lib object_manifest::catalog_streaming_tests:: -- --test-threads=1 | tee /tmp/catalog-streaming.log
           grep -q '^test result: ok. 5 passed; 0 failed' /tmp/catalog-streaming.log
 
+      - name: captured placement roots and worker materialization
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib meta_service::checkpoint_capture_tests:: -- --test-threads=1 | tee /tmp/placement-capture.log
+          grep -q '^test result: ok. 3 passed; 0 failed' /tmp/placement-capture.log
+
       - name: conditional PUT uncertain outcomes
         run: |
           set -o pipefail

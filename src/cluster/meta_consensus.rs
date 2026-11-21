@@ -620,9 +620,10 @@ fn run(
         if pending.is_empty() && pending_read.is_none() && pending_membership.is_none() {
             progress.mark(WorkerPhase::PublishCheckpoint);
             checkpoint.maybe_checkpoint_stream(peer, applied_term.get(), |id| {
-                let mut snapshot = service.export_snapshot_unsealed();
+                let capture = service.capture_checkpoint_snapshot();
                 let catalog = groups.to_bytes().map_err(storage)?;
                 Ok(move || {
+                    let mut snapshot = capture.into_snapshot();
                     snapshot.checksum = snapshot.checksum_material_hash();
                     super::meta_checkpoint::capture(snapshot, catalog, id).map(|stream| {
                         stream.map(|s| {
@@ -2296,10 +2297,11 @@ mod tests {
     fn deferred_metadata_sealing_preserves_captured_roster_and_placements() {
         let (mut service, groups) = fixture(1, 30);
         let expected = service.export_snapshot();
-        let mut captured = service.export_snapshot_unsealed();
-        assert!(captured.checksum.is_empty());
+        let captured = service.capture_checkpoint_snapshot();
         apply_with_groups(&mut service, heartbeat(), 16 * 1024 * 1024, &groups).unwrap();
         let sealed = std::thread::spawn(move || {
+            let mut captured = captured.into_snapshot();
+            assert!(captured.checksum.is_empty());
             captured.checksum = captured.checksum_material_hash();
             captured
         })
@@ -2495,6 +2497,8 @@ mod tests {
             placement.version = 3;
         }
         let saved = state(&service);
+        let captured = service.capture_checkpoint_snapshot();
+        let expected = service.export_snapshot();
         let error = prepare(&mut service, &request, 16 * 1024 * 1024, &groups).unwrap_err();
         assert!(
             error
@@ -2503,6 +2507,9 @@ mod tests {
             "{error}"
         );
         assert_eq!(state(&service), saved);
+        let mut captured = captured.into_snapshot();
+        captured.checksum = captured.checksum_material_hash();
+        assert_eq!(captured, expected);
     }
 
     struct PeerFiles(PathBuf);

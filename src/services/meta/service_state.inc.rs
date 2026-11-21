@@ -25,7 +25,7 @@ pub struct MatrixMetaService {
     // name differs from its metadata counterpart on purpose: they count and
     // cache different things, and sharing a name would fuse them.
     pub(crate) nodes: BTreeMap<String, PlacementNode>,
-    pub(crate) placements: BTreeMap<ObjectId, ObjectPlacement>,
+    pub(crate) placements: imbl::OrdMap<ObjectId, ObjectPlacement>,
     leader_lease: Option<PlacementLeaderLease>,
     leader_lease_receipts: BTreeMap<String, PlacementLeaderLeaseReceipt>,
     placement_coordinator_config: MetadataCoordinatorConfig,

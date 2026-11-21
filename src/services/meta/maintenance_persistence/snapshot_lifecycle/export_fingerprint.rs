@@ -1,5 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
+/// An application-thread capture whose public placement map is built by the worker.
+#[cfg(any(feature = "metadata-consensus", test))]
+pub(crate) struct MetaCheckpointCapture {
+    snapshot: MetaSnapshot,
+    placements: imbl::OrdMap<ObjectId, ObjectPlacement>,
+}
+
+#[cfg(any(feature = "metadata-consensus", test))]
+impl MetaCheckpointCapture {
+    pub(crate) fn into_snapshot(mut self) -> MetaSnapshot {
+        self.snapshot.placements = self.placements.into_iter().collect();
+        self.snapshot
+    }
+}
+
 fn metadata_fingerprint_reserve_hint(service: &MatrixMetaService) -> usize {
     let hint = 4096usize
         .saturating_add(service.records.len().saturating_mul(128))
@@ -28,6 +43,28 @@ impl MatrixMetaService {
     /// Copy the captured state without scanning its checksum material. The
     /// background checkpoint worker seals this private snapshot before encoding.
     pub(crate) fn export_snapshot_unsealed(&self) -> MetaSnapshot {
+        self.snapshot_with_placements(
+            self.placements
+                .iter()
+                .map(|(id, placement)| (id.clone(), placement.clone()))
+                .collect(),
+        )
+    }
+
+    /// Capture the roster root on the application thread. The checkpoint worker
+    /// materializes the public snapshot map from this immutable view.
+    #[cfg(any(feature = "metadata-consensus", test))]
+    pub(crate) fn capture_checkpoint_snapshot(&self) -> MetaCheckpointCapture {
+        MetaCheckpointCapture {
+            snapshot: self.snapshot_with_placements(BTreeMap::new()),
+            placements: self.placements.clone(),
+        }
+    }
+
+    fn snapshot_with_placements(
+        &self,
+        placements: BTreeMap<ObjectId, ObjectPlacement>,
+    ) -> MetaSnapshot {
         MetaSnapshot {
             object_manifests: self.object_manifests.clone(),
             // The collection is ordered by each record's own key; the snapshot states the
@@ -55,7 +92,7 @@ impl MatrixMetaService {
             // `StoreSnapshot::validate` a comparison of two independently produced copies
             // rather than a comparison of a value with itself.
             placement_nodes: self.nodes.clone(),
-            placements: self.placements.clone(),
+            placements,
             placement_leader_lease: self.leader_lease.clone(),
             placement_leader_lease_receipts: self.leader_lease_receipts.clone(),
             placement_coordinator_config: self.placement_coordinator_config.clone(),
