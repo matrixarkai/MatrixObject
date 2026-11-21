@@ -1220,6 +1220,7 @@ impl RemoteMetaClient {
 }
 
 include!("chunk_object_client.rs");
+include!("chunk_reclaim_client.rs");
 
 #[cfg(test)]
 mod tests {

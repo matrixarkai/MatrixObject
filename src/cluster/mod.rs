@@ -331,7 +331,7 @@ mod meta_checkpoint;
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
 mod object_client;
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
-pub use object_client::{ChunkWriteFailure, ObjectWriteFailure, ObjectWriteOptions};
+pub use object_client::{ChunkWriteFailure, ObjectWriteFailure, ObjectWriteOptions, ReclaimPlan, ReclaimReport};
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
 mod append_failover;
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]

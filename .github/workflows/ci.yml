@@ -3424,6 +3424,12 @@ jobs:
           cargo test --locked --lib chunk_reclaim::tests::a_page_already_swept_or_rewritten_is_never_a_candidate_and_a_clock_cannot_run_backwards -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-reclaim.log
           grep -q '^running 1 test$' /tmp/chunk-reclaim.log
           grep -q '^test result: ok. 1 passed' /tmp/chunk-reclaim.log
+      - name: a reclaim sweep frees the pages of deleted and overwritten chunk objects and only those
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --test network_metadata_consensus a_reclaim_sweep_frees_the_pages_of_deleted_and_overwritten_objects_and_only_those -- --exact | tee /tmp/chunk-reclaim-sweep.log
+          grep -q '^running 1 test$' /tmp/chunk-reclaim-sweep.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-reclaim-sweep.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail
