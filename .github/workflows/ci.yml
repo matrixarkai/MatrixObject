@@ -3335,6 +3335,60 @@ jobs:
           cargo test --locked --all-features --lib cluster::meta_consensus::tests::a_chunk_listing_refuses_to_continue_across_a_change_and_the_global_cursor_walks_every_bucket -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest-read.log
           grep -q '^running 1 test$' /tmp/chunk-manifest-read.log
           grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest-read.log
+      - name: chunk object stripes are whole pages and cover the object
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_object::tests::stripes_are_whole_pages_never_more_than_an_allocation_and_cover_the_object -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-object.log
+          grep -q '^running 1 test$' /tmp/chunk-object.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-object.log
+      - name: a chunk object stripe stores its digest page last
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_object::tests::a_one_page_stripe_stores_one_page_and_a_longer_one_stores_its_digest_page_last -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-object.log
+          grep -q '^running 1 test$' /tmp/chunk-object.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-object.log
+      - name: a chunk object manifest names every run
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_object::tests::the_manifest_names_every_run_and_a_manifest_with_a_hole_or_a_wrong_length_is_refused -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-object.log
+          grep -q '^running 1 test$' /tmp/chunk-object.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-object.log
+      - name: every range of a chunk object reads back exactly
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_object::tests::every_range_of_an_object_reads_back_exactly_through_the_plan_and_the_verification -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-object.log
+          grep -q '^running 1 test$' /tmp/chunk-object.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-object.log
+      - name: a chunk object read plan refuses what it cannot serve
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_object::tests::a_read_past_the_end_a_deleted_object_and_a_log_object_are_refused_by_the_plan -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-object.log
+          grep -q '^running 1 test$' /tmp/chunk-object.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-object.log
+      - name: a tampered chunk object page fails only the read that touches it
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_object::tests::a_tampered_page_fails_the_read_that_touches_it_and_not_one_that_avoids_it -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-object.log
+          grep -q '^running 1 test$' /tmp/chunk-object.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-object.log
+      - name: a tampered or missing digest page fails every read of its extent
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_object::tests::a_tampered_digest_page_or_a_missing_one_fails_every_read_of_its_extent -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-object.log
+          grep -q '^running 1 test$' /tmp/chunk-object.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-object.log
+      - name: a short or miscounted page read is refused
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_object::tests::a_page_cut_short_or_the_wrong_number_of_pages_is_refused -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-object.log
+          grep -q '^running 1 test$' /tmp/chunk-object.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-object.log
+      - name: a chunk object round trips through a star quorum and a wrong digest fails its read
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --test network_metadata_consensus a_chunk_object_round_trips_through_a_star_quorum_and_a_wrong_digest_fails_its_read -- --exact | tee /tmp/chunk-object-star.log
+          grep -q '^running 1 test$' /tmp/chunk-object-star.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-object-star.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail
