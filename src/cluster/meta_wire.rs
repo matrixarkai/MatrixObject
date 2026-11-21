@@ -115,9 +115,13 @@ pub enum MetaRequestCode {
     LogChunk = 97,
     /// Publish one chunk manifest: the client's decided outcome, checked again by every voter.
     PublishChunkManifest = 98,
+    /// Read the chunk manifest of one object from the committed state.
+    ReadChunkManifest = 99,
     /// Read the extents of a manifest that overlap one byte range, its cached digest, and the
     /// routes of the groups those extents name, at one metadata barrier.
     ReadManifestRange = 100,
+    /// List a page of the chunk manifest catalog.
+    ListChunkManifests = 101,
 }
 
 impl MetaRequestCode {
@@ -163,7 +167,9 @@ impl MetaRequestCode {
             96 => Some(MetaRequestCode::Features),
             97 => Some(MetaRequestCode::LogChunk),
             98 => Some(MetaRequestCode::PublishChunkManifest),
+            99 => Some(MetaRequestCode::ReadChunkManifest),
             100 => Some(MetaRequestCode::ReadManifestRange),
+            101 => Some(MetaRequestCode::ListChunkManifests),
             _ => None,
         }
     }
@@ -206,7 +212,9 @@ impl MetaRequestCode {
             MetaRequestCode::Features,
             MetaRequestCode::LogChunk,
             MetaRequestCode::PublishChunkManifest,
+            MetaRequestCode::ReadChunkManifest,
             MetaRequestCode::ReadManifestRange,
+            MetaRequestCode::ListChunkManifests,
         ]
     }
 }

@@ -3292,6 +3292,30 @@ jobs:
           cargo test --locked --all-features --lib cluster::meta_consensus::tests::an_entry_that_names_more_than_one_kind_of_change_is_refused_by_every_voter -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest-batch.log
           grep -q '^running 1 test$' /tmp/chunk-manifest-batch.log
           grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest-batch.log
+      - name: a chunk read and a chunk listing round trip the wire
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::a_chunk_read_and_a_chunk_listing_round_trip_the_wire_and_a_bad_one_is_refused -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest-read.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest-read.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest-read.log
+      - name: a chunk read answers the stored manifest or not found
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::a_chunk_read_answers_the_stored_manifest_its_tombstone_and_not_found_for_a_stranger -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest-read.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest-read.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest-read.log
+      - name: a chunk listing pages in key order and shows tombstones
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::a_chunk_listing_pages_in_key_order_stays_in_its_bucket_and_shows_tombstones -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest-read.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest-read.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest-read.log
+      - name: a chunk listing refuses to continue across a change
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::a_chunk_listing_refuses_to_continue_across_a_change_and_the_global_cursor_walks_every_bucket -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-manifest-read.log
+          grep -q '^running 1 test$' /tmp/chunk-manifest-read.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-manifest-read.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail
