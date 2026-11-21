@@ -1365,6 +1365,11 @@ impl ClusterGateway {
                 Ok(Err(failure)) => {
                     self.forget(bucket, key);
                     if failure.unconfirmed || outcome_may_be_committed(&failure.error) {
+                        // Equal values can belong to another writer. A conditional
+                        // mutation needs proof that this attempt was published.
+                        if only_if_absent || required_etag.is_some() {
+                            return Err(unconfirmed(&failure.error, &resource));
+                        }
                         if let Some(manifest) = self.resolve_landed_replace(bucket, key, body) {
                             self.remember(&manifest);
                             return Ok(manifest);
@@ -1862,7 +1867,7 @@ fn no_such_key(resource: &str) -> Response {
 fn unconfirmed(error: &ObjectError, resource: &str) -> Response {
     s3::error_response(
         s3::S3ErrorCode::ServiceUnavailable,
-        &format!("the publication is unconfirmed and was not retried; read the object to see whether it landed: {error}"),
+        &format!("the publication is unconfirmed and was not retried: {error}"),
         resource,
     )
 }
@@ -3780,3 +3785,7 @@ mod tests {
         assert_eq!(all_between(&listing, "Key"), ["visible"], "{listing}");
     }
 }
+
+#[cfg(test)]
+#[path = "conditional_put_outcome_tests.rs"]
+mod conditional_put_outcome_tests;
