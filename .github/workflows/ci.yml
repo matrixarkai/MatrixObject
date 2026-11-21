@@ -83,6 +83,12 @@ jobs:
         run: |
           cargo test --locked --lib wire::tests
           cargo test --locked --lib client_tests::
+          cargo test --locked --lib tcp_tests::
+
+      - name: documentation, warnings denied
+        run: cargo doc --no-deps --locked
+        env:
+          RUSTDOCFLAGS: "-D warnings"
 
       - name: cargo package (verify the published tarball builds)
         run: cargo package --locked

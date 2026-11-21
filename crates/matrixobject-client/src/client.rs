@@ -24,15 +24,23 @@ use crate::wire::{
 /// and reports the last failure. Contention worth seeing, not something to spin on for ever.
 const APPEND_ATTEMPTS: usize = 8;
 
+/// The longest key the client will address, as S3 has it.
+pub const MAX_KEY_BYTES: usize = 1024;
+
 /// Locks one process keeps per object before it drops the ones nobody holds.
 const MAX_APPEND_LOCKS: usize = 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum ClientError {
     /// The object does not exist.
     NotFound(String),
     /// A range that cannot be asked for or answered.
     InvalidRange(String),
+    /// A key the door cannot address: empty, or longer than [`MAX_KEY_BYTES`].
+    InvalidKey(String),
+    /// A bucket name that is not a plain name: it would change the request's path.
+    InvalidBucket(String),
     /// An append whose outcome is not decided: it may or may not be in the object, and the client
     /// has not written it again. The caller decides from its own record of what it acknowledged.
     OutcomeUnknown { key: String, detail: String },
@@ -46,7 +54,9 @@ impl fmt::Display for ClientError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ClientError::NotFound(key) => write!(f, "{key}: no such object"),
-            ClientError::InvalidRange(detail) => f.write_str(detail),
+            ClientError::InvalidRange(detail) | ClientError::InvalidKey(detail) | ClientError::InvalidBucket(detail) => {
+                f.write_str(detail)
+            }
             ClientError::OutcomeUnknown { key, detail } => {
                 write!(f, "{key}: the outcome of the append is unknown: {detail}")
             }
@@ -125,6 +135,23 @@ impl<T: Transport + Clone> Clone for S3Client<T> {
 }
 
 impl<T: Transport> S3Client<T> {
+    /// A client of `bucket`, which must be a plain name: 1 to 255 ASCII letters, digits, `.`, `-`
+    /// or `_`. Anything else would change the path of every request, so it is refused here.
+    pub fn try_new(transport: T, bucket: impl Into<String>) -> Result<Self, ClientError> {
+        let bucket = bucket.into();
+        let plain = !bucket.is_empty()
+            && bucket.len() <= 255
+            && bucket.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+            && !bucket.bytes().all(|b| b == b'.');
+        if !plain {
+            return Err(ClientError::InvalidBucket(format!(
+                "{bucket:?} is not a bucket name: use 1 to 255 ASCII letters, digits, '.', '-' or '_'"
+            )));
+        }
+        Ok(Self::new(transport, bucket))
+    }
+
+    /// A client of `bucket` without checking the name; see [`S3Client::try_new`].
     pub fn new(transport: T, bucket: impl Into<String>) -> Self {
         S3Client {
             transport,
@@ -160,8 +187,16 @@ impl<T: Transport> S3Client<T> {
         }
     }
 
-    fn object_target(&self, key: &str) -> String {
-        format!("/{}/{}", self.bucket, encode_key(key))
+    /// The request target of `key`. A key the door cannot address is refused here, before
+    /// anything is sent: an empty key would be a request about the bucket, not an object.
+    fn object_target(&self, key: &str) -> Result<String, ClientError> {
+        if key.is_empty() || key.len() > MAX_KEY_BYTES {
+            return Err(ClientError::InvalidKey(format!(
+                "a key is 1 to {MAX_KEY_BYTES} bytes, and this one is {}",
+                key.len()
+            )));
+        }
+        Ok(format!("/{}/{}", self.bucket, encode_key(key)))
     }
 
     fn send(
@@ -216,7 +251,7 @@ impl<T: Transport> S3Client<T> {
 
     /// Replace the object.
     pub fn put(&self, key: &str, bytes: &[u8]) -> Result<(), ClientError> {
-        let reply = self.send("PUT", &self.object_target(key), &[], bytes)?;
+        let reply = self.send("PUT", &self.object_target(key)?, &[], bytes)?;
         match reply.status {
             200 | 201 | 204 => {
                 // A put REPLACES, so any remembered end is now wrong.
@@ -229,7 +264,7 @@ impl<T: Transport> S3Client<T> {
 
     /// The whole object.
     pub fn get(&self, key: &str) -> Result<Vec<u8>, ClientError> {
-        let reply = self.send("GET", &self.object_target(key), &[], &[])?;
+        let reply = self.send("GET", &self.object_target(key)?, &[], &[])?;
         match reply.status {
             200 => Ok(reply.body),
             _ => Err(Self::failure(&reply, key)),
@@ -247,7 +282,7 @@ impl<T: Transport> S3Client<T> {
             .ok_or_else(|| ClientError::InvalidRange(format!("{key}: range overflow")))?;
         let reply = self.send(
             "GET",
-            &self.object_target(key),
+            &self.object_target(key)?,
             &[("range", format!("bytes={offset}-{last}"))],
             &[],
         )?;
@@ -282,7 +317,7 @@ impl<T: Transport> S3Client<T> {
     pub fn get_range_from(&self, key: &str, offset: u64) -> Result<Option<Vec<u8>>, ClientError> {
         let reply = self.send(
             "GET",
-            &self.object_target(key),
+            &self.object_target(key)?,
             &[("range", format!("bytes={offset}-"))],
             &[],
         )?;
@@ -318,7 +353,7 @@ impl<T: Transport> S3Client<T> {
     /// An append to a key nothing has written is how an append-only object is created, so a
     /// missing key is a length here and not an error.
     pub fn length_or_zero(&self, key: &str) -> Result<u64, ClientError> {
-        let reply = self.send("HEAD", &self.object_target(key), &[], &[])?;
+        let reply = self.send("HEAD", &self.object_target(key)?, &[], &[])?;
         match reply.status {
             200 => Ok(reply
                 .header(OBJECT_SIZE_HEADER)
@@ -332,7 +367,7 @@ impl<T: Transport> S3Client<T> {
 
     /// Delete the object. Deleting something already gone succeeds, as S3 has it.
     pub fn delete(&self, key: &str) -> Result<(), ClientError> {
-        let reply = self.send("DELETE", &self.object_target(key), &[], &[])?;
+        let reply = self.send("DELETE", &self.object_target(key)?, &[], &[])?;
         match reply.status {
             200 | 202 | 204 | 404 => {
                 self.forget_length(key);
@@ -440,7 +475,7 @@ impl<T: Transport> S3Client<T> {
             };
             let reply = match self.send(
                 "PUT",
-                &self.object_target(key),
+                &self.object_target(key)?,
                 &[(WRITE_OFFSET_HEADER, start_offset.to_string()), (ATTEMPT_HEADER, id.hex())],
                 bytes,
             ) {
@@ -556,7 +591,7 @@ impl<T: Transport> S3Client<T> {
             length: bytes.len() as u64,
             sha256: Some(Sha256::digest(bytes).into()),
         };
-        let target = format!("{}?{}", self.object_target(key), request.encode_query());
+        let target = format!("{}?{}", self.object_target(key)?, request.encode_query());
         let reply = self
             .send("POST", &target, &[], &[])
             .map_err(|error| unknown(format!("the append could not be resolved: {error}")))?;

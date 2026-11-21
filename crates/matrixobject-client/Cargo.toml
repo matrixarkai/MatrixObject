@@ -2,7 +2,7 @@
 name = "matrixobject-client"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.82"
 license = "Apache-2.0"
 description = "Client SDK for the MatrixObject S3 door: the wire contract the gateway and every client share."
 repository = "https://github.com/matrixarkai/MatrixObject"

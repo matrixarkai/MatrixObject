@@ -10,9 +10,38 @@ use std::time::Duration;
 
 use crate::transport::{Reply, Transport, TransportError, WireStats};
 
-/// Idle sockets kept per transport. Small on purpose: a client issues requests from one task at a
-/// time per object, so a deep pool would hold descriptors open to no benefit.
-const MAX_IDLE_CONNECTIONS: usize = 8;
+/// The limits a [`TcpTransport`] works within.
+///
+/// A client must not be made to wait for ever, or to buffer without bound, by a peer that is slow
+/// or wrong. Every one of these is a bound on something the peer controls.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TcpOptions {
+    /// How long a new connection may take to be established.
+    pub connect_timeout: Duration,
+    /// How long one read or write on a socket may block.
+    pub io_timeout: Duration,
+    /// The most bytes of a reply head (status line and headers) that are read before the reply is
+    /// refused.
+    pub max_head_bytes: usize,
+    /// The most bytes of a reply body that are accepted. A longer `Content-Length` is refused
+    /// before any of it is read.
+    pub max_body_bytes: usize,
+    /// Idle sockets kept for reuse. Small on purpose: a client issues requests from one task at a
+    /// time per object, so a deep pool would hold descriptors open to no benefit.
+    pub max_idle_connections: usize,
+}
+
+impl Default for TcpOptions {
+    fn default() -> Self {
+        TcpOptions {
+            connect_timeout: Duration::from_millis(500),
+            io_timeout: Duration::from_secs(30),
+            max_head_bytes: 64 * 1024,
+            max_body_bytes: 1 << 30,
+            max_idle_connections: 8,
+        }
+    }
+}
 
 /// Requests to one `host:port`, on pooled keep-alive sockets.
 ///
@@ -25,6 +54,7 @@ pub struct TcpTransport {
 #[derive(Debug)]
 struct Inner {
     addr: String,
+    options: TcpOptions,
     idle: Mutex<Vec<TcpStream>>,
     sent: AtomicU64,
     received: AtomicU64,
@@ -41,9 +71,15 @@ struct Exchange {
 
 impl TcpTransport {
     pub fn new(addr: impl Into<String>) -> Self {
+        Self::with_options(addr, TcpOptions::default())
+    }
+
+    /// A transport to `addr` working within `options`.
+    pub fn with_options(addr: impl Into<String>, options: TcpOptions) -> Self {
         TcpTransport {
             inner: Arc::new(Inner {
                 addr: addr.into(),
+                options,
                 idle: Mutex::new(Vec::new()),
                 sent: AtomicU64::new(0),
                 received: AtomicU64::new(0),
@@ -60,7 +96,7 @@ impl TcpTransport {
     /// Open a socket and count it, so a handshake cannot happen without being counted.
     fn open(&self) -> Result<TcpStream, TransportError> {
         self.inner.opened.fetch_add(1, Ordering::Relaxed);
-        connect(&self.inner.addr)
+        connect(&self.inner.addr, &self.inner.options)
     }
 
     fn take(&self) -> Option<TcpStream> {
@@ -69,7 +105,7 @@ impl TcpTransport {
 
     fn give_back(&self, stream: TcpStream) {
         let mut pool = self.inner.idle.lock().expect("idle sockets poisoned");
-        if pool.len() < MAX_IDLE_CONNECTIONS {
+        if pool.len() < self.inner.options.max_idle_connections {
             pool.push(stream);
         }
     }
@@ -82,7 +118,8 @@ impl TcpTransport {
         body: &[u8],
     ) -> Result<Exchange, TransportError> {
         let mut fresh = self.open()?;
-        let exchange = http_exchange(&mut fresh, &self.inner.addr, method, target, headers, body)?;
+        let exchange =
+            http_exchange(&mut fresh, &self.inner.addr, method, target, headers, body, &self.inner.options)?;
         if exchange.reusable {
             self.give_back(fresh);
         }
@@ -105,7 +142,7 @@ impl Transport for TcpTransport {
         // proportion to how long it was idle.
         let exchange = match self.take() {
             Some(mut pooled) => {
-                match http_exchange(&mut pooled, &self.inner.addr, method, target, headers, body) {
+                match http_exchange(&mut pooled, &self.inner.addr, method, target, headers, body, &self.inner.options) {
                     Ok(exchange) => {
                         if exchange.reusable {
                             self.give_back(pooled);
@@ -133,14 +170,14 @@ impl Transport for TcpTransport {
     }
 }
 
-fn connect(addr: &str) -> Result<TcpStream, TransportError> {
+fn connect(addr: &str, options: &TcpOptions) -> Result<TcpStream, TransportError> {
     let socket_addr = addr
         .to_socket_addrs()?
         .next()
         .ok_or_else(|| TransportError(format!("cannot resolve {addr}")))?;
-    let stream = TcpStream::connect_timeout(&socket_addr, Duration::from_millis(500))?;
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+    let stream = TcpStream::connect_timeout(&socket_addr, options.connect_timeout)?;
+    stream.set_read_timeout(Some(options.io_timeout))?;
+    stream.set_write_timeout(Some(options.io_timeout))?;
     stream.set_nodelay(true)?;
     Ok(stream)
 }
@@ -161,6 +198,7 @@ fn http_exchange(
     target: &str,
     extra: &[(&str, String)],
     body: &[u8],
+    options: &TcpOptions,
 ) -> Result<Exchange, TransportError> {
     let mut head = format!("{method} {target} HTTP/1.1\r\nHost: {addr}\r\n");
     for (name, value) in extra {
@@ -191,15 +229,22 @@ fn http_exchange(
             ));
         }
         raw.extend_from_slice(&chunk[..read]);
+        if raw.len() > options.max_head_bytes {
+            return Err(TransportError(format!(
+                "the reply head is longer than {} bytes",
+                options.max_head_bytes
+            )));
+        }
     };
 
     let head_text = String::from_utf8_lossy(&raw[..header_end]).into_owned();
     let mut lines = head_text.lines();
-    let status = lines
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
+    let status_line = lines.next().unwrap_or_default();
+    let status = status_line
+        .strip_prefix("HTTP/1.")
+        .and_then(|rest| rest.split_whitespace().nth(1))
         .and_then(|code| code.parse::<u16>().ok())
-        .ok_or_else(|| TransportError("unparseable status line".to_string()))?;
+        .ok_or_else(|| TransportError(format!("unparseable status line {status_line:?}")))?;
     let headers: Vec<(String, String)> = lines
         .filter_map(|line| line.split_once(':'))
         .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
@@ -210,6 +255,20 @@ fn http_exchange(
             .find(|(name, _)| name.eq_ignore_ascii_case(want))
             .map(|(_, value)| value.as_str())
     };
+
+    // A reply framed any other way than by `Content-Length` cannot be read to the byte, and a
+    // misread frame hands the rest of the stream to the next request as its reply head.
+    if header_of("transfer-encoding").is_some() {
+        return Err(TransportError(
+            "the store framed a reply with Transfer-Encoding, which this client does not read".to_string(),
+        ));
+    }
+    let mut lengths = headers.iter().filter(|(name, _)| name.eq_ignore_ascii_case("content-length")).map(|(_, v)| v.as_str());
+    if let Some(first) = lengths.next() {
+        if lengths.any(|other| other != first) {
+            return Err(TransportError("the store gave conflicting Content-Length headers".to_string()));
+        }
+    }
 
     // A HEAD has no body however long it says it is; 204 and 304 never carry one either.
     let expected = if method.eq_ignore_ascii_case("HEAD") || status == 204 || status == 304 {
@@ -224,6 +283,13 @@ fn http_exchange(
                 ))
             })?
     };
+
+    if expected > options.max_body_bytes {
+        return Err(TransportError(format!(
+            "the store announced a {expected} byte body, more than the {} bytes this client accepts",
+            options.max_body_bytes
+        )));
+    }
 
     let body_start = header_end + marker.len();
     while raw.len() - body_start < expected {
