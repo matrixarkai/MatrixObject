@@ -330,6 +330,7 @@ mod meta_checkpoint;
 
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
 mod object_client;
+pub mod reclaim_loop;
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
 pub use object_client::{ChunkWriteFailure, ObjectWriteFailure, ObjectWriteOptions, ReclaimPlan, ReclaimReport};
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]

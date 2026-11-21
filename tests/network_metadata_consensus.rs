@@ -4311,3 +4311,156 @@ fn a_log_object_costs_the_real_metadata_group_one_entry_per_switch_and_nothing_p
     // the first writer is fenced: its next append is refused
     assert!(object.append(&mut meta, b"late").is_err());
 }
+
+#[cfg(feature = "replica-server")]
+#[test]
+fn the_reclaim_loop_frees_after_the_grace_survives_a_failed_open_and_refuses_while_page_objects_exist() {
+    use matrixobjectstore_rs::chunk_reclaim::{live_pages_of, PageKey};
+    use matrixobjectstore_rs::cluster::reclaim_loop::{ReclaimLoop, ReclaimSettings};
+    use matrixobjectstore_rs::cluster::{
+        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ObjectWriteOptions, ReplicaClientOptions,
+    };
+    use std::collections::BTreeSet;
+
+    let root = std::env::temp_dir().join(node_regime::run_token("chunk-reclaim-loop"));
+    std::fs::create_dir(&root).unwrap();
+    let mut chunks = Vec::new();
+    for index in 0..3 {
+        let journal = root.join(format!("{index}.log"));
+        chunks.push(processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", journal.to_str().unwrap()),
+            ],
+        ));
+    }
+    let endpoints: Vec<_> = chunks.iter().map(|node| node.endpoint.clone()).collect();
+    let members: Vec<_> = (1..=3).map(|id| format!("star-{id}")).collect();
+    let config = ChunkGroupConfig {
+        placement_id: "group-a".into(),
+        failure_domain: "rack-a".into(),
+        identity: Some(ChunkGroupIdentity {
+            version: 3,
+            group_id: 1,
+            node_id: 1,
+            capacity_bytes: 1 << 28,
+            max_pages: 4096,
+            voters: vec![1, 2, 3],
+            peer_endpoints: Vec::new(),
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
+        }),
+        api_endpoints: endpoints,
+        member_ids: members.clone(),
+    };
+    let catalog = ChunkGroupCatalog::new(vec![config]).unwrap();
+    let metadata = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let meta_endpoint = metadata.nodes[metadata.leader()].as_ref().unwrap().endpoint.clone();
+    let mut client = RemoteMetaClient::connect(
+        &meta_endpoint,
+        &MetaClientOptions {
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for member in &members {
+        client.heartbeat_placement_node(member, 0, 1 << 28, false, true, 100).unwrap();
+    }
+    let options = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        replica: ReplicaClientOptions {
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let bytes = |length: usize, salt: usize| -> Vec<u8> { (0..length).map(|index| (index * 31 + salt) as u8).collect() };
+    let stripe = 4 * 4096;
+    let put = |client: &mut RemoteMetaClient, key: &str, salt: usize| {
+        client.write_chunk_object("chunk", key, None, &bytes(3 * 4096, salt), &options, stripe).unwrap()
+    };
+    let pages_of = |manifest: &matrixobjectstore_rs::chunk_manifest::ChunkManifest| -> BTreeSet<PageKey> {
+        live_pages_of([manifest])
+    };
+    let sequences = |client: &mut RemoteMetaClient| client.reclaim_inventory(&options).unwrap();
+    let grace = 60_000u64;
+    let settings = ReclaimSettings { grace_ms: grace, interval_ms: 1_000 };
+    let opener = |fail_first: bool| {
+        let endpoint = meta_endpoint.clone();
+        let mut first = fail_first;
+        move || {
+            if first {
+                first = false;
+                return Err(matrixobjectstore_rs::ObjectError::InvalidArgument("the metadata plane is down".into()));
+            }
+            RemoteMetaClient::connect(
+                &endpoint,
+                &MetaClientOptions {
+                    read_timeout: Duration::from_secs(10),
+                    write_timeout: Duration::from_secs(10),
+                    ..Default::default()
+                },
+            )
+        }
+    };
+
+    let live = put(&mut client, "live", 1);
+    let gone = put(&mut client, "gone", 2);
+    let gone_pages = pages_of(&gone);
+    client.delete_chunk_object("chunk", "gone").unwrap();
+
+    // a round whose connection cannot be opened fails and the loop goes on: the next round works
+    let mut sweeper = ReclaimLoop::new(opener(true), options.clone(), settings);
+    assert!(sweeper.round(0).is_err(), "the first open fails");
+    let first = sweeper.round(0).unwrap();
+    assert_eq!((first.unnamed_pages, first.freed.len()), (gone_pages.len(), 0), "the first sight starts the clocks");
+    assert!(sweeper.round(grace - 1).unwrap().freed.is_empty(), "nothing is freed before the grace");
+    let freed: BTreeSet<PageKey> = sweeper.round(grace).unwrap().freed.into_iter().collect();
+    assert_eq!(freed, gone_pages, "exactly the deleted object's pages are freed after the grace");
+    assert_eq!(client.read_chunk_object("chunk", "live", &options).unwrap().1, bytes(3 * 4096, 1));
+    let _ = &live;
+
+    // a restart forgets what it had seen: the clocks start again, so a page is freed later, never earlier
+    let late = put(&mut client, "late", 3);
+    let late_pages = pages_of(&late);
+    client.delete_chunk_object("chunk", "late").unwrap();
+    let mut restarted = ReclaimLoop::new(opener(false), options.clone(), settings);
+    assert!(restarted.round(10 * grace).unwrap().freed.is_empty(), "a restarted sweeper frees nothing on its first round");
+    let freed: BTreeSet<PageKey> = restarted.round(11 * grace).unwrap().freed.into_iter().collect();
+    assert_eq!(freed, late_pages);
+
+    // while a page-granular object exists the sweep is refused and forgets what it saw
+    let page_data = bytes(5000, 9);
+    client.write_object("pages", "p", None, &page_data, &options).unwrap();
+    let held = put(&mut client, "held", 4);
+    let held_pages = pages_of(&held);
+    client.delete_chunk_object("chunk", "held").unwrap();
+    let mut careful = ReclaimLoop::new(opener(false), options.clone(), settings);
+    let status = careful.status();
+    // many rounds, each a full grace apart: with one live page object NOTHING is ever freed
+    for round in 0..25u64 {
+        let refused = careful.round((20 + round) * grace).expect_err("a page-granular object exists");
+        assert!(refused.to_string().contains("1 page-granular objects"), "{refused}");
+    }
+    assert_eq!((status.refused_page_objects(), status.page_objects(), status.freed_pages()), (25, 1, 0));
+    assert!(status.line().contains("reclaim_refused_page_objects=25"), "{}", status.line());
+    for (page, sequence) in sequences(&mut client) {
+        if held_pages.contains(&page) {
+            assert_eq!(sequence, 1, "{page:?} must not be freed while a page-granular object exists");
+        }
+    }
+    // once it is deleted the clocks start from the first round that is allowed
+    client.delete_object("pages", "p", 1).unwrap();
+    assert!(careful.round(50 * grace).unwrap().freed.is_empty(), "the clocks restart after a refusal");
+    let freed: BTreeSet<PageKey> = careful.round(51 * grace).unwrap().freed.into_iter().collect();
+    assert!(held_pages.is_subset(&freed), "{freed:?}");
+    assert_eq!((status.refused_page_objects(), status.page_objects()), (25, 0), "no further refusal once it is gone");
+    assert!(status.freed_pages() >= held_pages.len() as u64);
+    assert_eq!(client.read_chunk_object("chunk", "live", &options).unwrap().1, bytes(3 * 4096, 1));
+    let _ = std::fs::remove_dir_all(&root);
+}
