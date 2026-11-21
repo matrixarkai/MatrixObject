@@ -186,7 +186,7 @@ impl ChunkCatalog {
             return Ok(false);
         }
         if stored.map(|stored| stored.as_ref()) != outcome.before.as_ref() {
-            return Err(invalid("chunk manifest prior state mismatch"));
+            return Err(ObjectError::PreconditionFailed("chunk manifest prior state mismatch".into()));
         }
         if stored.is_none() {
             if self.objects.len() >= MAX_CHUNK_OBJECTS {

@@ -1350,6 +1350,142 @@ fn standalone_star_quorum_writes_and_recovers_256_object_pages() {
 }
 
 #[cfg(feature = "replica-server")]
+#[cfg(feature = "replica-server")]
+#[test]
+fn a_chunk_object_round_trips_through_a_star_quorum_and_a_wrong_digest_fails_its_read() {
+    use matrixobjectstore_rs::chunk_catalog::ChunkOutcome;
+    use matrixobjectstore_rs::cluster::{
+        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ChunkWriteFailure, ObjectWriteOptions,
+        ReplicaClientOptions,
+    };
+    use matrixobjectstore_rs::object_manifest::ManifestListRequest;
+    use matrixobjectstore_rs::ObjectError;
+
+    let root = std::env::temp_dir().join(node_regime::run_token("chunk-object-star"));
+    std::fs::create_dir(&root).unwrap();
+    let mut chunks = Vec::new();
+    for index in 0..3 {
+        let journal = root.join(format!("{index}.log"));
+        chunks.push(processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", journal.to_str().unwrap()),
+            ],
+        ));
+    }
+    let endpoints: Vec<_> = chunks.iter().map(|node| node.endpoint.clone()).collect();
+    let members: Vec<_> = (1..=3).map(|id| format!("star-{id}")).collect();
+    let config = ChunkGroupConfig {
+        placement_id: "group-a".into(),
+        failure_domain: "rack-a".into(),
+        identity: Some(ChunkGroupIdentity {
+            version: 3,
+            group_id: 1,
+            node_id: 1,
+            capacity_bytes: 1 << 28,
+            max_pages: 4096,
+            voters: vec![1, 2, 3],
+            peer_endpoints: Vec::new(),
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
+        }),
+        api_endpoints: endpoints,
+        member_ids: members.clone(),
+    };
+    let catalog = ChunkGroupCatalog::new(vec![config]).unwrap();
+    let metadata = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let mut client = RemoteMetaClient::connect(
+        &metadata.nodes[metadata.leader()].as_ref().unwrap().endpoint,
+        &MetaClientOptions {
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for member in &members {
+        client.heartbeat_placement_node(member, 0, 1 << 28, false, true, 100).unwrap();
+    }
+    let options = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        replica: ReplicaClientOptions {
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let bytes = |length: usize, salt: usize| -> Vec<u8> { (0..length).map(|index| (index * 31 + salt) as u8).collect() };
+    // 4 pages per stripe, so a 40,000-byte object is three extents on the one group
+    let stripe = 4 * 4096;
+
+    // one small page, a few pages in one extent, and several extents
+    for (name, length) in [("tiny", 100usize), ("few", 3 * 4096 + 17), ("many", 40_000)] {
+        let data = bytes(length, length);
+        let manifest = client.write_chunk_object("chunk", name, None, &data, &options, stripe).unwrap();
+        assert_eq!((manifest.generation, manifest.length), (1, length as u64));
+        let (read, got) = client.read_chunk_object("chunk", name, &options).unwrap();
+        assert_eq!(read, manifest);
+        assert_eq!(got, data, "{name} reads back whole");
+        for (offset, span) in [(0usize, 1usize), (length / 2, length / 3), (length - 1, 1), (4095usize.min(length - 1), 2usize.min(length - (4095usize.min(length - 1))))] {
+            let slice = client.read_chunk_object_range(&manifest, offset as u64, span as u64, &options).unwrap();
+            assert_eq!(slice, &data[offset..offset + span], "{name} range {offset}+{span}");
+        }
+    }
+    assert_eq!(client.read_chunk_manifest("chunk", "many").unwrap().extents.len(), 3);
+    assert_eq!(client.read_chunk_manifest("chunk", "tiny").unwrap().extents.len(), 1);
+
+    // an overwrite is one generation later, and one decided from a stale manifest is refused
+    let first = client.read_chunk_manifest("chunk", "few").unwrap();
+    let second_data = bytes(5000, 7);
+    let second = client.write_chunk_object("chunk", "few", Some(&first), &second_data, &options, stripe).unwrap();
+    assert_eq!(second.generation, 2);
+    assert_eq!(client.read_chunk_object("chunk", "few", &options).unwrap().1, second_data);
+    match client.write_chunk_object("chunk", "few", Some(&first), &second_data, &options, stripe) {
+        Err(ChunkWriteFailure::BeforePublication(ObjectError::PreconditionFailed(_))) => {}
+        other => panic!("a stale writer must be refused before publication: {other:?}"),
+    }
+    assert_eq!(client.read_chunk_manifest("chunk", "few").unwrap().generation, 2, "the refusal changed nothing");
+
+    // an empty object has no extents and reads back empty
+    client.write_chunk_object("chunk", "empty", None, &[], &options, stripe).unwrap();
+    assert!(client.read_chunk_object("chunk", "empty", &options).unwrap().1.is_empty());
+
+    // a manifest whose digest does not match the pages it names fails the read by the digest check,
+    // whatever the pages hold
+    let good = client.read_chunk_manifest("chunk", "many").unwrap();
+    let mut wrong = good.clone();
+    wrong.generation += 1;
+    wrong.extents[1].digest = vec![0xAA; 32];
+    client.publish_chunk_manifest(ChunkOutcome::decide(Some(good.clone()), wrong.clone()).unwrap()).unwrap();
+    let error = client.read_chunk_object("chunk", "many", &options).unwrap_err();
+    assert!(matches!(&error, ObjectError::Corruption(message) if message.contains("integrity")), "{error:?}");
+    // a range inside the extents whose digests are right is still served
+    assert_eq!(
+        client.read_chunk_object_range(&wrong, 0, 100, &options).unwrap(),
+        bytes(40_000, 40_000)[0..100].to_vec()
+    );
+
+    // a delete is a tombstone: not found, and listed as deleted
+    client.delete_chunk_object("chunk", "tiny").unwrap();
+    assert!(matches!(client.read_chunk_object("chunk", "tiny", &options), Err(ObjectError::NotFound(_))));
+    let page = client
+        .list_chunk_manifests(ManifestListRequest {
+            version: 2,
+            bucket: "chunk".into(),
+            after: String::new(),
+            limit: 32,
+            expected_revision: Vec::new(),
+            after_bucket: String::new(),
+        })
+        .unwrap();
+    let listed: Vec<(&str, bool)> = page.entries.iter().map(|entry| (entry.key.as_str(), entry.deleted)).collect();
+    assert_eq!(listed, [("empty", false), ("few", false), ("many", false), ("tiny", true)]);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     use matrixobjectstore_rs::cluster::{
         ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ObjectWriteOptions,
