@@ -746,6 +746,14 @@ jobs:
           cargo test --locked --all-features --lib log_chunk_outcome::writer_lease_snapshot_tests:: -- --test-threads=1 | tee /tmp/writer-lease-capture.log
           grep -q '^test result: ok. 2 passed; 0 failed' /tmp/writer-lease-capture.log
 
+      - name: writer lease deadline selection
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib log_chunk_outcome::writer_lease_expiry_tests:: -- --test-threads=1 2>&1 | tee /tmp/writer-lease-expiry.log
+          grep -q '^test result: ok. 3 passed; 0 failed' /tmp/writer-lease-expiry.log
+          cargo test --locked --all-features --lib cluster::log_chunk_commands::log_chunk_expiry_tests:: -- --test-threads=1 2>&1 | tee /tmp/log-chunk-expiry.log
+          grep -q '^test result: ok. 2 passed; 0 failed' /tmp/log-chunk-expiry.log
+
       - name: conditional PUT uncertain outcomes
         run: |
           set -o pipefail
