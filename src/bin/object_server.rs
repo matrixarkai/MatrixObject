@@ -36,6 +36,11 @@
 //! | `MATRIXOBJECT_GATEWAY_NODE_ID` | *(unset)* | cluster mode: this door's id in the metaserver roster (declared there with `MATRIXOBJECT_METASERVER_GATEWAY_ROSTER`). When set, the door heartbeats that node online, withdraws it (draining) on SIGTERM, and clients find live doors with `RemoteMetaClient::list_gateways` |
 //! | `MATRIXOBJECT_GATEWAY_HEARTBEAT_MS` | `3000` | roster heartbeat interval, 100..60000 |
 //! | `MATRIXOBJECT_GATEWAY_DRAIN_GRACE_MS` | `5000` | after SIGTERM: how long to keep answering after withdrawing from the roster, so requests already routed here finish |
+//! | `MATRIXOBJECT_CLUSTER_CHUNK_OBJECTS` | *(unset)* | `1` stores objects as chunk manifests; the sweep below then runs in this process |
+//! | `MATRIXOBJECT_RECLAIM` | `on` | `off` is the only way to turn the sweep off; with chunk objects it also needs `MATRIXOBJECT_RECLAIM_ACK_LEAK=1`, or the door refuses to start |
+//! | `MATRIXOBJECT_RECLAIM_GRACE_MS` | `3600000` | a page must stay unnamed this long (60000..604800000) before it is freed; longer than any write takes from its first page to its publication |
+//! | `MATRIXOBJECT_RECLAIM_INTERVAL_MS` | a quarter of the grace | time between rounds, 1000 up to the grace |
+//! | `MATRIXOBJECT_RECLAIM_ACK_LEAK` | *(unset)* | `1` accepts that `MATRIXOBJECT_RECLAIM=off` leaks the pages of every deleted or overwritten chunk object |
 //! | `MATRIXOBJECT_CLIENT_TLS_CA_CERT`, `MATRIXOBJECT_CLIENT_TLS_CERT`, `MATRIXOBJECT_CLIENT_TLS_KEY` | *(unset)* | mutual TLS from this door to the metadata and chunk servers (cluster mode only); the door itself still listens in plaintext |
 //!
 //! # CLUSTER MODE
@@ -429,6 +434,7 @@ fn run_cluster_gateway(
         std::env::var("MATRIXOBJECT_CLUSTER_POOL_MAX").ok().as_deref(),
         worker_threads,
     );
+    let reclaim_write = write.clone();
     let options = GatewayOptions {
         write,
         replica,
@@ -469,6 +475,21 @@ fn run_cluster_gateway(
     // Objects are stored as chunk manifests only when asked, and the flag stays off by default until
     // pages that no manifest names can be reclaimed.
     let chunk_objects = std::env::var("MATRIXOBJECT_CLUSTER_CHUNK_OBJECTS").map_or(false, |value| value.trim() == "1");
+    // THE SWEEP THAT FREES THE PAGES NO MANIFEST NAMES runs in this process whenever objects are
+    // chunk manifests, and a door that would store them without it refuses to start.
+    let reclaim = match matrixobjectstore_rs::cluster::reclaim_loop::resolve_reclaim(
+        std::env::var("MATRIXOBJECT_RECLAIM").ok().as_deref(),
+        std::env::var("MATRIXOBJECT_RECLAIM_GRACE_MS").ok().as_deref(),
+        std::env::var("MATRIXOBJECT_RECLAIM_INTERVAL_MS").ok().as_deref(),
+        std::env::var("MATRIXOBJECT_RECLAIM_ACK_LEAK").ok().as_deref(),
+        chunk_objects,
+    ) {
+        Ok(settings) => settings,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    };
     let gateway = Arc::new(if chunk_objects {
         ClusterGateway::over_chunk_objects(move || (*for_gateway)(), options, bucket.to_string())
     } else {
@@ -478,6 +499,16 @@ fn run_cluster_gateway(
     let door = matrixobjectstore_rs::net::gateway_door::GatewayDoor::new(gateway);
     let drain_flag = door.drain_flag();
     let gateway = Arc::new(door);
+    if let Some(settings) = reclaim {
+        let stop = Arc::clone(&drain_flag);
+        let for_reclaim = Arc::clone(&open);
+        std::thread::spawn(move || {
+            matrixobjectstore_rs::cluster::reclaim_loop::ReclaimLoop::new(move || (*for_reclaim)(), reclaim_write, settings)
+                .run(stop)
+        });
+        println!("object_server reclaim_refused_page_objects=0 (a sweep refused because page objects exist is reported as a warning)");
+        println!("object_server reclaim grace_ms={} interval_ms={}", settings.grace_ms, settings.interval_ms);
+    }
     #[cfg(unix)]
     start_roster_heartbeat(Arc::clone(&open), drain_flag);
     #[cfg(not(unix))]
