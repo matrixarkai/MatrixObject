@@ -4434,3 +4434,88 @@ fn the_reclaim_loop_frees_after_the_grace_survives_a_failed_open_and_refuses_whi
     assert_eq!(client.read_chunk_object("chunk", "live", &options).unwrap().1, bytes(3 * 4096, 1));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[cfg(feature = "replica-server")]
+#[test]
+fn a_door_refuses_to_start_over_an_older_data_directory_and_starts_once_it_holds_none() {
+    use matrixobjectstore_rs::cluster::reclaim_loop::refuse_older_data_directory;
+    use matrixobjectstore_rs::cluster::{
+        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ObjectWriteOptions, ReplicaClientOptions,
+    };
+
+    let root = std::env::temp_dir().join(node_regime::run_token("older-data-directory"));
+    std::fs::create_dir(&root).unwrap();
+    let mut chunks = Vec::new();
+    for index in 0..3 {
+        let journal = root.join(format!("{index}.log"));
+        chunks.push(processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", journal.to_str().unwrap()),
+            ],
+        ));
+    }
+    let endpoints: Vec<_> = chunks.iter().map(|node| node.endpoint.clone()).collect();
+    let members: Vec<_> = (1..=3).map(|id| format!("star-{id}")).collect();
+    let config = ChunkGroupConfig {
+        placement_id: "group-a".into(),
+        failure_domain: "rack-a".into(),
+        identity: Some(ChunkGroupIdentity {
+            version: 3,
+            group_id: 1,
+            node_id: 1,
+            capacity_bytes: 1 << 28,
+            max_pages: 4096,
+            voters: vec![1, 2, 3],
+            peer_endpoints: Vec::new(),
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
+        }),
+        api_endpoints: endpoints,
+        member_ids: members.clone(),
+    };
+    let catalog = ChunkGroupCatalog::new(vec![config]).unwrap();
+    let metadata = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let mut client = RemoteMetaClient::connect(
+        &metadata.nodes[metadata.leader()].as_ref().unwrap().endpoint,
+        &MetaClientOptions {
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for member in &members {
+        client.heartbeat_placement_node(member, 0, 1 << 28, false, true, 100).unwrap();
+    }
+    let options = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        replica: ReplicaClientOptions {
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let bytes = |length: usize| -> Vec<u8> { (0..length).map(|index| (index * 31) as u8).collect() };
+
+    // an empty cluster and one that holds chunk objects only start
+    assert_eq!(refuse_older_data_directory(&mut client), Ok(()));
+    client.write_chunk_object("chunk", "a", None, &bytes(5000), &options, 4 * 4096).unwrap();
+    assert_eq!(refuse_older_data_directory(&mut client), Ok(()), "chunk objects are what this build stores");
+
+    // a page-granular object (what an earlier build wrote) is refused by name, with the count
+    client.write_object("pages", "old", None, &bytes(5000), &options).unwrap();
+    let refused = refuse_older_data_directory(&mut client).expect_err("an older data directory must be refused");
+    assert!(refused.contains("older data directory not supported"), "{refused}");
+    assert!(refused.contains("1 page-granular objects"), "{refused}");
+    assert!(refused.contains("data directories from earlier builds are not supported"), "{refused}");
+
+    // a deleted page-granular object does not count: the directory holds nothing this build cannot read
+    client.delete_object("pages", "old", 1).unwrap();
+    assert_eq!(refuse_older_data_directory(&mut client), Ok(()));
+    let _ = std::fs::remove_dir_all(&root);
+}
+

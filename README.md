@@ -88,10 +88,9 @@ configure remote placement, metadata consensus, TLS, or repair scheduling. Selec
 paths explicitly using the guides above; local multi-process results are not independent-host
 production qualification.
 
-Objects are stored as chunk manifests when a door is started with
-`MATRIXOBJECT_CLUSTER_CHUNK_OBJECTS=1` (see [chunk-granular manifests](docs/chunk-granular-manifest.md)
-and [the gateway](docs/cluster-gateway.md)); that path is off by default, and the page-granular manifest
-path remains the default until it is retired.
+Objects are stored as chunk manifests (see [chunk-granular manifests](docs/chunk-granular-manifest.md)
+and [the gateway](docs/cluster-gateway.md)). **Data directories from earlier builds are not supported**:
+a door refuses to start over a cluster that still holds page-granular objects, and there is no migration.
 
 ### Resume uncertain staged allocations
 

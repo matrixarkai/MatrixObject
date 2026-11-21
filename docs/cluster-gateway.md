@@ -187,7 +187,7 @@ of the tail merge exists. The default remains the plain path.
 
 ## Reclaiming the pages no manifest names
 
-With `MATRIXOBJECT_CLUSTER_CHUNK_OBJECTS=1` a door stores objects as chunk manifests, and the pages of a
+A door stores objects as chunk manifests, and the pages of a
 deleted object, of an overwritten generation and of a writer that died before publishing are named by no
 manifest. The door runs a sweep that frees them, in a thread of its own process, with no setting needed:
 
@@ -209,13 +209,12 @@ Known limits:
   repeated work. Electing one sweeper is a follow-up.
 * **A restart delays freeing, never advances it.** What a sweeper has seen is in memory, so a restarted door
   starts every grace clock again.
-* **It refuses while a page-granular object exists.** The sweep takes a page that no chunk manifest names for
-  garbage, so it would free the pages of an object published the page-granular way. A round that finds one
-  that is not deleted frees nothing and forgets what it had seen. A door must still be able to start, so
-  this is a refusal per round: a `WARNING` on the error stream with the number of page objects the first
-  time and then every tenth round, and a counter, `reclaim_refused_page_objects`, so a sweep that never
-  runs can be seen. **The default is only valid once no page-granular object exists**; until then keep
-  `MATRIXOBJECT_CLUSTER_CHUNK_OBJECTS` off.
+* **Data directories from earlier builds are not supported.** This build stores and reads chunk objects
+  only, and there is no migration. A door that finds a page-granular object that is not deleted when it
+  starts refuses to start, with `older data directory not supported` and the number of such objects. The
+  sweep also checks before every round (the counter `reclaim_refused_page_objects` counts the rounds it
+  refused) because it takes a page that no chunk manifest names for garbage and would otherwise free the
+  pages of such an object.
 * **The digest check is integrity, not access control.** A manifest that names a page keeps it alive;
   publishing assumes trusted cluster clients.
 
