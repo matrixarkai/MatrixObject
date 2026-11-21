@@ -3456,6 +3456,12 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus a_reclaim_sweep_frees_the_pages_of_deleted_and_overwritten_objects_and_only_those -- --exact | tee /tmp/chunk-reclaim-sweep.log
           grep -q '^running 1 test$' /tmp/chunk-reclaim-sweep.log
           grep -q '^test result: ok. 1 passed' /tmp/chunk-reclaim-sweep.log
+      - name: every expiry and leadership message in the workers is recognised as retryable
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::consensus_errors::tests::every_expiry_and_leadership_message_in_the_workers_is_recognised -- --exact --test-threads=1 2>&1 | tee /tmp/consensus-errors.log
+          grep -q '^running 1 test$' /tmp/consensus-errors.log
+          grep -q '^test result: ok. 1 passed' /tmp/consensus-errors.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail
