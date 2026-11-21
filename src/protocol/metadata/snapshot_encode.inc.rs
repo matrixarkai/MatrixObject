@@ -230,11 +230,10 @@ impl MetaSnapshot {
             }
             if !self.object_manifests.is_empty() {
                 // Catalog mutation enforces its checkpoint bound.
-                let bytes = self.object_manifests.to_bytes().expect("valid manifest catalog");
-                append_u64(&mut out, bytes.len() as u64);
+                append_u64(&mut out, self.object_manifests.encoded_size() as u64);
                 emit_body(&out)?;
                 out.clear();
-                emit_body(&bytes)?;
+                self.object_manifests.visit_encoded(&mut emit_body)?;
             }
             if has_features {
                 append_u64(&mut out, self.cluster_features.raised);

@@ -221,11 +221,14 @@ impl MatrixMetaService {
         }
         if !self.object_manifests.is_empty() {
             append_string(&mut material, "MOSRSMANIFEST1");
-            let bytes = self.object_manifests.to_bytes().expect("valid manifest catalog");
-            append_u64(&mut material, bytes.len() as u64);
-            let digest = fnv1a64_resumed(FNV1A64_OFFSET_BASIS, &material);
+            append_u64(&mut material, self.object_manifests.encoded_size() as u64);
+            let mut digest = fnv1a64_resumed(FNV1A64_OFFSET_BASIS, &material);
+            self.object_manifests.visit_encoded(&mut |bytes| {
+                digest = fnv1a64_resumed(digest, bytes);
+                Ok::<(), std::convert::Infallible>(())
+            }).unwrap();
             let mut checksum = String::with_capacity(24);
-            append_etag_of_digest(&mut checksum, fnv1a64_resumed(digest, &bytes));
+            append_etag_of_digest(&mut checksum, digest);
             return checksum;
         }
         etag(&material)
