@@ -189,7 +189,7 @@ mod tests {
     }
     #[test]
     fn manifest_journal_recovers_atomic_publication_and_torn_suffixes() {
-        let (base, create, replace) = crate::tests::manifest_publication_fixture();
+        let (base, create, replace) = crate::test_fixtures::manifest_publication_fixture();
         let first = PlacementJournal::record(&create).unwrap();
         let second = PlacementJournal::record(&replace).unwrap();
         let path = std::env::temp_dir().join(format!("manifest-journal-{}", std::process::id()));

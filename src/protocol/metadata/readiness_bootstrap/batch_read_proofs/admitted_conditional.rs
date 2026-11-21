@@ -190,24 +190,6 @@ pub(crate) fn admitted_versioned_conditional_object_batch_read_proof_checksum(
     etag(&material)
 }
 
-pub(crate) fn stamp_admitted_conditional_object_batch_read_proof(
-    operation: &str,
-    report: &mut AdmittedConditionalObjectBatchReadReport,
-) {
-    report.storage_admission_proof_format = STORAGE_ADMISSION_PROOF_FORMAT.to_string();
-    report.storage_admission_proof_checksum =
-        admitted_conditional_object_batch_read_proof_checksum(operation, report);
-}
-
-pub(crate) fn stamp_admitted_versioned_conditional_object_batch_read_proof(
-    operation: &str,
-    report: &mut AdmittedVersionedConditionalObjectBatchReadReport,
-) {
-    report.storage_admission_proof_format = STORAGE_ADMISSION_PROOF_FORMAT.to_string();
-    report.storage_admission_proof_checksum =
-        admitted_versioned_conditional_object_batch_read_proof_checksum(operation, report);
-}
-
 pub(crate) fn check_expected_admitted_conditional_object_batch_read_proof_checksum(
     operation: &str,
     actual: &str,

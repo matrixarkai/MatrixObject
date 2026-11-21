@@ -587,19 +587,23 @@ fn sweep(service: &MatrixMetaService, request: &LogChunkRequest, now_ms: u64) ->
 }
 
 /// The cleanup command for the leases whose term is over, at most one batch: the sweeper calls
-/// this on the leader and proposes what it returns. Scans the table, which holds at most
-/// `MAX_WRITER_LEASES` entries, and stops at the first batch it fills.
+/// this on the leader and proposes what it returns. The deadline index stops at
+/// the first live lease; only the selected batch is sorted into outcome key order.
 pub(super) fn expired(service: &MatrixMetaService, now_ms: u64) -> Vec<super::MetaRequest> {
-    let drops: Vec<LeaseRef> = service
+    let mut drops: Vec<LeaseRef> = service
         .writer_leases
-        .iter()
-        .filter(|(_, _, lease)| lease.expires_at_ms < now_ms)
+        .expired_before(now_ms)
         .take(SWEEP_BATCH)
-        .map(|(bucket, key, lease)| LeaseRef { bucket: bucket.to_string(), key: key.to_string(), epoch: lease.epoch })
+        .map(|(bucket, key, epoch)| LeaseRef { bucket: bucket.to_string(), key: key.to_string(), epoch })
         .collect();
+    drops.sort_unstable_by(|left, right| (&left.bucket, &left.key).cmp(&(&right.bucket, &right.key)));
     if drops.is_empty() {
         Vec::new()
     } else {
         vec![super::MetaRequest::LogChunk(LogChunkRequest::sweep(drops))]
     }
 }
+
+#[cfg(test)]
+#[path = "log_chunk_expiry_tests.rs"]
+mod log_chunk_expiry_tests;

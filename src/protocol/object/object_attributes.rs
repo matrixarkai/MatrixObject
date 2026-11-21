@@ -15,13 +15,6 @@
 pub struct ObjectAttributes(Option<Box<BTreeMap<String, String>>>);
 
 impl ObjectAttributes {
-    /// Whether the map behind the pointer has been allocated. The audit needs
-    /// this: an object carrying no attributes owes nothing for them, and one
-    /// that carries any owes the map's own inline size on the heap as well as
-    /// its entries.
-    pub(crate) fn is_allocated(&self) -> bool {
-        self.0.is_some()
-    }
 
     pub fn into_map(self) -> BTreeMap<String, String> {
         self.0.map(|map| *map).unwrap_or_default()

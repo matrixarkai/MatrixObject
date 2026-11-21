@@ -394,11 +394,11 @@ fn every_rust_source_carries_the_licence_header() {
 
     // A WALK THAT FINDS NOTHING PASSES EVERYTHING BELOW IT, which is how a licence gate goes
     // quietly blind: the headers do not have to disappear, the walk only has to stop reaching
-    // them -- a directory moved, a path that no longer resolves. 1,303 sources were here when
+    // them -- a directory moved, a path that no longer resolves. 860 sources were here when
     // this floor was written, so it has room for ordinary churn and only fires when the walk
     // itself has stopped working.
     assert!(
-        sources.len() >= 1_000,
+        sources.len() >= 700,
         "only {} Rust sources were found under {}, so a clean result below would mean \
          nothing",
         sources.len(),
@@ -687,7 +687,6 @@ fn every_binary_the_readme_tells_a_reader_to_run_exists() {
         ("metaserver", include_str!("bin/metaserver.rs")),
         ("object_server", include_str!("bin/object_server.rs")),
         ("chunkserver", include_str!("bin/chunkserver.rs")),
-        ("scale_bench", include_str!("bin/scale_bench.rs")),
     ];
     for (name, source) in BINARIES {
         assert!(
@@ -720,7 +719,7 @@ fn every_binary_the_readme_tells_a_reader_to_run_exists() {
     );
     assert_eq!(
         BINARIES.len(),
-        4,
+        3,
         "the binary list is meant to be every binary in src/bin"
     );
 
@@ -757,13 +756,6 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRS-BLOCK-ROUTE-BOOTSTRAP1",
         "MOSRS-BLOCKSERVER-BOOTSTRAP1",
         "MOSRS-BUCKET-CORS-REQUEST1",
-        "MOSRS-BUCKET-CREATE-REQUEST1",
-        "MOSRS-BUCKET-DELETE-REQUEST1",
-        "MOSRS-BUCKET-LIFECYCLE-REQUEST1",
-        "MOSRS-BUCKET-POLICY-DOCUMENT-REQUEST1",
-        "MOSRS-BUCKET-QUOTA-REQUEST1",
-        "MOSRS-BUCKET-RETENTION-REQUEST1",
-        "MOSRS-BUCKET-VERSIONING-REQUEST1",
         "MOSRS-CHUNK-MUTATION-BOOTSTRAP1",
         "MOSRS-CHUNK-RECLAIM-RECEIPT-PROOF1",
         "MOSRS-CHUNK-STATE-INSTALL-RECEIPT-PROOF1",
@@ -774,9 +766,6 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRS-METASERVER-BOOTSTRAP1",
         "MOSRS-METASERVER-COORDINATOR-BOOTSTRAP1",
         "MOSRS-METASERVER-RAFT-BOOTSTRAP1",
-        "MOSRS-MODULE-CATALOG-ROUTE1",
-        "MOSRS-MULTIPART-ABORT-REQUEST1",
-        "MOSRS-MULTIPART-COMPLETE-REQUEST1",
         "MOSRS-ROOT-CATALOG-BOOTSTRAP1",
         "MOSRS-ROOT-CATALOG-ROUTE1",
         // The route BINDING form, landed reader-first: this build verifies it and does
@@ -784,23 +773,18 @@ fn every_durable_format_constant_is_accounted_for() {
         // being retired and a stamp minted now is permanent.
         "MOSRS-CATALOG-ROUTE-BINDING1",
         "MOSRS-ROOTSERVER-BOOTSTRAP1",
-        "MOSRS-STORAGE-MAINTENANCE-APPLY-REQUEST1",
         "MOSRSBLOCK",
         "MOSRSBLOCK-CHUNK-CONTROL-PROOF1",
         "MOSRSBLOCK-FINGERPRINT17",
         "MOSRSBLOCK24",
         "MOSRSBLOCKROUTE10",
         "MOSRSCHUNK",
-        "MOSRSCHUNK-AGG-FINGERPRINT8",
         "MOSRSCHUNK-FINGERPRINT4",
         "MOSRSCHUNK22",
         "MOSRSCHUNK23",
         "MOSRSCHUNKCONTROL12",
-        "MOSRSJNL1",
         "MOSRSMETA",
-        "MOSRSMETA-CONTROL12",
         "MOSRSMETA-FINGERPRINT1",
-        "MOSRSMETA-INTEGRITY1",
         "MOSRSMETA18",
         "MOSRSMETA19",
         "MOSRSMETA20",
@@ -811,12 +795,9 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRSFEATURES1",
         "MOSRSLEASES1",
         "MOSRSMANIFEST1",
-        "MOSRSMODULESTATUS32",
         "MOSRSOBJECTREADY77",
         "MOSRSROOT",
         "MOSRSROOT-FINGERPRINT1",
-        "MOSRSROOT-PLACEMENT-MIGRATION-COMMIT-ENVELOPE2",
-        "MOSRSROOT-PLACEMENT-MIGRATION-ENVELOPE2",
         "MOSRSROOT33",
         "MOSRSROOT34",
         "MOSRSROOTRAFTSTATUS7",
@@ -840,7 +821,6 @@ fn every_durable_format_constant_is_accounted_for() {
         "MXOS-BLOCK-WRITE-BATCH-RECEIPT-PAGE-PROOF1",
         "MXOS-BLOCK-WRITE-RECEIPT-PAGE-PROOF1",
         "MXOS-BLOCK-WRITE-RECEIPT-PROOF1",
-        "MXOS-CACHE-BATCH-PROOF1",
         "MXOS-CHUNK-DISCARD-BATCH-PROOF1",
         "MXOS-CHUNK-DISCARD-BATCH-RECEIPT-PAGE-PROOF1",
         "MXOS-CHUNK-DISCARD-RECEIPT-PAGE-PROOF1",
@@ -854,8 +834,6 @@ fn every_durable_format_constant_is_accounted_for() {
         "MXOS-CHUNK-WRITE-RECEIPT-PAGE-PROOF1",
         "MXOS-CHUNK-WRITE-RECEIPT-PROOF1",
         "MXOS-COORDINATOR-POLICY1",
-        "MXOS-COPY-BATCH-PROOF1",
-        "MXOS-DELETE-BATCH-PROOF1",
         "MXOS-META-BATCH-RECEIPT-PAGE-PROOF1",
         "MXOS-META-BATCH-RECEIPT-PROOF1",
         "MXOS-META-COORDINATOR-CONFIG-RECEIPT-PAGE-PROOF1",
@@ -872,15 +850,6 @@ fn every_durable_format_constant_is_accounted_for() {
         "MXOS-META-TRANSACTION-RECEIPT-PAGE-PROOF1",
         "MXOS-META-TRANSACTION-RECEIPT-PROOF1",
         "MXOS-META-TRANSACTION-SUMMARY-PAGE-PROOF1",
-        "MXOS-METADATA-BATCH-READ-PROOF1",
-        "MXOS-MULTIPART-ABORT-PROOF1",
-        "MXOS-MULTIPART-COMPLETE-PROOF1",
-        "MXOS-MULTIPART-CREATE-PROOF1",
-        "MXOS-MULTIPART-PART-PROOF1",
-        "MXOS-OBJECT-BATCH-READ-PROOF1",
-        "MXOS-OBJECT-CHANGE-PAGE-PROOF1",
-        "MXOS-OBJECT-LIST-PAGE-PROOF1",
-        "MXOS-PUT-BATCH-PROOF1",
         "MXOS-RAFT-MEMBERSHIP-RECEIPT-PAGE-PROOF1",
         "MXOS-RAFT-MEMBERSHIP-RECEIPT-PROOF1",
         "MXOS-ROOT-LEADER-LEASE-RECEIPT-PAGE-PROOF1",
@@ -888,35 +857,17 @@ fn every_durable_format_constant_is_accounted_for() {
         "MXOS-RUST-FULL-COMPACTION-PLAN-PROOF1",
         "MXOS-RUST-METADATA-REPLICATION-PROOF5",
         "MXOS-RUST-METADATA-SNAPSHOT-INSTALL-SOURCE-PROOF1",
-        "MXOS-RUST-METADATA-SNAPSHOT-READ-PROOFS1",
-        "MXOS-RUST-METASERVER-SNAPSHOT-READ-PROOFS1",
         "MXOS-RUST-OBJECT-GC-REPORT-PROOF1",
-        "MXOS-RUST-ROOT-SNAPSHOT-READ-PROOFS1",
         "MXOS-RUST-SEGMENT-DISCARD-RUN-PROOF1",
         "MXOS-RUST-SERVICE-SNAPSHOT-INSTALL-SOURCE-PROOF1",
         "MXOS-RUST-STORAGE-SNAPSHOT-INSTALL-SOURCE-PROOF1",
-        "MXOS-RUST-STORAGE-SNAPSHOT-READ-PROOFS1",
         "MXOS-STORAGE-ADMISSION-PROOF2",
-        "MXOS-STORAGE-RECEIPT-PAGE-PROOF1",
-        "MXOSBLOCK-ALLOCATION-RELEASE-ENVELOPE1",
-        "MXOSBLOCK-ALLOCATION-RELEASE-REQUEST1",
-        "MXOSBLOCK-ALLOCATION-RESERVATION-ENVELOPE1",
-        "MXOSBLOCK-ALLOCATION-RESERVATION-REQUEST1",
-        "MXOSBLOCK-AUDIT-REPAIR-ENVELOPE1",
-        "MXOSBLOCK-BATCH-ALLOCATION-RESERVATION-ENVELOPE1",
-        "MXOSBLOCK-BATCH-ALLOCATION-RESERVATION-REQUEST1",
-        "MXOSBLOCK-CHUNK-HANDOFF-ENVELOPE1",
-        "MXOSBLOCK-CHUNK-HANDOFF-REQUEST1",
-        "MXOSBLOCK-STORAGE-MAINTENANCE-ENVELOPE1",
         "MXOSCHUNK-HANDOFF-ENVELOPE1",
         "MXOSCHUNK-HANDOFF-REQUEST1",
-        "MXOSCHUNK-RECLAIM-ENVELOPE1",
         "MXOSROOT-BLOCK-ROUTE-CONTROL-PROOF1",
         "MXOSROOT-CATALOG-LIVENESS-RECEIPT1",
         "MXOSROOT-CHUNK-CONTROL-PROOF1",
         "MXOSROOT-META-CONTROL-PROOF1",
-        "MXOSSEGMENT-COMPACTION-ENVELOPE2",
-        "MXOSSEGMENT-DISCARD-ENVELOPE1",
     ];
 
     fn collect(dir: &std::path::Path, out: &mut std::collections::BTreeSet<String>) {
@@ -979,7 +930,7 @@ fn every_durable_format_constant_is_accounted_for() {
     );
     assert_eq!(
         found.len(),
-        160,
+        112,
         "the count is pinned as well, so a rename that happens to swap two names cannot pass"
     );
 }

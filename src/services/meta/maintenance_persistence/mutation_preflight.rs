@@ -5,8 +5,6 @@
 pub(crate) struct MetaRecordUndo {
     key: String,
     previous_record: Option<MetadataRecord>,
-    next_commit_index: u64,
-    next_change_sequence: u64,
 }
 
 impl MetaRecordUndo {
@@ -273,39 +271,6 @@ impl MatrixMetaService {
             }
         }
         Ok(())
-    }
-
-    /// Everything `apply_mutation` changes, so one record commit can be undone
-    /// without copying the service.
-    pub(crate) fn capture_record_undo(&self, key: &str) -> MetaRecordUndo {
-        MetaRecordUndo {
-            previous_record: self.record(key).cloned(),
-            key: key.to_string(),
-            next_commit_index: self.next_commit_index,
-            next_change_sequence: self.next_change_sequence,
-        }
-    }
-
-    pub(crate) fn restore_record_undo(&mut self, undo: MetaRecordUndo) {
-        match undo.previous_record {
-            Some(record) => {
-                self.file_record(undo.key.into(), record);
-            }
-            None => {
-                self.records.remove(undo.key.as_str());
-            }
-        }
-        // `apply_mutation` no longer only appends here: the log is also trimmed
-        // from the front once it reaches
-        // `UNCHECKPOINTED_METADATA_CHANGE_RETENTION` with nothing checkpointing
-        // it, and a trim plus an append leaves the length unchanged -- so a
-        // `truncate` would keep the appended record and had already lost the
-        // oldest one. A sequence does not move when the front is trimmed, and
-        // the undo already carries the one this mutation started from.
-        self.changes
-            .retain(|change| change.sequence < undo.next_change_sequence);
-        self.next_commit_index = undo.next_commit_index;
-        self.next_change_sequence = undo.next_change_sequence;
     }
 
     /// Append to the change log, bounding it when nothing has checkpointed it.

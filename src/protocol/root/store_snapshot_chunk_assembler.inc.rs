@@ -107,7 +107,6 @@ impl StoreSnapshotChunkAssembler {
                     "store snapshot full checksum mismatch".to_string(),
                 ));
             }
-            let full_checksum = chunk.full_checksum;
             let image = chunk.payload;
             self.expected_total_bytes = None;
             self.expected_full_checksum = None;
@@ -115,7 +114,6 @@ impl StoreSnapshotChunkAssembler {
             self.expected_term = None;
             return Ok(Some(StoreSnapshotAssembledImage {
                 bytes: image,
-                full_checksum,
             }));
         }
         if self.buffer.is_empty() {
@@ -139,7 +137,6 @@ impl StoreSnapshotChunkAssembler {
                 "store snapshot full checksum mismatch".to_string(),
             ));
         }
-        let full_checksum = chunk.full_checksum;
         let image = std::mem::take(&mut self.buffer);
         self.expected_total_bytes = None;
         self.expected_full_checksum = None;
@@ -147,7 +144,6 @@ impl StoreSnapshotChunkAssembler {
         self.expected_term = None;
         Ok(Some(StoreSnapshotAssembledImage {
             bytes: image,
-            full_checksum,
         }))
     }
 

@@ -22,6 +22,7 @@ fn lease_captures_share_the_root_and_preserve_key_order() {
         table.validate().unwrap();
         let captured = table.clone();
         assert!(captured.leases.ptr_eq(&table.leases));
+        assert!(captured.deadlines.ptr_eq(&table.deadlines));
         let keys: Vec<_> = captured.iter().map(|(_, key, _)| key.to_string()).collect();
         let expected: Vec<_> = (0..count)
             .map(|index| format!("object-{index:08}"))

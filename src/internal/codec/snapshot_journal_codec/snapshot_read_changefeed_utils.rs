@@ -162,18 +162,3 @@ pub(crate) fn merge_ranges(mut ranges: Vec<DataRange>) -> Vec<DataRange> {
     }
     out
 }
-
-pub(crate) fn ranges_covered_by(ranges: &[DataRange], covering_ranges: &[DataRange]) -> bool {
-    let covering_ranges = merge_range_slice(covering_ranges);
-    ranges.iter().all(|range| {
-        let Some(range_end) = range.offset.checked_add(range.length) else {
-            return false;
-        };
-        covering_ranges.iter().any(|cover| {
-            let Some(cover_end) = cover.offset.checked_add(cover.length) else {
-                return false;
-            };
-            cover.offset <= range.offset && range_end <= cover_end
-        })
-    })
-}

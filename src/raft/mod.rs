@@ -6,8 +6,12 @@ include!("membership_plan.rs");
 include!("membership_receipts.rs");
 include!("raft_log_backend.rs");
 
+// The names the chunk state machine and write group are written against (they were imported by the
+// metadata state machine file they were included beside, which went with the embedded store).
 #[cfg(feature = "matrix-raft")]
-include!("matrixraft_state_machine.rs");
+use matrixraft::{
+    ApplyRequest, ApplyResponse, LogId, RaftError, SnapshotChunk, SnapshotMetadata, StateMachine,
+};
 
 #[cfg(feature = "matrix-raft")]
 include!("matrixraft_chunk_state_machine.rs");
