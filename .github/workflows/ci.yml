@@ -2673,6 +2673,12 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus the_reclaim_loop_frees_after_the_grace_survives_a_failed_open_and_refuses_while_page_objects_exist -- --exact | tee /tmp/reclaim-loop-cluster.log
           grep -q '^running 1 test$' /tmp/reclaim-loop-cluster.log
           grep -q '^test result: ok. 1 passed' /tmp/reclaim-loop-cluster.log
+      - name: a chunk manifest is shown with one identity per extent and two writes never share one
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib net::chunk_plane::tests::a_chunk_manifest_is_shown_with_one_identity_per_extent_and_two_writes_never_share_one -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-plane.log
+          grep -q '^running 1 test$' /tmp/chunk-plane.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-plane.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail

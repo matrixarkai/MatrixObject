@@ -1419,6 +1419,72 @@ fn a_chunk_object_round_trips_through_a_star_quorum_and_a_wrong_digest_fails_its
     }
     assert_eq!(client.read_chunk_manifest("chunk", "few").unwrap().generation, 2, "the refusal changed nothing");
 
+    // an append adds extents after the last one, and the whole object reads back verified
+    let base = client.read_chunk_manifest("chunk", "few").unwrap();
+    let tail_a = bytes(300, 11);
+    let grown = client.append_chunk_object(&base, &tail_a, &options, stripe).unwrap();
+    assert_eq!((grown.generation, grown.length, grown.extents.len()), (3, 5300, base.extents.len() + 1));
+    assert_eq!(grown.extents[..base.extents.len()], base.extents[..], "the extents already there are untouched");
+    // 4 pages per stripe: 16,434 bytes is two more extents
+    let tail_b = bytes(4 * 4096 + 50, 12);
+    let grown_again = client.append_chunk_object(&grown, &tail_b, &options, stripe).unwrap();
+    assert_eq!((grown_again.generation, grown_again.length, grown_again.extents.len()), (4, 5300 + tail_b.len() as u64, base.extents.len() + 3));
+    let whole: Vec<u8> = [second_data.as_slice(), tail_a.as_slice(), tail_b.as_slice()].concat();
+    assert_eq!(client.read_chunk_object("chunk", "few", &options).unwrap().1, whole);
+    for (offset, span) in [(4990usize, 30usize), (5290, 20), (5300, 4096), (whole.len() - 5, 5)] {
+        let slice = client.read_chunk_object_range(&grown_again, offset as u64, span as u64, &options).unwrap();
+        assert_eq!(slice, &whole[offset..offset + span], "range {offset}+{span} across the appended extents");
+    }
+    // an append decided from a stale manifest is refused before publication and changes nothing
+    match client.append_chunk_object(&base, &tail_a, &options, stripe) {
+        Err(ChunkWriteFailure::BeforePublication(ObjectError::PreconditionFailed(_))) => {}
+        other => panic!("a stale append must be refused before publication: {other:?}"),
+    }
+    assert_eq!(client.read_chunk_manifest("chunk", "few").unwrap(), grown_again, "the refusal changed nothing");
+    // an empty append and one with another page size are refused
+    assert!(matches!(
+        client.append_chunk_object(&grown_again, &[], &options, stripe),
+        Err(ChunkWriteFailure::BeforePublication(ObjectError::InvalidArgument(_)))
+    ));
+    let other_pages = ObjectWriteOptions { page_bytes: 8192, ..options.clone() };
+    assert!(matches!(
+        client.append_chunk_object(&grown_again, &tail_a, &other_pages, stripe),
+        Err(ChunkWriteFailure::BeforePublication(ObjectError::InvalidArgument(_)))
+    ));
+    // a manifest that already names the most extents refuses an append whole, before any page is written
+    let full = matrixobjectstore_rs::chunk_object::build_manifest(
+        "chunk",
+        "full",
+        1,
+        4096,
+        (0..matrixobjectstore_rs::chunk_manifest::MAX_CHUNK_EXTENTS as u64)
+            .map(|index| matrixobjectstore_rs::chunk_manifest::ChunkExtent {
+                group: "group-a".into(),
+                volume_id: 0,
+                chunk_id: index + 1,
+                kind: matrixobjectstore_rs::chunk_manifest::CHUNK_KIND_PAGED,
+                object_offset: index,
+                chunk_offset: 0,
+                length: 1,
+                flags: matrixobjectstore_rs::chunk_manifest::CHUNK_FLAG_SEALED,
+                digest: vec![7; 32],
+                footer_crc: 0,
+                footer_sha256: Vec::new(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    match client.append_chunk_object(&full, &tail_a, &options, stripe) {
+        Err(ChunkWriteFailure::BeforePublication(ObjectError::InvalidArgument(message))) => {
+            assert!(message.contains("append refused"), "{message}")
+        }
+        other => panic!("an append past the extent bound must be refused whole: {other:?}"),
+    }
+    // the fence republishes the same extents one generation later
+    let fenced = client.republish_chunk_manifest(&grown_again).unwrap();
+    assert_eq!((fenced.generation, fenced.length, &fenced.extents), (grown_again.generation + 1, grown_again.length, &grown_again.extents));
+    assert_eq!(client.read_chunk_object("chunk", "few", &options).unwrap().1, whole);
+
     // an empty object has no extents and reads back empty
     client.write_chunk_object("chunk", "empty", None, &[], &options, stripe).unwrap();
     assert!(client.read_chunk_object("chunk", "empty", &options).unwrap().1.is_empty());
@@ -1507,9 +1573,41 @@ fn a_chunk_object_round_trips_through_a_star_quorum_and_a_wrong_digest_fails_its
         assert_eq!(listing.status, 200);
         let listing = String::from_utf8_lossy(&listing.body).to_string();
         assert!(listing.contains("object") && listing.contains("copied"), "{listing}");
-        // an append is refused on this path until the log writer serves it
-        let append = call("PUT", "/gw/object", &[("x-amz-write-offset-bytes", "100")], b"more");
-        assert!(append.status >= 400, "an append must be refused, got {}", append.status);
+        // an append lands at the end and the object reads back whole, verified
+        let attempt = "00112233445566778899aabbccddeeff";
+        let more = bytes(70_000, 5);
+        let appended = call("PUT", "/gw/object", &[("x-amz-write-offset-bytes", "100"), ("x-amz-attempt-id", attempt)], &more);
+        assert_eq!(appended.status, 200, "{}", String::from_utf8_lossy(&appended.body));
+        let whole: Vec<u8> = [second.as_slice(), more.as_slice()].concat();
+        assert_eq!(call("GET", "/gw/object", &[], &[]).body, whole);
+        // one at the wrong offset is refused and changes nothing
+        let wrong = call("PUT", "/gw/object", &[("x-amz-write-offset-bytes", "100")], b"late");
+        assert!(wrong.status >= 400, "an append that would not land at the end must be refused, got {}", wrong.status);
+        assert_eq!(call("GET", "/gw/object", &[], &[]).body, whole);
+
+        // THE APPEND RESOLVE, END TO END. The attempt the gateway saw land is recognised as landed by its
+        // own extents; a different attempt for the same range is only ever ambiguous; and a resolve at the
+        // end of the object fences an attempt that never landed, after which the retry lands exactly once.
+        let resolve = |id: &str, offset: usize, length: usize| {
+            call("POST", &format!("/gw/object?append-resolve&attempt={id}&offset={offset}&length={length}"), &[], &[])
+        };
+        let landed = resolve(attempt, 100, more.len());
+        assert_eq!((landed.status, String::from_utf8_lossy(&landed.body).trim().to_string()), (200, "landed".to_string()));
+        let stranger = resolve("ffeeddccbbaa99887766554433221100", 100, more.len());
+        assert_eq!((stranger.status, String::from_utf8_lossy(&stranger.body).trim().to_string()), (200, "ambiguous".to_string()));
+        let end = 100 + more.len();
+        let before_fence = call("HEAD", "/gw/object", &[], &[]);
+        let etag_of = |response: &matrixobjectstore_rs::net::Response| {
+            response.headers.iter().find(|(name, _)| name.eq_ignore_ascii_case("etag")).map(|(_, value)| value.clone()).unwrap_or_default()
+        };
+        let never = resolve("0123456789abcdef0123456789abcdef", end, 5);
+        assert_eq!((never.status, String::from_utf8_lossy(&never.body).trim().to_string()), (200, "absent".to_string()));
+        assert_ne!(etag_of(&call("HEAD", "/gw/object", &[], &[])), etag_of(&before_fence), "the fence is a new generation");
+        assert_eq!(call("GET", "/gw/object", &[], &[]).body, whole, "the fence changed no byte");
+        let retry = call("PUT", "/gw/object", &[("x-amz-write-offset-bytes", &end.to_string())], b"tail!");
+        assert_eq!(retry.status, 200, "{}", String::from_utf8_lossy(&retry.body));
+        let after: Vec<u8> = [whole.as_slice(), b"tail!".as_slice()].concat();
+        assert_eq!(call("GET", "/gw/object", &[], &[]).body, after, "the retry landed exactly once");
         assert_eq!(call("DELETE", "/gw/object", &[], &[]).status, 204);
         assert_eq!(call("GET", "/gw/object", &[], &[]).status, 404);
     }
