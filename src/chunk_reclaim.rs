@@ -37,8 +37,13 @@ pub const FIRST_WRITE_SEQUENCE: u64 = 1;
 
 /// Every page the catalog names: the data pages of each live paged extent and its digest page.
 pub fn live_pages(catalog: &ChunkCatalog) -> BTreeSet<PageKey> {
+    live_pages_of(catalog.iter().map(|(_, manifest)| manifest.as_ref()))
+}
+
+/// The same, from any run of manifests (what a client reads from the catalog, a page at a time).
+pub fn live_pages_of<'a>(manifests: impl IntoIterator<Item = &'a crate::chunk_manifest::ChunkManifest>) -> BTreeSet<PageKey> {
     let mut live = BTreeSet::new();
-    for (_, manifest) in catalog.iter() {
+    for manifest in manifests {
         if manifest.deleted || manifest.kind != CHUNK_KIND_PAGED || manifest.page_bytes == 0 {
             continue;
         }

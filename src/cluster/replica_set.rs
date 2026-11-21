@@ -2401,6 +2401,43 @@ impl RemoteReplicaSet {
         Ok(report)
     }
 
+    /// The pages the members hold after `after`, at most `limit` of them: the union of every member's
+    /// bounded inventory, with the highest sequence any member reports for a page. It changes nothing
+    /// (`repair_inventory_batch` is the one that repairs), and like every inventory traversal it is a
+    /// live walk, not a snapshot. A member that does not answer fails the call, so a sweep never acts on
+    /// a view that left a member out.
+    pub fn page_inventory_union(
+        &mut self,
+        after: Option<&PageId>,
+        limit: usize,
+    ) -> Result<crate::cluster::message::PageInventory, ObjectError> {
+        let mut merged: BTreeMap<PageId, u64> = BTreeMap::new();
+        // Members stop at different pages when they have more, so the union is complete only up to the
+        // smallest last page of a member that has more: cut there, and say there is more. A caller
+        // continues after the last page it was given, so no page is skipped.
+        let mut cut: Option<PageId> = None;
+        for replica in &mut self.replicas {
+            let batch = replica.page_inventory(after, limit as u64)?;
+            if batch.has_more {
+                if let Some((last, _)) = batch.entries.last() {
+                    cut = Some(match cut {
+                        Some(current) if current <= *last => current,
+                        _ => last.clone(),
+                    });
+                }
+            }
+            for (page, sequence) in batch.entries {
+                let entry = merged.entry(page).or_insert(0);
+                *entry = (*entry).max(sequence);
+            }
+        }
+        let has_more = cut.is_some();
+        if let Some(cut) = &cut {
+            merged.retain(|page, _| page <= cut);
+        }
+        Ok(crate::cluster::message::PageInventory { entries: merged.into_iter().collect(), has_more })
+    }
+
     /// Repair at most 64 distinct pages from a bounded union of member inventories.
     /// Every inventory must answer before mutations begin. Stop at the first page
     /// with an error, deferred member or uncertain commit, without advancing past it.

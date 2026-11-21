@@ -1546,6 +1546,155 @@ fn a_chunk_object_round_trips_through_a_star_quorum_and_a_wrong_digest_fails_its
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[cfg(feature = "replica-server")]
+#[test]
+fn a_reclaim_sweep_frees_the_pages_of_deleted_and_overwritten_objects_and_only_those() {
+    use matrixobjectstore_rs::chunk_reclaim::{live_pages_of, Candidates, PageKey};
+    use matrixobjectstore_rs::cluster::{
+        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ObjectWriteOptions, ReplicaClientOptions,
+    };
+    use std::collections::BTreeSet;
+
+    let root = std::env::temp_dir().join(node_regime::run_token("chunk-reclaim-star"));
+    std::fs::create_dir(&root).unwrap();
+    let mut chunks = Vec::new();
+    for index in 0..3 {
+        let journal = root.join(format!("{index}.log"));
+        chunks.push(processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", journal.to_str().unwrap()),
+            ],
+        ));
+    }
+    let endpoints: Vec<_> = chunks.iter().map(|node| node.endpoint.clone()).collect();
+    let members: Vec<_> = (1..=3).map(|id| format!("star-{id}")).collect();
+    let config = ChunkGroupConfig {
+        placement_id: "group-a".into(),
+        failure_domain: "rack-a".into(),
+        identity: Some(ChunkGroupIdentity {
+            version: 3,
+            group_id: 1,
+            node_id: 1,
+            capacity_bytes: 1 << 28,
+            max_pages: 4096,
+            voters: vec![1, 2, 3],
+            peer_endpoints: Vec::new(),
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
+        }),
+        api_endpoints: endpoints,
+        member_ids: members.clone(),
+    };
+    let catalog = ChunkGroupCatalog::new(vec![config]).unwrap();
+    let metadata = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let mut client = RemoteMetaClient::connect(
+        &metadata.nodes[metadata.leader()].as_ref().unwrap().endpoint,
+        &MetaClientOptions {
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for member in &members {
+        client.heartbeat_placement_node(member, 0, 1 << 28, false, true, 100).unwrap();
+    }
+    let options = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        replica: ReplicaClientOptions {
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let bytes = |length: usize, salt: usize| -> Vec<u8> { (0..length).map(|index| (index * 31 + salt) as u8).collect() };
+    let stripe = 4 * 4096;
+    let put = |client: &mut RemoteMetaClient, key: &str, data: &[u8], expected: Option<&matrixobjectstore_rs::chunk_manifest::ChunkManifest>| {
+        client.write_chunk_object("chunk", key, expected, data, &options, stripe).unwrap()
+    };
+
+    // A and B take four pages each (three data pages and a digest page); C takes one, then is rewritten
+    let a_data = bytes(3 * 4096, 1);
+    let b_data = bytes(3 * 4096, 2);
+    let a = put(&mut client, "a", &a_data, None);
+    let b = put(&mut client, "b", &b_data, None);
+    let c_old = put(&mut client, "c", &bytes(100, 3), None);
+    let c_data = bytes(200, 4);
+    let c_new = put(&mut client, "c", &c_data, Some(&c_old));
+    let pages = |manifests: &[&matrixobjectstore_rs::chunk_manifest::ChunkManifest]| -> BTreeSet<PageKey> {
+        live_pages_of(manifests.iter().copied())
+    };
+    let (a_pages, b_pages, c_old_pages, c_new_pages) = (pages(&[&a]), pages(&[&b]), pages(&[&c_old]), pages(&[&c_new]));
+    assert_eq!((a_pages.len(), b_pages.len(), c_old_pages.len(), c_new_pages.len()), (4, 4, 1, 1));
+    let inventory = client.reclaim_inventory(&options).unwrap();
+    assert_eq!(inventory.len(), 10);
+    assert!(inventory.iter().all(|(_, sequence)| *sequence == 1));
+
+    client.delete_chunk_object("chunk", "a").unwrap();
+    let mut candidates = Candidates::new();
+    let grace = 1_000;
+
+    // the first sight starts the clocks and frees nothing; neither does a sweep before the grace is out
+    let first = client.reclaim_sweep(&mut candidates, 0, grace, &options).unwrap();
+    assert_eq!((first.inventory_pages, first.unnamed_pages, first.freed.len()), (10, 5, 0));
+    let early = client.reclaim_sweep(&mut candidates, grace - 1, grace, &options).unwrap();
+    assert!(early.freed.is_empty());
+
+    // once it is out, exactly the deleted object's pages and the overwritten generation's page go
+    let swept = client.reclaim_sweep(&mut candidates, grace, grace, &options).unwrap();
+    let freed: BTreeSet<PageKey> = swept.freed.iter().cloned().collect();
+    let garbage: BTreeSet<PageKey> = a_pages.union(&c_old_pages).cloned().collect();
+    assert_eq!(freed, garbage, "the garbage is freed and nothing else");
+    let after = client.reclaim_inventory(&options).unwrap();
+    for (page, sequence) in &after {
+        let expected = if garbage.contains(page) { 2 } else { 1 };
+        assert_eq!(*sequence, expected, "{page:?}");
+    }
+    assert!(after.iter().filter(|(page, _)| b_pages.contains(page) || c_new_pages.contains(page)).all(|(_, s)| *s == 1));
+
+    // the live objects still read back, verified, and a swept one is gone
+    assert_eq!(client.read_chunk_object("chunk", "b", &options).unwrap().1, b_data);
+    assert_eq!(client.read_chunk_object("chunk", "c", &options).unwrap().1, c_data);
+    assert!(client.read_chunk_object("chunk", "a", &options).is_err());
+    // a later sweep has nothing left to do
+    let idle = client.reclaim_sweep(&mut candidates, 10 * grace, grace, &options).unwrap();
+    assert!(idle.freed.is_empty() && idle.unnamed_pages == 0, "{idle:?}");
+
+    // THE LAST CHECK, END TO END: an object that is deleted and then published again between the scan
+    // that found its pages unnamed and the discard keeps every page, and still reads back verified.
+    let f_data = bytes(3 * 4096, 7);
+    let f = put(&mut client, "f", &f_data, None);
+    client.delete_chunk_object("chunk", "f").unwrap();
+    let tombstone = client.read_chunk_manifest("chunk", "f").unwrap();
+    let f_pages = pages(&[&f]);
+    let mut watch = Candidates::new();
+    let seen = client.reclaim_scan(&mut watch, 20 * grace, grace, &options).unwrap();
+    assert!(seen.due_pages().is_empty(), "the first sight frees nothing");
+    client.reclaim_apply(seen).unwrap();
+    let ripe = client.reclaim_scan(&mut watch, 21 * grace, grace, &options).unwrap();
+    let due: BTreeSet<PageKey> = ripe.due_pages().iter().cloned().collect();
+    assert_eq!(due, f_pages, "every page of the deleted object is due");
+    // the writer comes back between the scan and the discard
+    let mut again = f.clone();
+    again.generation = tombstone.generation + 1;
+    client
+        .publish_chunk_manifest(matrixobjectstore_rs::chunk_catalog::ChunkOutcome::decide(Some(tombstone), again).unwrap())
+        .unwrap();
+    let kept = client.reclaim_apply(ripe).unwrap();
+    assert!(kept.freed.is_empty(), "the catalog read again names every page: {kept:?}");
+    for (page, sequence) in client.reclaim_inventory(&options).unwrap() {
+        if f_pages.contains(&page) {
+            assert_eq!(sequence, 1, "{page:?}");
+        }
+    }
+    assert_eq!(client.read_chunk_object("chunk", "f", &options).unwrap().1, f_data);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
     use matrixobjectstore_rs::cluster::{
         ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ObjectWriteOptions,
