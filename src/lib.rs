@@ -17,6 +17,10 @@ pub mod chunk_object;
 pub mod chunk_reclaim;
 #[cfg(test)]
 mod test_fixtures;
+
+#[cfg(test)]
+#[path = "ec_regression_tests.rs"]
+mod tests;
 pub mod cluster_features;
 pub mod log_chunk_outcome;
 #[cfg(test)]
