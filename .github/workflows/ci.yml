@@ -105,6 +105,14 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Two compact append plans retain independent deadlines
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::meta_client::append_plan_cache::tests:: -- --test-threads=1 2>&1 | tee /tmp/two-append-plan-cache.log
+          grep -q '^test result: ok. 8 passed; 0 failed; 0 ignored' /tmp/two-append-plan-cache.log
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::alternating_object_appends_reuse_two_plans_and_a_failed_refresh_clears_both -- --exact --test-threads=1 2>&1 | tee /tmp/alternating-append-plan-rpc.log
+          grep -q '^test result: ok. 1 passed; 0 failed; 0 ignored' /tmp/alternating-append-plan-rpc.log
+
       - name: Ordered staged data plans
         run: |
           set -euo pipefail
