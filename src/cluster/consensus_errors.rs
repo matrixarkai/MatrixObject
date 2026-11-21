@@ -16,7 +16,7 @@ use crate::ObjectError;
 /// A request that waited in the queue past its deadline, and one whose leader changed under it, are
 /// as retryable as one that timed out; a worker that adds a message of this kind must add its start
 /// here (the guard test below reads the worker sources and fails if one is missing).
-const RETRYABLE: [&str; 9] = [
+const RETRYABLE: [&str; 10] = [
     "metadata consensus ",
     "chunk consensus ",
     "metadata request expired ",
@@ -24,6 +24,7 @@ const RETRYABLE: [&str; 9] = [
     "catalog request expired ",
     "membership request expired ",
     "chunk request expired ",
+    "chunk manifest request expired ",
     "metadata leadership changed",
     "chunk leadership changed",
 ];
@@ -99,6 +100,7 @@ mod tests {
             "metadata request expired before read confirmation",
             "metadata expiry request expired before read confirmation",
             "catalog request expired before proposal",
+            "chunk manifest request expired before proposal",
             "catalog request expired during preparation",
             "membership request expired before proposal",
             "chunk request expired before proposal",
