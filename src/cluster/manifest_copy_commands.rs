@@ -88,7 +88,7 @@ mod tests {
     }
     #[test]
     fn atomic_copy_binds_live_source_and_preserves_state_on_conflicts() {
-        let (mut service, create, _) = crate::tests::manifest_publication_fixture();
+        let (mut service, create, _) = crate::test_fixtures::manifest_publication_fixture();
         let source = create.manifest.as_ref().unwrap().after.clone().unwrap();
         create.apply(&mut service).unwrap();
         let enable = crate::staged_allocation::StagedAllocationRequest {
@@ -160,7 +160,7 @@ mod tests {
     fn atomic_copy_source_identity_does_not_duplicate_extent_payloads() {
         let mut extra = Vec::new();
         for pages in [0, 4096] {
-            let (mut service, create, _) = crate::tests::manifest_publication_fixture();
+            let (mut service, create, _) = crate::test_fixtures::manifest_publication_fixture();
             service.nodes.get_mut("group-a").unwrap().capacity_bytes = 1 << 30;
             let mut source = create.manifest.unwrap().after.unwrap();
             source.format_version = 2;

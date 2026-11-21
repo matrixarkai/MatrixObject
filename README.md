@@ -53,7 +53,7 @@ start with [CONTRIBUTING.md](CONTRIBUTING.md).
 | Object API process | [Object server](src/bin/object_server.rs) |
 | Metadata process and control-plane configuration | [Metadata server](src/bin/metaserver.rs) |
 | Replica process and chunk configuration | [Chunk server](src/bin/chunkserver.rs) |
-| Metadata consensus integration | [Metadata state machine](src/raft/matrixraft_state_machine.rs) |
+| Metadata consensus integration | [Metadata consensus](src/cluster/meta_consensus.rs) |
 | Chunk consensus integration | [Chunk state machine](src/raft/matrixraft_chunk_state_machine.rs) |
 
 These are distinct implementation entry points, not a ready-made cluster configuration.
@@ -82,18 +82,16 @@ before interpreting storage amplification. The guides below describe these paths
 | Size repair and append work | [Repair worker](docs/star-repair-worker.md) and [append amplification](docs/star-append-amplification.md) |
 | Plan distributed deployment work | [Distributed delivery](docs/distributed-delivery.md) |
 
-The local store API below is an embedding example, not a distributed deployment recipe.
-Building the service binaries does not configure remote placement, metadata consensus,
-TLS, or repair scheduling. Select and configure those paths explicitly using the guides
-above; local multi-process results are not independent-host production qualification.
+The object store is a cluster: a metadata quorum, chunk groups and the doors that serve them run as
+separate processes. There is no in-process store to embed. Building the service binaries does not
+configure remote placement, metadata consensus, TLS, or repair scheduling. Select and configure those
+paths explicitly using the guides above; local multi-process results are not independent-host
+production qualification.
 
-```rust
-use matrixobjectstore_rs::{MatrixObjectStore, StoreOptions};
-
-let mut store = MatrixObjectStore::new(StoreOptions::default())?;
-store.put_object("photos", "cat.jpg", bytes, "image/jpeg", now_ms, opts)?;
-let object = store.get_object("photos", "cat.jpg")?;
-```
+Objects are stored as chunk manifests when a door is started with
+`MATRIXOBJECT_CLUSTER_CHUNK_OBJECTS=1` (see [chunk-granular manifests](docs/chunk-granular-manifest.md)
+and [the gateway](docs/cluster-gateway.md)); that path is off by default, and the page-granular manifest
+path remains the default until it is retired.
 
 ### Resume uncertain staged allocations
 
@@ -439,274 +437,48 @@ comment claiming they do.
 
 ## What it does
 
-- **Quorum writes and reads.** A write needs `write_quorum` replicas to accept.
-  A read votes on `(write_sequence, checksum, etag)` across replicas, so a
-  replica that has fallen behind cannot answer with stale bytes.
-- **A replica can be its own process.** `ReplicaPlacement` chooses between replicas in this
-  address space -- the default, and what this store has always been -- and replicas in other
-  processes reached over a socket. The second is what makes the replication factor survivable
-  rather than only paid for; see
-  [replicas in their own processes](#replicas-in-their-own-processes) for the kill test and
-  for the measured size of what is not remote yet.
-- **Repair.** `repair_chunk_from_quorum` rebuilds one chunk on one replica from
-  the others, so a diverged replica costs one chunk of recopying.
-- **Erasure coding.** A page with no peers keeps a redundancy fragment, so a
-  partial corruption is still recoverable from the single copy it has. The
-  fragment is local to its page and is empty whenever the page has peers, which
-  is why a page written in large pieces measures exactly 3.00x at three replicas, with no
-  fragment on top.
-- **Striped payload, if you ask for it.** `stripe_redundancy_units` spreads a
-  page across its replicas as fixed-size units instead of copying it to each, so
-  the store holds `replica_count / (replica_count - stripe_redundancy_units)` of
-  the payload -- **1.5x against replication's 3.0x** at three replicas and one
-  unit of redundancy. Replication is the default. The trade is durability: one
-  loss survived where three-way replication survives two. A striped write needs
-  every replica to accept it, so `write_quorum` must equal `replica_count`.
-  Two limits, named rather than implied: a replica of a striped service cannot be
-  quarantined (the guard refuses dropping below the write quorum), and
-  `repair_chunk_replicas` reports a striped page with a lost replica as
-  unrepaired instead of rebuilding its units -- reads still serve it by
-  reconstructing on demand, so it is readable and one loss from unreadable at the
-  same time. [Footprint](#footprint) has the whole-store figures.
-- **Space reuse.** Overwriting an object normally leaves its previous version
-  resident until collection unless `reuse_stale_chunk_space` is left on, when the next write takes
-  that space directly, which measures about 9% off resident footprint on an
-  overwrite-heavy workload.
-- **Idempotent mutations.** Allocation, write, discard and repair carry
-  receipts, so a retried request is not applied twice.
-- **Object semantics.** Buckets, versioning, multipart upload, object lock and
-  retention, lifecycle policies, tagging, CORS and bucket policies, quotas, and
-  a change feed.
-
-## Footprint
-
-At three replicas with the metadata counted, measured at 26-character keys:
-
-| object size | objects | amplification | data-only figure |
-|---:|---:|---:|---:|
-| 64 KiB | 1,000 | **3.01x** | 3.00x |
-| 4 KiB | 4,000 | **3.14x** | 3.05x |
-| 1 KiB | 8,000 | **3.34x** | 3.02x |
-
-The data term has a floor of **3.00x** -- the replication floor for a store that
-copies every page to every replica -- and reads exactly that when a page is written in
-large pieces (the 64 KiB row). A page grown by many small appends also holds up to a
-sixteenth of its length in spare room, so the allocator is asked to grow it about once per
-6.25% rather than once per append (`reserve_page_growth`); that is the 0.05x on the 4 KiB
-row. What sits above the data term is metadata, which is **290 bytes an object plus 164,232
-fixed** whatever the object size.
-
-**What that 3.00x buys depends on where the replicas are, and the figure cannot tell you.**
-Three copies measure 3.00x whether they are three `BTreeMap`s on one heap or three copies in
-three processes, and only the second arrangement survives losing one of them. Under the
-default [`ReplicaPlacement::InProcess`](#replicas-in-their-own-processes) they are on one
-heap, and the three copies are the price of a guarantee that arrangement cannot provide; under
-`ReplicaPlacement::Remote` the same 3.00x is the price of surviving the loss of one replica
-process, which `tests/a_replica_is_its_own_process.rs` demonstrates by killing one and reading
-every acknowledged byte back from the survivors. Read any amplification figure in this
-section together with the placement it was measured under.
-
-Those bytes are not all in one place. **186 of them are a storage node's own** -- the
-object's entry in its map, and its key in the payload index -- and **104 are the metadata
-service's**, which keeps its own record of every object with its own versioning, deletion
-markers and change log. This crate models both services in one process, so the audit counts
-both; a deployment runs them on different machines, where a storage node carries 186 bytes
-an object rather than 290.
-
-Neither map keys its entries by a copy of what the entry already holds. `objects` is ordered by
-the identity inside each `ObjectMetadata` and `meta.records` by the key inside each record, so
-an entry is the value and nothing beside it. That is 32 bytes an object on the storage node and
-16 on the metadata service, and it is the reason both figures are what they are rather than 218
-and 128.
-
-The metadata service's record is **a name, two stamps and a digest**, and the collection
-holding it is ordered by that name rather than keeping a second copy of it. It does not restate the
-object: it holds an eight-byte digest of the object's rendered metadata, so it can prove a
-record matches the object without carrying a second copy of it. What that costs is a restore
-that is no longer self-sufficient -- a snapshot carries the digest, not the characters, so
-reproducing a value needs the object.
-`every_metadata_leg_is_a_line_and_the_intercepts_are_named` measures both shares and fails
-if either stops being what this file publishes.
-`footprint_audit()` names every resident byte and its breakdown sums to its own
-total with no remainder.
-
-Those two numbers are a line, fitted from measurements at three object counts by
-`the_published_metadata_footprint_line_is_the_one_this_tree_produces`, which fails
-if this file disagrees with the tree.
-
-A store that stripes moves the data term itself, to **1.5x** at three replicas and
-one unit of redundancy (1.53x for a page built by 1 KiB appends, which carries its
-growth headroom) -- which is the least any layout can hold and still survive a
-loss. Every replica holds one unit of each stripe group, so keeping `p` units of
-redundancy over `R` replicas costs `R / (R - p)`, which is smallest at one unit; with
-no redundancy nothing is recoverable, and the only way further down is more replicas,
-which is more hardware rather than less space.
-`one_unit_of_redundancy_is_the_least_a_layout_can_hold` sweeps every layout from three
-replicas to eight and fails if any of them undercuts that.
-
-Counted with the metadata, a thousand objects of 1 KiB measure
-**2.00x striped against 3.54x replicated**, both read out of `footprint_audit()` on a
-store nothing has read back yet. What separates the total from the 1.5x data term is the
-metadata line above, which striping does not change: the same 290 bytes an object either
-way. Striping moves the payload and nothing else.
-
-Both numbers are for the same object count, so the comparison is between two
-stores rather than across two measurements. It is a smaller point than the rows
-above because measuring both shapes at 8,000 objects takes longer than the whole
-suite, and a figure only a test nobody runs would check is a figure that goes
-stale.
-
-```
-cargo test --lib a_store_holds_one_and_a_half_copies_of_its_payload_when_it_stripes -- --nocapture
-cargo test --lib the_published_striped_amplification_is_the_one_this_tree_produces -- --nocapture
-```
-
-```
-MEASURE_OBJECTS=8000 MEASURE_SIZE=1024 cargo test --release --lib measure_the_metadata_footprint -- --ignored --nocapture
-```
-
-[docs/footprint.md](docs/footprint.md) has the per-leg working: which total to
-divide by, why lowering `replica_count` does not reach 1.0x, what is bounded by
-a setting rather than by your data, and what the change feeds cost.
-
-### What a mutation holds while it runs
-
-Every figure above is the store **at rest**. A mutation also holds a copy of what
-it may have to put back, from the moment it starts until it commits or is
-refused, so peak resident is the store plus that copy — and a copy taken and
-dropped inside one call is invisible to a figure taken at rest.
-
-Two copies exist, and they are reported separately because they are bounded by
-different things.
-
-**The store's own undo**, reported by `ObjectMutationRollback::footprint_audit`,
-at 1 KiB objects:
-
-| stored objects | undo |
-|---:|---:|
-| 250 | 1,225 B |
-| 1,000 | 1,225 B |
-| 2,000 | **1,225 B** |
-
-Flat, because a put, a delete, an append and a copy each write one object key,
-one metadata record and one change record, and the undo carries exactly that --
-not the payload index, not the store's containers, and not the bytes of a
-multipart upload in flight.
-
-**The page service's mutation batch** holds a second copy, boxed, so the undo
-above can leave the page service alone. It separates what it copies from what it
-only names:
-
-| stored objects | copied | named |
-|---:|---:|---:|
-| 250 | 2,557 B | 799,992 B |
-| 1,000 | **2,557 B** | 3,156,600 B |
-
-Also flat in the object count, because a chunk's payload is shared rather than
-copied and so are the receipt maps. The copy is 847 bytes of page service state,
-1,470 bytes of replica state, 168 bytes of shared receipt handles, and 24 bytes
-for each chunk — so what moves it is the chunk count, which the object SIZE
-drives rather than the object count.
-
-The receipt maps are shared until the batch writes one, which is what keeps them
-at the 168 bytes counted above rather than the whole of what the receipt table
-reaches at its bound.
-`the_published_mutation_copy_figures_are_the_ones_this_tree_produces` reads this
-table and fails if either figure stops being what the tree produces.
-
-```
-cargo test --release --lib measure_what_a_mutation_undo_costs -- --ignored --nocapture
-cargo test --release --lib measure_what_a_mutation_batch_snapshot_costs -- --ignored --nocapture
-```
-
-#### A delete does not reclaim, it trades
-
-Writing 500 objects of 1 KiB and then deleting every one leaves the store
-**26.4% larger** than when it held them:
-
-| | bytes |
-|---|---:|
-| holding 500 objects | 1,772,969 |
-| after deleting all 500 | 2,241,982 |
-
-The payload index is given back in full. What replaces it is **822 bytes of
-idempotency receipt per delete** across three replicas, bounded only by
-`receipt_retention`, which defaults to 100,000; plus 106 bytes of change feed and
-57 of metadata change log per delete, both bounded by their retention constants.
-The object's own entry does not go away either — a delete files a delete marker,
-so the 210 bytes of its `objects` entry stay, which is what the change feed and
-the versioned paths read.
-
-Those receipts are also the term that makes the mutation batch grow: after N
-deletes, every subsequent mutation's batch copies **615 bytes per retained
-receipt**, which at the default bound is about 61.5 MB copied per mutation.
-Issue #20 has the measurement and what narrowing it requires.
-
-So a deployment sizing from the figures above should add the undo and the batch
-copy to the resting total, and a workload that deletes should expect the receipt
-retention to dominate both.
+- **Quorum publication and verified reads.** An object is a manifest published with a generation
+  check; every page a read returns is checked against the digests the manifest committed, so a replica
+  that has fallen behind or been corrupted cannot answer with stale or wrong bytes. See
+  [object manifests](docs/object-manifests.md) and [authenticated reads](docs/authenticated-object-reads.md).
+- **Replicas are their own processes.** Metadata voters and chunk groups run as separate processes; see
+  [replicas in their own processes](#replicas-in-their-own-processes) for the kill test and for what is
+  not remote yet.
+- **Repair.** A replica that missed writes is brought back by the repair worker; see
+  [repair](docs/star-repair-worker.md).
+- **Idempotent mutations.** Allocation, write, discard and repair carry receipts, and an append that may
+  have landed is settled by its attempt id, so a retried request is not applied twice.
+- **Chunk-granular manifests.** An object can be stored as chunk manifests, one extent per run of pages
+  with a digest page, and appended to without rewriting it; see
+  [chunk-granular manifests](docs/chunk-granular-manifest.md). Pages no manifest names (a deleted or
+  overwritten object, a writer that died before publishing) are freed by a sweep the door runs.
+- **S3 front door.** PUT, GET with ranges, HEAD, DELETE, append, copy, multipart, batch delete,
+  conditional requests and delimiter listings; see [the gateway guide](docs/cluster-gateway.md).
 
 ## Reaching the store over a network
 
-An S3-compatible HTTP front door and a binary that serves it are built in, so a
-store can be reached from another machine rather than only in process.
+An S3-compatible HTTP front door and a binary that serves it are built in. The door serves a
+cluster: it refuses to start unless `MATRIXOBJECT_CLUSTER_META` names the metadata endpoints, and every
+request is answered by the cluster SDK against that quorum and its chunk groups.
 
 ```
-MATRIXOBJECT_SNAPSHOT_PATH=/var/lib/matrixobject/store.snapshot \
+MATRIXOBJECT_CLUSTER_META=127.0.0.1:17101,127.0.0.1:17102,127.0.0.1:17103 \
 MATRIXOBJECT_BUCKET=mybucket \
 cargo run --release --bin object_server
 ```
 
 | variable | default | meaning |
 |---|---|---|
+| `MATRIXOBJECT_CLUSTER_META` | *(required)* | `host:port[,host:port...]`: the metadata endpoints |
 | `MATRIXOBJECT_HTTP_ADDR` | `127.0.0.1:17200` | address to bind |
-| `MATRIXOBJECT_BUCKET` | `default` | bucket created at startup if it is absent; a restart writes nothing |
-| `MATRIXOBJECT_SNAPSHOT_PATH` | *(unset)* | durable snapshot file; **in memory when unset** |
-| `MATRIXOBJECT_JOURNAL_PATH` | *(unset)* | durable append-only journal, replayed at start; **exclusive with the snapshot** |
-| `MATRIXOBJECT_JOURNAL_REPAIR_TORN_TAIL` | *(unset)* | `1` drops a torn final journal frame at start and keeps it beside the journal |
-| `MATRIXOBJECT_REPLICAS` | *(unset: 3)* | in-process replica count, 1 to 7; the write quorum is a majority |
+| `MATRIXOBJECT_BUCKET` | `default` | bucket the door serves |
 | `MATRIXOBJECT_MAX_BODY_BYTES` | 64 MiB | largest object this door accepts |
 | `MATRIXOBJECT_THREADS` | 4 | accept threads |
 
-### Snapshot, journal, and in-process replicas
-
-Three of those settings change what the door costs and what it survives. The figures are from a
-300-operation, 3-node TemporalStore workload against the door (release build, medians of three runs):
-
-| durability | bytes the door handed to `write()` | door CPU | fsync |
-|---|---|---|---|
-| snapshot | 78.4 MB | 5.44 s | **none by default** |
-| journal, sync every frame | 0.2 MB | 2.25 s | every frame |
-| journal, sync every 32 frames (`MATRIX_OBJECTSTORE_RUST_JOURNAL_SYNC_EVERY_FRAMES=32`) | 0.2 MB | 1.78 s | every 32 |
-
-**The snapshot rewrites the whole store on every commit**, so a 200-byte append costs work in
-proportion to the store. Four clusters on one snapshot door wrote 922.6 MB where four doors each
-serving one cluster wrote 4 x 78.8 = 315.4 MB, and throughput on the shared door peaked at two
-clusters (26.8 writes/s) and fell at four (18.0). Snapshot mode also does not `fsync` its file unless
-`MATRIX_OBJECTSTORE_RUST_SNAPSHOT_STRICT_FSYNC` is set, so the two modes are not equally durable by
-default. The journal costs the size of the write and replays after `kill -9` to the same contents.
-
-**The journal has no checkpoint.** It grows with every write and opening it reads all of it, so it
-suits a store whose history is bounded. Restarting does not grow it: the bucket is created only when
-absent (a restart used to append 69 bytes whatever had changed).
-
-**A journal that ends inside a frame** (power loss, a short write) does not open, and the error says
-where: `ends in an incomplete frame at byte N of M (after K complete frames) ... Nothing was
-discarded`. `kill -9` cannot produce this, since a killed process finishes its in-flight write.
-`MATRIXOBJECT_JOURNAL_REPAIR_TORN_TAIL=1` drops that frame and keeps its bytes in
-`<journal>.torn-<offset>` before shortening the journal. It refuses anything that is not a tail: a
-complete frame whose checksum fails, a length over 128 MiB, a file that is not a journal. A length
-damaged in the middle of the log to a plausible value reads exactly like a tear, which is why the
-repair is opt-in and why the dropped bytes are kept.
-
-**The store keeps three in-process copies of every page by default**, and they all live in this one
-process, so they do not survive its failure. Resident memory over logical bytes stored, net of the
-idle door, at three replicas against one: 3.62x vs 1.69x (20,000 x 1 KiB), 3.06x vs 1.13x (1,000 x
-64 KiB), 3.30x vs 1.30x (64 x 1 MiB), 3.70x vs 1.76x (40,000 x 256 B appends). One replica also halves
-the CPU of a full 64 KiB read (420 to 615 ms per 1,000 reads against 838 to 1,268). What it costs: a
-single copy keeps an erasure-coding sidecar so it can repair itself, and rebuilding that sidecar is
-O(page) on every write. A 1 KiB put costs 1.08 million instructions at one replica against 166
-thousand at three.
+The binary's own documentation lists every cluster, roster, TLS and reclaim variable
+(`src/bin/object_server.rs`), and [the gateway guide](docs/cluster-gateway.md) explains what each one
+changes. A door that stores chunk objects runs the reclaim sweep that frees the pages no manifest names; it
+refuses to start with the sweep off unless that is acknowledged.
 
 The verbs, where `{bucket}` is the first path segment and `{key}` is everything after it:
 
@@ -758,63 +530,42 @@ answers `InvalidPart` or `InvalidPartOrder`: the store completes whatever parts 
 no list, so a mismatch not caught here is not caught at all, and the client would be handed an
 object assembled from something other than what it sent.
 
-### Three things to know before putting data in it
+### Two things to know before putting data in it
 
-**It is unauthenticated.** No signing, no token, no TLS. Anything that can open a socket to the
-port can read, overwrite and delete every object. That is why the default bind is loopback; moving
-it off loopback puts the whole store behind whatever else protects that network. The binary says so
-on startup when the address is not loopback.
+**It is unauthenticated.** No signing, no token, no TLS on the door. Anything that can open a socket to
+the port can read, overwrite and delete every object. That is why the default bind is loopback; moving
+it off loopback puts the whole store behind whatever else protects that network. The binary says so on
+startup when the address is not loopback.
 
-**Without a snapshot path nothing survives the process.** The default store is entirely in memory.
-The startup line always reports which of the two you have -- `snapshot=none` included -- so it is
-visible then rather than at the next restart.
-
-**Requests are serialised.** The store keeps interior mutability for its caches and durable stamps,
-so it is `Send` but not `Sync`: it can move between threads but cannot be shared by them, and the
-server holds it behind one lock. Extra accept threads stop a slow client stalling others; they do
-not add parallelism. This door exists so data can reach the store from another machine, not so it
-can reach it faster.
+**The door holds no data.** What survives is what the metadata quorum and the chunk groups keep; they have
+their own durability settings ([metadata](docs/metadata-consensus.md), [chunks](docs/chunk-consensus.md)).
+Without durable directories on those processes nothing survives their restart.
 
 ### What it is not
 
-An `Authorization` header is accepted and ignored rather than refused, so a signing
-client works against this surface -- it is simply not verified. There is no SigV4.
+An `Authorization` header is accepted and ignored rather than refused, so a signing client works
+against this surface -- it is simply not verified. There is no SigV4.
 
-Not implemented, and answered with `NotImplemented` or `MethodNotAllowed` rather than with an empty
-success: object ACLs, bucket policies, lifecycle verbs, object lock.
+Every verb the door does not serve is answered with an S3 `NotImplemented` error, so a client that
+probes can fall back and nothing returns a plausible-looking wrong answer; the list is in
+[the gateway guide](docs/cluster-gateway.md). `GET /healthz` is deliberately not S3: it answers plain
+text, because a container probe and an operator read it.
 
-Five places the model is narrower than S3's, each answered as itself rather than
-approximated:
+`chunked` framing is refused with 501 rather than read as a body of the wrong length, a `PUT` with no
+`Content-Length` is refused with 411 rather than stored as empty, and a multi-range request falls back to
+the whole object rather than returning one range under a 206 claiming to be all of it.
 
-| | this store | why |
-|---|---|---|
-| **CORS** | one flat policy per bucket; a second rule is **refused**, not flattened | flattening would union the rules, so an origin one rule allowed only `GET` would come back allowed whatever another permitted -- access the request never asked for. One rule round-trips exactly |
-| **The 5 MiB minimum** for a non-final part | any part size is accepted | the check would only ever refuse an upload this store can serve |
-| **Versioning** (`Enabled`, `Suspended`, never configured) | one flag, so `GetBucketVersioning` omits `<Status>` for `false` | that is what S3 sends for a never-configured bucket, and a client acts on it identically. Telling suspended from never-configured needs the third state |
-| **Version ids** (opaque strings in S3) | a number, reported as `x-amz-version-id`; `versionId=null` is **refused** | a client must treat an id as opaque, so it cannot tell. Every object here carries a version from the start, so S3's pre-versioning `null` names no version -- serving the current object would hand back a different one |
-| **`GetBucketLocation`** | an empty `<LocationConstraint/>` | S3's own value for its default region, and the only answer true of a store with no region. Answered at all because SDKs call it before their first request |
-
-`GET /healthz` is deliberately not S3: it answers plain text, because a container
-probe and an operator read it and an `<Error>` document would help neither.
-
-Anything a caller might reasonably expect and not get answers a status rather than
-a plausible-looking wrong answer: `chunked` framing is refused with 501 rather than
-read as a body of the wrong length, a `PUT` with no `Content-Length` is refused with
-411 rather than stored as empty, and a multi-range request falls back to the whole
-object rather than returning one range under a 206 claiming to be all of it.
-
-There is no deduplicating write: an object's `etag` is derived from its identity --
-bucket, key, version, length, content type -- not from a hash of its content, so
-comparing etags cannot tell the same bytes from the same shape. The store's real
-conditional writes are applied inside the mutation it guards.
+**Footprint (memory and bytes per object) has not been measured for the cluster stack yet.** The figures
+this page used to carry were measurements of an in-process store that no longer exists.
 
 ### Embedding it
 
 ```rust
+use matrixobjectstore_rs::net::cluster_gateway::{ClusterGateway, GatewayOptions};
 use matrixobjectstore_rs::net::{ObjectHttpServer, ServerOptions};
 
-let store = std::sync::Arc::new(std::sync::Mutex::new(store));
-let server = ObjectHttpServer::bind("127.0.0.1:17200", store, ServerOptions::default())?;
+let gateway = std::sync::Arc::new(ClusterGateway::over_sdk(open_metadata_client, GatewayOptions::default(), "mybucket"));
+let server = ObjectHttpServer::bind_handler("127.0.0.1:17200", gateway, ServerOptions::default())?;
 let handle = server.spawn()?;          // returns at once; `local_addr` reports the bound port
 // ... later ...
 handle.shutdown();                     // stops the accept loops and waits for them
@@ -1010,53 +761,17 @@ starting voters.
 
 ## Configuration
 
-`StoreOptions` carries the knobs. The ones most worth knowing:
+The processes are configured by environment variables, documented at the top of each binary
+(`src/bin/object_server.rs`, `src/bin/metaserver.rs`, `src/bin/chunkserver.rs`) and explained in
+[configuring](docs/configuring.md) and [the gateway guide](docs/cluster-gateway.md). Object writes
+take their page size, group spread and size limit from the writer's options
+(`ObjectWriteOptions`); the metadata plane keeps one control plane, the metaserver, selected by
+whichever endpoints a door or client names.
 
-| option | default | meaning |
-|---|---|---|
-| `chunk_size` | 64 MiB | how large a chunk grows before a new one is opened |
-| `page_size` | 1 MiB | the replicated unit a write lands in — see the sizing note below |
-| `max_extent_bytes` | 4 MiB | the largest contiguous range one extent may cover |
-| `volume_count` | 1 | volumes to spread chunks across |
-| `replica_count` | 3 | copies kept of each chunk |
-| `write_quorum` | 2 | replicas that must accept a write |
-| `stripe_redundancy_units` | 0 | units of redundancy in a stripe group; 0 copies every page to every replica |
-| `stripe_unit_bytes` | 64 KiB | bytes in one stripe unit, when striping |
-| `reuse_stale_chunk_space` | true | take the space a superseded object left instead of growing the chunk; set it false to let the collector see the garbage first |
-
-Every default above is `StoreOptions::default()`, and
-`every_option_in_the_table_is_a_field_with_that_default` reads this table and
-fails if a row names a field that does not exist or states a default the tree
-does not have.
-
-### The control plane
-
-The control plane is the **metaserver**: one metadata service, embedded by default.
-`control_plane_mode` takes `auto` (the default) or `metaserver`, and both select it --
-`auto` unconditionally, `metaserver` using whatever `metaserver_catalog_endpoints` names
-and the embedded catalog when it names nothing.
-
-Two earlier modes, `globalcatalog` and `rootserver`, selected a separate root catalog
-instead. Both are retired: the spellings are refused by name, a root catalog endpoint is
-refused at construction, in the environment and on snapshot load, and a snapshot written in
-`rootserver` mode **with no endpoint loads as a metaserver**, because that is what it already
-was. One written with an endpoint is refused rather than silently repointed.
-
-### Picking the two that matter
-
-**`page_size` is the one worth setting deliberately.** It is the replicated
-unit, so an object smaller than a page still occupies a page's worth of
-replication, and an object much larger than a page is split across more pages
-than a ranged read needs. Sizing `page_size` near your median object size is
-what keeps both from happening.
-
-**`receipt_retention` is not in the options table** -- it is configured on a
-live store with `configure_chunk_receipt_retention`, and it bounds what a
-mutation's idempotency receipts cost. Set `receipt_retention` rather than
-leaving it at its 100,000 default if your workload deletes heavily.
-
-[docs/configuring.md](docs/configuring.md) has the sizing table for both, and
-the measurements behind them.
+**`page_bytes` is the one worth setting deliberately.** It is the replicated unit, so an object smaller
+than a page still occupies a page's worth of replication, and an object much larger than a page is split
+across more pages than a ranged read needs. Sizing it near your median object size keeps both from
+happening. [docs/configuring.md](docs/configuring.md) has the sizing table and the measurements behind it.
 
 ## Contributing
 

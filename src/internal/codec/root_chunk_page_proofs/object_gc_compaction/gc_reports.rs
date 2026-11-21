@@ -1,18 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub(crate) fn chunk_range_discard_request_checksum(
-    chunk_id: &ChunkId,
-    ranges: &[DataRange],
-) -> String {
-    let mut material = Vec::new();
-    append_string(&mut material, "MOS-RUST-SEGMENT-DISCARD-REQUEST1");
-    append_chunk_id(&mut material, chunk_id);
-    append_u64(&mut material, ranges.len() as u64);
-    for range in ranges {
-        append_range(&mut material, range);
-    }
-    etag(&material)
-}
 
 pub(crate) fn object_gc_report_checksum(report: &GcReport) -> String {
     let mut material = Vec::new();

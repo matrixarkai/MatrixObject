@@ -11,7 +11,7 @@
 //! and reads `<Code>` to tell a missing bucket from a missing key. A surface that answers the
 //! right status with a plain-text body is one an S3 client reports as an unknown failure.
 //!
-//! So the wire format lives here, on its own, and [`super::service`] routes onto it. The two
+//! So the wire format lives here, on its own, and the gateway routes onto it. The two
 //! halves fail separately: a routing mistake is a wrong status, a format mistake is a body no
 //! client can read, and keeping them apart lets a test say which happened.
 //!

@@ -1015,36 +1015,6 @@ fn a_slow_peer_connection_does_not_prevent_shutdown() {
 }
 
 #[test]
-fn election_noops_checkpoint_and_replay_without_changing_metadata() {
-    use matrixobjectstore_rs::{MatrixObjectStore, MetadataStateMachine, StoreOptions};
-    use matrixraft::{ApplyRequest, LogId, StateMachine};
-    let mut machine =
-        MetadataStateMachine::new(MatrixObjectStore::new(StoreOptions::default()).unwrap());
-    let before = machine.store().metadata_state_fingerprint();
-    let request = ApplyRequest {
-        group_id: 1,
-        log_id: LogId { term: 1, index: 1 },
-        payload: Vec::new(),
-    };
-    let response = machine.apply(request.clone()).unwrap();
-    assert_eq!(response.response, vec![0]);
-    assert_eq!(machine.store().metadata_state_fingerprint(), before);
-    let snapshot = machine.snapshot().unwrap();
-    assert_eq!(snapshot.meta.payload_bytes, snapshot.data.len() as u64);
-    let mut restored =
-        MetadataStateMachine::new(MatrixObjectStore::new(StoreOptions::default()).unwrap());
-    restored.install_snapshot(snapshot).unwrap();
-    assert_eq!(restored.apply(request).unwrap(), response);
-    let next = ApplyRequest {
-        group_id: 1,
-        log_id: LogId { term: 2, index: 2 },
-        payload: Vec::new(),
-    };
-    assert_eq!(restored.apply(next).unwrap().applied_index, 2);
-    assert_eq!(restored.store().metadata_state_fingerprint(), before);
-}
-
-#[test]
 fn peer_storage_refuses_missing_zeroed_or_reidentified_history() {
     for (setting, value) in [
         ("MATRIXOBJECT_METASERVER_RAFT_NODE_ID", "1"),

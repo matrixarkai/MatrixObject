@@ -126,15 +126,6 @@ pub(crate) fn object_range_admission_proof_checksum(
     etag(&material)
 }
 
-pub(crate) fn stamp_object_range_admission_proof(
-    operation: &str,
-    admission: &mut ObjectRangeAdmission,
-) {
-    admission.storage_admission_proof_format = STORAGE_ADMISSION_PROOF_FORMAT.to_string();
-    admission.storage_admission_proof_checksum =
-        object_range_admission_proof_checksum(operation, admission);
-}
-
 pub(crate) fn check_expected_object_storage_admission_proof_checksum(
     operation: &str,
     admission: &ObjectRangeAdmission,

@@ -3491,7 +3491,7 @@ mod operation_deadline_tests {
     fn publication_keeps_original_outcome_after_success_lost_reply_and_mismatch() {
         for allocation in [None, Some(1)] {
             for mode in 0..3 {
-                let (_, placement, _) = crate::tests::manifest_publication_fixture();
+                let (_, placement, _) = crate::test_fixtures::manifest_publication_fixture();
                 let outcome = placement.manifest.unwrap();
                 let saved = outcome.to_bytes().unwrap();
                 let listener = TcpListener::bind("127.0.0.1:0").unwrap();

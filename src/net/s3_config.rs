@@ -6,7 +6,7 @@
 //!
 //! # WHY CORS IN PARTICULAR WAS AN INCOHERENCE
 //!
-//! This crate's default CORS policy is what [`super::service`]'s header list was built around --
+//! This crate's default CORS policy is what the gateway's header list was built around --
 //! the module's own doc comment names `ETag`, `Content-Type`, `Content-Length`, `Last-Modified`,
 //! `Accept-Ranges` and `Content-Range` as the exposed headers. The store holds a real, validated
 //! [`crate::BucketCorsPolicy`] per bucket. A browser client, which is the only kind of client CORS exists

@@ -1,13 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub(crate) fn object_error_code(err: &ObjectError) -> &'static str {
-    match err {
-        ObjectError::NotFound(_) => "NotFound",
-        ObjectError::InvalidArgument(_) => "InvalidArgument",
-        ObjectError::PreconditionFailed(_) => "PreconditionFailed",
-        ObjectError::Corruption(_) => "Corruption",
-    }
-}
 
 pub(crate) fn metadata_record_payload_bytes(record: &MetadataRecord) -> u64 {
     record

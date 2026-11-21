@@ -139,22 +139,6 @@ pub(crate) fn validate_metadata_qos_config(config: &MetadataQosConfig) -> Result
     Ok(())
 }
 
-pub(crate) fn validate_metadata_route_cache_config(
-    config: &MetadataRouteCacheConfig,
-) -> Result<(), ObjectError> {
-    if config.entries == 0 || config.entries > MAX_METADATA_ROUTE_CACHE_ENTRIES {
-        return Err(ObjectError::InvalidArgument(format!(
-            "metadata route cache entries must be 1..{MAX_METADATA_ROUTE_CACHE_ENTRIES}"
-        )));
-    }
-    if config.ttl_ms == 0 || config.ttl_ms > MAX_METADATA_ROUTE_CACHE_TTL_MS {
-        return Err(ObjectError::InvalidArgument(format!(
-            "metadata route cache ttl_ms must be 1..{MAX_METADATA_ROUTE_CACHE_TTL_MS}"
-        )));
-    }
-    Ok(())
-}
-
 pub(crate) fn validate_page_route_qos_config(
     config: &ChunkRouteQosConfig,
 ) -> Result<(), ObjectError> {

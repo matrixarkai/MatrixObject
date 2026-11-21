@@ -1,20 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub(crate) fn bounded_object_range_end(
-    offset: u64,
-    length: u64,
-    object_length: u64,
-) -> Result<u64, ObjectError> {
-    if offset > object_length {
-        return Err(ObjectError::InvalidArgument(
-            "range offset exceeds object length".to_string(),
-        ));
-    }
-    let available = object_length - offset;
-    offset
-        .checked_add(length.min(available))
-        .ok_or_else(|| ObjectError::InvalidArgument("read range overflows".to_string()))
-}
 
 pub(crate) fn merge_cache_stats(target: &mut CacheControlStats, next: CacheControlStats) {
     target.requested_ranges = target
@@ -51,62 +36,6 @@ pub(crate) fn merge_repair_stats(target: &mut RepairStats, next: RepairStats) {
         .saturating_add(next.repaired_replicas);
     target.failed_repairs = target.failed_repairs.saturating_add(next.failed_repairs);
     target.degraded_chunks = target.degraded_chunks.saturating_add(next.degraded_chunks);
-}
-
-pub(crate) fn finalize_object_replica_repair_plan(plan: &mut ObjectReplicaRepairPlan) {
-    plan.repair_needed = plan.repair_objects > 0;
-    plan.repair_can_apply = plan.repair_needed && !plan.truncated;
-    plan.repair_reason = if !plan.repair_needed {
-        "no_object_replica_repair_candidates".to_string()
-    } else if plan.truncated {
-        "object_replica_repair_plan_truncated".to_string()
-    } else {
-        "object_replica_repair_ready".to_string()
-    };
-}
-
-pub(crate) fn finalize_object_capacity_rebalance_report(
-    report: &mut ObjectCapacityRebalanceReport,
-) {
-    report.rebalance_needed = report.rebalance_objects > 0;
-    report.rebalance_can_apply =
-        report.rebalance_needed && !report.truncated && report.errors.is_empty();
-    report.rebalance_reason = if !report.rebalance_needed {
-        "no_object_capacity_rebalance_needed".to_string()
-    } else if report.truncated {
-        "object_capacity_rebalance_plan_truncated".to_string()
-    } else if !report.errors.is_empty() {
-        "object_capacity_rebalance_plan_errors".to_string()
-    } else {
-        "object_capacity_rebalance_ready".to_string()
-    };
-}
-
-pub(crate) fn merge_bounded_repair_report(
-    target: &mut BoundedRepairReport,
-    next: BoundedRepairReport,
-) {
-    target.total_chunk_count = target
-        .total_chunk_count
-        .saturating_add(next.total_chunk_count);
-    target.selected_chunk_count = target
-        .selected_chunk_count
-        .saturating_add(next.selected_chunk_count);
-    target.skipped_page_count = target
-        .skipped_page_count
-        .saturating_add(next.skipped_page_count);
-    target.candidate_repair_bytes = target
-        .candidate_repair_bytes
-        .saturating_add(next.candidate_repair_bytes);
-    target.selected_repair_bytes = target
-        .selected_repair_bytes
-        .saturating_add(next.selected_repair_bytes);
-    target.skipped_repair_bytes = target
-        .skipped_repair_bytes
-        .saturating_add(next.skipped_repair_bytes);
-    target.next_chunk_index = target.next_chunk_index.max(next.next_chunk_index);
-    target.has_more |= next.has_more;
-    merge_repair_stats(&mut target.stats, next.stats);
 }
 
 pub(crate) fn merge_chunk_partial_reclaim_report(
@@ -244,15 +173,6 @@ pub(crate) fn discard_ratio_ppm(discarded_bytes: u64, logical_length: u64) -> u6
     discarded_bytes
         .saturating_mul(1_000_000)
         .saturating_div(logical_length)
-}
-
-pub(crate) fn ratio_ppm(numerator: u64, denominator: u64) -> u64 {
-    if denominator == 0 {
-        return 0;
-    }
-    numerator
-        .saturating_mul(1_000_000)
-        .saturating_div(denominator)
 }
 
 pub(crate) fn trailing_discarded_bytes(logical_length: u64, ranges: &[DataRange]) -> u64 {

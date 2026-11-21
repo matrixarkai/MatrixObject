@@ -105,10 +105,6 @@ pub(crate) fn k_max_raft_apply_receipts() -> usize {
     4096
 }
 
-pub(crate) fn k_max_raft_membership_receipt_list_limit() -> usize {
-    10_000
-}
-
 pub(crate) fn k_max_metadata_receipt_list_limit() -> usize {
     10_000
 }
@@ -119,18 +115,5 @@ pub(crate) fn k_max_storage_receipt_list_limit() -> usize {
 
 pub(crate) fn k_max_metadata_transaction_list_limit() -> usize {
     10_000
-}
-
-pub(crate) fn check_payload_read_allowed(
-    metadata: &ObjectMetadata,
-    now_ms: u64,
-) -> Result<(), ObjectError> {
-    if metadata.storage_class.is_cold() && metadata.lock.restore_until_ms <= now_ms {
-        return Err(ObjectError::PreconditionFailed(format!(
-            "object in {} requires restore before payload read",
-            metadata.storage_class
-        )));
-    }
-    Ok(())
 }
 

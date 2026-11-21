@@ -1,8 +1,7 @@
 # Distributed delivery plan
 
-This plan tracks the remote metadata and chunk services. A feature available on
-the in-process `MatrixObjectStore` API is not evidence that the remote API
-supports it. All distributed acceptance runs use separate processes in local
+This plan tracks the remote metadata and chunk services. A feature of a local
+helper or a test fixture is not evidence that the remote API supports it. All distributed acceptance runs use separate processes in local
 WSL; these runs establish recovery behavior, not multi-host performance.
 
 ## Current foundation

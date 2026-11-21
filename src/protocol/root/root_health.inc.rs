@@ -231,22 +231,6 @@ pub(crate) fn service_read_write_coverage_status(
     }
 }
 
-pub(crate) fn service_read_write_readiness_label<'a>(
-    read_ready_count: u64,
-    write_ready_count: u64,
-    unready_label: &'a str,
-    read_unavailable_label: &'a str,
-    write_unavailable_label: &'a str,
-) -> &'a str {
-    if read_ready_count == 0 && write_ready_count == 0 {
-        unready_label
-    } else if read_ready_count == 0 {
-        read_unavailable_label
-    } else {
-        write_unavailable_label
-    }
-}
-
 pub(crate) fn chunkserver_coverage_status(
     active_count: u64,
     writable_count: u64,
@@ -284,39 +268,6 @@ pub(crate) fn chunkserver_coverage_status(
         "draining_degraded"
     } else {
         "healthy"
-    }
-}
-
-pub(crate) fn chunkserver_readiness_label<'a>(
-    writable_count: u64,
-    draining_count: u64,
-    capacity_blocked_count: u64,
-    frozen_count: u64,
-    read_only_count: u64,
-    raft_unwritable_count: u64,
-    unwritable_label: &'a str,
-    frozen_unwritable_label: &'a str,
-    read_only_unwritable_label: &'a str,
-    raft_unwritable_label: &'a str,
-    capacity_floor_unavailable_label: &'a str,
-    draining_unwritable_label: &'a str,
-) -> &'a str {
-    if writable_count == 0 {
-        if frozen_count != 0 {
-            frozen_unwritable_label
-        } else if read_only_count != 0 {
-            read_only_unwritable_label
-        } else if raft_unwritable_count != 0 {
-            raft_unwritable_label
-        } else if capacity_blocked_count != 0 {
-            capacity_floor_unavailable_label
-        } else if draining_count != 0 {
-            draining_unwritable_label
-        } else {
-            unwritable_label
-        }
-    } else {
-        unwritable_label
     }
 }
 
