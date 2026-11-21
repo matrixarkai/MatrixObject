@@ -3370,6 +3370,12 @@ jobs:
           cargo test --locked --lib chunk_object::tests::a_page_cut_short_or_the_wrong_number_of_pages_is_refused -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-object.log
           grep -q '^running 1 test$' /tmp/chunk-object.log
           grep -q '^test result: ok. 1 passed' /tmp/chunk-object.log
+      - name: a chunk object round trips through a star quorum and a wrong digest fails its read
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --test network_metadata_consensus a_chunk_object_round_trips_through_a_star_quorum_and_a_wrong_digest_fails_its_read -- --exact | tee /tmp/chunk-object-star.log
+          grep -q '^running 1 test$' /tmp/chunk-object-star.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-object-star.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail
