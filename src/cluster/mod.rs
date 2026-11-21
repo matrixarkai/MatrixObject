@@ -332,7 +332,10 @@ mod meta_checkpoint;
 mod object_client;
 pub mod reclaim_loop;
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
-pub use object_client::{ChunkWriteFailure, ObjectWriteFailure, ObjectWriteOptions, ReclaimPlan, ReclaimReport};
+pub use object_client::{
+    ChunkWriteFailure, ObjectWriteFailure, ObjectWriteOptions, OrderedObjectAppendFailure,
+    ReclaimPlan, ReclaimReport, StagedObjectAppend, StagedObjectAppendReceipt,
+};
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
 mod append_failover;
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]

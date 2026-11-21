@@ -219,3 +219,108 @@ fn compact_append_plan_client_fetches_wide_routes_and_rejects_wrong_identity() {
         worker.join().unwrap();
     }
 }
+
+#[test]
+fn alternating_object_appends_reuse_two_plans_and_a_failed_refresh_clears_both() {
+    use crate::cluster::{MetaClientOptions, MetaRequestCode, RemoteMetaClient};
+    use crate::object_manifest::{ManifestOutcome, ObjectManifest};
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        time::Duration,
+    };
+    let (mut service, groups) = fixture(1, 0);
+    let manifests: Vec<_> = ["wal", "index", "bad-refresh"]
+        .into_iter()
+        .map(|key| {
+            let manifest = ObjectManifest {
+                format_version: 2,
+                bucket: "bucket".into(),
+                key: key.into(),
+                generation: 1,
+                ..Default::default()
+            };
+            PlacementOutcome::publish_manifest(
+                &service,
+                ManifestOutcome::decide(None, manifest.clone()).unwrap(),
+                0,
+            )
+            .unwrap()
+            .apply(&mut service)
+            .unwrap();
+            manifest
+        })
+        .collect();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = listener.local_addr().unwrap().to_string();
+    let worker = std::thread::spawn(move || {
+        let saved = service.export_snapshot().to_bytes().unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut calls = Vec::new();
+        loop {
+            let mut header = [0; 6];
+            match stream.read_exact(&mut header) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                other => panic!("planning stream failed: {other:?}"),
+            }
+            let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+            assert!(length < 8192);
+            let mut payload = vec![0; length];
+            stream.read_exact(&mut payload).unwrap();
+            let code = MetaRequestCode::from_u8(header[1]).unwrap();
+            assert_eq!(code, MetaRequestCode::PlanAppendRoutes);
+            let request = MetaRequest::decode(code, &payload).unwrap();
+            let MetaRequest::PlanAppendRoutes(ref command) = request else {
+                panic!()
+            };
+            let key = command.key.clone();
+            calls.push(key.clone());
+            let mut reply = super::super::meta_server::apply_with_groups(
+                &mut service,
+                request,
+                usize::MAX,
+                &groups,
+            )
+            .unwrap();
+            if key == "bad-refresh" {
+                let MetaReply::AppendPlan(ref mut plan) = reply else {
+                    panic!()
+                };
+                plan.generation += 1;
+            }
+            stream
+                .write_all(&super::super::meta_message::encode_meta_reply(&reply))
+                .unwrap();
+        }
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
+        calls
+    });
+    let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+    client.cache_append_plans(Duration::from_secs(60));
+    for _ in 0..16 {
+        for manifest in &manifests[..2] {
+            let (plan, routes) = client
+                .plan_append_routes_compact(manifest, 4096, 1)
+                .unwrap();
+            assert_eq!(plan.key, manifest.key);
+            assert_eq!(routes.len(), 1);
+        }
+    }
+    assert!(client
+        .plan_append_routes_compact(&manifests[2], 4096, 1)
+        .is_err());
+    for manifest in &manifests[..2] {
+        client
+            .plan_append_routes_compact(manifest, 4096, 1)
+            .unwrap();
+    }
+    drop(client);
+    assert_eq!(
+        worker.join().unwrap(),
+        ["wal", "index", "bad-refresh", "wal", "index"]
+    );
+}

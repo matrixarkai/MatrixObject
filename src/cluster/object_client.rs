@@ -335,6 +335,36 @@ fn write_group_extents(
     Ok(client)
 }
 
+/// Data staging and publication are separate so staged writes can share data I/O.
+struct ObjectWriteData {
+    manifest: ObjectManifest,
+    groups: std::collections::BTreeMap<String, ChunkGroupRoute>,
+    connections: Vec<(String, RemoteGroupClient)>,
+}
+struct PreparedPublication<'a> {
+    bucket: &'a str,
+    key: &'a str,
+    outcome: ManifestOutcome,
+    allocation_id: Option<u64>,
+    compact: bool,
+}
+impl PreparedPublication<'_> {
+    fn before_publication(&self, error: ObjectError) -> ObjectWriteFailure {
+        ObjectWriteFailure::BeforePublication {
+            error,
+            staged: self
+                .outcome
+                .after
+                .as_ref()
+                .map(|after| Box::new(after.clone())),
+        }
+    }
+}
+struct PreparedObjectWrite<'a> {
+    publication: PreparedPublication<'a>,
+    data: ObjectWriteData,
+}
+
 impl RemoteMetaClient {
     fn take_object_page_range(
         &mut self,
@@ -911,6 +941,30 @@ impl RemoteMetaClient {
         compact: bool,
         tail_from: Option<usize>,
     ) -> Result<ObjectManifest, ObjectWriteFailure> {
+        let PreparedObjectWrite {
+            publication,
+            data: mut plan,
+        } = self.prepare_object_write(
+            bucket, key, expected, data, options, append, owned, compact, tail_from,
+        )?;
+        self.write_object_data(&mut plan, data, options)
+            .map_err(|error| publication.before_publication(error))?;
+        self.publish_prepared_object(publication, options)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_object_write<'a>(
+        &mut self,
+        bucket: &'a str,
+        key: &'a str,
+        expected: Option<ObjectManifest>,
+        data: &[u8],
+        options: &ObjectWriteOptions,
+        append: bool,
+        owned: Option<&crate::staged_allocation::StagedAllocation>,
+        compact: bool,
+        tail_from: Option<usize>,
+    ) -> Result<PreparedObjectWrite<'a>, ObjectWriteFailure> {
         self.check_operation_deadline().map_err(before)?;
         let confirmed = self.confirmed_allocation.take();
         let (pages, generation) =
@@ -1090,13 +1144,33 @@ impl RemoteMetaClient {
             (_, expected) => ManifestOutcome::decide(expected, published),
         }
         .map_err(before)?;
-        // The outcome owns the candidate; data I/O only borrows it instead of
-        // retaining another full copy of the object prefix.
-        let published = outcome.after.as_ref().unwrap();
-        let staged_error = |error| ObjectWriteFailure::BeforePublication {
-            error,
-            staged: Some(Box::new(published.clone())),
-        };
+        Ok(PreparedObjectWrite {
+            publication: PreparedPublication {
+                bucket,
+                key,
+                outcome,
+                allocation_id: owned.map(|allocation| allocation.allocation_id),
+                compact,
+            },
+            data: ObjectWriteData {
+                manifest,
+                groups,
+                connections,
+            },
+        })
+    }
+
+    fn write_object_data(
+        &mut self,
+        plan: &mut ObjectWriteData,
+        data: &[u8],
+        options: &ObjectWriteOptions,
+    ) -> Result<(), ObjectError> {
+        let ObjectWriteData {
+            manifest,
+            groups,
+            connections,
+        } = plan;
         // Group I/O may overlap, but publication waits for every started group.
         // Visit the first target first and keep the manifest in object order.
         let first_group = connections.last().map(|(group, _)| group.clone());
@@ -1117,24 +1191,20 @@ impl RemoteMetaClient {
             let mut jobs = Vec::new();
             for indexes in batch {
                 let group = &manifest.extents[indexes[0]].group;
-                let configured = groups.get(group).ok_or_else(|| staged_error(
-                    ObjectError::Corruption("object extent group was not verified".into())))?;
-                let client = connections.iter().position(|(name, _)| name == group)
+                let configured = groups.get(group).ok_or_else(|| {
+                    ObjectError::Corruption("object extent group was not verified".into())
+                })?;
+                let client = connections
+                    .iter()
+                    .position(|(name, _)| name == group)
                     .map(|index| connections.remove(index).1)
                     .or_else(|| self.take_group_connection(group, configured, &options.replica));
                 jobs.push((group.clone(), indexes, configured.clone(), client));
             }
             if jobs.len() == 1 {
                 let (group, indexes, configured, client) = jobs.pop().unwrap();
-                let client = write_group_extents(
-                    indexes,
-                    &configured,
-                    client,
-                    &manifest,
-                    data,
-                    options,
-                )
-                .map_err(&staged_error)?;
+                let client =
+                    write_group_extents(indexes, &configured, client, &manifest, data, options)?;
                 self.cache_group_connection(group, configured, client);
             } else {
                 let completed = std::thread::scope(|scope| {
@@ -1171,31 +1241,56 @@ impl RemoteMetaClient {
                         }
                     }
                     first_error.map_or(Ok(completed), Err)
-                }).map_err(&staged_error)?;
+                })?;
                 for (group, configured, client) in completed {
                     self.cache_group_connection(group, configured, client);
                 }
             }
         }
-        self.check_operation_deadline().map_err(&staged_error)?;
+        self.check_operation_deadline()?;
+        Ok(())
+    }
+
+    fn publish_prepared_object(
+        &mut self,
+        prepared: PreparedPublication<'_>,
+        options: &ObjectWriteOptions,
+    ) -> Result<ObjectManifest, ObjectWriteFailure> {
+        let PreparedPublication {
+            bucket,
+            key,
+            outcome,
+            allocation_id,
+            compact,
+        } = prepared;
         let (publication, unadmitted, outcome) = if compact {
-            let allocation_id = owned.expect("compact append requires owned staging").allocation_id;
-            let (result, unadmitted, outcome) = if let Some((pages, ttl_ms)) = self.reserve_next.take() {
-                let (result, unadmitted, outcome) = self.publish_compact_append_reserving(
-                    outcome, allocation_id, options.update_time_ms, pages, ttl_ms);
-                let result = result.map(|reserved| {
-                    self.reservation = reserved;
-                });
-                (result, unadmitted, outcome)
-            } else {
-                self.publish_compact_append_preserving_outcome(outcome, allocation_id, options.update_time_ms)
-            };
+            let allocation_id = allocation_id.expect("compact append requires owned staging");
+            let (result, unadmitted, outcome) =
+                if let Some((pages, ttl_ms)) = self.reserve_next.take() {
+                    let (result, unadmitted, outcome) = self.publish_compact_append_reserving(
+                        outcome,
+                        allocation_id,
+                        options.update_time_ms,
+                        pages,
+                        ttl_ms,
+                    );
+                    let result = result.map(|reserved| {
+                        self.reservation = reserved;
+                    });
+                    (result, unadmitted, outcome)
+                } else {
+                    self.publish_compact_append_preserving_outcome(
+                        outcome,
+                        allocation_id,
+                        options.update_time_ms,
+                    )
+                };
             match result {
                 Ok(()) => return Ok(outcome.after.unwrap()),
                 Err(error) => (Err(error), unadmitted, outcome),
             }
         } else {
-            self.publish_preserving_outcome(outcome, owned.map(|allocation| allocation.allocation_id), options.update_time_ms)
+            self.publish_preserving_outcome(outcome, allocation_id, options.update_time_ms)
         };
         match publication {
             Ok(value) => Ok(value),
@@ -1221,6 +1316,7 @@ impl RemoteMetaClient {
 
 include!("chunk_object_client.rs");
 include!("chunk_reclaim_client.rs");
+include!("staged_append_pair.rs");
 
 #[cfg(test)]
 mod tests {
