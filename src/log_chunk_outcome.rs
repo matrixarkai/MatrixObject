@@ -26,7 +26,6 @@ use crate::object_manifest::{
 };
 use crate::ObjectError;
 use prost::Message;
-use std::collections::BTreeMap;
 
 pub const ACTION_GRANT: u32 = 1;
 pub const ACTION_SEAL_SWITCH: u32 = 2;
@@ -69,7 +68,7 @@ impl WriterLease {
 /// The writer leases the metadata state holds, one per object.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WriterLeaseTable {
-    leases: BTreeMap<(String, String), WriterLeaseValue>,
+    leases: imbl::OrdMap<(String, String), WriterLeaseValue>,
 }
 /// A lease as the table keeps it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -437,3 +436,7 @@ impl LeaseBatch {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "writer_lease_snapshot_tests.rs"]
+mod writer_lease_snapshot_tests;

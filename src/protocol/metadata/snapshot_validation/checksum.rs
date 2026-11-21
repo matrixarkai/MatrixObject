@@ -175,11 +175,13 @@ impl MetaSnapshot {
         )
         .unwrap();
         if !self.object_manifests.is_empty() {
-            let bytes = self.object_manifests.to_bytes().expect("valid manifest catalog");
             append_string(&mut material, "MOSRSMANIFEST1");
-            append_u64(&mut material, bytes.len() as u64);
+            append_u64(&mut material, self.object_manifests.encoded_size() as u64);
             digest = fnv1a64_resumed(digest, &material);
-            digest = fnv1a64_resumed(digest, &bytes);
+            self.object_manifests.visit_encoded(&mut |bytes| {
+                digest = fnv1a64_resumed(digest, bytes);
+                Ok::<(), std::convert::Infallible>(())
+            }).unwrap();
         }
         if !self.cluster_features.is_default() {
             // Covered only when present, so every snapshot that predates it keeps its checksum.

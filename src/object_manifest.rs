@@ -726,7 +726,8 @@ impl ManifestOutcome {
 }
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct ManifestCatalog {
-    objects: BTreeMap<ObjectId, Arc<ManifestEntry>>,
+    // Captures share the ordered tree; mutations copy only the changed path.
+    objects: imbl::OrdMap<ObjectId, Arc<ManifestEntry>>,
     body_bytes: usize,
     retained: BTreeMap<u64, Arc<crate::manifest_retention::RetainedManifest>>,
     retention_bytes: usize,
@@ -1503,15 +1504,68 @@ impl ManifestCatalog {
         self.revision += 1;
         self.body_bytes = body_bytes;
     }
-    pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
-        let image = CatalogImage {
-            format_version: if self.publication_fence != 0 { 4 } else if !self.staged.is_empty() { 3 } else if self.retained.is_empty() { 1 } else { 2 },
-            objects: self.objects.values().map(|entry| entry.manifest.to_manifest()).collect(),
-            retained: self.retained.values().map(|record| record.as_ref().clone()).collect(),
-            staged: self.staged.values().cloned().collect(),
-            publication_fence: self.publication_fence,
+    /// Visit the unchanged catalog frame with scratch bounded by its largest record.
+    /// Callback errors stop output immediately, including before the checksum trailer.
+    pub(crate) fn visit_encoded<E>(
+        &self,
+        emit: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut checksum = 0xcbf29ce484222325u64;
+        let mut body = |bytes: &[u8]| {
+            checksum = bytes.iter().fold(checksum, |h, byte| {
+                (h ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+            });
+            emit(bytes)
         };
-        frame(b"MOMC", &image, MAX_SNAPSHOT)
+        body(b"MOMC")?;
+        let version = if self.publication_fence != 0 { 4 } else if !self.staged.is_empty() {
+            3
+        } else if self.retained.is_empty() { 1 } else { 2 };
+        body(&[8, version])?;
+        let mut scratch = Vec::new();
+        for entry in self.objects.values() {
+            scratch.clear();
+            scratch.push(18);
+            prost::encoding::encode_varint(entry.manifest.encoded_len() as u64, &mut scratch);
+            entry.manifest.encode_into(&mut scratch);
+            body(&scratch)?;
+        }
+        for record in self.retained.values() {
+            scratch.clear();
+            scratch.push(26);
+            prost::encoding::encode_varint(record.encoded_len() as u64, &mut scratch);
+            record.encode_raw(&mut scratch);
+            body(&scratch)?;
+        }
+        for record in self.staged.values() {
+            scratch.clear();
+            scratch.push(34);
+            prost::encoding::encode_varint(record.encoded_len() as u64, &mut scratch);
+            record.encode_raw(&mut scratch);
+            body(&scratch)?;
+        }
+        if self.publication_fence != 0 {
+            scratch.clear();
+            scratch.push(40);
+            prost::encoding::encode_varint(self.publication_fence, &mut scratch);
+            body(&scratch)?;
+        }
+        drop(body);
+        emit(&checksum.to_le_bytes())
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
+        let size = self.encoded_size();
+        if size > MAX_SNAPSHOT + 12 {
+            return Err(invalid("manifest encoding exceeds size bound"));
+        }
+        let mut bytes = Vec::with_capacity(size);
+        self.visit_encoded(&mut |part| {
+            bytes.extend_from_slice(part);
+            Ok::<(), std::convert::Infallible>(())
+        }).unwrap();
+        debug_assert_eq!(bytes.len(), size);
+        Ok(bytes)
     }
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ObjectError> {
         let image: CatalogImage = unframe(b"MOMC", bytes, MAX_SNAPSHOT)?;
@@ -2661,3 +2715,11 @@ mod catalog_full_tests {
         assert!(catalog_full(8).to_string().contains("MATRIXOBJECT_METASERVER_MAX_OBJECTS"));
     }
 }
+
+#[cfg(test)]
+#[path = "manifest_catalog_snapshot_tests.rs"]
+mod catalog_snapshot_tests;
+
+#[cfg(test)]
+#[path = "manifest_catalog_streaming_tests.rs"]
+mod catalog_streaming_tests;

@@ -2,7 +2,7 @@
 name = "matrixobjectstore-rs"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.89"
 license = "Apache-2.0"
 # The description is published verbatim on a package index, so it says what the
 # crate is in one line and uses the tier names the code uses. It said "segment
@@ -64,6 +64,7 @@ api-tls = ["peer-tls"]
 peer-tls = ["dep:rustls", "dep:rustls-pemfile"]
 
 [dependencies]
+imbl = { version = "=7.0.2", default-features = false }
 matrixobject-client = { path = "crates/matrixobject-client", version = "0.1.0" }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"], optional = true }

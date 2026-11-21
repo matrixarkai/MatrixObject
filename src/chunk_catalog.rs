@@ -21,7 +21,6 @@ use crate::chunk_manifest::ChunkManifest;
 use crate::object_manifest::{catalog_full, catalog_image_too_large, frame, unframe, MAX_OBJECTS};
 use crate::{ObjectError, ObjectId};
 use prost::Message;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// The most objects a catalog may hold: the same ceiling as the page-mode catalog.
@@ -114,7 +113,7 @@ struct ChunkCatalogImage {
 /// One manifest per object, with the bytes they take and a revision that moves on every change.
 #[derive(Clone, Debug, Default)]
 pub struct ChunkCatalog {
-    objects: BTreeMap<ObjectId, Arc<ChunkManifest>>,
+    objects: imbl::OrdMap<ObjectId, Arc<ChunkManifest>>,
     body_bytes: usize,
     revision: u64,
     /// The image bound; the default unless a test lowers it.

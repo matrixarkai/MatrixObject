@@ -364,8 +364,10 @@ jobs:
       - name: live catalog state and committed recovery
         run: |
           set -o pipefail
-          cargo test --locked --all-features --lib live_catalog -- --test-threads=1 | tee /tmp/live-catalog.log
-          grep -q 'test result: ok. 2 passed' /tmp/live-catalog.log
+          cargo test --locked --all-features --lib cluster::chunk_groups::tests::live_catalog_state_roundtrips_without_replacing_inventory_or_regressing_reports -- --exact --test-threads=1 | tee /tmp/live-catalog.log
+          grep -q 'test result: ok. 1 passed' /tmp/live-catalog.log
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::live_catalog_outcomes_apply_atomically_and_recover_after_checkpoint -- --exact --test-threads=1 | tee /tmp/live-catalog.log
+          grep -q 'test result: ok. 1 passed' /tmp/live-catalog.log
           cargo test --locked --all-features --lib cluster::meta_server::chunk_group_tests::live_membership_health_restores_from_local_snapshot_and_streamed_checkpoint -- --exact | tee /tmp/live-catalog.log
           grep -q 'test result: ok. 1 passed' /tmp/live-catalog.log
       - name: retained chunk membership fences and joint health
@@ -713,6 +715,36 @@ jobs:
           grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
           cargo test --locked --all-features --lib net::cluster_gateway::tests::every_verb_outside_the_subset_is_not_implemented -- --exact | tee /tmp/s3-gateway.log
           grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
+
+      - name: minimum supported Rust
+        run: |
+          rustup toolchain install 1.89.0 --profile minimal --no-self-update
+          cargo +1.89.0 check --locked --all-features --lib
+
+      - name: manifest catalog snapshot isolation
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib object_manifest::catalog_snapshot_tests:: -- --test-threads=1 | tee /tmp/catalog-snapshots.log
+          grep -q '^test result: ok. 5 passed; 0 failed' /tmp/catalog-snapshots.log
+      - name: streamed catalog frames and sink failures
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib object_manifest::catalog_streaming_tests:: -- --test-threads=1 | tee /tmp/catalog-streaming.log
+          grep -q '^test result: ok. 5 passed; 0 failed' /tmp/catalog-streaming.log
+
+      - name: captured placement roots and worker materialization
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib meta_service::checkpoint_capture_tests:: -- --test-threads=1 | tee /tmp/placement-capture.log
+          grep -q '^test result: ok. 4 passed; 0 failed' /tmp/placement-capture.log
+
+      - name: native catalog and writer lease snapshot roots
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib chunk_catalog::tests:: -- --test-threads=1 | tee /tmp/native-catalog-capture.log
+          grep -q '^test result: ok. 15 passed; 0 failed' /tmp/native-catalog-capture.log
+          cargo test --locked --all-features --lib log_chunk_outcome::writer_lease_snapshot_tests:: -- --test-threads=1 | tee /tmp/writer-lease-capture.log
+          grep -q '^test result: ok. 2 passed; 0 failed' /tmp/writer-lease-capture.log
 
       - name: conditional PUT uncertain outcomes
         run: |

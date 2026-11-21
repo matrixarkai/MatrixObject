@@ -5,7 +5,7 @@ impl MatrixMetaService {
         Self {
             object_manifests: Default::default(),
             nodes: BTreeMap::new(),
-            placements: BTreeMap::new(),
+            placements: imbl::OrdMap::new(),
             leader_lease: None,
             leader_lease_receipts: BTreeMap::new(),
             placement_coordinator_config: MetadataCoordinatorConfig {

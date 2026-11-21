@@ -196,7 +196,11 @@ impl MatrixMetaService {
     pub fn export_placement_snapshot(&self) -> PlacementSnapshot {
         let mut snapshot = PlacementSnapshot {
             nodes: self.nodes.clone(),
-            placements: self.placements.clone(),
+            placements: self
+                .placements
+                .iter()
+                .map(|(id, placement)| (id.clone(), placement.clone()))
+                .collect(),
             leader_lease: self.leader_lease.clone(),
             leader_lease_receipts: self.leader_lease_receipts.clone(),
             coordinator_config: self.placement_coordinator_config.clone(),
@@ -323,7 +327,11 @@ impl MatrixMetaService {
         )?;
         self.invalidate_snapshot_export_cache();
         self.nodes = snapshot.placement_nodes.clone();
-        self.placements = snapshot.placements.clone();
+        self.placements = snapshot
+            .placements
+            .iter()
+            .map(|(id, placement)| (id.clone(), placement.clone()))
+            .collect();
         self.leader_lease = snapshot.placement_leader_lease.clone();
         self.leader_lease_receipts = snapshot.placement_leader_lease_receipts.clone();
         self.placement_coordinator_config = snapshot.placement_coordinator_config.clone();
@@ -346,7 +354,7 @@ impl MatrixMetaService {
         }
         self.invalidate_snapshot_export_cache();
         self.nodes = snapshot.nodes;
-        self.placements = snapshot.placements;
+        self.placements = snapshot.placements.into_iter().collect();
         self.leader_lease = snapshot.leader_lease;
         self.leader_lease_receipts = snapshot.leader_lease_receipts;
         self.placement_coordinator_config = snapshot.coordinator_config;

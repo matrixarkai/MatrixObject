@@ -23,3 +23,7 @@ include!("meta/placement/placement_policy_internals.rs");
 include!("meta/placement/placement_repair_internals.rs");
 include!("meta/placement/placement_capacity_internals.rs");
 include!("meta/placement/leader_validation.rs");
+
+#[cfg(test)]
+#[path = "meta/checkpoint_capture_tests.rs"]
+mod checkpoint_capture_tests;
