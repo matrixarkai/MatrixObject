@@ -64,6 +64,11 @@ not be removed after a completion are invisible and are removed by a later abort
   re-evaluates: the offset now either still matches (retry) or no longer does (412, which the
   client answers by re-reading the length). The `x-amz-object-size` in the reply is the length
   the published manifest reports, so a receipt always says where the bytes landed.
+* Concurrent appends to one object are serialised by the client, not hidden by the gateway. A writer
+  that loses the race is refused with 412 and told the object's new length, and retries at it. The
+  gateway never turns that refusal into a success because bytes equal to the append's are present: two
+  writers appending identical bytes at one offset leave one copy, and only the attempt's own extents
+  (its attempt id) say that it landed.
 * An unconfirmed publication is not retried and not reported as success: it answers 503 with
   the SDK's own words.
 * Listing walks the bucket's manifest catalog in key order from the beginning (the SDK takes
