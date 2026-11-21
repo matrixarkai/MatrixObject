@@ -1483,6 +1483,66 @@ fn a_chunk_object_round_trips_through_a_star_quorum_and_a_wrong_digest_fails_its
         .unwrap();
     let listed: Vec<(&str, bool)> = page.entries.iter().map(|entry| (entry.key.as_str(), entry.deleted)).collect();
     assert_eq!(listed, [("empty", false), ("few", false), ("many", false), ("tiny", true)]);
+
+    // the same cluster through the S3 door, with objects stored as chunk manifests
+    {
+        use matrixobjectstore_rs::net::cluster_gateway::{ClusterGateway, GatewayOptions};
+        use matrixobjectstore_rs::net::{Request, RequestHandler};
+        let endpoint = metadata.nodes[metadata.leader()].as_ref().unwrap().endpoint.clone();
+        let gateway_options = GatewayOptions { write: options.clone(), replica: options.replica.clone(), ..Default::default() };
+        let gateway = ClusterGateway::over_chunk_objects(
+            move || {
+                RemoteMetaClient::connect(
+                    &endpoint,
+                    &MetaClientOptions {
+                        read_timeout: Duration::from_secs(10),
+                        write_timeout: Duration::from_secs(10),
+                        ..Default::default()
+                    },
+                )
+            },
+            gateway_options,
+            "gw",
+        );
+        let call = |method: &str, target: &str, headers: &[(&str, &str)], body: &[u8]| {
+            let (path, query) = target.split_once('?').unwrap_or((target, ""));
+            gateway.handle(&Request {
+                method: method.into(),
+                path: path.into(),
+                query: query.into(),
+                headers: headers.iter().map(|(name, value)| (name.to_ascii_lowercase(), (*value).to_string())).collect(),
+                body: body.to_vec(),
+                keep_alive: true,
+            })
+        };
+        let body = bytes(30_000, 3);
+        let put = call("PUT", "/gw/object", &[], &body);
+        assert_eq!(put.status, 200, "{}", String::from_utf8_lossy(&put.body));
+        assert!(put.headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("etag")));
+        let get = call("GET", "/gw/object", &[], &[]);
+        assert_eq!((get.status, get.body.as_slice()), (200, body.as_slice()));
+        let head = call("HEAD", "/gw/object", &[], &[]);
+        assert_eq!(head.status, 200);
+        let ranged = call("GET", "/gw/object", &[("range", "bytes=4090-4101")], &[]);
+        assert_eq!((ranged.status, ranged.body.as_slice()), (206, &body[4090..4102]));
+        // a replaced object is the next generation and reads back as the new bytes
+        let second = bytes(100, 9);
+        assert_eq!(call("PUT", "/gw/object", &[], &second).status, 200);
+        assert_eq!(call("GET", "/gw/object", &[], &[]).body, second);
+        // a copy moves the bytes
+        let copy = call("PUT", "/gw/copied", &[("x-amz-copy-source", "/gw/object")], &[]);
+        assert_eq!(copy.status, 200, "{}", String::from_utf8_lossy(&copy.body));
+        assert_eq!(call("GET", "/gw/copied", &[], &[]).body, second);
+        let listing = call("GET", "/gw?list-type=2", &[], &[]);
+        assert_eq!(listing.status, 200);
+        let listing = String::from_utf8_lossy(&listing.body).to_string();
+        assert!(listing.contains("object") && listing.contains("copied"), "{listing}");
+        // an append is refused on this path until the log writer serves it
+        let append = call("PUT", "/gw/object", &[("x-amz-write-offset-bytes", "100")], b"more");
+        assert!(append.status >= 400, "an append must be refused, got {}", append.status);
+        assert_eq!(call("DELETE", "/gw/object", &[], &[]).status, 204);
+        assert_eq!(call("GET", "/gw/object", &[], &[]).status, 404);
+    }
     let _ = std::fs::remove_dir_all(&root);
 }
 

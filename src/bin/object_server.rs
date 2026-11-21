@@ -26,6 +26,7 @@
 //! | `MATRIXOBJECT_CLUSTER_META_GROUP` | *(unset)* | metadata Raft group id; set for a Raft metadata quorum (several endpoints imply `1`) |
 //! | `MATRIXOBJECT_CLUSTER_TIMEOUT_MS` | `10000` | bound on one cluster operation |
 //! | `MATRIXOBJECT_CLUSTER_PAGE_BYTES` | `1048576` | page size for written data, 1 to 1048576 |
+//! | `MATRIXOBJECT_CLUSTER_CHUNK_OBJECTS` | `0` | `1` stores objects as chunk manifests (one extent per 64 MiB stripe, a digest page per multi-page extent) instead of page manifests; appends are refused on this path until the log writer serves them, and deleted or replaced pages are not reclaimed yet |
 //! | `MATRIXOBJECT_CLUSTER_COMPACT_APPEND` | `0` | `1` publishes appends as compact staged decisions; every metadata voter must support the version 11 outcome |
 //! | `MATRIXOBJECT_CLUSTER_RESERVE_NEXT` | `1` with compact append, else `0` | reserves the next append's staged allocation in the commit that publishes the current one, one metadata commit per append instead of two; every metadata voter must support the version 13 outcome; `0` turns it off |
 //! | `MATRIXOBJECT_CLUSTER_CACHE_ENTRIES` | `4096` | manifests the door remembers so a repeated append can skip reading one (and `MATRIXOBJECT_CLUSTER_CACHE_MIB`, `64`, bounds their memory: a manifest of 4,000 extents is about 0.75 MiB); the least recently used leave first |
@@ -465,7 +466,14 @@ fn run_cluster_gateway(
     }
     let open = Arc::new(open);
     let for_gateway = Arc::clone(&open);
-    let gateway = Arc::new(ClusterGateway::over_sdk(move || (*for_gateway)(), options, bucket.to_string()));
+    // Objects are stored as chunk manifests only when asked, and the flag stays off by default until
+    // pages that no manifest names can be reclaimed.
+    let chunk_objects = std::env::var("MATRIXOBJECT_CLUSTER_CHUNK_OBJECTS").map_or(false, |value| value.trim() == "1");
+    let gateway = Arc::new(if chunk_objects {
+        ClusterGateway::over_chunk_objects(move || (*for_gateway)(), options, bucket.to_string())
+    } else {
+        ClusterGateway::over_sdk(move || (*for_gateway)(), options, bucket.to_string())
+    });
     // `/livez` and `/readyz` in front of the gateway, and the drain switch behind them.
     let door = matrixobjectstore_rs::net::gateway_door::GatewayDoor::new(gateway);
     let drain_flag = door.drain_flag();
