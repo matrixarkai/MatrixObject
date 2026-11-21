@@ -726,7 +726,8 @@ impl ManifestOutcome {
 }
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct ManifestCatalog {
-    objects: BTreeMap<ObjectId, Arc<ManifestEntry>>,
+    // Captures share the ordered tree; mutations copy only the changed path.
+    objects: imbl::OrdMap<ObjectId, Arc<ManifestEntry>>,
     body_bytes: usize,
     retained: BTreeMap<u64, Arc<crate::manifest_retention::RetainedManifest>>,
     retention_bytes: usize,
@@ -2661,3 +2662,7 @@ mod catalog_full_tests {
         assert!(catalog_full(8).to_string().contains("MATRIXOBJECT_METASERVER_MAX_OBJECTS"));
     }
 }
+
+#[cfg(test)]
+#[path = "manifest_catalog_snapshot_tests.rs"]
+mod catalog_snapshot_tests;
