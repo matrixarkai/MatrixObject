@@ -65,6 +65,7 @@ peer-tls = ["dep:rustls", "dep:rustls-pemfile"]
 
 [dependencies]
 imbl = { version = "=7.0.2", default-features = false }
+matrixobject-client = { path = "crates/matrixobject-client", version = "0.1.0" }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"], optional = true }
 rustls-pemfile = { version = "2", optional = true }

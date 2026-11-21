@@ -1,0 +1,18 @@
+[package]
+name = "matrixobject-client"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+description = "Client SDK for the MatrixObject S3 door: the wire contract the gateway and every client share."
+repository = "https://github.com/matrixarkai/MatrixObject"
+homepage = "https://github.com/matrixarkai/MatrixObject"
+readme = "README.md"
+keywords = ["object-store", "s3", "client", "sdk", "append"]
+categories = ["api-bindings", "network-programming"]
+
+# The crate is std-only on purpose: the gateway and a client link it, and neither should inherit the
+# other's dependencies. It is not a member of any workspace, so it builds and tests alone with its
+# own lock file, which is what the `client SDK` CI job does.
+
+[dependencies]

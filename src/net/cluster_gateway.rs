@@ -21,6 +21,10 @@ use std::time::{Duration, Instant};
 use super::http::{self, Request, ResolvedRange, Response};
 use super::s3;
 use super::RequestHandler;
+use matrixobject_client::wire::{
+    AttemptId, Resolution, ResolveRequest, APPEND_STATE_AMBIGUOUS, APPEND_STATE_HEADER, OBJECT_SIZE_HEADER,
+    RESOLUTION_HEADER,
+};
 use crate::cluster::{
     MetaClientOptions, ObjectWriteFailure, ObjectWriteOptions, RemoteMetaClient,
     ReplicaClientOptions,
@@ -80,14 +84,12 @@ impl From<ObjectWriteFailure> for PlaneFailure {
     }
 }
 
-/// The header that names one attempt of an append: 32 hex characters (16 random bytes) chosen by the client, the same
-/// on every retry of that attempt and echoed in the response.
-pub const ATTEMPT_HEADER: &str = "x-amz-attempt-id";
+pub use matrixobject_client::wire::ATTEMPT_HEADER;
 
 /// Echo the attempt id of a request that carried one, so a client can match the answer to the attempt.
 fn with_attempt(response: Response, attempt: Option<[u8; 16]>) -> Response {
     match attempt {
-        Some(id) => response.with_header(ATTEMPT_HEADER, id.iter().map(|byte| format!("{byte:02x}")).collect::<String>()),
+        Some(id) => response.with_header(ATTEMPT_HEADER, AttemptId::from_bytes(id).hex()),
         None => response,
     }
 }
@@ -130,19 +132,6 @@ fn extents_over(extents: &[crate::object_manifest::ObjectExtent], offset: u64, e
         .filter(|extent| extent.object_offset < end && extent.object_offset.saturating_add(extent.length) > offset)
         .cloned()
         .collect()
-}
-
-fn decode_hex_16(text: &str) -> Option<[u8; 16]> {
-    if text.len() != 32 || !text.is_ascii() {
-        return None;
-    }
-    let mut out = [0u8; 16];
-    for (index, pair) in text.as_bytes().chunks(2).enumerate() {
-        let high = (pair[0] as char).to_digit(16)?;
-        let low = (pair[1] as char).to_digit(16)?;
-        out[index] = (high * 16 + low) as u8;
-    }
-    Some(out)
 }
 
 /// One connection's worth of cluster operations.
@@ -951,33 +940,6 @@ impl ClusterGateway {
 /// How many times a resolve re-reads the object when the generation moves under its fence.
 const RESOLVE_ROUNDS: usize = 3;
 
-/// What an append whose outcome was not known turned out to be.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AppendResolution {
-    /// The append's bytes are at the offset it named.
-    Landed,
-    /// They are not, and the append can never land: retry it as a new append.
-    Absent,
-    /// Bytes equal to the append's are at that offset, but nothing proves they are THIS attempt's: another writer's
-    /// identical append at the same offset looks the same. The caller decides from its own record of what it
-    /// acknowledged; this gateway never answers "landed" for it.
-    Ambiguous,
-}
-
-/// 64 hex characters as 32 bytes.
-fn decode_hex_32(text: &str) -> Option<[u8; 32]> {
-    if text.len() != 64 || !text.is_ascii() {
-        return None;
-    }
-    let mut out = [0u8; 32];
-    for (index, pair) in text.as_bytes().chunks(2).enumerate() {
-        let high = (pair[0] as char).to_digit(16)?;
-        let low = (pair[1] as char).to_digit(16)?;
-        out[index] = (high * 16 + low) as u8;
-    }
-    Some(out)
-}
-
 impl ClusterGateway {
     /// Settle an append whose outcome is not known (a timeout, a reset, a consensus deadline).
     ///
@@ -990,12 +952,12 @@ impl ClusterGateway {
     /// that read no attempt still in flight can publish. The answers:
     ///
     /// * `attempted` is known and the manifest holds the attempt's extents over `[offset, offset + length)`:
-    ///   [`AppendResolution::Landed`], exactly, even if later appends followed;
+    ///   [`Resolution::Landed`], exactly, even if later appends followed;
     /// * `attempted` is known and the object already extends past the offset without them: another append took the
     ///   offset and the generation moved, so the attempt can never land: `Absent`;
     /// * `attempted` is unknown (a gateway that never saw the attempt, or a plane that does not report it) and bytes
     ///   equal to the append's (`evidence_sha256`, or any bytes when none is given) fill the range:
-    ///   [`AppendResolution::Ambiguous`], never "landed";
+    ///   [`Resolution::Ambiguous`], never "landed";
     /// * the object ends exactly at the offset: nothing landed there yet. Publish its extents again at the next
     ///   generation; success fences the attempt (`Absent`), and a refusal because the generation moved sends the
     ///   resolve round again. An object that does not exist is fenced by creating it empty;
@@ -1012,7 +974,7 @@ impl ClusterGateway {
         length: u64,
         attempted: &[crate::object_manifest::ObjectExtent],
         evidence_sha256: Option<&[u8]>,
-    ) -> Result<AppendResolution, ObjectError> {
+    ) -> Result<Resolution, ObjectError> {
         let end = offset
             .checked_add(length)
             .filter(|_| length > 0)
@@ -1035,10 +997,10 @@ impl ClusterGateway {
             if !attempted.is_empty() {
                 let mine = extents_over(attempted, offset, end);
                 if !mine.is_empty() && live.is_some_and(|m| mine.iter().all(|extent| m.extents.contains(extent))) {
-                    return Ok(AppendResolution::Landed);
+                    return Ok(Resolution::Landed);
                 }
                 if current != offset {
-                    return Ok(AppendResolution::Absent);
+                    return Ok(Resolution::Absent);
                 }
             } else if current >= end {
                 let present = match evidence_sha256 {
@@ -1048,9 +1010,9 @@ impl ClusterGateway {
                     }
                     None => true,
                 };
-                return Ok(if present { AppendResolution::Ambiguous } else { AppendResolution::Absent });
+                return Ok(if present { Resolution::Ambiguous } else { Resolution::Absent });
             } else if current != offset {
-                return Ok(AppendResolution::Absent);
+                return Ok(Resolution::Absent);
             }
             let fenced = match &manifest {
                 Some(manifest) => self.with_plane(|plane| plane.publish_unchanged(manifest).map(|_| ()).map_err(|failure| failure.error)),
@@ -1061,7 +1023,7 @@ impl ClusterGateway {
                     if let Ok(mut cache) = self.manifests.lock() {
                         cache.remove(bucket, key);
                     }
-                    return Ok(AppendResolution::Absent);
+                    return Ok(Resolution::Absent);
                 }
                 Err(ObjectError::PreconditionFailed(_)) => continue,
                 Err(error) => return Err(error),
@@ -1077,20 +1039,11 @@ impl ClusterGateway {
     fn append_resolve_request(&self, request: &Request, bucket: &str, key: &str) -> Response {
         let resource = format!("/{bucket}/{key}");
         let bad = |message: &str| s3::error_response(s3::S3ErrorCode::InvalidArgument, message, &resource);
-        let number = |name: &str| request.query_param(name).and_then(|value| value.parse::<u64>().ok());
-        let (Some(offset), Some(length)) = (number("offset"), number("length")) else {
-            return bad("append-resolve needs numeric offset and length parameters");
+        let ResolveRequest { attempt, offset, length, sha256: digest } = match ResolveRequest::parse(|name| request.query_param(name)) {
+            Ok(parsed) => parsed,
+            Err(message) => return bad(message),
         };
-        let Some(id) = request.query_param("attempt").and_then(|value| decode_hex_16(&value)) else {
-            return bad("append-resolve needs the attempt parameter: the 32 hex characters the append sent in x-amz-attempt-id");
-        };
-        let digest = match request.query_param("sha256") {
-            None => None,
-            Some(value) => match decode_hex_32(&value) {
-                Some(digest) => Some(digest),
-                None => return bad("append-resolve's sha256 parameter must be 64 hex characters"),
-            },
-        };
+        let id = attempt.into_bytes();
         // What this gateway saw of the attempt: only a record for the SAME range of the same object counts.
         let attempted = self
             .attempts
@@ -1102,12 +1055,8 @@ impl ClusterGateway {
             .unwrap_or_default();
         match self.resolve_append(bucket, key, offset, length, &attempted, digest.as_ref().map(|d| d.as_slice())) {
             Ok(resolution) => {
-                let word = match resolution {
-                    AppendResolution::Landed => "landed",
-                    AppendResolution::Absent => "absent",
-                    AppendResolution::Ambiguous => "ambiguous",
-                };
-                Response::text(200, format!("{word}\n")).with_header("x-append-resolution", word)
+                let word = resolution.word();
+                Response::text(200, format!("{word}\n")).with_header(RESOLUTION_HEADER, word)
             }
             // Anything but a malformed request means the resolve is undecided, never "refused": a
             // client that read a definitive refusal would retry as a new append and could double it.
@@ -1130,8 +1079,8 @@ impl ClusterGateway {
             ),
             resource,
         )
-        .with_header("x-amz-append-state", "ambiguous".to_string())
-        .with_header("x-amz-object-size", length.to_string())
+        .with_header(APPEND_STATE_HEADER, APPEND_STATE_AMBIGUOUS.to_string())
+        .with_header(OBJECT_SIZE_HEADER, length.to_string())
     }
 
     fn health(&self, request: &Request) -> Response {
@@ -1284,8 +1233,8 @@ impl ClusterGateway {
         let required_etag = request.header("if-match").map(str::to_string);
         let attempt = match request.header(ATTEMPT_HEADER).map(str::trim).filter(|value| !value.is_empty()) {
             None => None,
-            Some(value) => match decode_hex_16(value) {
-                Some(id) => Some(id),
+            Some(value) => match AttemptId::parse(value) {
+                Some(id) => Some(id.into_bytes()),
                 None => {
                     return s3::error_response(
                         s3::S3ErrorCode::InvalidArgument,
@@ -1468,15 +1417,15 @@ impl ClusterGateway {
                     if failure.unconfirmed || outcome_may_be_committed(&failure.error) {
                         let sha = ring::digest::digest(&ring::digest::SHA256, body);
                         match self.resolve_append(bucket, key, offset, body.len() as u64, &failure.attempted, Some(sha.as_ref())) {
-                            Ok(AppendResolution::Landed) => {
+                            Ok(Resolution::Landed) => {
                                 if let Ok(manifest) = self.with_plane(|plane| plane.read_manifest(bucket, key)) {
                                     self.remember(&manifest);
                                     return with_attempt(object_written(&manifest), attempt);
                                 }
                             }
-                            Ok(AppendResolution::Ambiguous) => return self.append_ambiguous(bucket, key, &resource),
+                            Ok(Resolution::Ambiguous) => return self.append_ambiguous(bucket, key, &resource),
                             // Fenced: it did not land and now cannot. The client may retry as a new append.
-                            Ok(AppendResolution::Absent) => {
+                            Ok(Resolution::Absent) => {
                                 return s3::error_response(
                                     s3::S3ErrorCode::ServiceUnavailable,
                                     &format!("this append did not land and can no longer land (the object was fenced); retry it: {}", failure.error),
@@ -1847,7 +1796,7 @@ fn object_headers(response: &mut Response, manifest: &ObjectManifest) {
         .push(("x-amz-version-id".into(), manifest.generation.to_string()));
     response
         .headers
-        .push(("x-amz-object-size".into(), manifest.length.to_string()));
+        .push((OBJECT_SIZE_HEADER.into(), manifest.length.to_string()));
     response
         .headers
         .push(("x-matrixobject-length".into(), manifest.length.to_string()));
