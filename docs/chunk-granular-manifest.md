@@ -561,3 +561,12 @@ one; and no run on a cluster that carries other traffic.
   object and a deleted key.
 - Format 3 objects cannot be read by older builds, and a raised feature cannot be
   lowered. See the irreversibility statement above.
+- **Trust assumption: cluster clients are trusted for page addressing.** A chunk manifest names the
+  pages it holds by address (group, chunk, page range) and a publication is checked for its generation
+  and its own validity, not for whether the publisher wrote those pages. A client that can publish can
+  therefore name pages that belong to another object (an alias). The digest check on a read is
+  **integrity, not access control**: it proves that the bytes are the ones the manifest committed, not
+  that the publisher was entitled to name them. Publishing is not authorization. What an alias cannot
+  do is make the reclaim sweep free a live page: a page any manifest names stays live. Deployments that
+  do not trust every cluster client must put that boundary in front of the metadata plane.
+
