@@ -102,6 +102,8 @@ fn two_writers_of_one_generation_cannot_both_win() {
     let writer_b = ChunkOutcome::decide(Some(first), small("a", 2, 30)).unwrap();
     assert!(catalog.apply(&writer_a).unwrap());
     assert!(refused(catalog.apply(&writer_b)).contains("prior state mismatch"));
+    // a writer that lost the race is told so with the typed answer a client can branch on, never as corruption
+    assert!(matches!(catalog.apply(&writer_b), Err(ObjectError::PreconditionFailed(_))));
     assert_eq!(catalog.get(&small("a", 1, 1).object_id()).unwrap().extents[0].digest, vec![20; 32]);
 }
 
