@@ -79,6 +79,119 @@ fn write_group_pages(
 }
 
 impl RemoteMetaClient {
+    /// Write `data` as stripes of fresh pages, digest pages included, and return the extents that name
+    /// them, the first starting at `base_offset` of the object. Nothing is published.
+    fn write_chunk_stripes(
+        &mut self,
+        bucket: &str,
+        key: &str,
+        data: &[u8],
+        options: &ObjectWriteOptions,
+        stripe_bytes: u64,
+        base_offset: u64,
+    ) -> Result<Vec<crate::chunk_manifest::ChunkExtent>, ObjectError> {
+        let page_bytes = options.page_bytes as u64;
+        let stripes = crate::chunk_object::plan_stripes(data.len() as u64, page_bytes, stripe_bytes)?;
+        let mut extents = Vec::with_capacity(stripes.len());
+        if !stripes.is_empty() {
+            let count = options.target_groups.min(stripes.len() as u32).max(1) as usize;
+            let mut group_bytes = vec![0u64; count];
+            for (index, stripe) in stripes.iter().enumerate() {
+                group_bytes[index % count] += stripe.length;
+            }
+            let plan = self
+                .plan_object_placement(bucket, key, group_bytes.iter().copied().max().unwrap_or(0), count as u64)
+                ?;
+            if plan.node_ids.len() != count
+                || plan.node_ids.iter().collect::<std::collections::BTreeSet<_>>().len() != count
+            {
+                return Err(ObjectError::Corruption("placement returned invalid data groups".into()));
+            }
+            let routes = self.read_chunk_routes(&plan.node_ids)?;
+            if routes.len() != count {
+                return Err(ObjectError::Corruption("selected group route missing".into()));
+            }
+            // Digests first, so no page is allocated for an extent that cannot be stored.
+            let digests: Vec<crate::chunk_integrity::ExtentDigests> = stripes
+                .iter()
+                .map(|stripe| {
+                    crate::chunk_integrity::digest_extent(&data[stripe.range()], options.page_bytes)
+                        .map_err(|error| error.into_object_error())
+                })
+                .collect::<Result<_, _>>()?;
+            let mut per_group: Vec<Vec<(crate::PageId, &[u8])>> = (0..count).map(|_| Vec::new()).collect();
+            for (index, stripe) in stripes.iter().enumerate() {
+                let stored = crate::chunk_integrity::stored_pages(stripe.length, page_bytes) as u32;
+                let (allocation, first) = self
+                    .take_object_page_range(stored, options.page_allocation_lease_pages)
+                    ?;
+                let first_page = allocation.page(first)?;
+                let group = index % count;
+                let placement = crate::chunk_object::Placement {
+                    group: plan.node_ids[group].clone(),
+                    volume_id: first_page.chunk_id.volume_id(),
+                    chunk_id: first_page.chunk_id.id(),
+                    first_page: u64::from(first),
+                };
+                for (offset, bytes) in
+                    crate::chunk_object::pages_of(&data[stripe.range()], options.page_bytes, &digests[index])
+                {
+                    let page = allocation.page(first + offset as u32)?;
+                    per_group[group].push((page, bytes));
+                }
+                let placed = crate::chunk_object::Stripe { object_offset: base_offset + stripe.object_offset, length: stripe.length };
+                extents.push(crate::chunk_object::extent_for(&placement, &placed, &digests[index], page_bytes));
+            }
+            let mut jobs: Vec<_> = (0..count)
+                .map(|group| {
+                    let name = plan.node_ids[group].clone();
+                    let client = self.take_group_connection(&name, &routes[group], &options.replica);
+                    (name, routes[group].clone(), client, std::mem::take(&mut per_group[group]))
+                })
+                .collect();
+            let width = options.max_parallel_groups.max(1);
+            while !jobs.is_empty() {
+                let batch: Vec<_> = jobs.drain(..jobs.len().min(width)).collect();
+                let completed: Vec<(String, ChunkGroupRoute, RemoteGroupClient)> = if batch.len() == 1 {
+                    let (name, route, client, writes) = batch.into_iter().next().unwrap();
+                    let client = write_group_pages(&route, client, &writes, options)?;
+                    vec![(name, route, client)]
+                } else {
+                    std::thread::scope(|scope| {
+                        let handles: Vec<_> = batch
+                            .into_iter()
+                            .map(|(name, route, client, writes)| {
+                                scope.spawn(move || {
+                                    write_group_pages(&route, client, &writes, options).map(|client| (name, route, client))
+                                })
+                            })
+                            .collect();
+                        let mut done = Vec::new();
+                        let mut first_error = None;
+                        for handle in handles {
+                            match handle.join().unwrap_or_else(|_| {
+                                Err(ObjectError::Corruption("object group writer panicked".into()))
+                            }) {
+                                Ok(connection) => done.push(connection),
+                                Err(error) => {
+                                    first_error.get_or_insert(error);
+                                }
+                            }
+                        }
+                        first_error.map_or(Ok(done), Err)
+                    })
+                    ?
+                };
+                for (name, route, client) in completed {
+                    self.cache_group_connection(name, route, client);
+                }
+            }
+        }
+        Ok(extents)
+    }
+}
+
+impl RemoteMetaClient {
     /// Write `data` as a chunk object and publish it, one generation after `expected`.
     ///
     /// The order is the crash-safety rule: every data page, then the digest page of each multi-page
@@ -114,105 +227,83 @@ impl RemoteMetaClient {
             None => 1,
         };
         let page_bytes = options.page_bytes as u64;
-        let stripes = crate::chunk_object::plan_stripes(data.len() as u64, page_bytes, stripe_bytes).map_err(before)?;
-        let mut extents = Vec::with_capacity(stripes.len());
-        if !stripes.is_empty() {
-            let count = options.target_groups.min(stripes.len() as u32).max(1) as usize;
-            let mut group_bytes = vec![0u64; count];
-            for (index, stripe) in stripes.iter().enumerate() {
-                group_bytes[index % count] += stripe.length;
-            }
-            let plan = self
-                .plan_object_placement(bucket, key, group_bytes.iter().copied().max().unwrap_or(0), count as u64)
-                .map_err(before)?;
-            if plan.node_ids.len() != count
-                || plan.node_ids.iter().collect::<std::collections::BTreeSet<_>>().len() != count
-            {
-                return Err(before(ObjectError::Corruption("placement returned invalid data groups".into())));
-            }
-            let routes = self.read_chunk_routes(&plan.node_ids).map_err(before)?;
-            if routes.len() != count {
-                return Err(before(ObjectError::Corruption("selected group route missing".into())));
-            }
-            // Digests first, so no page is allocated for an extent that cannot be stored.
-            let digests: Vec<crate::chunk_integrity::ExtentDigests> = stripes
-                .iter()
-                .map(|stripe| {
-                    crate::chunk_integrity::digest_extent(&data[stripe.range()], options.page_bytes)
-                        .map_err(|error| before(error.into_object_error()))
-                })
-                .collect::<Result<_, _>>()?;
-            let mut per_group: Vec<Vec<(crate::PageId, &[u8])>> = (0..count).map(|_| Vec::new()).collect();
-            for (index, stripe) in stripes.iter().enumerate() {
-                let stored = crate::chunk_integrity::stored_pages(stripe.length, page_bytes) as u32;
-                let (allocation, first) = self
-                    .take_object_page_range(stored, options.page_allocation_lease_pages)
-                    .map_err(before)?;
-                let first_page = allocation.page(first).map_err(before)?;
-                let group = index % count;
-                let placement = crate::chunk_object::Placement {
-                    group: plan.node_ids[group].clone(),
-                    volume_id: first_page.chunk_id.volume_id(),
-                    chunk_id: first_page.chunk_id.id(),
-                    first_page: u64::from(first),
-                };
-                for (offset, bytes) in
-                    crate::chunk_object::pages_of(&data[stripe.range()], options.page_bytes, &digests[index])
-                {
-                    let page = allocation.page(first + offset as u32).map_err(before)?;
-                    per_group[group].push((page, bytes));
-                }
-                extents.push(crate::chunk_object::extent_for(&placement, stripe, &digests[index], page_bytes));
-            }
-            let mut jobs: Vec<_> = (0..count)
-                .map(|group| {
-                    let name = plan.node_ids[group].clone();
-                    let client = self.take_group_connection(&name, &routes[group], &options.replica);
-                    (name, routes[group].clone(), client, std::mem::take(&mut per_group[group]))
-                })
-                .collect();
-            let width = options.max_parallel_groups.max(1);
-            while !jobs.is_empty() {
-                let batch: Vec<_> = jobs.drain(..jobs.len().min(width)).collect();
-                let completed: Vec<(String, ChunkGroupRoute, RemoteGroupClient)> = if batch.len() == 1 {
-                    let (name, route, client, writes) = batch.into_iter().next().unwrap();
-                    let client = write_group_pages(&route, client, &writes, options).map_err(before)?;
-                    vec![(name, route, client)]
-                } else {
-                    std::thread::scope(|scope| {
-                        let handles: Vec<_> = batch
-                            .into_iter()
-                            .map(|(name, route, client, writes)| {
-                                scope.spawn(move || {
-                                    write_group_pages(&route, client, &writes, options).map(|client| (name, route, client))
-                                })
-                            })
-                            .collect();
-                        let mut done = Vec::new();
-                        let mut first_error = None;
-                        for handle in handles {
-                            match handle.join().unwrap_or_else(|_| {
-                                Err(ObjectError::Corruption("object group writer panicked".into()))
-                            }) {
-                                Ok(connection) => done.push(connection),
-                                Err(error) => {
-                                    first_error.get_or_insert(error);
-                                }
-                            }
-                        }
-                        first_error.map_or(Ok(done), Err)
-                    })
-                    .map_err(before)?
-                };
-                for (name, route, client) in completed {
-                    self.cache_group_connection(name, route, client);
-                }
-            }
-        }
+        let extents = self.write_chunk_stripes(bucket, key, data, options, stripe_bytes, 0).map_err(before)?;
         self.check_operation_deadline().map_err(before)?;
         let manifest = crate::chunk_object::build_manifest(bucket, key, generation, page_bytes, extents).map_err(before)?;
         let outcome = crate::chunk_catalog::ChunkOutcome::decide(expected.cloned(), manifest).map_err(before)?;
         self.publish_chunk_outcome(bucket, key, outcome)
+    }
+
+    /// Append `data` to the live paged object `expected` and publish it one generation later.
+    ///
+    /// The appended bytes are new extents after the last one, written like a whole object's (every
+    /// data page, then the digest page of a multi-page extent) and published with the generation
+    /// check, so an append that read a stale manifest is refused and nothing is changed. A writer that
+    /// dies before the publication leaves pages no manifest names. An append that would take the
+    /// object past the extents a manifest may name is refused whole; the object is then rewritten.
+    pub fn append_chunk_object(
+        &mut self,
+        expected: &crate::chunk_manifest::ChunkManifest,
+        data: &[u8],
+        options: &ObjectWriteOptions,
+        stripe_bytes: u64,
+    ) -> Result<crate::chunk_manifest::ChunkManifest, ChunkWriteFailure> {
+        let before = ChunkWriteFailure::BeforePublication;
+        self.check_operation_deadline().map_err(before)?;
+        expected.validate().map_err(before)?;
+        if expected.deleted || expected.kind != crate::chunk_manifest::CHUNK_KIND_PAGED {
+            return Err(before(ObjectError::InvalidArgument("only a live paged chunk object is appended to".into())));
+        }
+        if data.is_empty() {
+            return Err(before(ObjectError::InvalidArgument("an append needs at least one byte".into())));
+        }
+        if options.page_bytes as u64 != expected.page_bytes {
+            return Err(before(ObjectError::InvalidArgument(
+                "an append uses the page size the object was written with".into(),
+            )));
+        }
+        let new_length = expected
+            .length
+            .checked_add(data.len() as u64)
+            .filter(|length| *length <= options.max_object_bytes as u64)
+            .ok_or_else(|| before(ObjectError::InvalidArgument("the appended object would be larger than the size limit".into())))?;
+        let added = crate::chunk_object::plan_stripes(data.len() as u64, expected.page_bytes, stripe_bytes).map_err(before)?.len();
+        if expected.extents.len() + added > crate::chunk_manifest::MAX_CHUNK_EXTENTS {
+            return Err(before(ObjectError::InvalidArgument(format!(
+                "append refused: the object already holds {} extents and this append adds {added}; a manifest names at most {}",
+                expected.extents.len(),
+                crate::chunk_manifest::MAX_CHUNK_EXTENTS
+            ))));
+        }
+        let new_extents = self.write_chunk_stripes(&expected.bucket, &expected.key, data, options, stripe_bytes, expected.length).map_err(before)?;
+        self.check_operation_deadline().map_err(before)?;
+        let mut extents = expected.extents.clone();
+        extents.extend(new_extents);
+        let generation = expected
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| before(ObjectError::InvalidArgument("object generation exhausted".into())))?;
+        let manifest = crate::chunk_object::build_manifest(&expected.bucket, &expected.key, generation, expected.page_bytes, extents).map_err(before)?;
+        debug_assert_eq!(manifest.length, new_length);
+        let outcome = crate::chunk_catalog::ChunkOutcome::decide(Some(expected.clone()), manifest).map_err(before)?;
+        self.publish_chunk_outcome(&expected.bucket, &expected.key, outcome)
+    }
+
+    /// Publish `expected` again one generation later with exactly its extents: the fence an append
+    /// resolve uses. No publication that built on an older generation can succeed afterwards.
+    pub fn republish_chunk_manifest(
+        &mut self,
+        expected: &crate::chunk_manifest::ChunkManifest,
+    ) -> Result<crate::chunk_manifest::ChunkManifest, ChunkWriteFailure> {
+        let before = ChunkWriteFailure::BeforePublication;
+        expected.validate().map_err(before)?;
+        let mut again = expected.clone();
+        again.generation = expected
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| before(ObjectError::InvalidArgument("object generation exhausted".into())))?;
+        let outcome = crate::chunk_catalog::ChunkOutcome::decide(Some(expected.clone()), again).map_err(before)?;
+        self.publish_chunk_outcome(&expected.bucket, &expected.key, outcome)
     }
 
     /// Publish a decided outcome. A refusal the leader decided (the generation moved, the catalog is
