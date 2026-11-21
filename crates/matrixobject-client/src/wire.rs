@@ -84,6 +84,16 @@ impl AttemptId {
         AttemptId(bytes)
     }
 
+    /// A fresh id from the operating system's randomness.
+    ///
+    /// # Panics
+    /// If the system cannot supply random bytes, which an append cannot be made safe without.
+    pub fn random() -> Self {
+        let mut bytes = [0u8; 16];
+        getrandom::getrandom(&mut bytes).expect("the system supplies random bytes for an attempt id");
+        AttemptId(bytes)
+    }
+
     /// The id written as 32 hex characters, or `None` for anything else.
     pub fn parse(text: &str) -> Option<Self> {
         decode_hex::<16>(text).map(AttemptId)
@@ -106,6 +116,34 @@ impl AttemptId {
 impl fmt::Display for AttemptId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.hex())
+    }
+}
+
+/// What the door's answer to an append PUT means to the caller.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AppendStatus {
+    /// The append landed (200, 201 or 204) and the reply names the object's length.
+    Appended,
+    /// 412: the offset is not the object's end. The refusal may be about this very attempt's own
+    /// bytes, landed by an earlier send, so the outcome is settled by the attempt before any retry.
+    OffsetRefused,
+    /// 409: the gateway could not decide whether the attempt landed (`x-amz-append-state:
+    /// ambiguous`). Settled by the attempt like any other unknown outcome.
+    Ambiguous,
+    /// A server error (5xx): says nothing about whether the append was committed.
+    Unknown,
+    /// Any other status: a refusal the caller must see, and not a reason to retry.
+    Refused,
+}
+
+/// The meaning of a status an append PUT was answered with.
+pub fn classify_append_status(status: u16) -> AppendStatus {
+    match status {
+        200 | 201 | 204 => AppendStatus::Appended,
+        412 => AppendStatus::OffsetRefused,
+        409 => AppendStatus::Ambiguous,
+        500..=599 => AppendStatus::Unknown,
+        _ => AppendStatus::Refused,
     }
 }
 
@@ -241,6 +279,21 @@ mod tests {
             "000102030405060708090a0b0c0dabé",
         ] {
             assert_eq!(AttemptId::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn an_append_status_means_what_the_gateway_documents() {
+        for status in [200, 201, 204] {
+            assert_eq!(classify_append_status(status), AppendStatus::Appended);
+        }
+        assert_eq!(classify_append_status(412), AppendStatus::OffsetRefused);
+        assert_eq!(classify_append_status(409), AppendStatus::Ambiguous);
+        for status in [500, 502, 503, 599] {
+            assert_eq!(classify_append_status(status), AppendStatus::Unknown);
+        }
+        for status in [400, 403, 404, 405, 411, 413, 301, 100] {
+            assert_eq!(classify_append_status(status), AppendStatus::Refused);
         }
     }
 
