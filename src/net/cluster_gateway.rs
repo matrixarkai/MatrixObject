@@ -3733,6 +3733,110 @@ mod tests {
         let listing = text(&gateway.handle(&request("GET", "/b?list-type=2", &[], b"")));
         assert_eq!(all_between(&listing, "Key"), ["visible"], "{listing}");
     }
+
+    /// The client SDK against this gateway's own request handling, through an in-process door.
+    ///
+    /// The SDK's unit tests run it against a door written to match the documented contract; these
+    /// run it against the real handler, so a client and a gateway that disagree about an answer
+    /// fail here and not in a deployment.
+    mod client_conformance {
+        use super::*;
+        use matrixobject_client::{ClientError, Reply, S3Client, Transport, TransportError};
+
+        struct Door {
+            gateway: ClusterGateway,
+            _shared: Arc<Mutex<Shared>>,
+            /// How many of the next offset appends commit and then lose their reply.
+            lose_replies: Mutex<usize>,
+        }
+
+        impl std::fmt::Debug for Door {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("Door")
+            }
+        }
+
+        impl Transport for Door {
+            fn send(&self, method: &str, target: &str, headers: &[(&str, String)], body: &[u8]) -> Result<Reply, TransportError> {
+                let headers: Vec<(&str, &str)> = headers.iter().map(|(n, v)| (*n, v.as_str())).collect();
+                let response = self.gateway.handle(&request(method, target, &headers, body));
+                let is_append = method == "PUT" && headers.iter().any(|(n, _)| n.eq_ignore_ascii_case(WRITE_OFFSET_HEADER));
+                if is_append {
+                    let mut lose = self.lose_replies.lock().unwrap();
+                    if *lose > 0 {
+                        *lose -= 1;
+                        return Err(TransportError("connection reset".into()));
+                    }
+                }
+                Ok(Reply { status: response.status, headers: response.headers, body: response.body })
+            }
+        }
+
+        fn door() -> Arc<Door> {
+            let (gateway, shared) = gateway();
+            Arc::new(Door { gateway, _shared: shared, lose_replies: Mutex::new(0) })
+        }
+
+        #[test]
+        fn the_client_reads_writes_lists_and_deletes_through_the_gateway() {
+            let client = S3Client::new(door(), "b");
+            client.put("w/1", b"0123456789").unwrap();
+            client.put("w/2", b"x").unwrap();
+            client.put("z", b"y").unwrap();
+            assert_eq!(client.get("w/1").unwrap(), b"0123456789");
+            assert_eq!(client.get_range("w/1", 2, 3).unwrap(), b"234");
+            assert_eq!(client.get_range_from("w/1", 7).unwrap(), Some(b"789".to_vec()));
+            assert_eq!(client.length_or_zero("w/1").unwrap(), 10);
+            assert_eq!(client.length_or_zero("never").unwrap(), 0);
+            assert_eq!(client.list("w/", None).unwrap(), vec!["w/1", "w/2"]);
+            assert_eq!(client.list("", Some("w/1")).unwrap(), vec!["w/2", "z"]);
+            assert_eq!(client.get("never").unwrap_err(), ClientError::NotFound("never".into()));
+            client.delete("w/1").unwrap();
+            client.delete("w/1").unwrap();
+            assert_eq!(client.list("w/", None).unwrap(), vec!["w/2"]);
+        }
+
+        #[test]
+        fn appends_report_where_they_landed_and_a_second_client_follows_the_first() {
+            let door = door();
+            let (a, b) = (S3Client::new(door.clone(), "b"), S3Client::new(door.clone(), "b"));
+            let first = a.append("log", b"abc").unwrap();
+            assert_eq!((first.start_offset, first.object_length), (0, 3));
+            // B has never looked at the object: it learns the end, then appends there.
+            let second = b.append("log", b"de").unwrap();
+            assert_eq!((second.start_offset, second.object_length), (3, 5));
+            // A's cached end is stale; the refusal is settled by the attempt and the retry lands at 5.
+            let third = a.append("log", b"f").unwrap();
+            assert_eq!((third.start_offset, third.object_length), (5, 6));
+            assert_eq!(a.get("log").unwrap(), b"abcdef");
+        }
+
+        #[test]
+        fn an_append_whose_reply_was_lost_is_resolved_by_the_gateway_as_landed_and_is_not_repeated() {
+            let door = door();
+            let client = S3Client::new(door.clone(), "b");
+            *door.lose_replies.lock().unwrap() = 1;
+            let receipt = client.append("log", b"abc").unwrap();
+            assert_eq!((receipt.start_offset, receipt.end_offset, receipt.object_length), (0, 3, 3));
+            assert_eq!(client.get("log").unwrap(), b"abc", "the bytes are in the object once");
+        }
+
+        #[test]
+        fn two_writers_of_identical_bytes_at_one_offset_are_not_both_told_they_landed() {
+            let door = door();
+            let b = S3Client::new(door.clone(), "b");
+            b.append("log", b"head").unwrap();
+            let a = S3Client::new(door.clone(), "b");
+            *door.lose_replies.lock().unwrap() = 1;
+            let landed = a.append("log", b"same").unwrap();
+            assert_eq!((landed.start_offset, landed.end_offset), (4, 8));
+            // B's cached end is 4: its append of the SAME bytes at the SAME offset is refused, equal
+            // bytes are there, and they are A's. B must not be told its own copy landed.
+            let refused = b.append("log", b"same").unwrap_err();
+            assert!(matches!(refused, ClientError::OutcomeUnknown { .. }), "{refused:?}");
+            assert_eq!(a.get("log").unwrap(), b"headsame", "one physical copy, claimed by exactly one writer");
+        }
+    }
 }
 
 #[cfg(test)]

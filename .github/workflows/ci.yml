@@ -80,7 +80,9 @@ jobs:
           RUSTFLAGS: "-D warnings"
 
       - name: unit tests
-        run: cargo test --locked --lib wire::tests
+        run: |
+          cargo test --locked --lib wire::tests
+          cargo test --locked --lib client_tests::
 
       - name: cargo package (verify the published tarball builds)
         run: cargo package --locked

@@ -11,8 +11,10 @@ readme = "README.md"
 keywords = ["object-store", "s3", "client", "sdk", "append"]
 categories = ["api-bindings", "network-programming"]
 
-# The crate is std-only on purpose: the gateway and a client link it, and neither should inherit the
-# other's dependencies. It is not a member of any workspace, so it builds and tests alone with its
+# Two small dependencies only (a digest and a source of randomness): the gateway and a client link it,
+# and neither should inherit the other's. It is not a member of any workspace, so it builds and tests alone with its
 # own lock file, which is what the `client SDK` CI job does.
 
 [dependencies]
+getrandom = "0.2"
+sha2 = "0.10"
