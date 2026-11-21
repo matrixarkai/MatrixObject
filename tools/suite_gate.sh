@@ -47,7 +47,7 @@ run_isolated() {
     exit 1
   fi
 }
-run_isolated 1 tests::every_guard_the_workflow_pins_by_name_exists --exact
+run_isolated 1 repo_guard_tests::every_guard_the_workflow_pins_by_name_exists --exact
 RUST_TARGET_ARGS=()
 if [ -n "${CARGO_BUILD_TARGET:-}" ]; then
   RUST_TARGET_ARGS=(--target "$CARGO_BUILD_TARGET")

@@ -29,6 +29,7 @@ pub mod shard_router;
 pub mod s3;
 pub mod s3_batch;
 pub mod s3_config;
+pub mod s3_limits;
 pub mod s3_multipart;
 pub mod s3_versions;
 #[path = "net_service.rs"]
