@@ -734,7 +734,15 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --all-features --lib meta_service::checkpoint_capture_tests:: -- --test-threads=1 | tee /tmp/placement-capture.log
-          grep -q '^test result: ok. 3 passed; 0 failed' /tmp/placement-capture.log
+          grep -q '^test result: ok. 4 passed; 0 failed' /tmp/placement-capture.log
+
+      - name: native catalog and writer lease snapshot roots
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib chunk_catalog::tests:: -- --test-threads=1 | tee /tmp/native-catalog-capture.log
+          grep -q '^test result: ok. 15 passed; 0 failed' /tmp/native-catalog-capture.log
+          cargo test --locked --all-features --lib log_chunk_outcome::writer_lease_snapshot_tests:: -- --test-threads=1 | tee /tmp/writer-lease-capture.log
+          grep -q '^test result: ok. 2 passed; 0 failed' /tmp/writer-lease-capture.log
 
       - name: conditional PUT uncertain outcomes
         run: |

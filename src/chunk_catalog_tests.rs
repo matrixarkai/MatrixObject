@@ -298,3 +298,6 @@ fn an_outcome_is_framed_with_its_own_magic_and_checked_when_it_is_read() {
     let none = ChunkOutcome { format_version: 1, before: None, after: None };
     assert!(none.to_bytes().is_err());
 }
+
+#[path = "chunk_catalog_shared_root_tests.rs"]
+mod snapshot_tests;
