@@ -25,6 +25,7 @@
 //! whole store behind whatever else protects that network.
 
 pub mod http;
+mod in_process_door;
 pub mod shard_router;
 pub mod s3;
 pub mod s3_batch;
@@ -43,6 +44,7 @@ pub mod chunk_plane;
 pub mod gateway_door;
 
 pub use http::{Request, Response};
+pub use in_process_door::{request_from_target, InProcessDoor};
 pub use service::ObjectService;
 
 /// Anything that can answer one HTTP request, so the same listener can front the in-process
