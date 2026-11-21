@@ -533,7 +533,7 @@ mod tests {
     }
     #[test]
     fn publication_fence_is_durable_one_way_and_rejects_retired_namespace_publication() {
-        let (mut service, create, _) = crate::tests::manifest_publication_fixture();
+        let (mut service, create, _) = crate::test_fixtures::manifest_publication_fixture();
         create.apply(&mut service).unwrap();
         let mut reserve = request();
         reserve.key = "retired".into();

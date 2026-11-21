@@ -3532,7 +3532,7 @@ mod tests {
     fn manifest_outcomes_recover_from_raft_checkpoint_and_committed_suffix() {
         use std::cell::RefCell;
         let (files, mut peer) = batch_peer();
-        let (mut service, create, replace) = crate::tests::manifest_publication_fixture();
+        let (mut service, create, replace) = crate::test_fixtures::manifest_publication_fixture();
         let groups = super::super::ChunkGroupCatalog::default();
         let mut pending = VecDeque::new();
         let encode = |outcome: &PlacementOutcome| {
@@ -3612,7 +3612,7 @@ mod tests {
         use crate::object_manifest::ManifestOutcome;
         let (_files, mut peer) = batch_peer();
         let (mut service, groups) = fixture(1, 0);
-        let (_, create, _) = crate::tests::manifest_publication_fixture();
+        let (_, create, _) = crate::test_fixtures::manifest_publication_fixture();
         let mut first = create.manifest.unwrap().after.unwrap();
         first.extents[0].group = "group-0".into();
         let mut second = first.clone();

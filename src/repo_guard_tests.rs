@@ -394,11 +394,11 @@ fn every_rust_source_carries_the_licence_header() {
 
     // A WALK THAT FINDS NOTHING PASSES EVERYTHING BELOW IT, which is how a licence gate goes
     // quietly blind: the headers do not have to disappear, the walk only has to stop reaching
-    // them -- a directory moved, a path that no longer resolves. 1,303 sources were here when
+    // them -- a directory moved, a path that no longer resolves. 860 sources were here when
     // this floor was written, so it has room for ordinary churn and only fires when the walk
     // itself has stopped working.
     assert!(
-        sources.len() >= 1_000,
+        sources.len() >= 700,
         "only {} Rust sources were found under {}, so a clean result below would mean \
          nothing",
         sources.len(),
@@ -687,7 +687,6 @@ fn every_binary_the_readme_tells_a_reader_to_run_exists() {
         ("metaserver", include_str!("bin/metaserver.rs")),
         ("object_server", include_str!("bin/object_server.rs")),
         ("chunkserver", include_str!("bin/chunkserver.rs")),
-        ("scale_bench", include_str!("bin/scale_bench.rs")),
     ];
     for (name, source) in BINARIES {
         assert!(
@@ -720,7 +719,7 @@ fn every_binary_the_readme_tells_a_reader_to_run_exists() {
     );
     assert_eq!(
         BINARIES.len(),
-        4,
+        3,
         "the binary list is meant to be every binary in src/bin"
     );
 
@@ -784,7 +783,6 @@ fn every_durable_format_constant_is_accounted_for() {
         // being retired and a stamp minted now is permanent.
         "MOSRS-CATALOG-ROUTE-BINDING1",
         "MOSRS-ROOTSERVER-BOOTSTRAP1",
-        "MOSRS-STORAGE-MAINTENANCE-APPLY-REQUEST1",
         "MOSRSBLOCK",
         "MOSRSBLOCK-CHUNK-CONTROL-PROOF1",
         "MOSRSBLOCK-FINGERPRINT17",
@@ -800,7 +798,6 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRSMETA",
         "MOSRSMETA-CONTROL12",
         "MOSRSMETA-FINGERPRINT1",
-        "MOSRSMETA-INTEGRITY1",
         "MOSRSMETA18",
         "MOSRSMETA19",
         "MOSRSMETA20",
@@ -811,7 +808,6 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRSFEATURES1",
         "MOSRSLEASES1",
         "MOSRSMANIFEST1",
-        "MOSRSMODULESTATUS32",
         "MOSRSOBJECTREADY77",
         "MOSRSROOT",
         "MOSRSROOT-FINGERPRINT1",
@@ -979,7 +975,7 @@ fn every_durable_format_constant_is_accounted_for() {
     );
     assert_eq!(
         found.len(),
-        160,
+        157,
         "the count is pinned as well, so a rename that happens to swap two names cannot pass"
     );
 }

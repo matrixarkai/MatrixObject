@@ -15,6 +15,8 @@ pub(crate) mod extent_list;
 pub mod chunk_integrity;
 pub mod chunk_object;
 pub mod chunk_reclaim;
+#[cfg(test)]
+mod test_fixtures;
 pub mod cluster_features;
 pub mod log_chunk_outcome;
 #[cfg(test)]
@@ -299,13 +301,6 @@ pub use storage_protocol::*;
 mod raft;
 pub use raft::*;
 
-#[path = "store/object_store_state.rs"]
-mod core_store;
-pub use core_store::*;
-
-#[path = "store/raft_backed.rs"]
-mod raft_backed_store;
-pub use raft_backed_store::*;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ObjectError {
@@ -355,10 +350,6 @@ pub mod net;
 /// here is `any` and the submodules carry their own.
 #[cfg(any(feature = "replica-server", feature = "meta-server"))]
 pub mod cluster;
-
-#[cfg(test)]
-#[path = "object_store_regression_tests.rs"]
-mod tests;
 
 #[cfg(test)]
 mod repo_guard_tests;

@@ -3,8 +3,7 @@
 
 //! An S3 door over the replicated object plane, for the verbs a shared log needs.
 //!
-//! [`ObjectService`](super::ObjectService) serves one in-process store. This serves the cluster:
-//! each request is answered by the cluster SDK against a metadata quorum and its chunk groups.
+//! Each request is answered by the cluster SDK against a metadata quorum and its chunk groups.
 //! The verb subset and the mapping are written down in `docs/cluster-gateway.md`; the short
 //! version is that every verb outside the subset answers an S3 `NotImplemented` error.
 //!
@@ -39,7 +38,7 @@ mod s3_verbs;
 /// The most extents the replica plane lets one object hold.
 pub const MAX_OBJECT_EXTENTS: usize = 4096;
 
-/// Offset header, spelled as the in-process door spells it.
+/// Offset header, spelled as S3 spells it.
 pub const WRITE_OFFSET_HEADER: &str = super::s3_limits::WRITE_OFFSET_HEADER;
 
 const LIST_PAGE: u32 = 32;

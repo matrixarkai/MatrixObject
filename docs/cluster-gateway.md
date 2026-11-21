@@ -1,10 +1,9 @@
 # Cluster-backed S3 gateway
 
-`object_server` normally serves one in-process `MatrixObjectStore`. With
-`MATRIXOBJECT_CLUSTER_META` set it serves the replicated object plane instead: a metadata
-quorum plus chunk groups running as separate processes, reached through the cluster SDK
-(`RemoteMetaClient::write_object`, `append_object`, `read_object`, `read_object_range`,
-`delete_object`, `list_manifests`). The in-process path is untouched.
+`object_server` serves the replicated object plane: a metadata quorum plus chunk groups running as
+separate processes, reached through the cluster SDK (`RemoteMetaClient::write_object`,
+`append_object`, `read_object`, `read_object_range`, `delete_object`, `list_manifests`).
+`MATRIXOBJECT_CLUSTER_META` is required, and the process refuses to start without it.
 
 This door answers the S3 verbs a shared-log client needs, and the rest of what an S3 client
 commonly uses (copy, multipart, batch delete, conditional requests, delimiter listings). Every
@@ -82,7 +81,7 @@ not be removed after a completion are invisible and are removed by a later abort
   page and answers `400 InvalidRequest` naming the extent count; it does not work around it.
 * A catalog holds at most 100,000 objects and a manifest at most 1 MiB.
 * Whole-object GET reads the entire object into the gateway before answering.
-* The gateway is unauthenticated, like the in-process door.
+* The gateway is unauthenticated: anything that can reach its port can read, overwrite and delete.
 
 ## Opt-in append modes
 
@@ -139,14 +138,12 @@ gateway no longer refuses appends at 4096 extents itself.
 ### What was measured
 
 TemporalStore's shared-store harness, three nodes, 2000 operations per phase (4000 writes),
-one host, loopback, a single metaserver and three chunk servers, release builds. The in-process
-door is the same server with its journal.
+one host, loopback, a single metaserver and three chunk servers, release builds.
 
 | | sync write p50 / p99 | metadata written per write |
 |---|---|---|
 | plain append (default) | 42-59 ms / 150-167 ms | about 134 KB |
 | compact publication | 77-81 ms / 143-161 ms (earlier round, loaded machine: 101-131 ms) | about 1.35 KB |
-| in-process door | about 6 ms / 11-14 ms | not applicable |
 
 * Compact publication cuts the metadata written per append by about 100 times. The sync write
   p50 is not better than the plain path: every append now costs one more metadata commit (the
@@ -225,8 +222,7 @@ Known limits:
 ## Concurrency
 
 The SDK client takes `&mut self`, so the gateway keeps a small pool of metadata connections and
-lends one to each request. Accept threads serve one connection at a time (as the in-process
-door does), so `MATRIXOBJECT_THREADS` bounds concurrent clients.
+lends one to each request. Accept threads serve one connection at a time, so `MATRIXOBJECT_THREADS` bounds concurrent clients.
 
 ## Appends that may have landed: attempt ids
 

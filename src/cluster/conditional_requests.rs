@@ -912,7 +912,7 @@ mod manifest_tests {
     use crate::cluster::{MetaReply, MetaRequest};
     #[test]
     fn manifest_requests_and_replies_require_canonical_bounded_protobuf() {
-        let (_, create, _) = crate::tests::manifest_publication_fixture();
+        let (_, create, _) = crate::test_fixtures::manifest_publication_fixture();
         let outcome = create.manifest.unwrap();
         let value = outcome.after.clone().unwrap();
         let requests = [
@@ -964,7 +964,7 @@ mod manifest_tests {
 
     #[test]
     fn manifest_route_batches_are_canonical_bounded_and_ordered() {
-        let (_, create, _) = crate::tests::manifest_publication_fixture();
+        let (_, create, _) = crate::test_fixtures::manifest_publication_fixture();
         let first = create.manifest.unwrap().after.unwrap();
         let mut second = first.clone();
         second.key.push_str("-second");
