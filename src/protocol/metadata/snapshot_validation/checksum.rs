@@ -207,6 +207,15 @@ impl MetaSnapshot {
             }
             digest = fnv1a64_resumed(digest, &material);
         }
+        if !self.chunk_catalog.is_empty() {
+            // Covered only when present, so every snapshot that predates it keeps its checksum.
+            let bytes = self.chunk_catalog.to_bytes().expect("valid chunk catalog");
+            material.clear();
+            append_string(&mut material, "MOSRSCHUNKS1");
+            append_u64(&mut material, bytes.len() as u64);
+            digest = fnv1a64_resumed(digest, &material);
+            digest = fnv1a64_resumed(digest, &bytes);
+        }
         let mut checksum = String::with_capacity(24);
         append_etag_of_digest(&mut checksum, digest);
         checksum

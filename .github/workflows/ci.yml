@@ -3213,6 +3213,36 @@ jobs:
           cargo test --locked --lib chunk_catalog::tests::an_entry_put_back_restores_the_object_the_byte_count_and_the_revision -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog.log
           grep -q '^running 1 test$' /tmp/chunk-catalog.log
           grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog.log
+      - name: a metadata snapshot without a chunk catalog is written as before
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_catalog_snapshot_tests::a_snapshot_without_a_catalog_is_written_as_before -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog-snapshot.log
+          grep -q '^running 1 test$' /tmp/chunk-catalog-snapshot.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog-snapshot.log
+      - name: a chunk catalog makes the metadata snapshot version 23 and round trips
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_catalog_snapshot_tests::a_catalog_makes_the_snapshot_version_23_and_it_round_trips_into_another_service -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog-snapshot.log
+          grep -q '^running 1 test$' /tmp/chunk-catalog-snapshot.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog-snapshot.log
+      - name: the metadata snapshot checksum covers the chunk catalog only when there is one
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_catalog_snapshot_tests::the_checksum_covers_the_catalog_only_when_there_is_one -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog-snapshot.log
+          grep -q '^running 1 test$' /tmp/chunk-catalog-snapshot.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog-snapshot.log
+      - name: a damaged chunk catalog image in a metadata snapshot is refused
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_catalog_snapshot_tests::a_damaged_catalog_image_is_refused_and_so_is_a_snapshot_cut_short_inside_it -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog-snapshot.log
+          grep -q '^running 1 test$' /tmp/chunk-catalog-snapshot.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog-snapshot.log
+      - name: a metadata snapshot with a catalog and no lease still carries the lease table
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_catalog_snapshot_tests::a_snapshot_with_a_catalog_and_no_lease_still_carries_the_lease_table_and_the_features -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-catalog-snapshot.log
+          grep -q '^running 1 test$' /tmp/chunk-catalog-snapshot.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-catalog-snapshot.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail

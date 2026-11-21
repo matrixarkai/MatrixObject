@@ -121,6 +121,17 @@ pub struct ChunkCatalog {
     image_limit: Option<usize>,
 }
 
+/// Two catalogs are equal when they hold the same manifests. The revision is bookkeeping (a decoded
+/// image restarts it at the number of objects) and the image bound is a test switch, so neither is
+/// part of what a snapshot says.
+impl PartialEq for ChunkCatalog {
+    fn eq(&self, other: &Self) -> bool {
+        self.objects == other.objects
+    }
+}
+
+impl Eq for ChunkCatalog {}
+
 impl ChunkCatalog {
     pub fn new() -> Self {
         Self::default()

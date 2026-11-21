@@ -48,6 +48,8 @@ pub struct MetaSnapshot {
     pub cluster_features: crate::cluster_features::ClusterFeatures,
     /// Empty on every snapshot written before writer leases existed.
     pub writer_leases: crate::log_chunk_outcome::WriterLeaseTable,
+    /// Empty on every snapshot written before chunk manifests existed.
+    pub chunk_catalog: crate::chunk_catalog::ChunkCatalog,
     pub checksum: String,
 }
 

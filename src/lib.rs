@@ -3,6 +3,8 @@
 #[cfg(any(feature = "replica-server", feature = "meta-server"))]
 mod checkpoint_fragment;
 pub mod chunk_catalog;
+#[cfg(test)]
+mod chunk_catalog_snapshot_tests;
 pub mod chunk_manifest;
 pub mod chunk_namespace_fence;
 #[cfg(test)]
