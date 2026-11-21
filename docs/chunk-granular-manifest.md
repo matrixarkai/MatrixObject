@@ -570,3 +570,14 @@ one; and no run on a cluster that carries other traffic.
   do is make the reclaim sweep free a live page: a page any manifest names stays live. Deployments that
   do not trust every cluster client must put that boundary in front of the metadata plane.
 
+## Appending to a paged object through the gateway
+
+A paged object is appended to by writing the new bytes as new extents after the last one (data pages, then
+the digest page of a multi-page extent) and publishing the manifest one generation later, with the
+generation check: an append that read a stale manifest is refused and changes nothing. The gateway answers
+the append with the offset it landed at, and settles an append whose outcome is not known with the
+extents the attempt published as its identity, as it does for page-granular objects.
+
+Known limits: an append adds at least one extent, and a manifest names at most 4,096, so an object that has
+reached the bound refuses the append whole and is rewritten; a log chunk writer (several appends in one
+chunk, no extent per append) is not part of this path.
