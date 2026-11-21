@@ -47,5 +47,4 @@ pub(crate) fn validate_chunk_state_handoff(handoff: &ReplicaStateHandoff) -> Res
 }
 
 pub(crate) const PAGE_STORAGE_READINESS_FINGERPRINT_FORMAT: &str = "MOSRSBLOCK-FINGERPRINT17";
-pub(crate) const CHUNK_STORAGE_READINESS_FINGERPRINT_FORMAT: &str = "MOSRSCHUNK-AGG-FINGERPRINT8";
 

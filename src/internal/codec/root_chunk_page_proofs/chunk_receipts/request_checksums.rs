@@ -121,23 +121,6 @@ pub(crate) fn chunk_batch_write_request_checksum_borrowed(
     etag(&material)
 }
 
-pub(crate) fn chunk_batch_discard_request_checksum(
-    page_id: &PageId,
-    ranges: &[DataRange],
-) -> String {
-    let mut material = Vec::with_capacity(
-        request_page_id_encoded_len()
-            + std::mem::size_of::<u64>()
-            + ranges.len() * std::mem::size_of::<u64>() * 2,
-    );
-    append_page_id(&mut material, page_id);
-    append_u64(&mut material, ranges.len() as u64);
-    for range in ranges {
-        append_range(&mut material, range);
-    }
-    etag(&material)
-}
-
 pub(crate) fn chunk_batch_discard_nonempty_request_checksum(
     page_id: &PageId,
     ranges: &[DataRange],

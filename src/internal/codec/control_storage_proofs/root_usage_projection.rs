@@ -88,85 +88,6 @@ pub(crate) fn k_max_multipart_part_number() -> u32 {
     10_000
 }
 
-pub(crate) fn meta_bucket_key(bucket: &str) -> String {
-    format!("bucket/{bucket}")
-}
-
-pub(crate) fn meta_lifecycle_apply_key() -> &'static str {
-    "lifecycle/apply"
-}
-
-pub(crate) fn meta_lifecycle_transition_key() -> &'static str {
-    "lifecycle/transition"
-}
-
-pub(crate) fn meta_object_key(object_id: &ObjectId) -> String {
-    if object_id.key.is_empty() {
-        meta_bucket_key(&object_id.bucket)
-    } else {
-        format!("object/{}/{}", object_id.bucket, object_id.key)
-    }
-}
-
-pub(crate) fn metadata_projection_value(metadata: &ObjectMetadata) -> String {
-    format!(
-        "version={} length={} etag={} content_type={} metadata_count={} storage_class={} restore_until_ms={} deleted={} extent_count={} tag_count={} legal_hold={} retention_until_ms={}",
-        metadata.version,
-        metadata.length,
-        metadata.etag(),
-        metadata.content_type,
-        metadata.user_metadata.len(),
-        metadata.storage_class,
-        metadata.lock.restore_until_ms,
-        metadata.deleted,
-        metadata.extents.len(),
-        metadata.tags.len(),
-        metadata.lock.legal_hold,
-        metadata.lock.retention_until_ms
-    )
-}
-
-pub(crate) fn object_inventory_record_payload_bytes(record: &ObjectInventoryRecord) -> u64 {
-    let mut bytes = metadata_projection_value(&record.metadata).len() as u64;
-    bytes = bytes
-        .saturating_add(record.metadata.object_id.bucket.len() as u64)
-        .saturating_add(record.metadata.object_id.key.len() as u64)
-        .saturating_add(record.metadata.etag().len() as u64)
-        .saturating_add(record.metadata.content_type.len() as u64)
-        .saturating_add(record.metadata.storage_class.as_str().len() as u64)
-        .saturating_add((record.metadata.extents.len() as u64).saturating_mul(32));
-    for (key, value) in &record.metadata.tags {
-        bytes = bytes
-            .saturating_add(key.len() as u64)
-            .saturating_add(value.len() as u64);
-    }
-    if let Some(placement) = &record.placement {
-        bytes = bytes
-            .saturating_add(placement.object_id.bucket.len() as u64)
-            .saturating_add(placement.object_id.key.len() as u64)
-            .saturating_add((placement.node_ids.len() as u64).saturating_mul(16));
-        for node_id in &placement.node_ids {
-            bytes = bytes.saturating_add(node_id.len() as u64);
-        }
-    }
-    bytes
-}
-
-pub(crate) fn retention_active(
-    bucket_retention: &BTreeMap<String, u64>,
-    metadata: &ObjectMetadata,
-    now_ms: u64,
-) -> bool {
-    if metadata.lock.retention_until_ms > now_ms {
-        return true;
-    }
-    bucket_retention
-        .get(metadata.object_id.bucket.as_str())
-        .map_or(false, |retain_for_ms| {
-            *retain_for_ms > 0 && metadata.update_time_ms.saturating_add(*retain_for_ms) > now_ms
-        })
-}
-
 /// The twelve values `metadata_projection_value` formats, held as values.
 ///
 /// The projection is the largest single metadata leg at 355 bytes an object,
@@ -356,19 +277,6 @@ impl RecordValue {
     /// `String::with_capacity` or a `format!` instead and quietly allocate.
     pub fn empty() -> Self {
         RecordValue::Text(Box::from(""))
-    }
-
-    /// The digest of an object's rendered metadata.
-    ///
-    /// `ObjectProjection` is still the renderer -- it is what defines the
-    /// characters, and `the_packed_projection_spells_the_same_text` is what
-    /// keeps that definition honest. It is no longer what gets STORED.
-    pub(crate) fn of_object(metadata: &ObjectMetadata) -> Self {
-        RecordValue::Digest(Self::digest_of_object(metadata))
-    }
-
-    pub(crate) fn digest_of_object(metadata: &ObjectMetadata) -> u64 {
-        fnv1a64(ObjectProjection::from_metadata(metadata).to_text().as_bytes())
     }
 
     /// Which shape the value is, for a durable encoding that must not guess.

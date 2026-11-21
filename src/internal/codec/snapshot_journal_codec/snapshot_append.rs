@@ -45,17 +45,6 @@ pub(crate) fn snapshot_chunk_vec_capacity(total_bytes: u64, max_payload_bytes: u
         .min(SNAPSHOT_CHUNK_VEC_RESERVE_CAP)
 }
 
-pub(crate) fn snapshot_proof_material_capacity(
-    total_bytes: u64,
-    max_payload_bytes: usize,
-    bytes_per_chunk: usize,
-) -> usize {
-    const SNAPSHOT_PROOF_MATERIAL_RESERVE_CAP: usize = 1024 * 1024;
-    snapshot_chunk_vec_capacity(total_bytes, max_payload_bytes)
-        .saturating_mul(bytes_per_chunk)
-        .min(SNAPSHOT_PROOF_MATERIAL_RESERVE_CAP)
-}
-
 pub(crate) fn append_string_set<S: AsRef<str>>(out: &mut Vec<u8>, values: &BTreeSet<S>) {
     append_u64(out, values.len() as u64);
     for value in values {
@@ -379,19 +368,6 @@ pub(crate) fn append_multipart_upload(out: &mut Vec<u8>, upload: &MultipartUploa
     }
 }
 
-pub(crate) fn append_multipart_part(out: &mut Vec<u8>, part: &MultipartPart) {
-    append_u64(out, part.part_number as u64);
-    append_u64(out, part.length);
-    append_string(out, &part.etag);
-    append_u64(out, part.update_time_ms);
-    if let Some(idempotency_key) = &part.idempotency_key {
-        append_u64(out, 1);
-        append_string(out, idempotency_key);
-    } else {
-        append_u64(out, 0);
-    }
-}
-
 pub(crate) fn append_multipart_complete_receipt(
     out: &mut Vec<u8>,
     receipt: &MultipartCompleteReceipt,
@@ -423,14 +399,6 @@ pub(crate) fn append_object_change_record(out: &mut Vec<u8>, change: &ObjectChan
     append_string(out, &change.etag());
     append_u64(out, change.deleted as u64);
     append_u64(out, change.event_time_ms);
-}
-
-pub(crate) fn object_change_record_payload_bytes(change: &ObjectChangeRecord) -> u64 {
-    96_u64
-        .saturating_add(change.operation.len() as u64)
-        .saturating_add(change.object_id.bucket.len() as u64)
-        .saturating_add(change.object_id.key.len() as u64)
-        .saturating_add(change.etag().len() as u64)
 }
 
 pub(crate) fn append_object_change_cursor(out: &mut Vec<u8>, cursor: &ObjectChangeCursor) {

@@ -129,14 +129,6 @@ pub fn parse_raft_voter_csv(voters: &str) -> Result<Vec<String>, ObjectError> {
     canonical_raft_voters(out)
 }
 
-pub(crate) fn non_empty_str(value: &str) -> Option<&str> {
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
-}
-
 pub(crate) fn parse_catalog_endpoint_list(
     endpoints: Option<&str>,
 ) -> Result<Vec<String>, ObjectError> {

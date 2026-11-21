@@ -481,52 +481,6 @@ impl MatrixReplicaService {
         state.ec_fragment_digests = undo.ec_fragment_digests;
     }
 
-    /// The undo an open batch on THIS replica holds, for the footprint audit.
-    ///
-    /// The page service's batch used to carry every replica's pages, and the audit
-    /// read them there. Now the page service gives them up and each replica holds
-    /// its own, so the audit has to come here or it reports no pages held at all
-    /// while a mutation is in flight -- which is the one moment it was added to be
-    /// able to see.
-    pub(crate) fn open_mutation_batch_undo(&self) -> Option<&ReplicaServiceSnapshot> {
-        self.active_mutation_batch
-            .as_ref()?
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.as_ref())
-    }
-
-    /// The pages whose undo is WHAT THE WRITES REPLACED, and what those records
-    /// cost -- the replaced bytes included, since they are real memory.
-    ///
-    /// Reported apart from the pages the undo still HOLDS, because they are
-    /// different quantities: a record is a handful of scalars plus the bytes this
-    /// batch's writes covered, and the page it describes is not duplicated at all.
-    /// Adding them together would read as if the undo still held every page, which
-    /// is exactly what stopped being true.
-    pub(crate) fn open_mutation_batch_write_undo(&self) -> (u64, u64) {
-        let Some(batch) = self.active_mutation_batch.as_ref() else {
-            return (0, 0);
-        };
-        let mut bytes = 0u64;
-        for undo in batch.page_write_undo.values() {
-            bytes = bytes
-                .saturating_add(
-                    (std::mem::size_of::<PageId>() + std::mem::size_of::<PageWriteUndo>()) as u64,
-                )
-                .saturating_add(
-                    (undo.discarded_ranges.capacity() as u64)
-                        .saturating_mul(std::mem::size_of::<DataRange>() as u64),
-                );
-            for (_, bytes_replaced) in &undo.replaced {
-                bytes = bytes
-                    .saturating_add(std::mem::size_of::<(usize, Vec<u8>)>() as u64)
-                    .saturating_add(bytes_replaced.capacity() as u64);
-            }
-        }
-        (batch.page_write_undo.len() as u64, bytes)
-    }
-
     pub fn mutation_batch_status(&self) -> ReplicaMutationBatchStatus {
         let active = self.active_mutation_batch.as_ref();
         ReplicaMutationBatchStatus {

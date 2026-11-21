@@ -39,9 +39,3 @@ impl SharedTextLedger {
         }
     }
 }
-
-pub(crate) fn audit_object_id_heap(ledger: &mut SharedTextLedger, object_id: &ObjectId) -> u64 {
-    ledger
-        .charge(&object_id.bucket)
-        .saturating_add(ledger.charge(&object_id.key))
-}

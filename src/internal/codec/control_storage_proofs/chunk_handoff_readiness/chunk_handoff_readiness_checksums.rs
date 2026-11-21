@@ -122,26 +122,3 @@ pub(crate) fn chunk_local_state_handoff_request_checksum(
     etag(&material)
 }
 
-pub(crate) fn replica_state_handoff_request_checksum(
-    chunk_id: &ChunkId,
-    offset: u64,
-    length: u64,
-    source_replica_index: usize,
-    max_payload_bytes: u64,
-    route_control_proof_checksum: &str,
-) -> String {
-    let mut material = Vec::with_capacity(
-        encoded_string_len("MXOSBLOCK-CHUNK-HANDOFF-REQUEST1")
-            + std::mem::size_of::<u64>() * 6
-            + encoded_string_len(route_control_proof_checksum),
-    );
-    append_string(&mut material, "MXOSBLOCK-CHUNK-HANDOFF-REQUEST1");
-    append_chunk_id(&mut material, chunk_id);
-    append_u64(&mut material, offset);
-    append_u64(&mut material, length);
-    append_u64(&mut material, source_replica_index as u64);
-    append_u64(&mut material, max_payload_bytes);
-    append_string(&mut material, route_control_proof_checksum);
-    etag(&material)
-}
-

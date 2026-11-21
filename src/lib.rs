@@ -41,7 +41,7 @@ pub mod staged_allocation;
 
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -76,9 +76,6 @@ const DEFAULT_CHUNK_READ_CACHE_MAX_CACHEABLE_READ_BYTES: u64 = 4 * 1024 * 1024;
 const PIPELINE_OFFSET_MAX: u64 = i64::MAX as u64;
 const DEFAULT_METADATA_ROUTE_CACHE_ENTRIES: usize = 100_000;
 const DEFAULT_METADATA_ROUTE_CACHE_TTL_MS: u64 = 1000;
-const MAX_METADATA_ROUTE_CACHE_ENTRIES: usize = 10_000_000;
-const MAX_METADATA_ROUTE_CACHE_TTL_MS: u64 = 60 * 60 * 1000;
-const MAX_METADATA_ROUTE_BATCH_KEYS: usize = 4096;
 const DEFAULT_PAGE_READ_PARALLELISM: usize = 64;
 const DEFAULT_PAGE_WRITE_PARALLELISM: usize = 64;
 const DEFAULT_PAGE_BATCH_READ_PARALLELISM: usize = 64;
@@ -93,45 +90,14 @@ const DEFAULT_PAGE_CHUNK_FANOUT_PARALLELISM: usize = 64;
 const DEFAULT_STRIPE_UNIT_BYTES: usize = 64 * 1024;
 const DEFAULT_PRIMARY_BATCH_READ_REPAIR_PROBE_LIMIT: usize = 8;
 const STORAGE_ADMISSION_PROOF_FORMAT: &str = "MXOS-STORAGE-ADMISSION-PROOF2";
-const CACHE_BATCH_PROOF_FORMAT: &str = "MXOS-CACHE-BATCH-PROOF1";
-const METADATA_BATCH_READ_PROOF_FORMAT: &str = "MXOS-METADATA-BATCH-READ-PROOF1";
-const OBJECT_BATCH_READ_PROOF_FORMAT: &str = "MXOS-OBJECT-BATCH-READ-PROOF1";
-const DELETE_BATCH_PROOF_FORMAT: &str = "MXOS-DELETE-BATCH-PROOF1";
-const PUT_BATCH_PROOF_FORMAT: &str = "MXOS-PUT-BATCH-PROOF1";
-const COPY_BATCH_PROOF_FORMAT: &str = "MXOS-COPY-BATCH-PROOF1";
-const MULTIPART_CREATE_PROOF_FORMAT: &str = "MXOS-MULTIPART-CREATE-PROOF1";
-const MULTIPART_PART_PROOF_FORMAT: &str = "MXOS-MULTIPART-PART-PROOF1";
-const MULTIPART_COMPLETE_PROOF_FORMAT: &str = "MXOS-MULTIPART-COMPLETE-PROOF1";
-const MULTIPART_ABORT_PROOF_FORMAT: &str = "MXOS-MULTIPART-ABORT-PROOF1";
-const OBJECT_LIST_PAGE_PROOF_FORMAT: &str = "MXOS-OBJECT-LIST-PAGE-PROOF1";
-const OBJECT_CHANGE_PAGE_PROOF_FORMAT: &str = "MXOS-OBJECT-CHANGE-PAGE-PROOF1";
 const CHUNK_HEAD_BATCH_PROOF_FORMAT: &str = "MXOS-CHUNK-HEAD-BATCH-PROOF1";
 const CHUNK_READ_BATCH_PROOF_FORMAT: &str = "MXOS-CHUNK-READ-BATCH-PROOF1";
-const PAGE_CHUNK_CAPACITY_ALL_ELIGIBLE_TARGET: usize = usize::MAX;
-const PAGE_REPLICA_SERVICE_MODE_ALL_ELIGIBLE_TARGET: usize = usize::MAX;
 const DEFAULT_LOCAL_REPLICA_STORE_PARALLELISM: usize = 8;
 const MAX_STORAGE_PARALLELISM: usize = 4096;
 const DEFAULT_STORAGE_RECEIPT_RETENTION: usize = 100_000;
 const MAX_STORAGE_RECEIPT_RETENTION: usize = 1_000_000;
 const DEFAULT_META_RETENTION_LIMIT: usize = 1_000_000;
 const MAX_META_RETENTION_LIMIT: usize = 10_000_000;
-/// A change feed exists so a consumer can catch up, and the cursor-driven
-/// compaction drops only the prefix every registered consumer has already
-/// passed. With no cursor registered at all there is no such position, so that
-/// compaction declines to drop anything -- which left a store nobody subscribes
-/// to retaining its entire feed for the life of the process.
-///
-/// This bounds that case. It is a constant rather than a setting because the
-/// feed is replicated state covered by the snapshot checksum: a limit that
-/// differed between replicas would diverge them, and a limit carried in the
-/// snapshot would be a durable format change. Derived from already-replicated
-/// state and a constant, every replica trims identically.
-///
-/// A consumer that registers later and asks for a trimmed prefix is told to
-/// resync -- `cursor_compacted`, `resync_required` and `resync_from_sequence`
-/// on the page -- which is the read path's existing contract and what it
-/// answers after any compaction.
-const UNCONSUMED_OBJECT_CHANGE_RETENTION: usize = 1_024;
 
 /// The same bound for the metadata service's own change log.
 ///
@@ -149,21 +115,6 @@ const UNCONSUMED_OBJECT_CHANGE_RETENTION: usize = 1_024;
 /// durable format change.
 const UNCHECKPOINTED_METADATA_CHANGE_RETENTION: usize = 1_024;
 
-/// How many distinct content types share one allocation each.
-///
-/// Every object carried its own copy of its content type, so a store holding a
-/// million objects of one type held a million copies of the same string. The
-/// set is open -- a content type is whatever the client sent -- so this needs a
-/// bound that the four storage classes do not: a pool entry outlives the object
-/// that introduced it, and a client writing and deleting a million objects with
-/// distinct types would otherwise leave a million entries behind.
-///
-/// Past the bound an object owns its own string, which is exactly what every
-/// object did before, so the behaviour degrades to the previous one rather than
-/// failing. A constant rather than a setting for the same reason as the two
-/// bounds above: it is derived from replicated state, and a limit that differed
-/// between replicas would make their footprints differ for no stated reason.
-const MAX_SHARED_CONTENT_TYPES: usize = 256;
 const DEFAULT_META_MAX_BATCH_MUTATIONS: usize = 10_000;
 const DEFAULT_META_MAX_BATCH_VALUE_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_META_MAX_OPEN_TRANSACTIONS: usize = 1_000_000;
@@ -178,7 +129,6 @@ const DEFAULT_PAGE_ROUTE_QOS_WINDOW_MS: u64 = 1000;
 const MAX_PAGE_ROUTE_QOS_WINDOW_MS: u64 = 60 * 60 * 1000;
 const DEFAULT_CHUNK_MUTATION_QOS_WINDOW_MS: u64 = 1000;
 const MAX_CHUNK_MUTATION_QOS_WINDOW_MS: u64 = 60 * 60 * 1000;
-const MAX_BUCKET_LIST_LIMIT: usize = 100_000;
 const DEFAULT_CORS_ALLOWED_METHODS: [&str; 6] = ["GET", "HEAD", "PUT", "POST", "DELETE", "OPTIONS"];
 const MAX_BUCKET_POLICY_DOCUMENT_BYTES: usize = 1024 * 1024;
 const MAX_OBJECT_METADATA_ENTRIES: usize = 128;
@@ -278,10 +228,9 @@ pub use root_protocol::*;
 mod replica_service;
 pub use replica_service::*;
 use replica_service::{
-    select_bounded_chunk_discard_ranges_from, select_bounded_chunk_write_ranges_from,
     trim_btree_map_to_retention, trim_deque_front_to_retention, validate_chunk_mutation_qos_config,
     validate_meta_retention_limit, validate_metadata_admission_policy,
-    validate_metadata_qos_config, validate_metadata_route_cache_config,
+    validate_metadata_qos_config,
     validate_page_route_qos_config, validate_storage_receipt_retention,
     verify_storage_receipt_page_invariants,
 };
@@ -289,10 +238,7 @@ use replica_service::{
 #[path = "services/page.rs"]
 mod chunk_service;
 pub use chunk_service::*;
-use chunk_service::{
-    default_chunk_endpoints, select_admitted_page_discard_requests,
-    validate_page_chunk_endpoint_topology,
-};
+use chunk_service::{default_chunk_endpoints, validate_page_chunk_endpoint_topology};
 
 #[path = "protocol/storage.rs"]
 mod storage_protocol;

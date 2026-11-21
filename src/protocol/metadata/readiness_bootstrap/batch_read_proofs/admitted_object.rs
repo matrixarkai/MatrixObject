@@ -86,15 +86,6 @@ pub(crate) fn admitted_object_batch_read_proof_checksum(
     etag(&material)
 }
 
-pub(crate) fn stamp_admitted_object_batch_read_proof(
-    operation: &str,
-    report: &mut AdmittedObjectBatchReadReport,
-) {
-    report.storage_admission_proof_format = STORAGE_ADMISSION_PROOF_FORMAT.to_string();
-    report.storage_admission_proof_checksum =
-        admitted_object_batch_read_proof_checksum(operation, report);
-}
-
 pub(crate) fn check_expected_admitted_object_batch_read_proof_checksum(
     operation: &str,
     report: &AdmittedObjectBatchReadReport,

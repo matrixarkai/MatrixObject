@@ -263,11 +263,6 @@ impl MatrixReplicaService {
             .insert(page_id.clone(), (chunk.write_sequence, chunk.checksum(), hashes));
     }
 
-    #[cfg(test)]
-    pub(crate) fn page_validation_for_test(&self, page_id: &PageId) -> Option<(u64, String, Vec<u64>)> {
-        self.page_validation.borrow().get(page_id).cloned()
-    }
-
     fn can_insert_read_cache_payload(&self, bytes: u64) -> bool {
         let max_bytes = self.max_read_cache_bytes.get();
         let max_cacheable = self.max_cacheable_read_bytes.get();

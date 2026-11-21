@@ -24,11 +24,6 @@ pub struct ObjectLockState {
 pub struct ObjectLock(Option<Box<ObjectLockState>>);
 
 impl ObjectLock {
-    /// Whether the state behind the pointer has been allocated. The audit needs
-    /// this: an object under none of the three owes nothing for them.
-    pub(crate) fn is_allocated(&self) -> bool {
-        self.0.is_some()
-    }
 }
 
 impl std::ops::Deref for ObjectLock {

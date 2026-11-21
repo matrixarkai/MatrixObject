@@ -8,7 +8,6 @@ pub struct EmbeddedControlPlaneBootstrap {
     pub metadata_control_proof: MetadataControlProof,
 }
 
-pub(crate) const EMBEDDED_PLACEMENT_CATALOG_ENDPOINT: &str = "embedded-root-catalog";
 pub(crate) const EMBEDDED_METASERVER_CATALOG_ENDPOINT: &str = "embedded-metaserver-catalog";
 pub(crate) const CATALOG_ROUTE_CHECKSUM_FORMAT: &str = "MOSRS-ROOT-CATALOG-ROUTE1";
 
@@ -38,7 +37,6 @@ pub(crate) const CATALOG_PAGE_ROUTE_DISCRIMINATOR: &str = "page-route";
 pub(crate) const CATALOG_CHUNK_ROUTE_DISCRIMINATOR: &str = "chunk-route";
 pub(crate) const CATALOG_OBJECTSTORE_ROUTE_DISCRIMINATOR: &str = "objectstore-route";
 pub(crate) const CATALOG_LIVENESS_RECEIPT_FORMAT: &str = "MXOSROOT-CATALOG-LIVENESS-RECEIPT1";
-pub(crate) const MODULE_CATALOG_ROUTE_CHECKSUM_FORMAT: &str = "MOSRS-MODULE-CATALOG-ROUTE1";
 pub(crate) const CONTROL_PLANE_CATALOG_SELECTION_CHECKSUM_FORMAT: &str =
     "MOSRS-CONTROL-PLANE-CATALOG-SELECTION1";
 pub(crate) const CONTROL_PLANE_CATALOG_ENDPOINT_SET_CHECKSUM_FORMAT: &str =
