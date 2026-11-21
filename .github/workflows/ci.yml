@@ -97,7 +97,7 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --lib \
-            tests::every_durable_format_constant_is_accounted_for -- --exact \
+            repo_guard_tests::every_durable_format_constant_is_accounted_for -- --exact \
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
