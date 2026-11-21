@@ -443,6 +443,21 @@ impl RemoteMetaClient {
             other => Err(unexpected_reply("a chunk manifest", &other)),
         }
     }
+    /// The chunk manifest of `bucket/key` from the committed state (a read barrier, not a stale copy).
+    /// An object that was never published is `NotFound`; a deleted one answers with its tombstone.
+    pub fn read_chunk_manifest(&mut self, bucket: &str, key: &str) -> Result<crate::chunk_manifest::ChunkManifest, ObjectError> {
+        match self.call(MetaRequest::ReadChunkManifest { bucket: bucket.to_string(), key: key.to_string() })? {
+            MetaReply::ChunkManifest(manifest) => Ok(manifest),
+            other => Err(unexpected_reply("a chunk manifest", &other)),
+        }
+    }
+    /// One page of the chunk manifest catalog, in the shape `list_manifests` answers with.
+    pub fn list_chunk_manifests(&mut self, request: crate::object_manifest::ManifestListRequest) -> Result<crate::object_manifest::ManifestListPage, ObjectError> {
+        match self.call(MetaRequest::ListChunkManifests(request))? {
+            MetaReply::Manifests(page) => Ok(page),
+            other => Err(unexpected_reply("a chunk manifest page", &other)),
+        }
+    }
     fn log_chunk_call(&mut self, request: super::LogChunkRequest) -> Result<super::LogChunkReply, ObjectError> {
         match self.call(MetaRequest::LogChunk(request))? {
             MetaReply::LogChunk(reply) => Ok(reply),
@@ -2238,6 +2253,8 @@ impl RemoteMetaClient {
                 | MetaRequest::ReadChunkRoutesWide { .. }
                 | MetaRequest::ListChunkRoutes { .. }
                 | MetaRequest::ListManifests(_)
+                | MetaRequest::ReadChunkManifest { .. }
+                | MetaRequest::ListChunkManifests(_)
         ) || matches!(&request, MetaRequest::Membership(command) if command.is_read())
           || matches!(&request, MetaRequest::ManifestRetention(command) if command.is_read())
           || matches!(&request, MetaRequest::StagedAllocation(command) if command.is_read());

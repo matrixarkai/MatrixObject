@@ -1510,6 +1510,22 @@ pub(super) fn apply_to_meta(
         MetaRequest::PublishManifest { .. } => Err(ObjectError::InvalidArgument(
             "publication requires a chunk catalog".into(),
         )),
+        MetaRequest::ReadChunkManifest { bucket, key } => {
+            crate::validate_bucket(&bucket)?;
+            crate::validate_key(&key)?;
+            let manifest = guard
+                .chunk_catalog
+                .get(&crate::ObjectId::new(bucket.clone(), key.clone()))
+                .ok_or_else(|| ObjectError::NotFound(format!("chunk manifest {bucket}/{key} is not in the catalog")))?;
+            let reply = MetaReply::ChunkManifest(manifest.as_ref().clone());
+            crate::cluster::message::check_reply_size(reply.payload_len(), max_payload_bytes)?;
+            Ok(reply)
+        }
+        MetaRequest::ListChunkManifests(request) => {
+            let reply = MetaReply::Manifests(guard.chunk_catalog.list_page(&request)?);
+            crate::cluster::message::check_reply_size(reply.payload_len(), max_payload_bytes)?;
+            Ok(reply)
+        }
         MetaRequest::ListManifests(request) => {
             let reply = MetaReply::Manifests(guard.object_manifests.list_page(&request)?);
             crate::cluster::message::check_reply_size(reply.payload_len(), max_payload_bytes)?;

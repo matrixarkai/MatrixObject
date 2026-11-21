@@ -805,6 +805,8 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::ReadChunkRoutesWide { .. }
         | MetaRequest::ListChunkRoutes { .. }
         | MetaRequest::ListManifests(_)
+        | MetaRequest::ReadChunkManifest { .. }
+        | MetaRequest::ListChunkManifests(_)
         | MetaRequest::PlanObjectPlacement { .. }
         | MetaRequest::PlanObjectPlacementRoutes { .. }
         | MetaRequest::PlanObjectWriteRoutes { .. }
@@ -3760,6 +3762,7 @@ mod tests {
     include!("log_chunk_pipeline_tests.rs");
     include!("log_chunk_cost_probes.rs");
     include!("chunk_manifest_batch_tests.rs");
+    include!("chunk_manifest_read_tests.rs");
 
     #[test]
     fn compact_read_session_batches_restore_shared_records_before_committing_removal_and_creation()

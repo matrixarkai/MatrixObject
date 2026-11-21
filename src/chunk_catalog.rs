@@ -244,6 +244,44 @@ impl ChunkCatalog {
         self.revision = revision;
     }
 
+    /// One page of the catalog, in the shape the object listing already answers with: the objects of
+    /// one bucket after a key, or (cursor version 3) of every bucket after a bucket and key. The
+    /// revision stands in for a listing that must not straddle a change.
+    pub fn list_page(&self, request: &crate::object_manifest::ManifestListRequest) -> Result<crate::object_manifest::ManifestListPage, ObjectError> {
+        use crate::object_manifest::{ManifestListPage, ManifestSummary};
+        request.validate()?;
+        let revision = u128::from(self.revision).to_be_bytes();
+        if request.version >= 2 && !request.expected_revision.is_empty() && request.expected_revision != revision {
+            return Err(ObjectError::PreconditionFailed("chunk catalog changed during listing".into()));
+        }
+        let start = ObjectId::new(
+            if request.version == 3 { request.after_bucket.clone() } else { request.bucket.clone() },
+            request.after.clone(),
+        );
+        let mut values = self
+            .objects
+            .range((std::ops::Bound::Excluded(start), std::ops::Bound::Unbounded))
+            .take_while(|(id, _)| request.version == 3 || id.bucket.as_str() == request.bucket);
+        let entries = values
+            .by_ref()
+            .take(request.limit as usize)
+            .map(|(_, manifest)| ManifestSummary {
+                key: manifest.key.clone(),
+                generation: manifest.generation,
+                length: manifest.length,
+                deleted: manifest.deleted,
+                bucket: if request.version == 3 { manifest.bucket.clone() } else { String::new() },
+            })
+            .collect();
+        Ok(ManifestListPage {
+            version: request.version,
+            bucket: request.bucket.clone(),
+            entries,
+            has_more: values.next().is_some(),
+            revision: if request.version >= 2 { revision.to_vec() } else { Vec::new() },
+        })
+    }
+
     /// The image a snapshot carries.
     pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
         let image = ChunkCatalogImage {
