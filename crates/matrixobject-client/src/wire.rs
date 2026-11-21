@@ -121,6 +121,7 @@ impl fmt::Display for AttemptId {
 
 /// What the door's answer to an append PUT means to the caller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum AppendStatus {
     /// The append landed (200, 201 or 204) and the reply names the object's length.
     Appended,
