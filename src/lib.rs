@@ -14,6 +14,7 @@ pub mod durable_payload;
 pub(crate) mod extent_list;
 pub mod chunk_integrity;
 pub mod chunk_object;
+pub mod chunk_reclaim;
 pub mod cluster_features;
 pub mod log_chunk_outcome;
 #[cfg(test)]

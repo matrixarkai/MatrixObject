@@ -3389,6 +3389,54 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus a_chunk_object_round_trips_through_a_star_quorum_and_a_wrong_digest_fails_its_read -- --exact | tee /tmp/chunk-object-star.log
           grep -q '^running 1 test$' /tmp/chunk-object-star.log
           grep -q '^test result: ok. 1 passed' /tmp/chunk-object-star.log
+      - name: the live pages are the data pages and the digest page of every live extent
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_reclaim::tests::the_live_pages_are_the_data_pages_and_the_digest_page_of_every_live_extent -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-reclaim.log
+          grep -q '^running 1 test$' /tmp/chunk-reclaim.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-reclaim.log
+      - name: a deleted chunk object's pages are freed after the grace and a live one's are not
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_reclaim::tests::a_deleted_objects_pages_are_freed_after_the_grace_and_a_live_objects_are_not -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-reclaim.log
+          grep -q '^running 1 test$' /tmp/chunk-reclaim.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-reclaim.log
+      - name: an overwrite frees the old generation and keeps the new one
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_reclaim::tests::an_overwrite_frees_the_old_generation_and_keeps_the_new_one -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-reclaim.log
+          grep -q '^running 1 test$' /tmp/chunk-reclaim.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-reclaim.log
+      - name: pages of a writer that never published are freed only after the grace
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_reclaim::tests::pages_of_a_writer_that_never_published_are_freed_but_only_after_the_grace -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-reclaim.log
+          grep -q '^running 1 test$' /tmp/chunk-reclaim.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-reclaim.log
+      - name: a manifest published between two scans keeps its pages
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_reclaim::tests::a_manifest_published_between_two_scans_keeps_its_pages -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-reclaim.log
+          grep -q '^running 1 test$' /tmp/chunk-reclaim.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-reclaim.log
+      - name: the last check keeps pages published after the due list was made
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_reclaim::tests::the_last_check_keeps_pages_published_after_the_due_list_was_made -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-reclaim.log
+          grep -q '^running 1 test$' /tmp/chunk-reclaim.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-reclaim.log
+      - name: a restart forgets the sightings and starts every clock again
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_reclaim::tests::a_restart_forgets_the_sightings_and_starts_every_clock_again -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-reclaim.log
+          grep -q '^running 1 test$' /tmp/chunk-reclaim.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-reclaim.log
+      - name: a swept page is never a candidate and a clock cannot run backwards
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib chunk_reclaim::tests::a_page_already_swept_or_rewritten_is_never_a_candidate_and_a_clock_cannot_run_backwards -- --exact --test-threads=1 2>&1 | tee /tmp/chunk-reclaim.log
+          grep -q '^running 1 test$' /tmp/chunk-reclaim.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-reclaim.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail

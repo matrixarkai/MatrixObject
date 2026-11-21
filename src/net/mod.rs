@@ -37,6 +37,8 @@ pub mod service;
 
 #[cfg(all(feature = "http-server", feature = "replica-server", feature = "meta-server"))]
 pub mod cluster_gateway;
+#[cfg(all(feature = "http-server", feature = "replica-server", feature = "meta-server"))]
+pub mod chunk_plane;
 #[cfg(all(feature = "http-server", feature = "meta-server"))]
 pub mod gateway_door;
 
