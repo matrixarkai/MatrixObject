@@ -15,7 +15,7 @@ fn configured() -> BucketConfig {
         max_age_seconds: 600,
     });
     config.policy = "{\"Version\":\"2012-10-17\"}".into();
-    config.lifecycle.push(LifecycleRule { id: "old".into(), prefix: "logs/".into(), enabled: true, expiration_days: 30, abort_multipart_days: 7, noncurrent_expiration_days: 0 });
+    config.lifecycle.push(LifecycleRule { id: "old".into(), prefix: "logs/".into(), enabled: true, expiration_days: 30, abort_multipart_days: 7, noncurrent_expiration_days: 0, ..Default::default() });
     config.quota_bytes = 1 << 30;
     config.object_lock_enabled = true;
     config.default_retention = Some(DefaultRetention { mode: RETENTION_GOVERNANCE, days: 5 });
@@ -107,3 +107,34 @@ fn an_allowed_origin_matches_with_one_wildcard() {
     // the head and tail may not overlap
     assert!(!origin_matches("ab*bc", "abc"));
 }
+
+#[test]
+fn a_lifecycle_rule_keeps_its_filters_counts_and_transition_through_its_document() {
+    let rules = vec![
+        LifecycleRule {
+            id: "full".into(),
+            prefix: "logs/".into(),
+            enabled: true,
+            expiration_days: 90,
+            noncurrent_expiration_days: 7,
+            abort_multipart_days: 3,
+            tag_key: "env".into(),
+            tag_value: "tmp".into(),
+            noncurrent_versions_to_keep: 2,
+            expire_delete_markers: true,
+            transition_days: 30,
+            transition_storage_class: "GLACIER".into(),
+        },
+        LifecycleRule { id: "tag-only".into(), enabled: false, expiration_days: 1, tag_key: "a".into(), tag_value: "b".into(), ..Default::default() },
+    ];
+    let document = lifecycle_xml(&rules);
+    assert_eq!(parse_lifecycle(&document).unwrap(), rules, "{document}");
+    // two `Days` in one rule are read inside their own elements
+    let both = "<LifecycleConfiguration><Rule><Status>Enabled</Status><Expiration><Days>5</Days></Expiration><Transition><Days>2</Days><StorageClass>X</StorageClass></Transition></Rule></LifecycleConfiguration>";
+    let parsed = parse_lifecycle(both).unwrap();
+    assert_eq!((parsed[0].expiration_days, parsed[0].transition_days), (5, 2));
+    // a transition names its days and its class together
+    let half = "<LifecycleConfiguration><Rule><Status>Enabled</Status><Transition><Days>2</Days></Transition></Rule></LifecycleConfiguration>";
+    assert!(parse_lifecycle(half).is_err());
+}
+

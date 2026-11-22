@@ -707,6 +707,9 @@ impl ClusterGateway {
         if method == "POST" && request.query_param("delete").is_some() {
             return self.delete_objects(request, bucket);
         }
+        if method == "DELETE" && request.query_param("delete-prefix").is_some() {
+            return self.delete_prefix(request, bucket);
+        }
         if request.query_param("changes").is_some() && matches!(method, "GET" | "DELETE") {
             return self.change_feed_request(request, bucket);
         }
@@ -796,7 +799,7 @@ impl ClusterGateway {
                 }
             }
         }
-        for sub in ["tagging", "retention", "legal-hold"] {
+        for sub in ["tagging", "retention", "legal-hold", "restore"] {
             if request.query_param(sub).is_some() {
                 return self
                     .object_attribute_request(request, bucket, key, sub)
@@ -807,7 +810,7 @@ impl ClusterGateway {
             return self.version_request(request, bucket, key, &version);
         }
         for sub in [
-            "acl", "restore", "select",
+            "acl", "select",
         ] {
             if request.query_param(sub).is_some() {
                 return not_implemented(&format!("the object sub-resource ?{sub}"), &resource);
@@ -2990,7 +2993,8 @@ mod tests {
         assert_eq!(missing.status, 404);
         assert!(text(&missing).contains("/b/absent"), "the missing thing is the source: {}", text(&missing));
         assert_eq!(copy("/b/dst", &[]).status, 400, "onto itself");
-        assert_eq!(copy("/b/src?versionId=3", &[]).status, 400, "a version is not served");
+        assert_eq!(copy("/b/src?versionId=3", &[]).status, 404, "a version that does not exist is not copied");
+        assert_eq!(copy("/b/src?versionId=x", &[]).status, 400, "a version id is a number");
         assert_eq!(copy("/b", &[]).status, 400, "no key");
         assert_eq!(copy("/b/.multipart/x/meta", &[]).status, 400, "reserved");
         assert_eq!(copy("/b/src", &[("x-amz-copy-source-if-match", "\"gen-999\"")]).status, 412);
@@ -3771,6 +3775,175 @@ mod tests {
         let body = format!("<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{etag}</ETag></Part></CompleteMultipartUpload>");
         assert_eq!(gateway.handle(&request("POST", &format!("/vault/k?uploadId={id}"), &[], body.as_bytes())).status, 403);
         assert_eq!(gateway.handle(&request("GET", "/vault/k", &[], &[])).body, b"held");
+    }
+
+
+    #[test]
+    fn a_kept_version_carries_its_own_tags_and_retention_and_is_read_by_range() {
+        let (gateway, _) = gateway_requiring_buckets();
+        bucket_with(&gateway, "vh", &[("versioning", VERSIONED), ("object-lock", LOCKED_BUCKET)]);
+        let v1 = header_of(&gateway.handle(&request("PUT", "/vh/k", &[], b"0123456789")), "x-amz-version-id").unwrap();
+        let v2 = header_of(&gateway.handle(&request("PUT", "/vh/k", &[], b"abcdefghij")), "x-amz-version-id").unwrap();
+        // a tag set on a kept version is that version's, and the current one is untouched
+        let tags = "<Tagging><TagSet><Tag><Key>era</Key><Value>old</Value></Tag></TagSet></Tagging>";
+        assert_eq!(gateway.handle(&request("PUT", &format!("/vh/k?tagging&versionId={v1}"), &[], tags.as_bytes())).status, 200);
+        assert!(text(&gateway.handle(&request("GET", &format!("/vh/k?tagging&versionId={v1}"), &[], &[]))).contains("<Key>era</Key>"));
+        assert!(!text(&gateway.handle(&request("GET", &format!("/vh/k?tagging&versionId={v2}"), &[], &[]))).contains("<Key>era</Key>"));
+        assert!(!text(&gateway.handle(&request("GET", "/vh/k?tagging", &[], &[]))).contains("<Key>era</Key>"), "the current version was not changed");
+        assert_eq!(gateway.handle(&request("GET", "/vh/k?tagging&versionId=999", &[], &[])).status, 404);
+        // a retention on a kept version protects that version
+        let governance = "<Retention><Mode>GOVERNANCE</Mode><RetainUntilDate>2099-01-01T00:00:00Z</RetainUntilDate></Retention>";
+        assert_eq!(gateway.handle(&request("PUT", &format!("/vh/k?retention&versionId={v1}"), &[], governance.as_bytes())).status, 200);
+        assert!(text(&gateway.handle(&request("GET", &format!("/vh/k?retention&versionId={v1}"), &[], &[]))).contains("GOVERNANCE"));
+        assert_eq!(gateway.handle(&request("GET", "/vh/k?retention", &[], &[])).status, 404, "the current version has no retention");
+        // a version is read by range, with the answer a range read of an object gives
+        let part = gateway.handle(&request("GET", &format!("/vh/k?versionId={v1}"), &[("range", "bytes=2-4")], &[]));
+        assert_eq!((part.status, part.body.as_slice()), (206, b"234".as_slice()));
+        assert_eq!(header_of(&part, "content-range").as_deref(), Some("bytes 2-4/10"));
+        let suffix = gateway.handle(&request("GET", &format!("/vh/k?versionId={v1}"), &[("range", "bytes=-3")], &[]));
+        assert_eq!(suffix.body, b"789");
+        assert_eq!(gateway.handle(&request("GET", &format!("/vh/k?versionId={v1}"), &[("range", "bytes=50-60")], &[])).status, 416);
+        // and the locked version is not deleted without the bypass
+        assert_eq!(gateway.handle(&request("DELETE", &format!("/vh/k?versionId={v1}"), &[], &[])).status, 403);
+        assert_eq!(gateway.handle(&request("DELETE", &format!("/vh/k?versionId={v1}"), &[("x-amz-bypass-governance-retention", "true")], &[])).status, 204);
+        assert_eq!(gateway.handle(&request("GET", &format!("/vh/k?versionId={v1}"), &[], &[])).status, 404);
+    }
+
+
+    #[test]
+    fn lifecycle_rules_filter_by_tag_keep_versions_transition_objects_and_remove_empty_markers() {
+        let (gateway, _) = gateway_requiring_buckets();
+        let rules = "<LifecycleConfiguration>\
+            <Rule><ID>tagged</ID><Filter><Tag><Key>team</Key><Value>x</Value></Tag></Filter><Status>Enabled</Status><Expiration><Days>1</Days></Expiration></Rule>\
+            <Rule><ID>cold</ID><Filter><Prefix>arch/</Prefix></Filter><Status>Enabled</Status><Transition><Days>1</Days><StorageClass>STANDARD_IA</StorageClass></Transition></Rule>\
+            <Rule><ID>keep</ID><Filter><Prefix>ver/</Prefix></Filter><Status>Enabled</Status><NoncurrentVersionExpiration><NewerNoncurrentVersions>2</NewerNoncurrentVersions></NoncurrentVersionExpiration></Rule>\
+            <Rule><ID>markers</ID><Filter><Prefix>mk/</Prefix></Filter><Status>Enabled</Status><Expiration><ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker></Expiration></Rule>\
+            </LifecycleConfiguration>";
+        bucket_with(&gateway, "ops", &[("versioning", VERSIONED), ("lifecycle", rules)]);
+        // the configuration reads back with its filters, counts and transition
+        let read = text(&gateway.handle(&request("GET", "/ops?lifecycle", &[], &[])));
+        for needle in ["<Tag><Key>team</Key><Value>x</Value></Tag>", "<NewerNoncurrentVersions>2</NewerNoncurrentVersions>", "<StorageClass>STANDARD_IA</StorageClass>", "<ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker>"] {
+            assert!(read.contains(needle), "{needle} in {read}");
+        }
+        // a tag filter: only the tagged object expires
+        assert_eq!(gateway.handle(&request("PUT", "/ops/t1", &[("x-amz-tagging", "team=x")], b"1")).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/ops/t2", &[("x-amz-tagging", "team=y")], b"2")).status, 200);
+        // a transition: the class changes and the bytes do not
+        assert_eq!(gateway.handle(&request("PUT", "/ops/arch/a", &[], b"archive me")).status, 200);
+        // keep the 2 newest of the non-current versions
+        for body in ["a", "b", "c", "d", "e"] {
+            assert_eq!(gateway.handle(&request("PUT", "/ops/ver/k", &[], body.as_bytes())).status, 200);
+        }
+        // a delete marker left over nothing: write, delete, write again (the marker is kept), delete the first version
+        let first = header_of(&gateway.handle(&request("PUT", "/ops/mk/m", &[], b"one")), "x-amz-version-id").unwrap();
+        assert_eq!(gateway.handle(&request("DELETE", "/ops/mk/m", &[], &[])).status, 204);
+        assert_eq!(gateway.handle(&request("PUT", "/ops/mk/m", &[], b"two")).status, 200);
+        assert_eq!(gateway.handle(&request("DELETE", &format!("/ops/mk/m?versionId={first}"), &[], &[])).status, 204);
+        let report = gateway.run_lifecycle(now_ms() + 2 * 86_400_000).unwrap();
+        assert_eq!(report.expired, 1, "{report:?}");
+        assert_eq!(gateway.handle(&request("GET", "/ops/t1", &[], &[])).status, 404, "the tagged object expired");
+        assert_eq!(gateway.handle(&request("GET", "/ops/t2", &[], &[])).body, b"2", "the other tag did not");
+        assert_eq!(report.transitioned, 1, "{report:?}");
+        let head = gateway.handle(&request("HEAD", "/ops/arch/a", &[], &[]));
+        assert_eq!(header_of(&head, "x-amz-storage-class").as_deref(), Some("STANDARD_IA"));
+        assert_eq!(gateway.handle(&request("GET", "/ops/arch/a", &[], &[])).body, b"archive me");
+        assert_eq!(report.expired_versions, 2, "5 writes keep 4 versions, the 2 newest stay: {report:?}");
+        let versions = text(&gateway.handle(&request("GET", "/ops?versions&prefix=ver/", &[], &[])));
+        assert_eq!(all_between(&versions, "VersionId").len(), 3, "the current version and two kept: {versions}");
+        assert_eq!(report.expired_markers, 1, "{report:?}");
+        // a second pass finds nothing more to do
+        let again = gateway.run_lifecycle(now_ms() + 2 * 86_400_000).unwrap();
+        assert_eq!((again.transitioned, again.expired_versions, again.expired_markers), (0, 0, 0), "{again:?}");
+    }
+
+    #[test]
+    fn an_object_in_a_colder_class_is_restored_for_a_window_and_a_version_is_copied_back() {
+        let (gateway, _) = gateway_requiring_buckets();
+        bucket_with(&gateway, "cold", &[("versioning", VERSIONED)]);
+        let put = gateway.handle(&request("PUT", "/cold/deep", &[("x-amz-storage-class", "GLACIER")], b"frozen"));
+        assert_eq!(put.status, 200, "{}", text(&put));
+        assert_eq!(header_of(&gateway.handle(&request("HEAD", "/cold/deep", &[], &[])), "x-amz-storage-class").as_deref(), Some("GLACIER"));
+        assert!(header_of(&gateway.handle(&request("HEAD", "/cold/deep", &[], &[])), "x-amz-restore").is_none());
+        let restore = gateway.handle(&request("POST", "/cold/deep?restore", &[], b"<RestoreRequest><Days>2</Days></RestoreRequest>"));
+        assert_eq!(restore.status, 202, "{}", text(&restore));
+        let restored = header_of(&gateway.handle(&request("HEAD", "/cold/deep", &[], &[])), "x-amz-restore").expect("a restore window");
+        assert!(restored.contains("ongoing-request=\"false\"") && restored.contains("expiry-date"), "{restored}");
+        assert_eq!(gateway.handle(&request("GET", "/cold/deep", &[], &[])).body, b"frozen");
+        // an object in the standard class has nothing to restore, and a bad request is refused
+        assert_eq!(gateway.handle(&request("PUT", "/cold/plain", &[], b"x")).status, 200);
+        let standard = gateway.handle(&request("POST", "/cold/plain?restore", &[], b"<RestoreRequest><Days>2</Days></RestoreRequest>"));
+        assert_eq!(standard.status, 403);
+        assert!(text(&standard).contains("InvalidObjectState"), "{}", text(&standard));
+        assert_eq!(gateway.handle(&request("POST", "/cold/deep?restore", &[], b"<RestoreRequest/>")).status, 400);
+        assert_eq!(gateway.handle(&request("PUT", "/cold/bad", &[("x-amz-storage-class", "cold storage")], b"x")).status, 400);
+
+        // a version is brought back by copying it onto its own key, and the version it replaces is kept
+        let v1 = header_of(&gateway.handle(&request("PUT", "/cold/doc", &[("content-type", "text/plain")], b"one")), "x-amz-version-id").unwrap();
+        assert_eq!(gateway.handle(&request("PUT", "/cold/doc", &[], b"two")).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/cold/doc", &[("x-amz-copy-source", "/cold/doc")], &[])).status, 400, "a copy onto itself is refused");
+        let back = gateway.handle(&request("PUT", "/cold/doc", &[("x-amz-copy-source", &format!("/cold/doc?versionId={v1}"))], &[]));
+        assert_eq!(back.status, 200, "{}", text(&back));
+        assert_eq!(gateway.handle(&request("GET", "/cold/doc", &[], &[])).body, b"one");
+        assert_eq!(header_of(&gateway.handle(&request("HEAD", "/cold/doc", &[], &[])), "content-type").as_deref(), Some("text/plain"));
+        let versions = text(&gateway.handle(&request("GET", "/cold?versions&prefix=doc", &[], &[])));
+        assert_eq!(all_between(&versions, "VersionId").len(), 3, "the copy over the key kept 'two': {versions}");
+        // a version that does not exist is not copied
+        assert_eq!(gateway.handle(&request("PUT", "/cold/other", &[("x-amz-copy-source", "/cold/doc?versionId=999")], &[])).status, 404);
+    }
+
+
+    #[test]
+    fn versions_are_listed_in_pages_and_a_prefix_is_deleted_in_batches() {
+        let (gateway, _) = gateway_requiring_buckets();
+        bucket_with(&gateway, "pg", &[("versioning", VERSIONED), ("object-lock", LOCKED_BUCKET)]);
+        for key in ["a", "b"] {
+            for body in ["1", "2", "3"] {
+                assert_eq!(gateway.handle(&request("PUT", &format!("/pg/{key}"), &[], body.as_bytes())).status, 200);
+            }
+        }
+        // six versions in pages of four, resumed inside a key by the version marker
+        let mut seen: Vec<(String, String)> = Vec::new();
+        let (mut key_marker, mut version_marker) = (String::new(), String::new());
+        for _ in 0..4 {
+            let mut target = "/pg?versions&max-keys=4".to_string();
+            if !key_marker.is_empty() {
+                target.push_str(&format!("&key-marker={key_marker}&version-id-marker={version_marker}"));
+            }
+            let page = text(&gateway.handle(&request("GET", &target, &[], &[])));
+            let keys = all_between(&page, "Key");
+            let versions = all_between(&page, "VersionId");
+            seen.extend(keys.into_iter().zip(versions));
+            match (between(&page, "NextKeyMarker"), between(&page, "NextVersionIdMarker")) {
+                (Some(key), Some(version)) => {
+                    key_marker = key;
+                    version_marker = version;
+                }
+                _ => break,
+            }
+        }
+        assert_eq!(seen.len(), 6, "{seen:?}");
+        let unique: std::collections::BTreeSet<_> = seen.iter().cloned().collect();
+        assert_eq!(unique.len(), 6, "no version repeats or is lost across pages: {seen:?}");
+        // newest first within a key, keys in order
+        assert!(seen.windows(2).all(|pair| pair[0].0 < pair[1].0 || (pair[0].0 == pair[1].0 && pair[0].1.parse::<u64>().unwrap() > pair[1].1.parse::<u64>().unwrap())), "{seen:?}");
+
+        // a prefix is deleted in batches; a locked object is refused and counted
+        bucket_with(&gateway, "bulk", &[("object-lock", LOCKED_BUCKET)]);
+        for index in 0..5 {
+            assert_eq!(gateway.handle(&request("PUT", &format!("/bulk/old/{index}"), &[], b"x")).status, 200);
+        }
+        assert_eq!(gateway.handle(&request("PUT", "/bulk/keep/0", &[], b"x")).status, 200);
+        let held = [("x-amz-object-lock-mode", "COMPLIANCE"), ("x-amz-object-lock-retain-until-date", "2099-01-01T00:00:00Z")];
+        assert_eq!(gateway.handle(&request("PUT", "/bulk/old/held", &held, b"x")).status, 200);
+        let empty = gateway.handle(&request("DELETE", "/bulk?delete-prefix=", &[], &[]));
+        assert_eq!(empty.status, 400, "an empty prefix is refused");
+        let first = text(&gateway.handle(&request("DELETE", "/bulk?delete-prefix=old/&limit=3", &[], &[])));
+        assert!(first.contains("<Deleted>3</Deleted>") && first.contains("<IsTruncated>true</IsTruncated>"), "{first}");
+        let next = between(&first, "NextMarker").expect("a marker to resume after");
+        let second = text(&gateway.handle(&request("DELETE", &format!("/bulk?delete-prefix=old/&limit=10&marker={next}"), &[], &[])));
+        assert!(second.contains("<Refused>1</Refused>") && second.contains("<IsTruncated>false</IsTruncated>"), "{second}");
+        let left = text(&gateway.handle(&request("GET", "/bulk?list-type=2", &[], &[])));
+        assert_eq!(all_between(&left, "Key"), ["keep/0", "old/held"], "{left}");
     }
 
 }

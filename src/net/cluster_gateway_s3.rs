@@ -200,6 +200,61 @@ impl ClusterGateway {
         }
     }
 
+    /// `DELETE /{bucket}?delete-prefix=P[&limit=N][&marker=K]`: delete up to `limit` live objects whose keys start with `P`
+    /// and come after `marker`, as `DeleteObjects` would (a lock refuses an object, versioning leaves a delete marker).
+    /// The answer counts what was deleted and what was refused, and names the key to resume after when more remain.
+    pub(super) fn delete_prefix(&self, request: &Request, bucket: &str) -> Response {
+        let resource = format!("/{bucket}");
+        let prefix = request.query_param("delete-prefix").unwrap_or_default();
+        if prefix.is_empty() {
+            return s3::error_response(s3::S3ErrorCode::InvalidArgument, "delete-prefix names the prefix to delete; an empty one would empty the bucket", &resource);
+        }
+        let limit = request.query_param("limit").and_then(|raw| raw.parse::<usize>().ok()).unwrap_or(1000).clamp(1, 10_000);
+        let marker = request.query_param("marker").unwrap_or_default();
+        let lock = match self.lock_check(request, bucket, &resource) {
+            Ok(lock) => lock,
+            Err(refusal) => return refusal,
+        };
+        let versioned = match self.versioning_on(bucket) {
+            Ok(on) => on,
+            Err(error) => return error_response(error, &resource, true),
+        };
+        let keys = match self.keys_under(bucket, &prefix) {
+            Ok(keys) => keys,
+            Err(error) => return error_response(error, &resource, true),
+        };
+        let mut pending: Vec<String> = keys.into_iter().filter(|key| marker.is_empty() || key.as_str() > marker.as_str()).collect();
+        let more = pending.len() > limit;
+        pending.truncate(limit);
+        let (mut deleted, mut refused) = (0u64, 0u64);
+        for key in &pending {
+            self.forget(bucket, key);
+            let removed = if versioned {
+                self.versioned_delete(bucket, key, lock).and_then(|marker| marker.ok_or_else(|| ObjectError::NotFound("already deleted".into())))
+            } else {
+                self.delete_checked(bucket, key, lock)
+            };
+            match removed {
+                Ok(manifest) => {
+                    self.remember(&manifest);
+                    self.note_change(bucket, "delete", key, manifest.generation, 0);
+                    deleted += 1;
+                }
+                Err(ObjectError::NotFound(_)) => {}
+                Err(ObjectError::PreconditionFailed(_)) => refused += 1,
+                Err(error) => return error_response(error, &resource, true),
+            }
+        }
+        let mut body = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<DeletePrefixResult><Deleted>{deleted}</Deleted><Refused>{refused}</Refused><IsTruncated>{more}</IsTruncated>");
+        if more {
+            if let Some(last) = pending.last() {
+                body.push_str(&format!("<NextMarker>{}</NextMarker>", crate::bucket_config::xml_escape(last)));
+            }
+        }
+        body.push_str("</DeletePrefixResult>\n");
+        s3::xml_response(200, body)
+    }
+
     /// `DeleteObjects`: `POST /{bucket}?delete` with a list of keys.
     pub(super) fn delete_objects(&self, request: &Request, bucket: &str) -> Response {
         let resource = format!("/{bucket}");
@@ -280,7 +335,7 @@ impl ClusterGateway {
         source: &str,
     ) -> Response {
         let resource = format!("/{bucket}/{key}");
-        let (source_bucket, source_key) = match batch::parse_copy_source(source) {
+        let (source_bucket, source_key, source_version) = match batch::parse_copy_source_with_version(source) {
             Ok(parsed) => parsed,
             Err(reason) => {
                 return s3::error_response(s3::S3ErrorCode::InvalidArgument, &reason, &resource)
@@ -298,7 +353,8 @@ impl ClusterGateway {
                 &resource,
             );
         }
-        if source_bucket == bucket && source_key == key {
+        // copying a version onto its own key is how an old version is brought back, so only the plain form is refused
+        if source_bucket == bucket && source_key == key && source_version.is_none() {
             return s3::error_response(
                 s3::S3ErrorCode::InvalidRequest,
                 "the copy source and destination are the same object, so this request would change nothing",
@@ -306,6 +362,18 @@ impl ClusterGateway {
             );
         }
         let source_resource = format!("/{source_bucket}/{source_key}");
+        // the key the named version is stored at: the key itself when it is the current version
+        let read_key = match &source_version {
+            None => source_key.clone(),
+            Some(version) => match self.version_key(&source_bucket, &source_key, version, &source_resource) {
+                Ok(read_key) => read_key,
+                Err(response) => return response,
+            },
+        };
+        let versioned = match self.versioning_on(bucket) {
+            Ok(on) => on,
+            Err(error) => return error_response(error, &resource, true),
+        };
         // the destination carries what the request says (its lock, and its default retention), and the source's content
         // type, metadata and tags unless the request replaces them
         let lock = match self.lock_check(request, bucket, &resource).and_then(|lock| self.with_quota(lock, bucket, &resource)) {
@@ -325,7 +393,7 @@ impl ClusterGateway {
         const ATTEMPTS: usize = 4;
         for _ in 0..ATTEMPTS {
             let outcome = self.with_plane(|plane| {
-                let (source, source_attributes) = match plane.read_manifest_with_attributes(&source_bucket, &source_key) {
+                let (source, source_attributes) = match plane.read_manifest_with_attributes(&source_bucket, &read_key) {
                     Ok((manifest, carried)) if !manifest.deleted => (manifest, carried),
                     Ok(_) | Err(ObjectError::NotFound(_)) => {
                         return Ok(Err(s3::error_response(
@@ -369,6 +437,14 @@ impl ClusterGateway {
                 if let Some(refusal) = lock.refuse_quota(source.length, replaced) {
                     return Ok(Ok(Err(refusal)));
                 }
+                // a copy over a key keeps the version it replaces, like any other write
+                if versioned {
+                    if let Some(kept) = current.as_ref() {
+                        if let Err(failure) = ClusterGateway::retain(plane, kept) {
+                            return Ok(Ok(Err(failure)));
+                        }
+                    }
+                }
                 let destination = ChunkAttributes {
                     content_type: if replace_metadata { named.content_type.clone() } else { source_attributes.content_type.clone() },
                     user_metadata: if replace_metadata { named.user_metadata.clone() } else { source_attributes.user_metadata.clone() },
@@ -378,8 +454,11 @@ impl ClusterGateway {
                     legal_hold: named.legal_hold,
                     // the copy is a new write: the client that publishes stamps its own clock
                     modified_ms: 0,
+                    // and it is in the class the request names, not the source's, and is not restored
+                    storage_class: named.storage_class.clone(),
+                    restore_until_ms: 0,
                 };
-                Ok(Ok(plane.copy_with(&source_bucket, &source_key, bucket, key, current, &destination)))
+                Ok(Ok(plane.copy_with(&source_bucket, &read_key, bucket, key, current, &destination)))
             });
             match outcome {
                 Err(error) => return error_response(error, &resource, false),

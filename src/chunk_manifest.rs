@@ -142,6 +142,12 @@ pub struct ChunkManifest {
     /// When this generation's data was written, in milliseconds since the epoch; zero when it was not recorded.
     #[prost(uint64, tag = "16")]
     pub modified_ms: u64,
+    /// The storage class the object was moved to; empty for the standard one.
+    #[prost(string, tag = "17")]
+    pub storage_class: String,
+    /// The time until which a restore keeps the object readable from a colder class; zero when none was asked.
+    #[prost(uint64, tag = "18")]
+    pub restore_until_ms: u64,
 }
 
 pub use crate::bucket_config::{RETENTION_COMPLIANCE, RETENTION_GOVERNANCE};
@@ -161,6 +167,8 @@ pub struct ChunkAttributes {
     pub legal_hold: bool,
     /// When the data was written; zero asks the client that publishes to stamp its own clock.
     pub modified_ms: u64,
+    pub storage_class: String,
+    pub restore_until_ms: u64,
 }
 
 impl ChunkAttributes {
@@ -174,6 +182,8 @@ impl ChunkAttributes {
             retain_until_ms: manifest.retain_until_ms,
             legal_hold: manifest.legal_hold,
             modified_ms: manifest.modified_ms,
+            storage_class: manifest.storage_class.clone(),
+            restore_until_ms: manifest.restore_until_ms,
         }
     }
 
@@ -186,6 +196,8 @@ impl ChunkAttributes {
         manifest.retain_until_ms = self.retain_until_ms;
         manifest.legal_hold = self.legal_hold;
         manifest.modified_ms = self.modified_ms;
+        manifest.storage_class = self.storage_class.clone();
+        manifest.restore_until_ms = self.restore_until_ms;
     }
 }
 
@@ -268,11 +280,14 @@ impl ChunkManifest {
             || self.retain_until_ms != 0
             || self.legal_hold
             || self.modified_ms != 0
+            || !self.storage_class.is_empty()
+            || self.restore_until_ms != 0
     }
 
     fn validate_attributes(&self) -> Result<(), ObjectError> {
         let metadata_bytes: usize = self.user_metadata.iter().map(|(k, v)| k.len() + v.len()).sum();
         if self.content_type.len() > MAX_CONTENT_TYPE_BYTES
+            || self.storage_class.len() > 32
             || metadata_bytes > MAX_USER_METADATA_BYTES
             || self.tags.len() > MAX_OBJECT_TAGS
             || self.tags.iter().any(|(k, v)| k.is_empty() || k.len() > 128 || v.len() > 256)

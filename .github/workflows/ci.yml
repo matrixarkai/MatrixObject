@@ -933,7 +933,7 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --all-features --lib bucket_config::tests:: -- --test-threads=1 | tee /tmp/bucket-config.log
-          grep -q '^test result: ok. 6 passed' /tmp/bucket-config.log
+          grep -q '^test result: ok. 7 passed' /tmp/bucket-config.log
           cargo test --locked --all-features --lib net::cluster_gateway::tests::a_bucket_is_created_probed_listed_and_deleted_and_its_record_is_not_a_client_object -- --exact | tee /tmp/gateway-features.log
           grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
           cargo test --locked --all-features --lib net::cluster_gateway::tests::bucket_configuration_is_stored_read_back_and_removed -- --exact | tee /tmp/gateway-features.log
@@ -965,6 +965,14 @@ jobs:
           cargo test --locked --all-features --lib net::cluster_gateway::tests::a_noncurrent_expiration_removes_old_versions_and_an_expiration_leaves_a_marker -- --exact | tee /tmp/gateway-features.log
           grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
           cargo test --locked --all-features --lib net::cluster_gateway::tests::a_bucket_that_opts_in_keeps_an_ordered_change_feed_read_by_cursor_and_trimmed_by_the_consumer -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_kept_version_carries_its_own_tags_and_retention_and_is_read_by_range -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::lifecycle_rules_filter_by_tag_keep_versions_transition_objects_and_remove_empty_markers -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::an_object_in_a_colder_class_is_restored_for_a_window_and_a_version_is_copied_back -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::versions_are_listed_in_pages_and_a_prefix_is_deleted_in_batches -- --exact | tee /tmp/gateway-features.log
           grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
           cargo test --locked --all-features --test network_metadata_consensus the_s3_door_over_chunk_objects_creates_configures_lists_and_deletes_buckets -- --exact | tee /tmp/buckets-real.log
           grep -q '^test result: ok. 1 passed' /tmp/buckets-real.log

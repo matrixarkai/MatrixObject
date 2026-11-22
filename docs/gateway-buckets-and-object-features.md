@@ -96,9 +96,13 @@ the current version until something is written and is kept like any other versio
 
 | Request | Answer |
 |---|---|
-| `GET`/`HEAD /{b}/{k}?versionId=N` | that version, with the attributes it carried; a delete marker answers 405 |
+| `GET`/`HEAD /{b}/{k}?versionId=N` (with `Range`) | that version, with the attributes it carried, whole or by range; a delete marker answers 405 |
 | `DELETE /{b}/{k}?versionId=N` | removes that version for good (an object lock on it applies); deleting the current version brings the latest kept one back as current |
-| `GET /{b}?versions` (`prefix`, `key-marker`, `max-keys`) | every version and delete marker, newest first within a key |
+| `GET`/`PUT`/`DELETE /{b}/{k}?tagging`, `GET`/`PUT ?retention`, `GET`/`PUT ?legal-hold` with `&versionId=N` | the same requests, about that version: a tag set on a kept version is that version's and the current one is untouched |
+| `PUT /{b}/{k}` + `x-amz-copy-source: /{b}/{k}?versionId=N` | copies that version; onto its own key it brings the old version back, and the version it replaces is kept |
+| `GET /{b}?versions` (`prefix`, `key-marker`, `version-id-marker`, `max-keys`) | every version and delete marker, newest first within a key, in pages that resume inside a key |
+
+Any write that replaces an object in a versioned bucket keeps the replaced version, a copy over a key included.
 
 The keep and the replacement are two publications; a crash between them leaves a retained copy of what is
 still current, and the retry keeps the same generation under the same hidden key, which already exists and is
@@ -114,6 +118,31 @@ that stopped being current that many days ago, and an abort rule removes multipa
 ago and never completed. An object an object lock still protects is left alone and counted. A pass is safe to
 repeat and to run from several doors at once, because every deletion is conditional on the manifest it decided
 from. Objects written before the write time was recorded have no age and are never expired.
+
+A rule also filters, keeps and moves:
+
+- A **tag filter** (`<Tag>` alone or with a prefix in `<And>`) limits a rule to the objects carrying that tag.
+- `<NewerNoncurrentVersions>N` keeps the `N` newest non-current versions whatever their age and deletes the older
+  ones (with `<NoncurrentDays>` also given, only those older than that).
+- `<ExpiredObjectDeleteMarker>true` removes a kept delete marker once no kept version older than it is left.
+- `<Transition>` with `<Days>` and `<StorageClass>` moves an object to that storage class that many days after it
+  was last written.
+
+## Storage class and restore
+
+An object carries a storage class (`x-amz-storage-class` on a write, a lifecycle transition, or none for the
+standard class) and a restore window. They are properties of the manifest: moving an object to another class
+republishes the same extents and moves no data, and the object stays readable. `POST /{b}/{k}?restore`
+(`<RestoreRequest><Days>N</Days>`, also with `&versionId=N`) opens a restore window and answers 202; `HEAD` then
+shows `x-amz-restore: ongoing-request="false", expiry-date="..."`. An object in the standard class has nothing to
+restore and answers 403 `InvalidObjectState`.
+
+## Deleting a prefix
+
+`DELETE /{b}?delete-prefix=P&limit=N&marker=K` deletes up to `N` live objects whose keys start with `P` and come
+after `K`, as `DeleteObjects` would: a lock refuses an object (counted as refused), versioning leaves delete
+markers, and a change feed records each deletion. The answer counts what was deleted and refused and names the
+key to resume after when more remain. An empty prefix is refused so a request cannot empty a bucket by accident.
 
 ## Change feed
 

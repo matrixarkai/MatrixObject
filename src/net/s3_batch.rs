@@ -165,6 +165,21 @@ pub fn copy_object_result_xml(last_modified_ms: u64, etag: &str) -> String {
 /// The header is `/bucket/key` or `bucket/key` -- both forms are sent in practice, and the leading
 /// slash is optional in S3's own definition -- and the key may be percent-encoded, since it
 /// travels in something shaped like a path.
+/// [`parse_copy_source`] that also accepts a `?versionId=N` suffix, returning the version id it names.
+pub fn parse_copy_source_with_version(header: &str) -> Result<(String, String, Option<String>), String> {
+    let trimmed = header.trim();
+    match trimmed.find("?versionId=") {
+        None => parse_copy_source(trimmed).map(|(bucket, key)| (bucket, key, None)),
+        Some(at) => {
+            let version = trimmed[at + "?versionId=".len()..].to_string();
+            if version.is_empty() || version.contains('&') {
+                return Err("x-amz-copy-source names a version id that is not a whole number".to_string());
+            }
+            parse_copy_source(&trimmed[..at]).map(|(bucket, key)| (bucket, key, Some(version)))
+        }
+    }
+}
+
 pub fn parse_copy_source(header: &str) -> Result<(String, String), String> {
     let trimmed = header.trim();
     // A versionId suffix names a version this endpoint does not serve. Refused rather than

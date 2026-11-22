@@ -1946,6 +1946,14 @@ mod coupled_groups {
         assert_eq!(call("PUT", "/hist/page", &[], &second).status, 200);
         assert_eq!(call("GET", &format!("/hist/page?versionId={v1}"), &[], &[]).body, first);
 
+        // appends that land at the end of the object or not at all, each with an attempt id
+        let attempt = |n: u128| format!("{n:032x}");
+        let first_append = call("PUT", "/hist/log", &[("x-amz-write-offset-bytes", "0"), ("x-amz-attempt-id", &attempt(1))], b"alpha");
+        assert_eq!(first_append.status, 200, "{}", String::from_utf8_lossy(&first_append.body));
+        assert_eq!(call("PUT", "/hist/log", &[("x-amz-write-offset-bytes", "5"), ("x-amz-attempt-id", &attempt(2))], b"beta").status, 200);
+        assert_ne!(call("PUT", "/hist/log", &[("x-amz-write-offset-bytes", "3")], b"wrong").status, 200, "an append that would not land at the end is refused");
+        assert_eq!(call("GET", "/hist/log", &[], &[]).body, b"alphabeta");
+
         // every leader is lost, and the data and the versions are still there
         let leader = metadata.api.iter().position(|a| a == _ready.endpoint()).unwrap();
         metadata.kill(leader);
@@ -1987,6 +1995,34 @@ mod coupled_groups {
         }
         assert_eq!(call("GET", "/hist/page", &[], &[]).body, b"three");
         assert_eq!(call("GET", &format!("/hist/page?versionId={v1}"), &[], &[]).body, first, "an old version still reads after a write");
+
+        // the log survived, and appends go on landing at its end; a retry cannot double one, because an append that would
+        // not land at the end is refused
+        let log_deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let current = call("GET", "/hist/log", &[], &[]).body;
+            if current == b"alphabetagamma" {
+                break;
+            }
+            assert!(
+                current == b"alphabeta" && Instant::now() < log_deadline,
+                "the log was not intact after the leaders were lost: {} bytes",
+                current.len()
+            );
+            let appended = call("PUT", "/hist/log", &[("x-amz-write-offset-bytes", "9"), ("x-amz-attempt-id", &attempt(3))], b"gamma");
+            if appended.status != 200 {
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        }
+        // the attempt that landed is found by its id, over the quorum that took over
+        let digest = ring::digest::digest(&ring::digest::SHA256, b"gamma");
+        let sha: String = digest.as_ref().iter().map(|byte| format!("{byte:02x}")).collect();
+        let resolved = call("POST", &format!("/hist/log?append-resolve&attempt={}&offset=9&length=5&sha256={sha}", attempt(3)), &[], &[]);
+        assert_eq!(resolved.status, 200, "{}", String::from_utf8_lossy(&resolved.body));
+        // landed, or ambiguous when the append that landed was a retry the gateway had not seen the first attempt of;
+        // never absent, because its bytes are at the end of the log
+        let resolution = header(&resolved, "x-append-resolution");
+        assert!(matches!(resolution.as_deref(), Some("landed" | "ambiguous")), "{resolution:?}");
     }
 
     /// THE RAFT-MODE OBJECT TEST: chunk objects over two Raft chunk groups of three voters each, through the

@@ -85,6 +85,23 @@ pub struct LifecycleRule {
     /// Delete a non-current version this many days after it stopped being current; zero for none.
     #[prost(uint32, tag = "6")]
     pub noncurrent_expiration_days: u32,
+    /// The rule applies only to objects carrying this tag (key and value); empty for no tag filter.
+    #[prost(string, tag = "7")]
+    pub tag_key: String,
+    #[prost(string, tag = "8")]
+    pub tag_value: String,
+    /// Keep this many of the newest non-current versions whatever their age; the older ones are deleted. Zero keeps no
+    /// count: every non-current version is subject to `noncurrent_expiration_days` alone.
+    #[prost(uint32, tag = "9")]
+    pub noncurrent_versions_to_keep: u32,
+    /// Remove a delete marker kept as a version once no version older than it is kept.
+    #[prost(bool, tag = "10")]
+    pub expire_delete_markers: bool,
+    /// Move an object to `transition_storage_class` this many days after it was last written; zero for none.
+    #[prost(uint32, tag = "11")]
+    pub transition_days: u32,
+    #[prost(string, tag = "12")]
+    pub transition_storage_class: String,
 }
 
 #[derive(Clone, PartialEq, Eq, Message)]
@@ -160,8 +177,20 @@ impl BucketConfig {
             }
         }
         for rule in &self.lifecycle {
-            if rule.expiration_days == 0 && rule.abort_multipart_days == 0 && rule.noncurrent_expiration_days == 0 {
-                return Err(invalid("a lifecycle rule must expire something"));
+            let acts = rule.expiration_days > 0
+                || rule.abort_multipart_days > 0
+                || rule.noncurrent_expiration_days > 0
+                || rule.noncurrent_versions_to_keep > 0
+                || rule.expire_delete_markers
+                || (rule.transition_days > 0 && !rule.transition_storage_class.is_empty());
+            if !acts {
+                return Err(invalid("a lifecycle rule must expire, transition or clean up something"));
+            }
+            if rule.tag_key.is_empty() != rule.tag_value.is_empty() && rule.tag_key.is_empty() {
+                return Err(invalid("a lifecycle tag filter names a key"));
+            }
+            if rule.transition_storage_class.len() > 32 {
+                return Err(invalid("a storage class is at most 32 bytes"));
             }
             if rule.id.len() > MAX_FIELD_BYTES || rule.prefix.len() > MAX_FIELD_BYTES {
                 return Err(invalid("a lifecycle rule field is too long"));
@@ -391,13 +420,43 @@ pub fn lifecycle_xml(rules: &[LifecycleRule]) -> String {
         if !rule.id.is_empty() {
             out.push_str(&format!("<ID>{}</ID>", xml_escape(&rule.id)));
         }
-        out.push_str(&format!("<Filter><Prefix>{}</Prefix></Filter>", xml_escape(&rule.prefix)));
+        let tag = if rule.tag_key.is_empty() {
+            String::new()
+        } else {
+            format!("<Tag><Key>{}</Key><Value>{}</Value></Tag>", xml_escape(&rule.tag_key), xml_escape(&rule.tag_value))
+        };
+        out.push_str(&match (rule.prefix.is_empty(), tag.is_empty()) {
+            (_, true) => format!("<Filter><Prefix>{}</Prefix></Filter>", xml_escape(&rule.prefix)),
+            (true, false) => format!("<Filter>{tag}</Filter>"),
+            (false, false) => format!("<Filter><And><Prefix>{}</Prefix>{tag}</And></Filter>", xml_escape(&rule.prefix)),
+        });
         out.push_str(if rule.enabled { "<Status>Enabled</Status>" } else { "<Status>Disabled</Status>" });
-        if rule.expiration_days > 0 {
-            out.push_str(&format!("<Expiration><Days>{}</Days></Expiration>", rule.expiration_days));
+        if rule.expiration_days > 0 || rule.expire_delete_markers {
+            let mut inner = String::new();
+            if rule.expiration_days > 0 {
+                inner.push_str(&format!("<Days>{}</Days>", rule.expiration_days));
+            }
+            if rule.expire_delete_markers {
+                inner.push_str("<ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker>");
+            }
+            out.push_str(&format!("<Expiration>{inner}</Expiration>"));
         }
-        if rule.noncurrent_expiration_days > 0 {
-            out.push_str(&format!("<NoncurrentVersionExpiration><NoncurrentDays>{}</NoncurrentDays></NoncurrentVersionExpiration>", rule.noncurrent_expiration_days));
+        if rule.transition_days > 0 && !rule.transition_storage_class.is_empty() {
+            out.push_str(&format!(
+                "<Transition><Days>{}</Days><StorageClass>{}</StorageClass></Transition>",
+                rule.transition_days,
+                xml_escape(&rule.transition_storage_class)
+            ));
+        }
+        if rule.noncurrent_expiration_days > 0 || rule.noncurrent_versions_to_keep > 0 {
+            let mut inner = String::new();
+            if rule.noncurrent_expiration_days > 0 {
+                inner.push_str(&format!("<NoncurrentDays>{}</NoncurrentDays>", rule.noncurrent_expiration_days));
+            }
+            if rule.noncurrent_versions_to_keep > 0 {
+                inner.push_str(&format!("<NewerNoncurrentVersions>{}</NewerNoncurrentVersions>", rule.noncurrent_versions_to_keep));
+            }
+            out.push_str(&format!("<NoncurrentVersionExpiration>{inner}</NoncurrentVersionExpiration>"));
         }
         if rule.abort_multipart_days > 0 {
             out.push_str(&format!("<AbortIncompleteMultipartUpload><DaysAfterInitiation>{}</DaysAfterInitiation></AbortIncompleteMultipartUpload>", rule.abort_multipart_days));
@@ -422,13 +481,33 @@ pub fn parse_lifecycle(body: &str) -> Result<Vec<LifecycleRule>, ObjectError> {
             Some("Disabled") => false,
             _ => return Err(invalid("a lifecycle rule is Enabled or Disabled")),
         };
+        // each action's numbers are read inside its own element, so `Days` of an expiration and of a transition differ
+        let scoped = |element: &str| raw_blocks(&block, element).into_iter().next().unwrap_or_default();
+        let expiration = scoped("Expiration");
+        let transition = scoped("Transition");
+        let noncurrent = scoped("NoncurrentVersionExpiration");
+        let (tag_key, tag_value) = match raw_blocks(&block, "Tag").into_iter().next() {
+            Some(tag) => (xml_first(&tag, "Key").unwrap_or_default(), xml_first(&tag, "Value").unwrap_or_default()),
+            None => (String::new(), String::new()),
+        };
+        let transition_days = number(&transition, "Days")?;
+        let transition_storage_class = xml_first(&transition, "StorageClass").unwrap_or_default();
+        if (transition_days > 0) != !transition_storage_class.is_empty() && !transition.is_empty() {
+            return Err(invalid("a lifecycle transition names Days and a StorageClass together"));
+        }
         rules.push(LifecycleRule {
             id: xml_first(&block, "ID").unwrap_or_default(),
             prefix,
             enabled,
-            expiration_days: number(&block, "Days")?,
+            expiration_days: number(&expiration, "Days")?,
             abort_multipart_days: number(&block, "DaysAfterInitiation")?,
-            noncurrent_expiration_days: number(&block, "NoncurrentDays")?,
+            noncurrent_expiration_days: number(&noncurrent, "NoncurrentDays")?,
+            tag_key,
+            tag_value,
+            noncurrent_versions_to_keep: number(&noncurrent, "NewerNoncurrentVersions")?,
+            expire_delete_markers: xml_first(&expiration, "ExpiredObjectDeleteMarker").as_deref().map(str::trim) == Some("true"),
+            transition_days,
+            transition_storage_class,
         });
     }
     if rules.is_empty() {
