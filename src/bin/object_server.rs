@@ -372,8 +372,6 @@ fn run_cluster_gateway(
             matrixobjectstore_rs::cluster::reclaim_loop::ReclaimLoop::new(move || (*for_reclaim)(), reclaim_write, settings)
                 .run(stop)
         });
-        println!("object_server reclaim_refused_page_objects=0 (a sweep refused because page objects exist is reported as a warning)");
-        println!("object_server reclaim grace_ms={} interval_ms={}", settings.grace_ms, settings.interval_ms);
     }
     #[cfg(unix)]
     start_roster_heartbeat(Arc::clone(&open), drain_flag);
@@ -407,6 +405,12 @@ fn run_cluster_gateway(
     );
     // Flushed: a supervisor reading this line from a pipe must not wait for a full buffer.
     let _ = std::io::Write::flush(&mut std::io::stdout());
+    // The sweep's status follows the listening line: a supervisor reads the FIRST line for the address.
+    if let Some(settings) = reclaim {
+        println!("object_server reclaim_refused_page_objects=0 (a sweep refused because page objects exist is reported as a warning)");
+        println!("object_server reclaim grace_ms={} interval_ms={}", settings.grace_ms, settings.interval_ms);
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    }
     if !bound.ip().is_loopback() {
         println!(
             "WARNING: {bound} is not loopback and this server is unauthenticated, so anything              that can reach this port can read, overwrite and delete every object"
