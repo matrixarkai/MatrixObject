@@ -65,7 +65,7 @@ Four jobs, all on a pinned toolchain:
 
 | job | what it does |
 |---|---|
-| **build & docs** | `cargo build --all-targets --locked` and `--all-features`, then `cargo doc --no-deps --locked` and `--all-features`, all with warnings denied |
+| **build & docs** | `cargo build --all-targets --locked` and `--all-features`, then `cargo doc --no-deps --locked` and `--all-features`, all with warnings denied; process tests for gateway startup during metadata election and its deadline |
 | **format and rollback guards** | Named library guards, grouped test filters, integration targets and network-partition checks |
 
 The **network metadata consensus** job also runs named health, routing, preparation, and consensus tests
