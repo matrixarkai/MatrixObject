@@ -77,15 +77,11 @@ fn number(name: &str, value: &str, low: u64, high: u64) -> Result<u64, String> {
 ///   quarter of the grace.
 /// * `ack_leak`: `MATRIXOBJECT_RECLAIM_ACK_LEAK`: `1` lets a door that stores chunk objects
 ///   start with the sweep off, which leaks every page of a deleted or overwritten object.
-/// * `chunk_objects`: the door stores objects as chunk manifests. Without it nothing here
-///   applies: the sweep frees pages that no CHUNK manifest names, so it must never run against
-///   page-granular objects.
 pub fn resolve_reclaim(
     reclaim: Option<&str>,
     grace: Option<&str>,
     interval: Option<&str>,
     ack_leak: Option<&str>,
-    chunk_objects: bool,
 ) -> Result<Option<ReclaimSettings>, String> {
     let on = match present(reclaim) {
         None => true,
@@ -93,9 +89,6 @@ pub fn resolve_reclaim(
         Some("off") => false,
         Some(other) => return Err(format!("MATRIXOBJECT_RECLAIM={other:?} must be on or off")),
     };
-    if !chunk_objects {
-        return Ok(None);
-    }
     if !on {
         return match present(ack_leak) {
             Some("1") => Ok(None),
@@ -154,6 +147,24 @@ impl ReclaimStatus {
             self.rounds(),
             self.freed_pages()
         )
+    }
+}
+
+/// The message of the refusal to start over a data directory written by an earlier build.
+pub fn older_data_directory_message(page_objects: u64) -> String {
+    format!(
+        "older data directory not supported: the metadata plane holds {page_objects} page-granular objects that are not \
+         deleted, and this build stores and reads chunk objects only; data directories from earlier builds are not supported"
+    )
+}
+
+/// Refuse to start over objects this build cannot read or reclaim: any page-granular object that is not
+/// deleted means the data directory was written by an earlier build, and there is no migration.
+pub fn refuse_older_data_directory(client: &mut RemoteMetaClient) -> Result<(), String> {
+    match client.count_page_objects() {
+        Ok(0) => Ok(()),
+        Ok(count) => Err(older_data_directory_message(count)),
+        Err(error) => Err(format!("the metadata plane could not be checked for objects from an earlier build: {error}")),
     }
 }
 
@@ -261,49 +272,49 @@ where
 mod tests {
     use super::*;
 
-    fn resolve(reclaim: Option<&str>, grace: Option<&str>, interval: Option<&str>, ack: Option<&str>, chunk: bool) -> Result<Option<ReclaimSettings>, String> {
-        resolve_reclaim(reclaim, grace, interval, ack, chunk)
+    fn resolve(reclaim: Option<&str>, grace: Option<&str>, interval: Option<&str>, ack: Option<&str>) -> Result<Option<ReclaimSettings>, String> {
+        resolve_reclaim(reclaim, grace, interval, ack)
     }
 
     #[test]
     fn the_sweep_runs_by_default_with_an_hour_of_grace_and_a_quarter_of_it_between_rounds() {
         assert_eq!(
-            resolve(None, None, None, None, true),
+            resolve(None, None, None, None),
             Ok(Some(ReclaimSettings { grace_ms: 3_600_000, interval_ms: 900_000 }))
         );
-        assert_eq!(resolve(Some("on"), Some(" 120000 "), None, None, true), Ok(Some(ReclaimSettings { grace_ms: 120_000, interval_ms: 30_000 })));
-        assert_eq!(resolve(Some(""), Some("60000"), Some("1000"), None, true), Ok(Some(ReclaimSettings { grace_ms: 60_000, interval_ms: 1_000 })));
+        assert_eq!(resolve(Some("on"), Some(" 120000 "), None, None), Ok(Some(ReclaimSettings { grace_ms: 120_000, interval_ms: 30_000 })));
+        assert_eq!(resolve(Some(""), Some("60000"), Some("1000"), None), Ok(Some(ReclaimSettings { grace_ms: 60_000, interval_ms: 1_000 })));
     }
 
     #[test]
     fn a_setting_that_is_out_of_range_or_not_a_number_is_refused_not_defaulted() {
         for grace in ["59999", "604800001", "x", "-1", "1.5"] {
-            assert!(resolve(None, Some(grace), None, None, true).is_err(), "grace {grace}");
+            assert!(resolve(None, Some(grace), None, None).is_err(), "grace {grace}");
         }
         for interval in ["999", "0", "x"] {
-            assert!(resolve(None, None, Some(interval), None, true).is_err(), "interval {interval}");
+            assert!(resolve(None, None, Some(interval), None).is_err(), "interval {interval}");
         }
         // the interval may not exceed the grace
-        assert!(resolve(None, Some("60000"), Some("60001"), None, true).is_err());
-        assert!(resolve(Some("never"), None, None, None, true).is_err());
-        assert!(resolve(Some("OFF"), None, None, None, true).is_err());
+        assert!(resolve(None, Some("60000"), Some("60001"), None).is_err());
+        assert!(resolve(Some("never"), None, None, None).is_err());
+        assert!(resolve(Some("OFF"), None, None, None).is_err());
     }
 
     #[test]
-    fn chunk_objects_with_the_sweep_off_refuse_to_start_unless_the_leak_is_acknowledged() {
-        assert!(resolve(Some("off"), None, None, None, true).is_err());
-        assert!(resolve(Some("off"), None, None, Some("0"), true).is_err());
-        assert!(resolve(Some("off"), None, None, Some(""), true).is_err());
-        assert_eq!(resolve(Some("off"), None, None, Some("1"), true), Ok(None));
+    fn a_door_with_the_sweep_off_refuses_to_start_unless_the_leak_is_acknowledged() {
+        assert!(resolve(Some("off"), None, None, None).is_err());
+        assert!(resolve(Some("off"), None, None, Some("0")).is_err());
+        assert!(resolve(Some("off"), None, None, Some("")).is_err());
+        assert_eq!(resolve(Some("off"), None, None, Some("1")), Ok(None));
         // the acknowledgement does not turn the sweep on
-        assert_eq!(resolve(None, None, None, Some("1"), true).map(|s| s.is_some()), Ok(true));
+        assert_eq!(resolve(None, None, None, Some("1")).map(|s| s.is_some()), Ok(true));
     }
 
     #[test]
-    fn a_door_that_does_not_store_chunk_objects_never_runs_the_sweep() {
-        assert_eq!(resolve(None, None, None, None, false), Ok(None));
-        assert_eq!(resolve(Some("off"), None, None, None, false), Ok(None));
-        // a bad value of the switch is still refused
-        assert!(resolve(Some("never"), None, None, None, false).is_err());
+    fn the_refusal_over_an_older_data_directory_names_it_and_says_there_is_no_migration() {
+        let message = older_data_directory_message(3);
+        assert!(message.contains("older data directory not supported"), "{message}");
+        assert!(message.contains("3 page-granular objects"), "{message}");
+        assert!(message.contains("data directories from earlier builds are not supported"), "{message}");
     }
 }
