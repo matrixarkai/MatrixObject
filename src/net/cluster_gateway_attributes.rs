@@ -102,6 +102,14 @@ fn parse_mode(text: &str) -> Option<u32> {
     }
 }
 
+/// Whether an object carrying `carried` passes a rule's tag filter (`None`: the rule has none).
+pub(super) fn tag_matches(carried: &ChunkAttributes, tag: Option<(&str, &str)>) -> bool {
+    match tag {
+        None => true,
+        Some((key, value)) => carried.tags.get(key).is_some_and(|found| found == value),
+    }
+}
+
 /// The headers an object answers with for what it carries. The content type replaces the default one.
 pub(super) fn apply_attribute_headers(response: &mut Response, attributes: &ChunkAttributes) {
     if !attributes.content_type.is_empty() {
@@ -126,6 +134,15 @@ pub(super) fn apply_attribute_headers(response: &mut Response, attributes: &Chun
     if attributes.modified_ms != 0 {
         response.headers.push(("last-modified".into(), http::http_date(attributes.modified_ms)));
     }
+    if !attributes.storage_class.is_empty() {
+        response.headers.push(("x-amz-storage-class".into(), attributes.storage_class.clone()));
+    }
+    if attributes.restore_until_ms > now_ms() {
+        response.headers.push((
+            "x-amz-restore".into(),
+            format!("ongoing-request=\"false\", expiry-date=\"{}\"", http::http_date(attributes.restore_until_ms)),
+        ));
+    }
 }
 
 /// One change to an object's attributes, applied to whatever the object carries when the request is decided.
@@ -133,6 +150,8 @@ enum Change {
     Tags(std::collections::BTreeMap<String, String>),
     Retention(u32, u64),
     Hold(bool),
+    /// Keep the object readable from its colder class until this time.
+    Restore(u64),
 }
 
 impl Change {
@@ -141,6 +160,7 @@ impl Change {
         match self {
             Change::Tags(tags) => attributes.tags = tags.clone(),
             Change::Hold(on) => attributes.legal_hold = *on,
+            Change::Restore(until) => attributes.restore_until_ms = *until,
             Change::Retention(mode, until) => {
                 // a period in force is only lengthened, unless it is GOVERNANCE and the caller bypasses it
                 let in_force = attributes.retention_mode != 0 && attributes.retain_until_ms > now_ms();
@@ -187,6 +207,12 @@ impl ClusterGateway {
         }
         if let Some(tagging) = request.header("x-amz-tagging") {
             attributes.tags = parse_tagging_header(tagging).map_err(|error| invalid(error.to_string()))?;
+        }
+        if let Some(class) = request.header("x-amz-storage-class").map(str::trim).filter(|class| !class.is_empty() && *class != "STANDARD") {
+            if class.len() > 32 || !class.bytes().all(|byte| byte.is_ascii_uppercase() || byte == b'_') {
+                return Err(invalid("x-amz-storage-class is a name in capitals, such as STANDARD_IA or GLACIER".into()));
+            }
+            attributes.storage_class = class.to_string();
         }
         let mode = request.header("x-amz-object-lock-mode");
         let until = request.header("x-amz-object-lock-retain-until-date");
@@ -237,7 +263,15 @@ impl ClusterGateway {
         let method = request.method.as_str();
         let text = String::from_utf8_lossy(&request.body).to_string();
         let malformed = |message: String| s3::error_response(s3::S3ErrorCode::MalformedXml, &message, &resource);
-        let read = || self.with_plane(|plane| plane.read_manifest_with_attributes(bucket, key));
+        // `?versionId=N` names the version the request is about: the current one, or one kept under a hidden key
+        let target = match request.query_param("versionId") {
+            None => key.to_string(),
+            Some(version) => match self.version_key(bucket, key, &version, &resource) {
+                Ok(target) => target,
+                Err(response) => return Some(response),
+            },
+        };
+        let read = || self.with_plane(|plane| plane.read_manifest_with_attributes(bucket, &target));
         let live = |read: Result<(ObjectManifest, ChunkAttributes), ObjectError>| match read {
             Ok((manifest, attributes)) if !manifest.deleted => Ok((manifest, attributes)),
             Ok(_) | Err(ObjectError::NotFound(_)) => Err(no_such_key(&resource)),
@@ -313,6 +347,10 @@ impl ClusterGateway {
                 }
                 Change::Retention(mode, until)
             }
+            ("POST", "restore") => match bc::xml_first(&text, "Days").and_then(|days| days.trim().parse::<u64>().ok()).filter(|days| (1..=3650).contains(days)) {
+                Some(days) => Change::Restore(now_ms() + days * DAY_MS),
+                None => return Some(malformed("a restore request names Days, from 1 to 3650".into())),
+            },
             ("PUT", "legal-hold") => match bc::xml_first(&text, "Status").as_deref().map(str::trim) {
                 Some("ON") => Change::Hold(true),
                 Some("OFF") => Change::Hold(false),
@@ -320,12 +358,23 @@ impl ClusterGateway {
             },
             _ => return None,
         };
-        let done = || Response::status(if method == "DELETE" { 204 } else { 200 });
+        let done = || Response::status(match method {
+            "DELETE" => 204,
+            "POST" => 202,
+            _ => 200,
+        });
         for _ in 0..4 {
             let (manifest, attributes) = match live(read()) {
                 Ok(found) => found,
                 Err(response) => return Some(response),
             };
+            if matches!(change, Change::Restore(_)) && attributes.storage_class.is_empty() {
+                return Some(s3::error_response(
+                    s3::S3ErrorCode::InvalidObjectState,
+                    "a restore is for an object moved to another storage class; this one is in the standard class",
+                    &resource,
+                ));
+            }
             let mut changed = attributes.clone();
             if let Err(message) = change.apply(&mut changed, lock) {
                 return Some(s3::error_response(s3::S3ErrorCode::AccessDenied, &format!("{LOCKED}: {message}"), &resource));

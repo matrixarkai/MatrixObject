@@ -109,6 +109,19 @@ impl ClusterGateway {
         })
     }
 
+    /// The key the version `version` of `key` is stored at: the key itself when it is the current version, else its
+    /// hidden key.
+    pub(super) fn version_key(&self, bucket: &str, key: &str, version: &str, resource: &str) -> Result<String, Response> {
+        let Ok(generation) = version.trim().parse::<u64>() else {
+            return Err(s3::error_response(s3::S3ErrorCode::InvalidArgument, "a version id is a whole number", resource));
+        };
+        match self.with_plane(|plane| plane.read_manifest(bucket, key)) {
+            Ok(current) if current.generation == generation => Ok(key.to_string()),
+            Ok(_) | Err(ObjectError::NotFound(_)) => Ok(retained_key(key, generation)),
+            Err(error) => Err(error_response(error, resource, false)),
+        }
+    }
+
     /// `GET`, `HEAD` or `DELETE` of one version: `?versionId=N`.
     pub(super) fn version_request(&self, request: &Request, bucket: &str, key: &str, version: &str) -> Response {
         let resource = format!("/{bucket}/{key}");
@@ -168,12 +181,33 @@ impl ClusterGateway {
         if kept_manifest.deleted {
             return marker_response(generation, &resource);
         }
+        let length = kept_manifest.length;
         let mut response = if method == "HEAD" {
             Response::status(200)
         } else {
-            match self.with_plane(|plane| plane.read(bucket, &hidden)) {
-                Ok((_, data)) => Response { status: 200, headers: Vec::new(), body: data },
-                Err(error) => return error_response(error, &resource, false),
+            match http::resolve_range(request.header("range"), length) {
+                ResolvedRange::Whole => match self.with_plane(|plane| plane.read(bucket, &hidden)) {
+                    Ok((_, data)) => Response { status: 200, headers: Vec::new(), body: data },
+                    Err(error) => return error_response(error, &resource, false),
+                },
+                ResolvedRange::Partial { offset, length: span } => {
+                    match self.with_plane(|plane| plane.read_range(bucket, &hidden, offset, span)) {
+                        Ok((_, data)) => {
+                            let mut partial = Response { status: 206, headers: Vec::new(), body: data };
+                            partial.headers.push(("content-range".into(), format!("bytes {offset}-{}/{length}", offset + span - 1)));
+                            partial
+                        }
+                        Err(error) => return error_response(error, &resource, false),
+                    }
+                }
+                ResolvedRange::Unsatisfiable => {
+                    return s3::error_response(
+                        s3::S3ErrorCode::InvalidRange,
+                        &format!("the requested range lies outside the version, which is {length} bytes"),
+                        &resource,
+                    )
+                    .with_header("content-range", format!("bytes */{length}"))
+                }
             }
         };
         let shown = ObjectManifest { generation, ..kept_manifest };
@@ -280,18 +314,9 @@ impl ClusterGateway {
         s3::xml_response(200, body)
     }
 
-    /// Expire kept versions that stopped being current `age_ms` ago, under `prefix`. A version's age is counted from
-    /// when its successor was written.
-    pub(super) fn expire_noncurrent(
-        &self,
-        bucket: &str,
-        prefix: &str,
-        age_ms: u64,
-        now_ms: u64,
-        lock: LockCheck,
-        report: &mut super::lifecycle::LifecycleReport,
-    ) -> Result<(), ObjectError> {
-        let keys: Vec<String> = self.with_plane(|plane| {
+    /// The keys under `prefix` that have a kept version, in order.
+    fn versioned_keys(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, ObjectError> {
+        self.with_plane(|plane| {
             let mut found: Vec<String> = Vec::new();
             let mut after: Option<String> = Some(".versions.".to_string());
             loop {
@@ -311,41 +336,89 @@ impl ClusterGateway {
                     return Ok(found);
                 }
             }
-        })?;
-        for key in keys {
+        })
+    }
+
+    /// Expire kept versions that stopped being current `age_ms` ago, under `prefix`, keeping the `keep` newest whatever
+    /// their age. A version's age is counted from when its successor was written; with `age_ms` zero every version past
+    /// the `keep` newest goes.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn expire_noncurrent(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        tag: Option<(&str, &str)>,
+        age_ms: u64,
+        keep: usize,
+        now_ms: u64,
+        lock: LockCheck,
+        report: &mut super::lifecycle::LifecycleReport,
+    ) -> Result<(), ObjectError> {
+        for key in self.versioned_keys(bucket, prefix)? {
             let generations = self.retained_generations(bucket, &key)?;
             let current = match self.with_plane(|plane| plane.read_manifest_with_attributes(bucket, &key)) {
                 Ok((_, carried)) => Some(carried.modified_ms),
                 Err(ObjectError::NotFound(_)) => None,
                 Err(error) => return Err(error),
             };
-            for (index, generation) in generations.iter().enumerate() {
-                // when the next version, kept or current, was written
+            let candidates = generations.len().saturating_sub(keep);
+            for (index, generation) in generations.iter().enumerate().take(candidates) {
                 let hidden = retained_key(&key, *generation);
-                let successor = match generations.get(index + 1) {
-                    Some(next) => match self.with_plane(|plane| plane.read_manifest_with_attributes(bucket, &retained_key(&key, *next))) {
-                        Ok((_, carried)) => carried.modified_ms,
-                        Err(ObjectError::NotFound(_)) => continue,
-                        Err(error) => return Err(error),
-                    },
-                    None => current.unwrap_or(0),
-                };
-                if successor == 0 || now_ms.saturating_sub(successor) < age_ms {
-                    continue;
+                if age_ms > 0 {
+                    // when the next version, kept or current, was written
+                    let successor = match generations.get(index + 1) {
+                        Some(next) => match self.with_plane(|plane| plane.read_manifest_with_attributes(bucket, &retained_key(&key, *next))) {
+                            Ok((_, carried)) => carried.modified_ms,
+                            Err(ObjectError::NotFound(_)) => continue,
+                            Err(error) => return Err(error),
+                        },
+                        None => current.unwrap_or(0),
+                    };
+                    if successor == 0 || now_ms.saturating_sub(successor) < age_ms {
+                        continue;
+                    }
                 }
                 let verdict = self.with_plane(|plane| {
                     let (manifest, carried) = plane.read_manifest_with_attributes(bucket, &hidden)?;
                     if !manifest.deleted {
+                        if !attributes::tag_matches(&carried, tag) {
+                            return Ok(false);
+                        }
                         if let Some(refusal) = lock.refuse(&carried) {
                             return Err(refusal.error);
                         }
                     }
-                    plane.delete_at(&manifest).map(|_| ())
+                    plane.delete_at(&manifest).map(|_| true)
                 });
                 match verdict {
-                    Ok(()) => report.expired_versions += 1,
+                    Ok(true) => report.expired_versions += 1,
+                    Ok(false) => {}
                     Err(ObjectError::PreconditionFailed(message)) if message.starts_with(attributes::LOCKED) => report.kept_locked += 1,
                     Err(ObjectError::NotFound(_)) | Err(ObjectError::PreconditionFailed(_)) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove the kept delete markers that no kept version older than them is left under: a marker over nothing hides
+    /// nothing.
+    pub(super) fn expire_markers(&self, bucket: &str, prefix: &str, report: &mut super::lifecycle::LifecycleReport) -> Result<(), ObjectError> {
+        for key in self.versioned_keys(bucket, prefix)? {
+            loop {
+                let Some(oldest) = self.retained_generations(bucket, &key)?.first().copied() else { break };
+                let hidden = retained_key(&key, oldest);
+                let verdict = self.with_plane(|plane| {
+                    let (manifest, _) = plane.read_manifest_with_attributes(bucket, &hidden)?;
+                    if !manifest.deleted {
+                        return Ok(false);
+                    }
+                    plane.delete_at(&manifest).map(|_| true)
+                });
+                match verdict {
+                    Ok(true) => report.expired_markers += 1,
+                    Ok(false) | Err(ObjectError::NotFound(_)) | Err(ObjectError::PreconditionFailed(_)) => break,
                     Err(error) => return Err(error),
                 }
             }

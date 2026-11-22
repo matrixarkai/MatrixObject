@@ -26,6 +26,10 @@ pub struct LifecycleReport {
     pub aborted_uploads: u64,
     /// Kept versions deleted by a noncurrent expiration.
     pub expired_versions: u64,
+    /// Objects moved to another storage class.
+    pub transitioned: u64,
+    /// Kept delete markers removed because no older version was kept.
+    pub expired_markers: u64,
 }
 
 impl ClusterGateway {
@@ -40,14 +44,26 @@ impl ClusterGateway {
             }
             report.buckets += 1;
             let lock = LockCheck { enabled: config.object_lock_enabled, bypass: false, quota: None };
-            for rule in rules.iter().filter(|rule| rule.expiration_days > 0) {
-                self.expire_under(&bucket, &rule.prefix, u64::from(rule.expiration_days) * DAY_MS, now_ms, lock, &mut report)?;
-            }
-            for rule in rules.iter().filter(|rule| rule.noncurrent_expiration_days > 0) {
-                self.expire_noncurrent(&bucket, &rule.prefix, u64::from(rule.noncurrent_expiration_days) * DAY_MS, now_ms, lock, &mut report)?;
-            }
-            for rule in rules.iter().filter(|rule| rule.abort_multipart_days > 0) {
-                self.abort_stale_uploads(&bucket, &rule.prefix, u64::from(rule.abort_multipart_days) * DAY_MS, now_ms, &mut report)?;
+            for rule in &rules {
+                let tag = (!rule.tag_key.is_empty()).then(|| (rule.tag_key.as_str(), rule.tag_value.as_str()));
+                if rule.expiration_days > 0 {
+                    self.expire_under(&bucket, &rule.prefix, tag, u64::from(rule.expiration_days) * DAY_MS, now_ms, lock, &mut report)?;
+                }
+                if rule.transition_days > 0 && !rule.transition_storage_class.is_empty() {
+                    let age = u64::from(rule.transition_days) * DAY_MS;
+                    self.transition_under(&bucket, &rule.prefix, tag, age, &rule.transition_storage_class, now_ms, &mut report)?;
+                }
+                if rule.noncurrent_expiration_days > 0 || rule.noncurrent_versions_to_keep > 0 {
+                    let age = u64::from(rule.noncurrent_expiration_days) * DAY_MS;
+                    let keep = rule.noncurrent_versions_to_keep as usize;
+                    self.expire_noncurrent(&bucket, &rule.prefix, tag, age, keep, now_ms, lock, &mut report)?;
+                }
+                if rule.expire_delete_markers {
+                    self.expire_markers(&bucket, &rule.prefix, &mut report)?;
+                }
+                if rule.abort_multipart_days > 0 {
+                    self.abort_stale_uploads(&bucket, &rule.prefix, u64::from(rule.abort_multipart_days) * DAY_MS, now_ms, &mut report)?;
+                }
             }
         }
         Ok(report)
@@ -80,10 +96,12 @@ impl ClusterGateway {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn expire_under(
         &self,
         bucket: &str,
         prefix: &str,
+        tag: Option<(&str, &str)>,
         age_ms: u64,
         now_ms: u64,
         lock: LockCheck,
@@ -91,7 +109,7 @@ impl ClusterGateway {
     ) -> Result<(), ObjectError> {
         for key in self.keys_under(bucket, prefix)? {
             let written = match self.with_plane(|plane| plane.read_manifest_with_attributes(bucket, &key)) {
-                Ok((manifest, carried)) if !manifest.deleted => carried.modified_ms,
+                Ok((manifest, carried)) if !manifest.deleted && attributes::tag_matches(&carried, tag) => carried.modified_ms,
                 Ok(_) | Err(ObjectError::NotFound(_)) => continue,
                 Err(error) => return Err(error),
             };
@@ -115,6 +133,50 @@ impl ClusterGateway {
                 Err(ObjectError::PreconditionFailed(message)) if message.starts_with(attributes::LOCKED) => report.kept_locked += 1,
                 // another writer got there first: the next pass decides again on what it left
                 Err(ObjectError::NotFound(_)) | Err(ObjectError::PreconditionFailed(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    /// Move the objects under `prefix` that were last written `age_ms` ago to `class`. The data stays where it is: a
+    /// storage class is a property of the manifest, republished with the same extents.
+    #[allow(clippy::too_many_arguments)]
+    fn transition_under(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        tag: Option<(&str, &str)>,
+        age_ms: u64,
+        class: &str,
+        now_ms: u64,
+        report: &mut LifecycleReport,
+    ) -> Result<(), ObjectError> {
+        for key in self.keys_under(bucket, prefix)? {
+            let (manifest, carried) = match self.with_plane(|plane| plane.read_manifest_with_attributes(bucket, &key)) {
+                Ok((manifest, carried)) if !manifest.deleted => (manifest, carried),
+                Ok(_) | Err(ObjectError::NotFound(_)) => continue,
+                Err(error) => return Err(error),
+            };
+            if !attributes::tag_matches(&carried, tag)
+                || carried.storage_class == class
+                || carried.modified_ms == 0
+                || now_ms.saturating_sub(carried.modified_ms) < age_ms
+            {
+                continue;
+            }
+            let mut changed = carried.clone();
+            changed.storage_class = class.to_string();
+            changed.restore_until_ms = 0;
+            match self.with_plane(|plane| Ok(plane.update_attributes(&manifest, &changed))) {
+                Ok(Ok(published)) => {
+                    self.remember(&published);
+                    self.note_change(bucket, "transition", &key, published.generation, 0);
+                    report.transitioned += 1;
+                }
+                // another writer moved the object: the next pass decides again on what it left
+                Ok(Err(failure)) if lost_race(&failure.error) => {}
+                Ok(Err(failure)) => return Err(failure.error),
                 Err(error) => return Err(error),
             }
         }

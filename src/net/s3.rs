@@ -57,6 +57,7 @@ pub enum S3ErrorCode {
     NoSuchVersion,
     /// The bucket would hold more than its quota.
     QuotaExceeded,
+    InvalidObjectState,
     InvalidRequest,
     InvalidPart,
     InvalidPartOrder,
@@ -95,6 +96,7 @@ impl S3ErrorCode {
             S3ErrorCode::AccessDenied => "AccessDenied",
             S3ErrorCode::NoSuchVersion => "NoSuchVersion",
             S3ErrorCode::QuotaExceeded => "QuotaExceeded",
+            S3ErrorCode::InvalidObjectState => "InvalidObjectState",
             S3ErrorCode::InvalidRequest => "InvalidRequest",
             S3ErrorCode::InvalidPart => "InvalidPart",
             S3ErrorCode::InvalidPartOrder => "InvalidPartOrder",
@@ -131,6 +133,7 @@ impl S3ErrorCode {
             | S3ErrorCode::NoSuchVersion => 404,
             S3ErrorCode::AccessDenied => 403,
             S3ErrorCode::QuotaExceeded => 403,
+            S3ErrorCode::InvalidObjectState => 403,
             S3ErrorCode::InvalidRequest => 400,
             S3ErrorCode::InvalidPart
             | S3ErrorCode::InvalidPartOrder
