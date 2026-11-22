@@ -23,16 +23,14 @@ pages a ranged read touches, not how many extents the manifest names.
 ## Metadata Raft checkpoints are required for log workloads
 
 `MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES` is `67108864` (64 MiB of new WAL
-history) by default; `0` disables it. With checkpointing off the metadata Raft WAL
-is never truncated, and a voter refuses appends once it reaches 512 MiB. During a
-rolling upgrade from a build that cannot restore a checkpoint, set it to `0` until
-every voter is upgraded. Every object publication writes its manifest
+history) by default, and `0` is refused. Without checkpoints the metadata Raft WAL
+is never truncated, and a voter refuses appends once it reaches 512 MiB. Every
+object publication writes its manifest
 outcome to that WAL on all voters, so a workload that appends to a log object
 fills it quickly: measured with 300-byte appends and full-manifest publication,
 all three voters exited after about 2,770 appends (about 2 GB of WAL in total).
-Keep an interval from 1,024 through 134,217,728 bytes for any such workload. The
-metaserver prints a warning at startup when Raft is configured and the variable
-is `0`.
+The interval must be from 1,024 through 134,217,728 bytes; any other value stops
+the metaserver at startup.
 
 ## Standalone journal checkpoints
 

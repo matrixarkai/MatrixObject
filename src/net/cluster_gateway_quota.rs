@@ -69,9 +69,6 @@ impl ClusterGateway {
 
     /// `check` with the bucket's quota and its current usage, when the bucket has a quota.
     pub(super) fn with_quota(&self, mut check: LockCheck, bucket: &str, resource: &str) -> Result<LockCheck, Response> {
-        if !self.options.require_buckets {
-            return Ok(check);
-        }
         let rules = self.bucket_rules(bucket).map_err(|error| error_response(error, resource, true))?;
         if let Some(rules) = rules.filter(|rules| rules.quota_bytes > 0) {
             let used = self.bucket_usage(bucket).map_err(|error| error_response(error, resource, true))?;

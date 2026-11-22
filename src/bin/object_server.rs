@@ -16,8 +16,7 @@
 //! |---|---|---|
 //! | `MATRIXOBJECT_HTTP_ADDR` | `127.0.0.1:17200` | address to bind |
 //! | `MATRIXOBJECT_BUCKET` | `default` | bucket created at startup |
-//! | `MATRIXOBJECT_REQUIRE_BUCKETS` | `1` | a request to a bucket that was never created is refused with `NoSuchBucket`; `0` keeps buckets implicit |
-//! | `MATRIXOBJECT_LIFECYCLE_INTERVAL_MS` | `3600000` | time between lifecycle passes (expirations and abandoned multipart uploads of the buckets' rules), 1000 to 86400000; `0` turns them off. Needs `MATRIXOBJECT_REQUIRE_BUCKETS` |
+//! | `MATRIXOBJECT_LIFECYCLE_INTERVAL_MS` | `3600000` | time between lifecycle passes (expirations and abandoned multipart uploads of the buckets' rules), 1000 to 86400000; any other value is refused |
 //! | `MATRIXOBJECT_MAX_BODY_BYTES` | `67108864` | largest object this door accepts |
 //! | `MATRIXOBJECT_THREADS` | `4` | accept threads |
 //! | `MATRIXOBJECT_CLUSTER_META` | *(unset)* | `host:port[,host:port...]`: serve the replicated object plane through these metadata endpoints instead of an in-process store (see below) |
@@ -30,10 +29,8 @@
 //! | `MATRIXOBJECT_GATEWAY_NODE_ID` | *(unset)* | cluster mode: this door's id in the metaserver roster (declared there with `MATRIXOBJECT_METASERVER_GATEWAY_ROSTER`). When set, the door heartbeats that node online, withdraws it (draining) on SIGTERM, and clients find live doors with `RemoteMetaClient::list_gateways` |
 //! | `MATRIXOBJECT_GATEWAY_HEARTBEAT_MS` | `3000` | roster heartbeat interval, 100..60000 |
 //! | `MATRIXOBJECT_GATEWAY_DRAIN_GRACE_MS` | `5000` | after SIGTERM: how long to keep answering after withdrawing from the roster, so requests already routed here finish |
-//! | `MATRIXOBJECT_RECLAIM` | `on` | `off` is the only way to turn the sweep off; with chunk objects it also needs `MATRIXOBJECT_RECLAIM_ACK_LEAK=1`, or the door refuses to start |
 //! | `MATRIXOBJECT_RECLAIM_GRACE_MS` | `3600000` | a page must stay unnamed this long (60000..604800000) before it is freed; longer than any write takes from its first page to its publication |
 //! | `MATRIXOBJECT_RECLAIM_INTERVAL_MS` | a quarter of the grace | time between rounds, 1000 up to the grace |
-//! | `MATRIXOBJECT_RECLAIM_ACK_LEAK` | *(unset)* | `1` accepts that `MATRIXOBJECT_RECLAIM=off` leaks the pages of every deleted or overwritten chunk object |
 //! | `MATRIXOBJECT_CLIENT_TLS_CA_CERT`, `MATRIXOBJECT_CLIENT_TLS_CERT`, `MATRIXOBJECT_CLIENT_TLS_KEY` | *(unset)* | mutual TLS from this door to the metadata and chunk servers (cluster mode only); the door itself still listens in plaintext |
 //!
 //! # CLUSTER MODE
@@ -203,6 +200,19 @@ fn main() {
     std::process::exit(2);
 }
 
+/// The time between lifecycle passes: 1000 to 86400000 ms, one hour when the variable is unset. Any other value,
+/// `0` included, is refused.
+#[cfg(all(feature = "http-server", feature = "replica-server", feature = "meta-server"))]
+fn resolve_lifecycle_interval(raw: Option<&str>) -> Result<u64, String> {
+    match raw {
+        None => Ok(3_600_000),
+        Some(raw) => match raw.trim().parse::<u64>() {
+            Ok(ms) if (1_000..=86_400_000).contains(&ms) => Ok(ms),
+            _ => Err(format!("MATRIXOBJECT_LIFECYCLE_INTERVAL_MS must be from 1000 to 86400000, and {raw:?} is not")),
+        },
+    }
+}
+
 #[cfg(all(feature = "http-server", feature = "replica-server", feature = "meta-server"))]
 #[allow(clippy::too_many_arguments)]
 fn run_cluster_gateway(
@@ -261,7 +271,6 @@ fn run_cluster_gateway(
         worker_threads,
     );
     let reclaim_write = write.clone();
-    let options_require_buckets = std::env::var("MATRIXOBJECT_REQUIRE_BUCKETS").map_or(true, |value| value.trim() != "0");
     let options = GatewayOptions {
         write,
         replica,
@@ -276,8 +285,6 @@ fn run_cluster_gateway(
             std::env::var("MATRIXOBJECT_CLUSTER_CACHE_MIB").ok().as_deref(),
             GatewayOptions::default().cache_bytes / (1024 * 1024),
         ) * 1024 * 1024,
-        // a bucket exists when it has been created; `MATRIXOBJECT_REQUIRE_BUCKETS=0` keeps buckets implicit
-        require_buckets: options_require_buckets,
         ..GatewayOptions::default()
     };
     let mut meta_options = ClusterGateway::meta_options(timeout);
@@ -298,15 +305,10 @@ fn run_cluster_gateway(
     }
     let open = Arc::new(open);
     let for_gateway = Arc::clone(&open);
-    // Objects are stored as chunk manifests only when asked, and the flag stays off by default until
-    // pages that no manifest names can be reclaimed.
-    // THE SWEEP THAT FREES THE PAGES NO MANIFEST NAMES runs in this process whenever objects are
-    // chunk manifests, and a door that would store them without it refuses to start.
+    // THE SWEEP THAT FREES THE PAGES NO MANIFEST NAMES always runs in this process: objects are chunk manifests.
     let reclaim = match matrixobjectstore_rs::cluster::reclaim_loop::resolve_reclaim(
-        std::env::var("MATRIXOBJECT_RECLAIM").ok().as_deref(),
         std::env::var("MATRIXOBJECT_RECLAIM_GRACE_MS").ok().as_deref(),
         std::env::var("MATRIXOBJECT_RECLAIM_INTERVAL_MS").ok().as_deref(),
-        std::env::var("MATRIXOBJECT_RECLAIM_ACK_LEAK").ok().as_deref(),
     ) {
         Ok(settings) => settings,
         Err(message) => {
@@ -339,49 +341,43 @@ fn run_cluster_gateway(
     let door = matrixobjectstore_rs::net::gateway_door::GatewayDoor::new(gateway);
     let drain_flag = door.drain_flag();
     // THE LIFECYCLE RULES OF THE BUCKETS are acted on by a pass every interval: expirations and abandoned multipart
-    // uploads. `MATRIXOBJECT_LIFECYCLE_INTERVAL_MS=0` turns the pass off; a pass is safe to repeat and to run from
-    // several doors at once.
-    let lifecycle_interval = match std::env::var("MATRIXOBJECT_LIFECYCLE_INTERVAL_MS") {
-        Ok(raw) => match raw.trim().parse::<u64>() {
-            Ok(ms) if ms == 0 || (1_000..=86_400_000).contains(&ms) => ms,
-            _ => {
-                eprintln!("MATRIXOBJECT_LIFECYCLE_INTERVAL_MS must be 0 or from 1000 to 86400000, and {raw:?} is not");
-                std::process::exit(2);
-            }
-        },
-        Err(_) => 3_600_000,
+    // uploads. A pass is safe to repeat and to run from several doors at once.
+    let lifecycle_interval = match resolve_lifecycle_interval(std::env::var("MATRIXOBJECT_LIFECYCLE_INTERVAL_MS").ok().as_deref()) {
+        Ok(ms) => ms,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
     };
-    if lifecycle_interval > 0 && options_require_buckets {
-        let stop = Arc::clone(&drain_flag);
-        std::thread::spawn(move || {
-            let mut waited = 0u64;
-            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                waited += 500;
-                if waited < lifecycle_interval {
-                    continue;
-                }
-                waited = 0;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |elapsed| elapsed.as_millis() as u64);
-                match for_lifecycle.run_lifecycle(now) {
-                    Ok(report) if report.expired + report.expired_versions + report.aborted_uploads + report.kept_locked > 0 => eprintln!(
-                        "lifecycle: {} expired, {} old versions expired, {} kept by a lock, {} uploads aborted in {} buckets",
-                        report.expired, report.expired_versions, report.kept_locked, report.aborted_uploads, report.buckets
-                    ),
-                    Ok(_) => {}
-                    Err(error) => eprintln!("lifecycle pass failed: {error}"),
-                }
+    let stop = Arc::clone(&drain_flag);
+    std::thread::spawn(move || {
+        let mut waited = 0u64;
+        while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            waited += 500;
+            if waited < lifecycle_interval {
+                continue;
             }
-        });
-    }
+            waited = 0;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_millis() as u64);
+            match for_lifecycle.run_lifecycle(now) {
+                Ok(report) if report.expired + report.expired_versions + report.aborted_uploads + report.kept_locked > 0 => eprintln!(
+                    "lifecycle: {} expired, {} old versions expired, {} kept by a lock, {} uploads aborted in {} buckets",
+                    report.expired, report.expired_versions, report.kept_locked, report.aborted_uploads, report.buckets
+                ),
+                Ok(_) => {}
+                Err(error) => eprintln!("lifecycle pass failed: {error}"),
+            }
+        }
+    });
     let gateway = Arc::new(door);
-    if let Some(settings) = reclaim {
+    {
         let stop = Arc::clone(&drain_flag);
         let for_reclaim = Arc::clone(&open);
         std::thread::spawn(move || {
-            matrixobjectstore_rs::cluster::reclaim_loop::ReclaimLoop::new(move || (*for_reclaim)(), reclaim_write, settings)
+            matrixobjectstore_rs::cluster::reclaim_loop::ReclaimLoop::new(move || (*for_reclaim)(), reclaim_write, reclaim)
                 .run(stop)
         });
     }
@@ -418,11 +414,9 @@ fn run_cluster_gateway(
     // Flushed: a supervisor reading this line from a pipe must not wait for a full buffer.
     let _ = std::io::Write::flush(&mut std::io::stdout());
     // The sweep's status follows the listening line: a supervisor reads the FIRST line for the address.
-    if let Some(settings) = reclaim {
-        println!("object_server reclaim_refused_page_objects=0 (a sweep refused because page objects exist is reported as a warning)");
-        println!("object_server reclaim grace_ms={} interval_ms={}", settings.grace_ms, settings.interval_ms);
-        let _ = std::io::Write::flush(&mut std::io::stdout());
-    }
+    println!("object_server reclaim_refused_page_objects=0 (a sweep refused because page objects exist is reported as a warning)");
+    println!("object_server reclaim grace_ms={} interval_ms={}", reclaim.grace_ms, reclaim.interval_ms);
+    let _ = std::io::Write::flush(&mut std::io::stdout());
     if !bound.ip().is_loopback() {
         println!(
             "WARNING: {bound} is not loopback and this server is unauthenticated, so anything              that can reach this port can read, overwrite and delete every object"
@@ -433,4 +427,19 @@ fn run_cluster_gateway(
         std::process::exit(1);
     }
     std::process::exit(0);
+}
+
+#[cfg(all(test, feature = "http-server", feature = "replica-server", feature = "meta-server"))]
+mod tests {
+    use super::resolve_lifecycle_interval;
+
+    #[test]
+    fn the_lifecycle_interval_is_one_hour_by_default_and_zero_or_out_of_range_is_refused() {
+        assert_eq!(resolve_lifecycle_interval(None), Ok(3_600_000));
+        assert_eq!(resolve_lifecycle_interval(Some(" 1000 ")), Ok(1_000));
+        assert_eq!(resolve_lifecycle_interval(Some("86400000")), Ok(86_400_000));
+        for refused in ["0", "999", "86400001", "x", "", "-1"] {
+            assert!(resolve_lifecycle_interval(Some(refused)).is_err(), "{refused:?}");
+        }
+    }
 }

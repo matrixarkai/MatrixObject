@@ -73,7 +73,14 @@ impl ObjectPlane for ForeignWriterPlane {
     fn append(&mut self, _: ObjectManifest, _: &[u8]) -> Result<ObjectManifest, PlaneFailure> {
         Err(ObjectError::InvalidArgument("unexpected append".into()).into())
     }
-    fn read(&mut self, _: &str, _: &str) -> Result<(ObjectManifest, Vec<u8>), ObjectError> {
+    fn read(&mut self, bucket: &str, _: &str) -> Result<(ObjectManifest, Vec<u8>), ObjectError> {
+        // the bucket "b" has its record
+        if bucket == crate::bucket_config::SYSTEM_BUCKET {
+            let bytes = crate::bucket_config::BucketConfig::new(0).to_bytes()?;
+            let mut record = manifest(1, 0, &bytes);
+            record.bucket = bucket.into();
+            return Ok((record, bytes));
+        }
         self.0
             .lock()
             .unwrap()

@@ -156,18 +156,7 @@ fn acl_xml() -> String {
 }
 
 impl ClusterGateway {
-    /// `ListBuckets`: buckets are implicit in the replica plane (one exists as soon as an object is
-    /// published under it) and the plane cannot enumerate them, so this names the bucket the
-    /// gateway was started for.
-    pub(super) fn list_buckets(&self, request: &Request) -> Response {
-        if !matches!(request.method.as_str(), "GET" | "HEAD") {
-            return method_not_allowed("GET, HEAD", "/");
-        }
-        s3::xml_response(200, s3::list_all_my_buckets_xml(&[self.bucket_hint.clone()]))
-    }
-
-    /// `DeleteBucket`: refused while any live object remains, otherwise a no-op (a bucket has no
-    /// existence apart from its objects).
+    /// `DeleteBucket`: refused while any live object remains, otherwise the bucket's record is removed.
     pub(super) fn delete_bucket(&self, bucket: &str) -> Response {
         let resource = format!("/{bucket}");
         let held = self.with_plane(|plane| {
@@ -192,7 +181,6 @@ impl ClusterGateway {
                 "the bucket still holds objects",
                 &resource,
             ),
-            Ok(false) if !self.options.require_buckets => Response::status(204),
             Ok(false) => match self.drop_bucket_record(bucket) {
                 Ok(()) => Response::status(204),
                 Err(error) => error_response(error, &resource, true),

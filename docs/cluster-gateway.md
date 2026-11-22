@@ -26,17 +26,16 @@ fall back and nothing returns a plausible-looking wrong answer.
 | `PUT /{b}/{k}` + `x-amz-copy-source` | `copy_object_atomic` on the SDK plane: the destination names the source's extents, no data moves; the destination's generation is the compare-and-swap |
 | `POST /{b}?delete` | one `delete_object` per key; an absent key is reported deleted |
 | `POST /{b}/{k}?uploads`, `PUT ?partNumber=&uploadId=`, `POST ?uploadId=`, `DELETE ?uploadId=`, `GET ?uploadId=`, `GET /{b}?uploads` | multipart, below |
-| `GET /` | the bucket the gateway was started for (buckets are implicit and cannot be enumerated) |
-| `DELETE /{b}` | 409 `BucketNotEmpty` while any live object remains, else 204 |
-| `GET /{b}?versioning`, `GET /{b}?acl`, `GET /{b}/{k}?acl`, `GET /{b}/{k}?tagging` | fixed answers: not versioned, private to the owner, no tags |
-| `PUT /{b}`, `HEAD /{b}`, `GET /{b}?location` | answered without a cluster call: buckets are implicit |
+| `GET /` | the buckets that have a record, in order |
+| `DELETE /{b}` | 409 `BucketNotEmpty` while any live object remains, else 204 and the bucket's record is removed |
+| `GET /{b}?acl`, `GET /{b}/{k}?acl`, `GET /{b}/{k}?tagging` | fixed answers: private to the owner, no tags |
+| `PUT /{b}`, `HEAD /{b}` | create and read the bucket's record; a request to a bucket with no record is refused with `NoSuchBucket` |
+| `GET /{b}?location` | answered without a cluster call |
 | `GET /healthz` | one `list_manifests` call |
 
 Buckets that are created and configured, object attributes (content type, metadata, tags), object lock, quotas,
-CORS, lifecycle rules, versioning (`versionId`, `versions`) and the change feed are served when buckets are explicit
-(`MATRIXOBJECT_REQUIRE_BUCKETS`, on by default in `object_server`) and are described in
-[gateway-buckets-and-object-features.md](gateway-buckets-and-object-features.md). A gateway with implicit buckets
-answers the fixed values in the table above for those requests. Refused with `NotImplemented`: ACL changes,
+CORS, lifecycle rules, versioning (`versionId`, `versions`) and the change feed are described in
+[gateway-buckets-and-object-features.md](gateway-buckets-and-object-features.md). Refused with `NotImplemented`: ACL changes,
 `UploadPartCopy`, the bucket policy as an access rule (it is stored and read back, not evaluated). `If-None-Match: *`
 on a PUT is honoured.
 
@@ -144,13 +143,10 @@ manifest. The door runs a sweep that frees them, in a thread of its own process,
 
 | variable | default | meaning |
 |---|---|---|
-| `MATRIXOBJECT_RECLAIM` | `on` | `off` is the only way to turn it off |
 | `MATRIXOBJECT_RECLAIM_GRACE_MS` | `3600000` | a page must stay unnamed this long before it is freed; 60000 to 604800000. Keep it longer than a write takes from its first page to its publication |
 | `MATRIXOBJECT_RECLAIM_INTERVAL_MS` | a quarter of the grace | time between rounds, 1000 up to the grace |
-| `MATRIXOBJECT_RECLAIM_ACK_LEAK` | unset | `1` lets a chunk-object door start with `MATRIXOBJECT_RECLAIM=off` |
 
-A door that stores chunk objects with the sweep off **refuses to start** unless the leak is acknowledged. A
-value that is out of range or not a number is refused, never replaced by the default.
+The sweep always runs. A value that is out of range or not a number is refused, never replaced by the default.
 
 Known limits:
 

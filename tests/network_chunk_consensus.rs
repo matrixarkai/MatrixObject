@@ -1140,7 +1140,8 @@ mod coupled_groups {
             let id = (i + 1).to_string();
             let state = self.root.join(i.to_string());
             let catalog = self.root.join("catalog.bin");
-            let checkpoint_bytes = self.checkpoint_bytes.to_string();
+            // 0 means "the server's default interval": the server refuses 0 as a setting, and an empty value is the default
+            let checkpoint_bytes = if self.checkpoint_bytes == 0 { String::new() } else { self.checkpoint_bytes.to_string() };
             let request_threads = self.request_threads.to_string();
             let mut environment: Vec<(&str, &str)> = vec![
                 ("MATRIXOBJECT_METASERVER_ADDR", &self.api[i]),
@@ -1890,7 +1891,7 @@ mod coupled_groups {
         }
         group_usage(&metadata.api, &groups, &[]);
         let options = ObjectWriteOptions { page_bytes: 4096, target_groups: 2, max_parallel_groups: 2, replica: chunk_options(), ..Default::default() };
-        let gateway_options = GatewayOptions { write: options.clone(), replica: options.replica.clone(), require_buckets: true, ..Default::default() };
+        let gateway_options = GatewayOptions { write: options.clone(), replica: options.replica.clone(), ..Default::default() };
         let api = metadata.api.clone();
         let open = move || {
             RemoteMetaClient::connect_catalog(

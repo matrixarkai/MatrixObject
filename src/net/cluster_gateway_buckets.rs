@@ -7,8 +7,7 @@
 //! A bucket is the record [`crate::bucket_config::BucketConfig`], stored as an ordinary chunk object in the
 //! reserved system bucket. It exists exactly when its record does. A change to it is a compare-and-swap on the
 //! record's generation, retried when another writer got in first, so two clients configuring one bucket never
-//! overwrite each other. Whether a request to a bucket that has no record is refused is a gateway option
-//! ([`GatewayOptions::require_buckets`]); a gateway embedded in a process that never creates buckets leaves it off.
+//! overwrite each other. A request to a bucket that has no record is refused with `NoSuchBucket`.
 use super::*;
 use crate::bucket_config::{self as bc, BucketConfig, SYSTEM_BUCKET};
 
@@ -111,13 +110,10 @@ impl ClusterGateway {
         }
     }
 
-    /// The refusal for a request to a bucket that has no record, when the gateway requires one.
+    /// The refusal for a request to a bucket that has no record.
     pub(super) fn bucket_gate(&self, bucket: &str) -> Option<Response> {
         if bucket == SYSTEM_BUCKET {
             return Some(s3::error_response(s3::S3ErrorCode::NoSuchBucket, "the bucket does not exist", &format!("/{bucket}")));
-        }
-        if !self.options.require_buckets {
-            return None;
         }
         if let Ok(known) = self.buckets_known.lock() {
             if let Some((at, exists)) = known.get(bucket) {
@@ -148,10 +144,6 @@ impl ClusterGateway {
         if bucket == SYSTEM_BUCKET {
             return s3::error_response(s3::S3ErrorCode::InvalidArgument, "that name is reserved", &resource);
         }
-        // where buckets are implicit there is nothing to create, and nothing is asked of the cluster
-        if !self.options.require_buckets {
-            return Response::status(200);
-        }
         let lock = request.header("x-amz-bucket-object-lock-enabled").is_some_and(|v| v.eq_ignore_ascii_case("true"));
         let mut config = BucketConfig::new(now_ms());
         if lock {
@@ -170,10 +162,6 @@ impl ClusterGateway {
     /// `HEAD /{bucket}`.
     pub(super) fn head_bucket(&self, bucket: &str) -> Response {
         let resource = format!("/{bucket}");
-        // where buckets are implicit every bucket exists, and nothing is asked of the cluster
-        if !self.options.require_buckets {
-            return Response::status(200);
-        }
         match self.load_bucket(bucket) {
             Ok(Some(_)) => Response::status(200),
             Ok(None) => s3::error_response(s3::S3ErrorCode::NoSuchBucket, "the bucket does not exist", &resource),
@@ -212,12 +200,7 @@ impl ClusterGateway {
             return method_not_allowed("GET, HEAD", "/");
         }
         match self.bucket_names() {
-            Ok(mut names) => {
-                if names.is_empty() && !self.options.require_buckets {
-                    names.push(self.bucket_hint.clone());
-                }
-                s3::xml_response(200, s3::list_all_my_buckets_xml(&names))
-            }
+            Ok(names) => s3::xml_response(200, s3::list_all_my_buckets_xml(&names)),
             Err(error) => error_response(error, "/", true),
         }
     }

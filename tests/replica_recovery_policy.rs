@@ -16,17 +16,11 @@ fn invalid_replica_persistence_settings_are_refused_before_serving() {
             &["", "replica", "PEERS"][..],
             "MATRIXOBJECT_REPLICA_LOCAL_RECOVERY must be xor or peers",
         ),
-        (
-            "MATRIXOBJECT_REPLICA_GROUP_COMMIT",
-            &["", "yes", "1", "TRUE"][..],
-            "MATRIXOBJECT_REPLICA_GROUP_COMMIT must be true or false",
-        ),
     ] {
         for mode in modes {
             let mut child = Command::new(env!("CARGO_BIN_EXE_chunkserver"))
                 .env("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0")
                 .env_remove("MATRIXOBJECT_REPLICA_LOCAL_RECOVERY")
-                .env_remove("MATRIXOBJECT_REPLICA_GROUP_COMMIT")
                 .env(setting, mode)
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())

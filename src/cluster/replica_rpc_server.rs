@@ -106,10 +106,6 @@ pub struct ReplicaNodeOptions {
     /// callers. Configured replicated Star deployments can use peer repair instead;
     /// changing this does not change journal sync, checksums or client write quorum.
     pub local_recovery_sidecar: bool,
-    /// Share journal synchronization across already waiting standalone mutations.
-    /// Defaults to true; no deliberate batch-fill delay. Ignored without a local
-    /// journal and for Raft groups. Every successful reply still follows sync.
-    pub journal_group_commit: bool,
     /// Opt-in bounded deferred completion for standalone journal group commits.
     /// Frees request executors while durability is pending; defaults to false.
     pub journal_deferred_completion: bool,
@@ -147,7 +143,6 @@ impl Default for ReplicaNodeOptions {
             tls: None,
             maintenance: false,
             local_recovery_sidecar: true,
-            journal_group_commit: true,
             journal_deferred_completion: false,
             max_payload_bytes: MAX_PAYLOAD_BYTES,
             capacity_bytes: 256 * 1024 * 1024,
@@ -512,7 +507,7 @@ impl ReplicaNodeServer {
         #[cfg(not(feature = "chunk-consensus"))]
         let standalone = true;
         let group_commit =
-            if standalone && self.options.journal_group_commit && self.has_local_journal {
+            if standalone && self.has_local_journal {
                 Some(star_group_commit::Committer::start_with_deferred(
                     Arc::clone(&self.replica),
                     self.options.max_payload_bytes,

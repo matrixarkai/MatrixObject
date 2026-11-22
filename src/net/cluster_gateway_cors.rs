@@ -41,9 +41,6 @@ fn allow_origin(rule: &CorsRule, origin: &str) -> String {
 
 impl ClusterGateway {
     fn cors_rules(&self, request: &Request) -> Option<std::sync::Arc<crate::bucket_config::BucketConfig>> {
-        if !self.options.require_buckets {
-            return None;
-        }
         let rules = self.bucket_rules(bucket_of(request)?).ok().flatten()?;
         (!rules.cors.is_empty()).then_some(rules)
     }
