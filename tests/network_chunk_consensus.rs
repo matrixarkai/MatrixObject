@@ -1587,6 +1587,280 @@ mod coupled_groups {
         health(&mut meta, true, 4, 4);
     }
 
+    #[test]
+    #[ignore = "requires a private network namespace; use tools/network_partition_test.sh"]
+    fn live_peer_partitions_preserve_objects_and_recover() {
+        node_regime::network::require_isolated();
+        probe_recovery(true);
+    }
+
+    #[cfg(feature = "peer-tls")]
+    #[test]
+    #[ignore = "requires a private network namespace; use tools/network_partition_test.sh"]
+    fn authenticated_live_peer_partitions_preserve_objects_and_recover() {
+        node_regime::network::require_isolated();
+        let certificates = node_regime::tls::TlsFiles::new();
+        for i in 0..3 {
+            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
+        }
+        probe_recovery_with_transport(true, Some(certificates.root.clone()));
+    }
+
+    #[cfg(feature = "peer-tls")]
+    #[test]
+    #[ignore = "requires a private network namespace; use tools/network_partition_test.sh"]
+    fn authenticated_api_and_peer_partitions_preserve_objects() {
+        node_regime::network::require_isolated();
+        let certificates = node_regime::tls::TlsFiles::new();
+        for i in 0..3 {
+            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
+        }
+        probe_recovery_with_security(true, Some(certificates.root.clone()), true);
+    }
+
+    fn probe_recovery(partition: bool) {
+        probe_recovery_with_transport(partition, None);
+    }
+
+    fn probe_recovery_with_transport(partition: bool, peer_tls: Option<PathBuf>) {
+        probe_recovery_with_security(partition, peer_tls, false);
+    }
+
+    fn probe_recovery_with_security(partition: bool, peer_tls: Option<PathBuf>, api_tls: bool) {
+        fn wait_for_write_placement(metadata: &MetadataGroup, groups: &[Group]) {
+            // placement admits the workload when a chunk object spanning every group can be written
+            use matrixobjectstore_rs::cluster::ObjectWriteOptions;
+            static ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let mut client = metadata.ready();
+            let options = ObjectWriteOptions {
+                page_bytes: 256,
+                target_groups: groups.len() as u32,
+                max_parallel_groups: groups.len(),
+                replica: ReplicaClientOptions { tls: api_tls_config(metadata.api_tls.as_ref()), ..Default::default() },
+                ..Default::default()
+            };
+            let until = Instant::now() + Duration::from_secs(30);
+            loop {
+                let key = format!("probe/readiness/{:08}", ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+                let observed = match client.write_chunk_object("probe-bucket", &key, None, &[7u8; 1025], &options, 512) {
+                    Ok(_) => return,
+                    Err(error) => format!("{error:?}"),
+                };
+                assert!(Instant::now() < until, "recovered placement did not admit the workload: {observed}; nodes={:?}", client.list_placement_nodes());
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        let mut groups: Vec<_> = (1..=2)
+            .map(|id| {
+                let mut group = Group::configured(4 * 1024 * 1024);
+                group.peer_tls = peer_tls.clone();
+                group.api_tls = if api_tls { peer_tls.clone() } else { None };
+                group.group_id = id;
+                group.max_pages = 1024;
+                group.checkpoint_bytes = 16 * 1024;
+                group.heartbeat_ms = "1000";
+                group
+            })
+            .collect();
+        let mut metadata = MetadataGroup::for_groups_with_threads(&groups, 8);
+        for group in &mut groups {
+            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
+            for i in 0..3 {
+                group.start(i);
+            }
+            group.leader();
+        }
+        let group_id = metadata
+            .ready()
+            .metadata_group_identity()
+            .unwrap()
+            .group_id
+            .to_string();
+        group_usage(&metadata.api, &groups, &[]);
+        let endpoints = metadata.api.join(",");
+        let api_environment = api_tls_environment(metadata.api_tls.as_ref());
+        let replica_options = ReplicaClientOptions { tls: api_tls_config(metadata.api_tls.as_ref()), ..Default::default() };
+        let run = |mode: &str, bytes: &str, name: &str| {
+            std::process::Command::new(env!("CARGO_BIN_EXE_distributed_probe"))
+                .envs(api_environment.iter().map(|(name, value)| (*name, value)))
+                .args([
+                    mode,
+                    "--metadata",
+                    &endpoints,
+                    "--group",
+                    &group_id,
+                    "--bucket",
+                    "probe-bucket",
+                    "--run",
+                    name,
+                    "--objects",
+                    "12",
+                    "--bytes",
+                    bytes,
+                    "--workers",
+                    "3",
+                    "--groups",
+                    "2",
+                    "--page-bytes",
+                    "256",
+                ])
+                .output()
+                .unwrap()
+        };
+        let check = |output: std::process::Output| {
+            assert!(
+                output.status.success(),
+                "stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(
+                text.contains("phase=verify completed=12 requested=12"),
+                "{text}"
+            );
+            assert!(!text.contains("failed=true"), "{text}");
+        };
+        wait_for_write_placement(&metadata, &groups);
+        check(run("write", "1025", "recovery"));
+        let (_, first) = metadata
+            .ready()
+            .read_chunk_object(
+                "probe-bucket",
+                "probe/recovery/00000000",
+                &matrixobjectstore_rs::cluster::ObjectWriteOptions { page_bytes: 256, replica: replica_options.clone(), ..Default::default() },
+            )
+            .unwrap();
+        // Keep workload version 1 reproducible across client upgrades.
+        assert_eq!(
+            &first[..16],
+            &[48, 4, 40, 164, 67, 125, 127, 187, 26, 250, 23, 127, 169, 118, 248, 113]
+        );
+        assert!(!run("write", "1025", "recovery").status.success());
+        assert!(!run("verify", "1024", "recovery").status.success());
+        check(run("verify", "1025", "recovery"));
+        if partition {
+            let leaders: Vec<_> = groups.iter().map(Group::leader).collect();
+            let endpoint = metadata.ready().endpoint().to_owned();
+            let meta_leader = metadata
+                .api
+                .iter()
+                .position(|api| api == &endpoint)
+                .unwrap();
+            let mut addresses: Vec<_> = groups
+                .iter()
+                .zip(&leaders)
+                .map(|(group, leader)| group.peers[&(*leader as u64 + 1)])
+                .collect();
+            addresses.push(
+                metadata
+                    .peers
+                    .split(',')
+                    .nth(meta_leader)
+                    .unwrap()
+                    .split_once('@')
+                    .unwrap()
+                    .1
+                    .parse()
+                    .unwrap(),
+            );
+            let mut blocked = node_regime::network::BlockPeers::new(&addresses);
+            for (group, isolated) in groups.iter().zip(&leaders) {
+                let until = Instant::now() + Duration::from_secs(30);
+                while group.leader() == *isolated {
+                    assert!(
+                        Instant::now() < until,
+                        "isolated data leader still serves quorum reads"
+                    );
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                assert!(group.client(*isolated).ping().is_err());
+            }
+            let until = Instant::now() + Duration::from_secs(30);
+            while metadata.ready().endpoint() == endpoint {
+                assert!(
+                    Instant::now() < until,
+                    "isolated metadata leader still serves quorum reads"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let mut isolated =
+                RemoteMetaClient::connect(&endpoint, &MetaClientOptions { tls: api_tls_config(metadata.api_tls.as_ref()), ..Default::default() }).unwrap();
+            assert!(isolated
+                .read_chunk_manifest("probe-bucket", "probe/recovery/00000000")
+                .is_err());
+            check(run("verify", "1025", "recovery"));
+            wait_for_write_placement(&metadata, &groups);
+            check(run("write", "1025", "partition"));
+            for group in &mut groups {
+                for node in &mut group.nodes {
+                    assert!(node.as_mut().unwrap().child.try_wait().unwrap().is_none());
+                }
+            }
+            for node in &mut metadata.nodes {
+                assert!(node.as_mut().unwrap().child.try_wait().unwrap().is_none());
+            }
+            blocked.assert_dropped();
+            blocked.heal();
+            // Remove the new leaders, so the healed voters must join the next write quorums.
+            for (group, isolated) in groups.iter_mut().zip(&leaders) {
+                let leader = group.leader();
+                assert_ne!(leader, *isolated);
+                group.kill(leader);
+            }
+            let leader = metadata.ready().endpoint().to_owned();
+            let leader = metadata.api.iter().position(|api| api == &leader).unwrap();
+            assert_ne!(leader, meta_leader);
+            metadata.kill(leader);
+            metadata.ready();
+            for group in &groups {
+                group.leader();
+            }
+            wait_for_write_placement(&metadata, &groups);
+            check(run("write", "1025", "healed"));
+        } else {
+            for group in &mut groups {
+                let leader = group.leader();
+                group.kill(leader);
+            }
+            let leader = metadata.ready().endpoint().to_owned();
+            let leader = metadata.api.iter().position(|api| api == &leader).unwrap();
+            metadata.kill(leader);
+        }
+        metadata.ready();
+        for group in &groups {
+            group.leader();
+        }
+        check(run("verify", "1025", "recovery"));
+        for group in &mut groups {
+            for i in 0..3 {
+                if group.nodes[i].is_some() {
+                    group.kill(i);
+                }
+            }
+        }
+        for i in 0..3 {
+            if metadata.nodes[i].is_some() {
+                metadata.kill(i);
+            }
+        }
+        for i in 0..3 {
+            metadata.start(i);
+        }
+        metadata.ready();
+        for group in &mut groups {
+            for i in 0..3 {
+                group.start(i);
+            }
+            group.leader();
+        }
+        check(run("verify", "1025", "recovery"));
+        if partition {
+            check(run("verify", "1025", "partition"));
+            check(run("verify", "1025", "healed"));
+        }
+    }
+
     /// THE RAFT-MODE OBJECT TEST: chunk objects over two Raft chunk groups of three voters each, through the
     /// leader loss of the metadata plane and of every group, a race between two writers, an append, and a
     /// restart of everything. (The Star mode is exercised against real chunk servers in the metadata tests.)
