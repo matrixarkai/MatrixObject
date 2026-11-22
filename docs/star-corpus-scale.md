@@ -2,7 +2,7 @@
 
 The corpus workload measures fixed-size data requests against journal-backed
 Star replicas. Background page count and manifest extent count are different
-variables: the append traffic measurements in `star-append-amplification.md`
+variables: the append traffic measurements in `the retired page-granular guides`
 vary the latter. Neither bounded messages nor a small correctness run establish
 flat latency at large stored-data volumes.
 

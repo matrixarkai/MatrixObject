@@ -226,7 +226,7 @@ pub use server::{
 #[cfg(feature = "meta-server")]
 pub use directory::{ControlPlaneStatus, MetaDirectory};
 #[cfg(feature = "meta-server")]
-pub use meta_client::{MetaCallOutcome, MetaClientOptions, ReadLeaseCache, RemoteMetaClient};
+pub use meta_client::{MetaCallOutcome, MetaClientOptions, RemoteMetaClient};
 #[cfg(feature = "meta-server")]
 pub use meta_message::{
     CommittedPlacement, ManifestRangeEntry, ManifestRouteEntry, MetaReply, MetaRequest, PlacementAssignment,
@@ -259,10 +259,6 @@ pub use log_op::{LogOpReply, LogOpRequest};
 mod chunk_log;
 #[cfg(feature = "replica-server")]
 pub use chunk_log::{ChunkLogError, ChunkLogReader, ChunkLogWriter, LogCallError, SealedFooter, LOG_QUORUM, LOG_REPLICAS};
-#[cfg(all(feature = "replica-server", feature = "meta-server"))]
-mod log_object;
-#[cfg(all(feature = "replica-server", feature = "meta-server"))]
-pub use log_object::{renew_leases, LogMeta, LogObject, LogObjectError, LogObjectOptions, LogObjectReader};
 #[cfg(all(test, feature = "replica-server"))]
 mod chunk_log_tests;
 #[cfg(feature = "replica-server")]
@@ -332,17 +328,12 @@ mod meta_checkpoint;
 mod object_client;
 pub mod reclaim_loop;
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
-pub use object_client::{
-    ChunkWriteFailure, ObjectWriteFailure, ObjectWriteOptions, OrderedObjectAppendFailure,
-    ReclaimPlan, ReclaimReport, StagedObjectAppend, StagedObjectAppendReceipt,
-};
+pub use object_client::{ChunkWriteFailure, ObjectWriteFailure, ObjectWriteOptions, ReclaimPlan, ReclaimReport};
+
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
-mod append_failover;
+mod chunk_failover;
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
-pub use append_failover::{
-    read_abandoned_log, AbandonedAttempt, AbandonedRecord, AppendFailoverPolicy, FailoverAppend,
-    FailoverFailure,
-};
+pub use chunk_failover::{ChunkFailover, ChunkFailoverFailure, FailoverPolicy};
 
 #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
 mod peer_delivery;

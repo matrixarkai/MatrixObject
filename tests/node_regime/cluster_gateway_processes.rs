@@ -482,33 +482,3 @@ fn killing_the_gateway_mid_append_then_resolving_through_another_stores_every_ap
     }
 }
 
-
-#[test]
-fn compact_sdk_startup_creates_and_appends_after_an_existing_publication_fence() {
-    use matrixobjectstore_rs::net::cluster_gateway::{ClusterGateway, GatewayOptions};
-    use matrixobjectstore_rs::net::{Request, RequestHandler};
-    fn request(method: &str, target: &str, headers: &[(&str, String)], body: &[u8]) -> Request {
-        Request { method: method.into(), path: target.into(), query: String::new(), headers: headers.iter().map(|(name, value)| (name.to_string(), value.clone())).collect(), body: body.to_vec(), keep_alive: false }
-    }
-    let cluster = Cluster::with_env(&[]);
-    cluster.meta_client().enable_publication_fence().unwrap();
-    for attempt in 0..2 {
-        let endpoints = cluster.endpoints.clone();
-        let group_id = cluster.group_id;
-        let gateway = ClusterGateway::over_sdk_with_publication_fence(
-            move || RemoteMetaClient::connect_raft_catalog(&endpoints, group_id, &MetaClientOptions {
-                connect_timeout: Duration::from_secs(3), read_timeout: Duration::from_secs(30), write_timeout: Duration::from_secs(30), ..Default::default()
-            }),
-            GatewayOptions { compact_append: true, reserve_next: true, ..Default::default() },
-            "gateway",
-        ).unwrap();
-        let target = format!("/gateway/startup-{attempt}");
-        for (headers, bytes) in [(Vec::new(), b"seed".as_slice()), (vec![("x-amz-write-offset-bytes", "4".to_string())], b"one".as_slice()), (vec![("x-amz-write-offset-bytes", "7".to_string())], b"two".as_slice())] {
-            let reply = gateway.handle(&request("PUT", &target, &headers, bytes));
-            assert!((200..300).contains(&reply.status), "startup {attempt}: {} {:?}", reply.status, reply.body);
-        }
-        let reply = gateway.handle(&request("GET", &target, &[], &[]));
-        assert_eq!(reply.status, 200);
-        assert_eq!(reply.body, b"seedonetwo");
-    }
-}

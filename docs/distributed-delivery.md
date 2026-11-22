@@ -11,9 +11,7 @@ WSL; these runs establish recovery behavior, not multi-host performance.
 | Star durability | Routed three-member groups require three durable write acknowledgements and one readable copy. Repair selects a majority source independently. | `docs/chunk-group-catalog.md`, `docs/star-repair-worker.md`; journal-backed process recovery tests |
 | Metadata consensus | Current-term quorum reads, conditional manifest publication, binary protobuf outcomes, checkpoint recovery and membership changes | `docs/metadata-consensus.md`; `network_metadata_consensus` |
 | Data consensus | Optional Raft groups, batched conditional writes and digest probes, verified routing, leader failover | `docs/chunk-consensus.md`; `conditional_digest_batches_replicate_ordered_page_outcomes` |
-| Object access | Immutable extents, bounded authenticated range reads, suffix-only append, resumable unpublished writes and appends, metadata-only copy | `docs/object-manifests.md`, `docs/authenticated-object-reads.md`; multi-group process tests |
 | Repair | Bounded resumable inventory, head-first checks, periodic payload scrubs, retry backoff and isolation of stopped groups | `docs/star-repair-worker.md`, `docs/star-repair-scale.md` |
-| Catalog enumeration | Bounded cross-bucket traversal, tombstones and revision-checked continuation through metadata failover | `docs/manifest-listing.md`; `manifest_listing_continues_after_leader_loss_and_preserves_tombstones` |
 
 The default routed Star threshold is `N=3, W=3, R=1`. A missing member can
 therefore leave existing objects readable while preventing new publication.
@@ -36,22 +34,22 @@ its fenced staging ownership expires. Retried operations must distinguish an
 unconfirmed publication from a refused publication.
 
 Explicit durable generation handles are now available through
-`retain_manifest` and `read_retained_object`; see `manifest-retention.md`.
+`retain_manifest` and `read_retained_object`; see `the retired page-granular guides`.
 These handles require explicit release and do not change ordinary reads.
 Renewable, expiring sessions and an automatic session-read helper are available
-through `read-session-leases.md`. Ordinary whole-object, range and batch reads
+through `the retired page-granular guides`. Ordinary whole-object, range and batch reads
 now acquire exact-generation sessions in fenced catalogs. Native batch selection,
 duplicate-grant sharing and cleanup on failed admission are enforced. Selected
 grant acknowledgements omit the full manifest and are bounded at 63 bytes. Unfenced
 catalogs and pre-activation readers still require migration and drain; session
 journal decisions are independent of extent-list size.
 Explicit owned allocation, publication, resume and abort are available through
-`staged-object-writes.md`. A durable publication fence and atomic live-source
-copy are available through `publication-admission.md`. Opt-in staged deadlines,
-renewal and bounded automatic cleanup are available through `staged-ownership-leases.md`.
+`the retired page-granular guides`. A durable publication fence and atomic live-source
+copy are available through `the retired page-granular guides`. Opt-in staged deadlines,
+renewal and bounded automatic cleanup are available through `the retired page-granular guides`.
 Explicit durable chunk namespace closure and immutable repair pins are available
 through `chunk-namespace-fences.md`. Persistable allocation retry identity is
-available through `staged-request-identity.md`. Automatic fence propagation and
+available through `the retired page-granular guides`. Automatic fence propagation and
 reader rollout and drain remain unfinished.
 Keep reclamation disabled while completing them.
 
@@ -124,7 +122,7 @@ Retain bounded batching and connection reuse. Optimize rollback copying,
 checkpoint stalls and scan allocations only after the relevant counters identify
 them as costs. Local WSL results do not establish multi-host latency or throughput.
 Client publication allocation measurements and outcome reuse are recorded in
-`publication-allocations.md`; they do not measure durable write amplification.
+`the retired page-granular guides`; they do not measure durable write amplification.
 Compression, erasure-coded placement, tiering and raw-device storage require
 separate durability and recovery designs before being advertised remotely.
 
@@ -136,7 +134,6 @@ measure performance at the same replication thresholds before tuning them.
 
 | Workstream | Current status | Next deliverable and acceptance |
 |---|---|---|
-| Write topology and durability | Star is the default, `N=3, W=3, R=1`; Raft is optional. `append_object_with_failover` keeps an append stream acknowledged through one stopped member by re-planning on another group (`member-failover.md`); refused and uncertain publication stay separate return values | Measured on one metadata server only: repeat with a metadata quorum; record abandoned pages durably in metadata instead of returning them to the caller |
 | Chunk sizing and append boundaries | Page and extent limits exist; a page is not a storage chunk | Add an explicit configurable chunk policy with 64 MiB default and up to 512 MiB, without splitting an atomic append across chunks; test rollover and restart |
 | Bounded asynchronous I/O | Connection reuse and bounded batches exist | Audit client admission independently: configurable 16 in-flight requests and 100 queued requests; refuse overload before allocating or mutating |
 | Writer sessions and ordered completion | Staging ownership, generation CAS and reader retention have distinct contracts | Audit process-owned writer renewal and expiry, forced takeover fencing, and a contiguous append acknowledgement frontier under reordered requests and replies; test delayed old-owner packets after takeover |
@@ -165,7 +162,7 @@ contracts, restart tests and an update to this ledger.
 
 ## Star append cost
 
-[Star append journal and traffic cost](star-append-amplification.md) records
+Star append journal and traffic cost records
 an owned, fenced append through three metadata voters and three Star replicas.
 A fixed 4-KiB suffix added 12,552 bytes to the three data journals at every tested
 prefix size. At 4,095 prior extents, publication sent 604,919 bytes and the three
@@ -206,15 +203,15 @@ checkpoint/repair interference or TemporalStore integration.
 | 6 | Physical reclamation and API expansion | Recover interrupted deletion without reclaiming retained or copied data; add conditional delete, multipart and version access through remote clients with restart tests |
 | 7 | Cross-service append and foreground performance | TemporalStore local and replicated binary outcomes; report logical, network and durable bytes, CPU, allocations and latency with concurrent repair and checkpoints |
 
-[Compact staged append publication](compact-staged-append.md) implements the
-explicit publication protocol for the first milestone. [Compact append planning](compact-append-planning.md)
+Compact staged append publication implements the
+explicit publication protocol for the first milestone. Compact append planning
 implements exact-generation selection without transferring the stored prefix;
 catalog preparation and hashing remain separate work. Keep physical reclamation disabled
 until metadata-driven closure and stale-node isolation are complete. Aligned
 block storage, compression, distributed EC and tier movement follow these safety
 milestones and require their own durable formats and recovery workloads.
 
-[Immutable catalog sharing](manifest-catalog-sharing.md) records the catalog
+Immutable catalog sharing records the catalog
 clone allocation measurement, canonical-image checks and exact-entry rollback
 checks. Sharing removes extent-list copies from snapshot capture and undo
 capture; constructing new candidates and serializing checkpoints remain separate
@@ -251,7 +248,7 @@ to worldwide contributions throughout delivery.
 
 ## Concurrent reader evidence
 
-The reproducible local release workload in [leased-read-scale.md](leased-read-scale.md)
+The reproducible local release workload in the retired page-granular guides
 exercises three metadata voters and three Star replicas with 1–32 clients,
 1–1,024 extents per fixed-size object, whole reads and four-object batches. It
 verifies payloads, zero data-journal growth, empty retained catalogs after every
@@ -263,6 +260,6 @@ still require further profiling and optimization.
 
 Metadata route replies now borrow manifest data during sizing and framing and
 write directly into one output buffer. The measured allocation counts and wire
-compatibility checks are in [manifest-route-encoding.md](manifest-route-encoding.md).
+compatibility checks are in the retired page-granular guides.
 This removes codec copies; fragmentation, retained catalog work, per-object grant
 mutations, checkpoint/repair interference and physical I/O still need profiling.

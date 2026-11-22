@@ -49,6 +49,31 @@ completion is refused with 400 and the upload stays usable. A part's etag is its
 generation, so uploading a part again replaces it and invalidates the old etag. Parts that could
 not be removed after a completion are invisible and are removed by a later abort.
 
+## What the retired embedded door answered, and where each is tested now
+
+The embedded store had its own HTTP door. The cluster gateway answers the same S3 requests over chunk objects.
+Each row says what happens now and which test proves it against real metadata and chunk processes (the same
+scenarios also run against a fake plane in the gateway's unit tests, so a plane cannot change a verb's meaning).
+
+| request | now | tested end to end by |
+|---|---|---|
+| `PUT`, `GET`, `HEAD`, `DELETE` of an object | served | `a_chunk_object_round_trips_through_a_star_quorum_and_a_wrong_digest_fails_its_read` (Star), `chunk_objects_over_raft_groups_survive_leader_loss_races_appends_and_total_restart` (Raft, through the client) |
+| append (`x-amz-write-offset-bytes`) and its attempt-id resolve | served | the same Star test (append, wrong offset, resolve landed / ambiguous / absent, fence, retry lands once) |
+| append through the loss of one data node | served by `append_chunk_object_with_failover` | `a_chunk_write_and_append_switch_groups_when_a_member_of_the_chosen_group_stops` |
+| `Range` (closed, open-ended, suffix) | served | `the_s3_door_over_chunk_objects_serves_listing_conditions_copy_batch_multipart_and_ranges` |
+| `ListObjectsV2` with prefix, delimiter, paging | served | the same test |
+| `If-Match`, `If-None-Match` on writes and reads | served | the same test |
+| copy (`x-amz-copy-source`) | served: the bytes are copied and the copy does not follow the source | the same test |
+| `POST ?delete` (batch delete), `DELETE` of a bucket (409 while objects remain) | served | the same test |
+| multipart upload (create, part, list, complete, abort) | served | the same test |
+| `GET /healthz` | served | the same test |
+| object tagging (change), bucket CORS, versioning (configuration, `versions`, `versionId`), ACLs | **not served**: answered `NotImplemented`, reads of tags, ACLs and versioning answer a fixed value | refusal is covered by the gateway's unit tests |
+| object lock, retention, lifecycle, bucket policy, quotas, change feed | **not served**: these were methods of the embedded store's own API and never S3 requests the cluster gateway answered | none |
+
+A chunk manifest holds only the object's latest generation, so versioning would need retained manifests
+and is not on the chunk path. The Raft and Star group modes both carry chunk objects; the Star test runs against real
+chunk servers, the Raft test against a Raft group of three voters per group.
+
 ## Mapping
 
 * Bucket and key are passed to the SDK unchanged, so the same names work through either door.
@@ -82,90 +107,6 @@ not be removed after a completion are invisible and are removed by a later abort
 * A catalog holds at most 100,000 objects and a manifest at most 1 MiB.
 * Whole-object GET reads the entire object into the gateway before answering.
 * The gateway is unauthenticated: anything that can reach its port can read, overwrite and delete.
-
-## Opt-in append modes
-
-Compact publication and tail compaction are off by default, and the default append is the plain
-one described above. Reserving the next allocation follows compact publication: on with it,
-off without it.
-
-| Variable | Mode |
-|---|---|
-| `MATRIXOBJECT_CLUSTER_COMPACT_APPEND=1` | compact publication |
-| `MATRIXOBJECT_CLUSTER_RESERVE_NEXT` (on with compact publication; `0` turns it off) | with compact publication, reserve the next append's allocation in the publishing commit (one metadata commit per append instead of two) |
-| `MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS=N` (2 to 4096, for example 3500) | tail compaction |
-
-**Upgrade order.** Compact publication needs every metadata voter to support the version 11
-outcome, and reserving the next allocation the version 13 outcome. Upgrade the voters before the
-gateways. A gateway paired with a voter that does not understand them is not detected: the gateway
-does not fall back, and its appends fail (the S3 answer is a 412 "the object kept changing under
-this append" after its retries). There is no capability handshake yet.
-
-**Compact publication.** Each append takes a leased staged allocation (60 s) and publishes a
-digest-bound decision with `append_staged_object_compact`, instead of the whole manifest. On
-the measured workload the metadata plane wrote about 1.5 KB per write instead of about
-134 KB, at the price of one more metadata commit per append (higher sync write latency).
-Requirements:
-
-* Every metadata voter and journal reader must support the version 12 outcome; downgrading
-  after use is unsupported.
-* It turns on the durable publication fence the first time it is used. The fence is
-  cluster-wide and permanent, and from then on the plain publish path is refused for EVERY
-  write ("fresh extents require owned publication"). The gateway therefore also publishes
-  whole-object PUTs under an owned allocation while this mode is on.
-* If enabling the fence is refused, the gateway prints one line,
-  `cluster gateway: compact append is unavailable (enabling the publication fence: ...); using the plain publish path from here on`,
-  and uses the plain path for the rest of the process. Once the fence is on there is no
-  fallback: a failed staged write is reported as the failure it is, and a failed append
-  releases its allocation.
-
-**Next-append reservations.** With reservation enabled, an object becomes hot
-when another append starts within two seconds of its last successful publication.
-The window starts at completion, so an append's own I/O time does not make an
-immediate next append cold. Failed or unconfirmed appends do not refresh activity.
-The gateway remembers at most 4096 objects' completion times and caches at most
-48 reserved allocations. The reservation lease and metadata admission limits
-still apply.
-
-**Tail compaction.** When an object holds `N` extents, the next append goes through
-`append_object_compacting`: the short tail is merged into full pages by compare-and-set, so a
-log object stays appendable past 4096 extents. This is plain publication (the full manifest
-per append) and so cannot be combined with compact publication, because the fence refuses
-plain publication. Do not set both: below its bound compact publication would turn the fence
-on, and at the bound tail compaction would then be refused. With tail compaction on, the
-gateway no longer refuses appends at 4096 extents itself.
-
-### What was measured
-
-TemporalStore's shared-store harness, three nodes, 2000 operations per phase (4000 writes),
-one host, loopback, a single metaserver and three chunk servers, release builds.
-
-| | sync write p50 / p99 | metadata written per write |
-|---|---|---|
-| plain append (default) | 42-59 ms / 150-167 ms | about 134 KB |
-| compact publication | 77-81 ms / 143-161 ms (earlier round, loaded machine: 101-131 ms) | about 1.35 KB |
-
-* Compact publication cuts the metadata written per append by about 100 times. The sync write
-  p50 is not better than the plain path: every append now costs one more metadata commit (the
-  allocation). The compact-publication figures above were taken on a machine whose door
-  latency was itself higher than on the plain-path round, so compare within a round.
-* The plain path fails at the 4097th append to one object with
-  `400 InvalidRequest` ("the object already holds 4096 extents"). Compact publication does not
-  lift that bound.
-* Crossing 4096 extents worked only with tail compaction on and compact publication off
-  (16000 writes at 8000 operations per phase, sync p50 95 ms against 8 ms for the door), and
-  that run wrote 3.45 GB of metadata because it is plain publication. The disk was 97 percent
-  full during that run, so its absolute latencies are inflated.
-* Not measured: data-node failure, and any metadata checkpoint setting (the Raft checkpoint
-  size was left unset; 4000 writes ran without it).
-
-### Which mode for a log workload
-
-For a log that stays below 4096 appends per object (rotate the object before that), compact
-publication: it removes the metadata growth that dominates the plain path, at a latency cost
-that the extra allocation commit explains. For a log that must grow one object past 4096
-appends, tail compaction, accepting plain publication's metadata cost, until a staged variant
-of the tail merge exists. The default remains the plain path.
 
 ## Running it for real
 

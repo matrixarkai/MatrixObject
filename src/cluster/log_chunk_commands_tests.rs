@@ -607,28 +607,6 @@ mod log_chunk_commands_tests {
     }
 
     #[test]
-    fn an_ordinary_page_publication_never_writes_a_chunked_manifest_or_appends_pages_to_one() {
-        use crate::object_manifest::ManifestOutcome;
-        let (mut service, groups) = fixture(1, 0);
-        raise(&mut service);
-        grant(&mut service, &groups, "log", "gw-a", NOW);
-        let log = stored(&service, "log").unwrap();
-        assert_eq!(log.format_version, 3);
-        let before = state_of(&service);
-        // the general publication path refuses a chunked manifest, whoever asks
-        let next = ObjectManifest { generation: log.generation + 1, ..log.clone() };
-        assert!(ManifestOutcome::decide(Some(log.clone()), next).is_err());
-        // a page append to a log object: refused as chunked, and the page extent would follow a chunk
-        let mut appended = ObjectManifest { generation: log.generation + 1, length: log.length + 10, ..log.clone() };
-        appended.extents.push(page_extent(501, log.length, 10));
-        assert!(ManifestOutcome::decide_append(log.clone(), appended.clone()).is_err());
-        // an earlier format cannot hold the chunk extents at all
-        let earlier = ObjectManifest { format_version: 2, ..appended };
-        assert!(ManifestOutcome::decide(Some(log), earlier).is_err());
-        assert_eq!(state_of(&service), before);
-    }
-
-    #[test]
     fn a_deleted_log_object_is_created_again_with_a_later_generation_a_new_lease_and_a_new_chunk() {
         use crate::object_manifest::ManifestOutcome;
         let (mut service, groups) = fixture(1, 0);

@@ -22,11 +22,8 @@
 //! | `MATRIXOBJECT_CLUSTER_META_GROUP` | *(unset)* | metadata Raft group id; set for a Raft metadata quorum (several endpoints imply `1`) |
 //! | `MATRIXOBJECT_CLUSTER_TIMEOUT_MS` | `10000` | bound on one cluster operation |
 //! | `MATRIXOBJECT_CLUSTER_PAGE_BYTES` | `1048576` | page size for written data, 1 to 1048576 |
-//! | `MATRIXOBJECT_CLUSTER_COMPACT_APPEND` | `0` | `1` publishes appends as compact staged decisions; every metadata voter must support the version 11 outcome |
-//! | `MATRIXOBJECT_CLUSTER_RESERVE_NEXT` | `1` with compact append, else `0` | reserves the next append's staged allocation in the commit that publishes the current one, one metadata commit per append instead of two; every metadata voter must support the version 13 outcome; `0` turns it off |
 //! | `MATRIXOBJECT_CLUSTER_CACHE_ENTRIES` | `4096` | manifests the door remembers so a repeated append can skip reading one (and `MATRIXOBJECT_CLUSTER_CACHE_MIB`, `64`, bounds their memory: a manifest of 4,000 extents is about 0.75 MiB); the least recently used leave first |
 //! | `MATRIXOBJECT_CLUSTER_POOL_MAX` | `64` (at least the thread count) | idle metadata connections kept for reuse; a request that finds the pool empty opens one and drops it when the pool is full |
-//! | `MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS` | *(unset)* | 2 to 4096: merge a log object's short tail once it holds this many extents, so it stays appendable past 4096 |
 //! | `MATRIXOBJECT_CLUSTER_TARGET_GROUPS` | `1` | data groups one object is spread over |
 //! | `MATRIXOBJECT_GATEWAY_NODE_ID` | *(unset)* | cluster mode: this door's id in the metaserver roster (declared there with `MATRIXOBJECT_METASERVER_GATEWAY_ROSTER`). When set, the door heartbeats that node online, withdraws it (draining) on SIGTERM, and clients find live doors with `RemoteMetaClient::list_gateways` |
 //! | `MATRIXOBJECT_GATEWAY_HEARTBEAT_MS` | `3000` | roster heartbeat interval, 100..60000 |
@@ -180,31 +177,6 @@ fn main() {
         let timeout_ms = env_usize("MATRIXOBJECT_CLUSTER_TIMEOUT_MS", 10_000).max(1) as u64;
         let page_bytes = env_usize("MATRIXOBJECT_CLUSTER_PAGE_BYTES", 1024 * 1024);
         let target_groups = env_usize("MATRIXOBJECT_CLUSTER_TARGET_GROUPS", 1);
-        let compact_append = env_usize("MATRIXOBJECT_CLUSTER_COMPACT_APPEND", 0) != 0;
-        // On whenever compact append is: it saves a metadata commit per append (see the table
-        // above). `MATRIXOBJECT_CLUSTER_RESERVE_NEXT=0` turns it off.
-        let reserve_requested = std::env::var("MATRIXOBJECT_CLUSTER_RESERVE_NEXT")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .map(|_| env_usize("MATRIXOBJECT_CLUSTER_RESERVE_NEXT", 0));
-        let reserve_next = match matrixobjectstore_rs::net::cluster_gateway::resolve_reserve_next(
-            compact_append,
-            reserve_requested,
-        ) {
-            Ok(reserve) => reserve,
-            Err(message) => {
-                eprintln!("{message}");
-                std::process::exit(2);
-            }
-        };
-        let compact_extents = match env_usize("MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS", 0) {
-            0 => None,
-            bound if (2..=4096).contains(&bound) => Some(bound),
-            bound => {
-                eprintln!("MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS={bound} is outside 2 to 4096");
-                std::process::exit(2);
-            }
-        };
         let group = std::env::var("MATRIXOBJECT_CLUSTER_META_GROUP")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -219,9 +191,6 @@ fn main() {
             Duration::from_millis(timeout_ms),
             page_bytes,
             target_groups as u32,
-            compact_append,
-            compact_extents,
-            reserve_next,
         );
     }
 
@@ -244,9 +213,6 @@ fn run_cluster_gateway(
     timeout: std::time::Duration,
     page_bytes: usize,
     target_groups: u32,
-    compact_append: bool,
-    compact_extents: Option<usize>,
-    reserve_next: bool,
 ) -> ! {
     use std::sync::Arc;
 
@@ -307,9 +273,6 @@ fn run_cluster_gateway(
             std::env::var("MATRIXOBJECT_CLUSTER_CACHE_MIB").ok().as_deref(),
             GatewayOptions::default().cache_bytes / (1024 * 1024),
         ) * 1024 * 1024,
-        compact_append,
-        compact_extents,
-        reserve_next,
         ..GatewayOptions::default()
     };
     let mut meta_options = ClusterGateway::meta_options(timeout);

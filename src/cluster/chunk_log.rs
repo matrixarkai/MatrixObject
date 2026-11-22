@@ -631,13 +631,6 @@ impl ChunkLogReader {
         }
     }
 
-    /// Retarget the next synchronous read while retaining this group's connections.
-    pub(crate) fn select_chunk(&mut self, volume: u64, chunk: u64, generation: u32) {
-        self.volume = volume;
-        self.chunk = chunk;
-        self.generation = generation;
-    }
-
     fn client(&mut self, index: usize) -> Result<&mut RemoteReplicaClient, LogCallError> {
         if self.clients[index].is_none() {
             let client = RemoteReplicaClient::connect(&self.endpoints[index], &self.options).map_err(LogCallError::Transport)?;

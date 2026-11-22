@@ -1,7 +1,7 @@
 # Measuring throughput and latency of a cluster
 
-`examples/qps_http.rs` is an open-loop load generator for the S3 door, `examples/qps_direct.rs` is the same
-for the SDK (no gateway), and `tools/qps_rig.py` and `tools/qps_ladder.py` bring a cluster up, run a
+`examples/qps_http.rs` is an open-loop load generator for the S3 door, and `tools/qps_rig.py` and
+`tools/qps_ladder.py` bring a cluster up, run a
 measured step with per-process resource attribution, and search for the offered rate at which a cluster stops
 keeping up.
 
@@ -25,7 +25,7 @@ keeping up.
 ## Running it
 
 ```
-cargo build --release --features metadata-consensus --bins --example qps_http --example qps_direct
+cargo build --release --features metadata-consensus --bins --example qps_http
 python3 tools/qps_rig.py up                         # three voters, three chunkservers, gateway on port 22010
 target/release/examples/qps_http populate --addr 127.0.0.1:22010 --bucket temporalstore --objects 1000 --per-object 4 --value 1024 --conc 16
 python3 tools/qps_rig.py step my-run --objects 1000 --rate 200 --secs 15 --conc 8 --value 1024 --read-frac 0

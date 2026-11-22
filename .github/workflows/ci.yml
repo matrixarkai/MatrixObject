@@ -111,27 +111,6 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Two compact append plans retain independent deadlines
-        run: |
-          set -euo pipefail
-          cargo test --locked --all-features --lib cluster::meta_client::append_plan_cache::tests:: -- --test-threads=1 2>&1 | tee /tmp/two-append-plan-cache.log
-          grep -q '^test result: ok. 8 passed; 0 failed; 0 ignored' /tmp/two-append-plan-cache.log
-          cargo test --locked --all-features --lib cluster::meta_consensus::tests::alternating_object_appends_reuse_two_plans_and_a_failed_refresh_clears_both -- --exact --test-threads=1 2>&1 | tee /tmp/alternating-append-plan-rpc.log
-          grep -q '^test result: ok. 1 passed; 0 failed; 0 ignored' /tmp/alternating-append-plan-rpc.log
-
-      - name: Ordered staged data plans
-        run: |
-          set -euo pipefail
-          cargo test --locked --all-features --lib cluster::object_client::staged_append_pair_tests:: -- --test-threads=1 2>&1 | tee /tmp/ordered-staged-data.log
-          grep -q '^test result: ok. 3 passed; 0 failed' /tmp/ordered-staged-data.log
-
-      - name: Compact SDK startup validates its publication options
-        run: |
-          set -euo pipefail
-          cargo test --locked --all-features --lib compact_sdk_startup_ -- --test-threads=1 | tee /tmp/compact-sdk-startup.log
-          grep -q '^running 2 tests$' /tmp/compact-sdk-startup.log
-          grep -q '^test result: ok. 2 passed' /tmp/compact-sdk-startup.log
-
       - name: The README describes the CI it has
         run: |
           set -o pipefail
@@ -189,29 +168,6 @@ jobs:
           set -o pipefail
           cargo test --locked --all-features --test chunk_membership_controller -- --test-threads=1 | tee /tmp/membership-controller.log
           grep -q 'test result: ok. 3 passed' /tmp/membership-controller.log
-      - name: Check repeated concurrent voter rejoin
-        shell: bash
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::dynamic_groups::three_dynamic_groups_rejoin_removed_voters_across_three_rounds -- --exact --nocapture --test-threads=1 | tee /tmp/repeated-membership.log
-          grep -q 'test result: ok. 1 passed' /tmp/repeated-membership.log
-          grep -q 'DYNAMIC_GROUPS groups=3 peak_processes=15 objects=84' /tmp/repeated-membership.log
-          grep -q 'replacement_rounds=3' /tmp/repeated-membership.log
-      - name: Check concurrent dynamic group controllers
-        shell: bash
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::dynamic_groups::three_dynamic_groups_replace_voters_concurrently_during_reads_and_recover -- --exact --nocapture --test-threads=1 | tee /tmp/concurrent-groups.log
-          grep -q 'test result: ok. 1 passed' /tmp/concurrent-groups.log
-          grep -q 'DYNAMIC_GROUPS groups=3 peak_processes=15 objects=60' /tmp/concurrent-groups.log
-          grep -q 'concurrent_controllers=true' /tmp/concurrent-groups.log
-      - name: Check multi-group dynamic voter replacement
-        shell: bash
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::dynamic_groups::three_dynamic_groups_replace_voters_during_reads_and_recover -- --exact --nocapture --test-threads=1 | tee /tmp/dynamic-groups.log
-          grep -q 'test result: ok. 1 passed' /tmp/dynamic-groups.log
-          grep -q 'DYNAMIC_GROUPS groups=3 peak_processes=15 objects=60' /tmp/dynamic-groups.log
       - name: Check committed chunk route validation
         shell: bash
         run: |
@@ -245,13 +201,6 @@ jobs:
           grep -q '^running 4 tests$' /tmp/catalog-commands.log
           grep -q '^test result: ok. 4 passed' /tmp/catalog-commands.log
 
-      - name: api tls serves persistent metadata and star data connections
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --lib cluster::api_tls::tests::api_tls_serves_persistent_metadata_and_star_data_connections -- --exact --nocapture | tee /tmp/api-tls.log
-          grep -q '^running 1 test$' /tmp/api-tls.log
-          grep -q '^test result: ok. 1 passed' /tmp/api-tls.log
-
       - name: api tls rejects plaintext and foreign clients before mutations
         run: |
           set -o pipefail
@@ -279,20 +228,6 @@ jobs:
           cargo test --locked --all-features --test api_tls_processes encrypted_cli_health_and_durable_restart_refuse_plaintext_downgrade -- --exact --nocapture | tee /tmp/api-tls.log
           grep -q '^running 1 test$' /tmp/api-tls.log
           grep -q '^test result: ok. 1 passed' /tmp/api-tls.log
-
-      - name: authenticated api and peer objects recover after restart
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::authenticated_api_and_peer_objects_recover_after_restart -- --exact --nocapture | tee /tmp/api-tls.log
-          grep -q '^running 1 test$' /tmp/api-tls.log
-          grep -q '^test result: ok. 1 passed' /tmp/api-tls.log
-
-      - name: encrypted APIs recover concurrent four-group objects
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::encrypted_api_load_recovers_four_way_objects -- --exact --nocapture | tee /tmp/api-load.log
-          grep -q '^running 1 test$' /tmp/api-load.log
-          grep -q '^test result: ok. 1 passed' /tmp/api-load.log
 
       - name: peer TLS refuses incomplete configuration
         run: |
@@ -349,20 +284,6 @@ jobs:
           cargo test --locked --features metadata-consensus,chunk-consensus --test network_chunk_consensus coupled_groups::health_convergence_wait_survives_temporary_metadata_quorum_loss -- --exact --nocapture | tee /tmp/health-convergence.log
           grep -q '^running 1 test$' /tmp/health-convergence.log
           grep -q '^test result: ok. 1 passed' /tmp/health-convergence.log
-
-      - name: larger authenticated quorums survive maximum voter loss
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::larger_authenticated_quorums_recover_after_maximum_voter_loss -- --exact --nocapture | tee /tmp/larger-voter-recovery.log
-          grep -q '^running 1 test$' /tmp/larger-voter-recovery.log
-          grep -q '^test result: ok. 1 passed' /tmp/larger-voter-recovery.log
-
-      - name: authenticated metadata and data peers recover together
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::authenticated_peer_quorums_recover_striped_payloads_and_capacity -- --exact --nocapture | tee /tmp/peer-tls-recovery.log
-          grep -q '^running 1 test$' /tmp/peer-tls-recovery.log
-          grep -q '^test result: ok. 1 passed' /tmp/peer-tls-recovery.log
 
       - name: automatic health survives clock rollback and snapshot recovery
         run: |
@@ -480,30 +401,6 @@ jobs:
           cargo test --locked --all-features --lib cluster::meta_consensus::tests::deferred_metadata_sealing_preserves_captured_roster_and_placements -- --exact --nocapture | tee /tmp/deferred-sealing.log
           grep -q 'test result: ok. 1 passed' /tmp/deferred-sealing.log
 
-      - name: object writer load preserves manifests and pages through recovery
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::object_writer_load_preserves_manifests_and_pages_through_recovery -- --exact --nocapture | tee /tmp/object-load.log
-          grep -q 'test result: ok. 1 passed' /tmp/object-load.log
-
-      - name: object write preflight bounds work and checks expected generation
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --lib cluster::object_client::tests::object_write_preflight_bounds_work_and_checks_expected_generation -- --exact --nocapture | tee /tmp/object-writer.log
-          grep -q 'test result: ok. 1 passed' /tmp/object-writer.log
-
-      - name: typed publication refusals preserve admission state without replay
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --lib cluster::object_client::tests::typed_publication_refusals_do_not_become_uncertain_or_replay -- --exact --nocapture | tee /tmp/publication-admission.log
-          grep -q 'test result: ok. 1 passed' /tmp/publication-admission.log
-
-      - name: lost publication replies are confirmed by exact readback without replay
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --lib cluster::object_client::tests::lost_publication_replies_are_confirmed_by_exact_readback_without_replay -- --exact --nocapture | tee /tmp/object-writer.log
-          grep -q 'test result: ok. 1 passed' /tmp/object-writer.log
-
       - name: chunk group reply must name the requested placement
         run: |
           set -o pipefail
@@ -528,12 +425,6 @@ jobs:
           cargo test --locked --all-features --test network_chunk_consensus conditional_digest_batches_replicate_ordered_page_outcomes -- --exact | tee /tmp/digest-batching.log
           grep -q 'test result: ok. 1 passed' /tmp/digest-batching.log
 
-      - name: manifest listing survives metadata failover with revision fences
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_metadata_consensus manifest_listing_continues_after_leader_loss_and_preserves_tombstones -- --exact | tee /tmp/manifest-listing.log
-          grep -q 'test result: ok. 1 passed' /tmp/manifest-listing.log
-
       - name: retention formats outcomes and preparation preserve state
         run: |
           set -o pipefail
@@ -546,18 +437,6 @@ jobs:
             cargo test --locked --all-features --lib "$test" -- --exact | tee /tmp/manifest-retention.log
             grep -q 'test result: ok. 1 passed' /tmp/manifest-retention.log
           done
-
-      - name: retained generations survive overwrite delete and metadata recovery
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_metadata_consensus retained_generations_survive_overwrite_deletion_failover_and_checkpoint_restart -- --exact | tee /tmp/manifest-retention.log
-          grep -q 'test result: ok. 1 passed' /tmp/manifest-retention.log
-
-      - name: retained payloads remain readable on restarted Star replicas
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_metadata_consensus metadata_routes_object_writes_through_a_standalone_star_quorum -- --exact | tee /tmp/manifest-retention.log
-          grep -q 'test result: ok. 1 passed' /tmp/manifest-retention.log
 
       - name: owned allocation formats and atomic outcomes recover
         run: |
@@ -573,108 +452,6 @@ jobs:
             grep -q 'test result: ok. 1 passed' /tmp/staged-ownership.log
           done
 
-      - name: owned allocations survive metadata recovery and reject aborted publication
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_metadata_consensus staged_allocations_survive_failover_and_restart_and_fence_aborted_publication -- --exact | tee /tmp/staged-ownership.log
-          grep -q 'test result: ok. 1 passed' /tmp/staged-ownership.log
-
-      - name: owned writes and appends recover with Raft data groups
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::serial_object_writer_preserves_verified_recovery -- --exact | tee /tmp/staged-ownership.log
-          grep -q 'test result: ok. 1 passed' /tmp/staged-ownership.log
-
-      - name: publication admission and atomic copy preserve source and failure semantics
-        run: |
-          set -o pipefail
-          for test in \
-            cluster::staged_allocation_commands::tests::publication_fence_is_durable_one_way_and_rejects_retired_namespace_publication \
-            cluster::manifest_copy_commands::tests::atomic_copy_binds_live_source_and_preserves_state_on_conflicts \
-            cluster::manifest_copy_commands::tests::atomic_copy_source_identity_does_not_duplicate_extent_payloads \
-            cluster::manifest_copy_commands::tests::publication_fence_and_atomic_copy_recover_from_standalone_journal \
-            cluster::meta_consensus::tests::publication_fence_and_copy_restore_speculative_state_and_commit_in_order \
-            cluster::meta_client::manifest_copy_client_tests::atomic_copy_lost_reply_remains_unconfirmed_without_mutation_replay \
-            manifest_copy::tests::atomic_copy_codec_rejects_truncation_unknown_fields_and_wrong_destination
-          do
-            cargo test --locked --all-features --lib "$test" -- --exact | tee /tmp/publication-admission.log
-            grep -q 'test result: ok. 1 passed' /tmp/publication-admission.log
-          done
-
-      - name: publication retains original outcomes across response failures
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --lib cluster::meta_client::operation_deadline_tests::publication_keeps_original_outcome_after_success_lost_reply_and_mismatch -- --exact | tee /tmp/publication-outcome.log
-          grep -q 'test result: ok. 1 passed' /tmp/publication-outcome.log
-
-      - name: staged leases preserve deadline and recovery decisions
-        run: |
-          set -o pipefail
-          for test in \
-            cluster::staged_allocation_commands::tests::staged_leases_enforce_deadlines_renewal_and_capacity_without_clocked_replay \
-            cluster::staged_allocation_commands::tests::staged_lease_journal_recovers_renewal_and_decided_expiry \
-            cluster::meta_consensus::tests::leased_staging_batch_restores_renewal_before_commit_and_refuses_stale_expiry \
-            staged_allocation::tests::leased_staging_codec_bounds_ttl_and_preserves_deadline_identity
-          do
-            cargo test --locked --all-features --lib "$test" -- --exact | tee /tmp/staged-lease.log
-            grep -q 'test result: ok. 1 passed' /tmp/staged-lease.log
-          done
-          cargo test --locked --all-features --test network_metadata_consensus staged_lease_deadlines_and_renewals_survive_failover_restart_and_quorum_loss -- --exact | tee /tmp/staged-lease.log
-          grep -q 'test result: ok. 1 passed' /tmp/staged-lease.log
-
-      - name: log chunk commands go through the leader draft, name their chunks once and need both features
-        run: |
-          set -o pipefail
-          # nested modules: each filter is the module and the test, which names exactly one test
-          for test in \
-            log_chunk_pipeline_tests::every_outcome_kind_survives_the_leaders_draft_and_the_commit_that_follows \
-            log_chunk_pipeline_tests::a_switch_into_another_group_restores_the_capacity_of_the_group_it_leaves \
-            log_chunk_commands_tests::interleaved_grants_switches_sweeps_and_allocations_never_name_a_chunk_twice_and_ids_only_go_up \
-            log_chunk_commands_tests::a_page_and_a_grant_name_their_chunks_by_one_function_of_the_raft_index \
-            log_chunk_commands_tests::nothing_leases_or_emits_a_chunked_manifest_until_an_operator_raises_the_feature \
-            log_chunk_commands_tests::a_grant_refuses_an_object_that_holds_page_extents_and_changes_nothing_while_new_and_log_objects_still_work \
-            log_chunk_commands_tests::a_switch_refuses_an_object_that_holds_page_extents_and_changes_nothing \
-            log_chunk_commands_tests::a_renewal_and_a_sweep_naming_a_page_object_find_no_lease_and_change_nothing \
-            log_chunk_commands_tests::an_ordinary_page_publication_never_writes_a_chunked_manifest_or_appends_pages_to_one \
-            log_chunk_commands_tests::a_deleted_log_object_is_created_again_with_a_later_generation_a_new_lease_and_a_new_chunk \
-            log_chunk_outcome_tests::malformed_lease_batches_are_refused_before_they_can_apply
-          do
-            cargo test --locked --all-features --lib "$test" | tee /tmp/log-chunk-commands.log
-            grep -q 'test result: ok. 1 passed' /tmp/log-chunk-commands.log
-          done
-          cargo test --locked --all-features --test network_metadata_consensus log_chunk_and_feature_commands_commit_through_the_real_leader_pipeline -- --exact | tee /tmp/log-chunk-commands.log
-          grep -q 'test result: ok. 1 passed' /tmp/log-chunk-commands.log
-
-      - name: a log object appends without the metadata plane, moves on with one entry per chunk and reads back
-        run: |
-          set -o pipefail
-          # nested modules: each filter is the module and the test, which names exactly one test.
-          # The two tests that wait out a lease term are not pinned: they measure wall time.
-          for test in \
-            log_object::tests::appends_cross_chunks_and_read_back_byte_identical \
-            log_object::tests::no_metadata_command_is_sent_between_chunk_switches \
-            log_object::tests::a_reader_sees_exactly_the_acknowledged_bytes_while_the_writer_appends \
-            log_object::tests::a_new_writer_takes_over_at_the_tail_the_nodes_hold_and_the_old_one_is_fenced \
-            log_object::tests::a_node_that_was_down_is_caught_up_and_a_new_writer_starts_at_the_acknowledged_length \
-            log_object::tests::a_node_that_does_not_speak_log_chunks_stops_the_writer_before_anything_is_granted \
-            log_object::tests::an_object_at_its_cap_fills_its_open_chunk_and_refuses_the_append_that_does_not_fit \
-            log_object::tests::a_switch_that_never_reached_the_metadata_plane_is_finished_by_the_next_writer \
-            log_object::tests::a_seal_that_reached_one_node_is_completed_by_the_next_writer_and_no_switch_is_sent_without_a_footer \
-            log_object::tests::a_seal_that_reached_no_node_leaves_the_handle_open_and_sends_no_switch \
-            log_object::tests::the_error_mapping_names_what_the_metadata_plane_and_the_nodes_say
-          do
-            cargo test --locked --all-features --lib "$test" -- --test-threads=1 | tee /tmp/log-object.log
-            grep -q 'test result: ok. 1 passed' /tmp/log-object.log
-          done
-          cargo test --locked --all-features --test network_metadata_consensus a_log_object_costs_the_real_metadata_group_one_entry_per_switch_and_nothing_per_append -- --exact | tee /tmp/log-object.log
-          grep -q 'test result: ok. 1 passed' /tmp/log-object.log
-
-      - name: fenced publication and atomic copy survive metadata recovery
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_metadata_consensus publication_fence_and_atomic_copy_survive_checkpoint_restart_and_quorum_loss -- --exact | tee /tmp/publication-admission.log
-          grep -q 'test result: ok. 1 passed' /tmp/publication-admission.log
-
       - name: a feature declaration does not stop the leader and the set survives recovery
         run: |
           set -o pipefail
@@ -685,50 +462,11 @@ jobs:
           grep -q '^running 1 test$' /tmp/feature-raise.log
           grep -q 'test result: ok. 1 passed' /tmp/feature-raise.log
 
-      - name: shared read leases and lease-free short reads
+      - name: the read grace bit is known and raised like the others
         run: |
           set -o pipefail
-          cargo test --locked --all-features --lib cluster::meta_client::shared_read_leases -- --test-threads=1 | tee /tmp/read-leases.log
-          grep -q '^running 16 tests$' /tmp/read-leases.log
-          grep -q 'test result: ok. 16 passed' /tmp/read-leases.log
           cargo test --locked --all-features --lib cluster::features_commands::tests::the_read_grace_bit_is_known_and_is_raised_like_the_others -- --exact | tee /tmp/read-grace-bit.log
           grep -q 'test result: ok. 1 passed' /tmp/read-grace-bit.log
-
-      - name: the S3 verbs the cluster gateway serves keep their behaviour
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_listing_with_a_delimiter_folds_keys_into_common_prefixes -- --exact | tee /tmp/s3-gateway.log
-          grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_delimited_listing_pages_without_losing_or_repeating_anything -- --exact | tee /tmp/s3-gateway.log
-          grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_multipart_upload_assembles_one_object_and_leaves_nothing_behind -- --exact | tee /tmp/s3-gateway.log
-          grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_multipart_completion_is_checked_against_the_parts_the_upload_holds -- --exact | tee /tmp/s3-gateway.log
-          grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::multipart_requests_for_the_wrong_upload_or_part_are_refused -- --exact | tee /tmp/s3-gateway.log
-          grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::an_assembled_object_over_the_gateways_limit_is_refused_and_the_upload_survives -- --exact | tee /tmp/s3-gateway.log
-          grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_copy_makes_the_destination_hold_the_source -- --exact | tee /tmp/s3-gateway.log
-          grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_copy_refuses_what_it_cannot_do_and_changes_nothing -- --exact | tee /tmp/s3-gateway.log
-          grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_put_with_if_match_replaces_only_that_version -- --exact | tee /tmp/s3-gateway.log
-          grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_conditional_read_answers_304_or_412_from_the_etag -- --exact | tee /tmp/s3-gateway.log
-          grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_batch_delete_reports_each_key_and_a_missing_key_is_deleted -- --exact | tee /tmp/s3-gateway.log
-          grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_bucket_is_deleted_only_when_it_holds_no_object -- --exact | tee /tmp/s3-gateway.log
-          grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::the_bucket_list_names_the_gateways_bucket -- --exact | tee /tmp/s3-gateway.log
-          grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::the_sub_resources_a_client_probes_for_are_answered -- --exact | tee /tmp/s3-gateway.log
-          grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::the_reserved_prefix_is_not_an_object_namespace -- --exact | tee /tmp/s3-gateway.log
-          grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::every_verb_outside_the_subset_is_not_implemented -- --exact | tee /tmp/s3-gateway.log
-          grep -q 'test result: ok. 1 passed' /tmp/s3-gateway.log
 
       - name: minimum supported Rust
         run: |
@@ -774,16 +512,6 @@ jobs:
           cargo test --locked --all-features --lib net::cluster_gateway::conditional_put_outcome_tests:: -- --test-threads=1 | tee /tmp/conditional-put-outcomes.log
           grep -q '^test result: ok. 4 passed; 0 failed' /tmp/conditional-put-outcomes.log
 
-      - name: automatic staged cleanup stays bounded and survives durable restart
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --lib cluster::staged_lease_sweeper::tests::automatic_expiry_selection_is_bounded_preserves_live_and_permanent_owners_and_drains -- --exact | tee /tmp/automatic-staged-expiry.log
-          grep -q 'test result: ok. 1 passed' /tmp/automatic-staged-expiry.log
-          cargo test --locked --all-features --test automatic_staged_expiry | tee /tmp/automatic-staged-expiry.log
-          grep -q 'test result: ok. 1 passed' /tmp/automatic-staged-expiry.log
-          cargo test --locked --all-features --test network_metadata_consensus automatic_staged_expiry_resumes_after_outage_requires_quorum_and_keeps_idle_wal_stable -- --exact | tee /tmp/automatic-staged-expiry.log
-          grep -q 'test result: ok. 1 passed' /tmp/automatic-staged-expiry.log
-
       - name: manifest route replies preserve wire bytes with bounded allocations
         run: |
           set -o pipefail
@@ -791,27 +519,6 @@ jobs:
           grep -q '^test result: ok. 2 passed' /tmp/manifest-route-encoding.log
           cargo test --locked --all-features --test manifest_route_encoding_allocations -- --test-threads=1 | tee /tmp/manifest-route-encoding.log
           grep -q '^test result: ok. 1 passed' /tmp/manifest-route-encoding.log
-
-      - name: owned Star appends keep suffix writes bounded through full restart
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_metadata_consensus star_append_amplification -- --test-threads=1 | tee /tmp/star-append-cost.log
-          grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/star-append-cost.log
-          for test_name in \
-            compact_append_publishes_after_metadata_leader_loss_and_recovers \
-            compact_owned_append_keeps_publication_bounded_and_recovers_all_replicas \
-            owned_append_keeps_data_writes_bounded_and_recovers_all_replicas \
-            star_corpus_scale::star_corpus_workload_verifies_durable_reads_writes_and_appends \
-            star_corpus_scale::checkpoint_corpus_measurement::checkpoint_corpus_measurement_drains_both_layouts_and_recovers \
-            star_corpus_scale::checkpoint_corpus_measurement::sized_star_replicas_preserve_capacity_and_page_limits_after_restart \
-            star_corpus_scale::checkpoint_interference::checkpoint_interference_preserves_three_durable_append_copies \
-            star_recovery_profiles::star_repair_and_append_work_across_local_recovery_profiles \
-            segmented_star_replicas_keep_objects_through_metadata_failover_and_full_restart \
-            replica_segment_retirement::segmented_star_retirement_reclaims_files_preserves_cold_objects_and_recovers_all_processes \
-            replica_segment_retirement::segmented_star_background_compaction_keeps_cold_objects_without_manual_barriers
-          do
-            grep -Fxq "test star_append_amplification::${test_name} ... ok" /tmp/star-append-cost.log
-          done
 
       - name: checkpoint buffering preserves bytes and propagates final flush failures
         run: |
@@ -893,39 +600,6 @@ jobs:
           done
           test "$(grep -c 'reused_read_calls=0 reused_read_bytes=0' /tmp/payload-allocations.log)" -eq 6
 
-      - name: immutable replica checkpoints preserve metadata and concurrent writes
-        run: |
-          set -euo pipefail
-          cargo test --locked --all-features --lib replica_checkpoint_ -- --test-threads=1 | tee /tmp/replica-catalog.log
-          grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/replica-catalog.log
-          grep -Fq 'checkpoint_catalog_newest_corruption_is_refused_without_fallback_or_repair ... ok' /tmp/replica-catalog.log
-          grep -Fq 'checkpoint_recovery_scalar_capture_does_not_pin_live_payloads_or_receipt_maps ... ok' /tmp/replica-catalog.log
-          grep -Fq 'catalog_covered_ranges_reuse_the_provider_buffer_and_clamp_reads ... ok' /tmp/replica-catalog.log
-          grep -Fq 'catalog_covered_ranges_do_not_retain_provider_padding_capacity ... ok' /tmp/replica-catalog.log
-          grep -Fq 'catalog_covered_ranges_refuse_wrong_lengths_and_propagate_io_errors ... ok' /tmp/replica-catalog.log
-          grep -Fq 'checkpoint_index_retention_preserves_every_duplicate_extent_record_after_reload ... ok' /tmp/replica-catalog.log
-          grep -Fq 'compaction_reuses_sector_storage_without_mixing_distinct_extents ... ok' /tmp/replica-catalog.log
-          grep -Fq 'compaction_reused_fragment_buffer_handles_unaligned_ranges_across_flushes ... ok' /tmp/replica-catalog.log
-          for test_name in compaction_unions_shared_ranges_and_packs_sparse_pages_without_copying_dead_extent_bytes compaction_budget_preserves_unmoved_spans_and_resumes_a_shared_extent compaction_refuses_damaged_source_before_rebinding_pages compaction_checks_cancellation_before_writing_or_changing_the_catalog compaction_cancelled_after_copy_keeps_the_published_root_recoverable compaction_range_union_handles_aliases_adjacency_and_invalid_bounds
-          do
-            grep -Fq "${test_name} ... ok" /tmp/replica-catalog.log
-          done
-          cargo test --locked --all-features --lib segmented_ -- --test-threads=1 | tee /tmp/replica-segmented.log
-          grep -q '^test result: ok. [1-9][0-9]* passed; 0 failed;' /tmp/replica-segmented.log
-          grep -Fq 'segmented_checkpoint_advances_storage_cut_and_reclaims_quiet_history ... ok' /tmp/replica-segmented.log
-          grep -Fq 'segmented_manual_compaction_evacuates_cold_data_and_metadata_after_readers_leave ... ok' /tmp/replica-segmented.log
-          for test_name in segmented_background_compaction_reclaims_sparse_history_after_reader_deferral segmented_dense_background_analysis_writes_nothing_and_backs_off segmented_checkpoint_requested_during_analysis_has_a_new_durable_epoch segmented_install_uses_published_boundary_after_its_cached_cut_is_retired segmented_install_refuses_an_unproven_retired_cut_with_new_durable_tail segmented_background_poll_does_not_flush_a_pending_foreground_group segmented_server_compacts_without_requests_or_heartbeats segmented_checkpoint_epoch_reservation_refuses_overflow_without_losing_state
-          do
-            grep -Fq "${test_name} ... ok" /tmp/replica-segmented.log
-          done
-          for test_name in segmented_replica_background_checkpoint_preserves_concurrent_grouped_tail segmented_replica_install_supersedes_background_checkpoint_and_keeps_new_tail segmented_replica_batch_overflow_keeps_context_for_each_committed_group segmented_journal_recovery_policy_is_applied_after_checkpoint_restore segmented_replica_retirement_preserves_cold_payloads_and_reopens_overwritten_pages
-          do
-            grep -Fq "${test_name} ... ok" /tmp/replica-segmented.log
-          done
-          cargo test --locked --all-features --lib verified_metadata_reconnect_skips -- --test-threads=1 | tee /tmp/metadata-voter-probe.log
-          grep -q '^test result: ok. 1 passed; 0 failed;' /tmp/metadata-voter-probe.log
-          grep -Fq 'verified_metadata_reconnect_skips_typed_follower_without_skipping_ordinary_refusal ... ok' /tmp/metadata-voter-probe.log
-
       - name: shared Star journal sync preserves durability and bounded groups
         run: |
           set -o pipefail
@@ -937,13 +611,6 @@ jobs:
           grep -Fq 'shared_sync_concurrent_conditional_requests_have_one_durable_winner ... ok' /tmp/star-shared-sync.log
           grep -Fq 'shared_sync_idle_path_refuses_failed_persistence ... ok' /tmp/star-shared-sync.log
 
-      - name: compact append decisions enforce ownership and committed identity
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --lib compact_append -- --test-threads=1 | tee /tmp/compact-append.log
-          grep -q '^test result: ok. 8 passed; 0 failed;' /tmp/compact-append.log
-          grep -Fq 'failed_compact_append_does_not_create_object_activity ... ok' /tmp/compact-append.log
-
       - name: catalog clones share immutable manifests and preserve canonical images
         run: |
           set -o pipefail
@@ -952,45 +619,11 @@ jobs:
           cargo test --locked --all-features --lib shared_catalog -- --test-threads=1 | tee /tmp/catalog-sharing-images.log
           grep -q '^test result: ok. 1 passed' /tmp/catalog-sharing-images.log
 
-      - name: leased readers verify concurrent payloads and bounded admission
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_metadata_consensus leased_object_read_scale -- --test-threads=1 --nocapture | tee /tmp/leased-reader-admission.log
-          grep -q '^test result: ok. 2 passed' /tmp/leased-reader-admission.log
-
       - name: selected generation grants retain compact wire and committed identity
         run: |
           set -o pipefail
           cargo test --locked --all-features --lib compact_selected_grants -- --test-threads=1 --nocapture | tee /tmp/compact-grants.log
-          grep -q '^test result: ok. 5 passed' /tmp/compact-grants.log
-
-      - name: ordinary reads preserve selected generations and batch consistency
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --lib ordinary_read_protection -- --test-threads=1 | tee /tmp/ordinary-reads.log
-          grep -q '^test result: ok. 3 passed' /tmp/ordinary-reads.log
-          cargo test --locked --all-features --test ordinary_read_protection -- --test-threads=1 | tee /tmp/ordinary-reads.log
-          grep -q '^test result: ok. 5 passed' /tmp/ordinary-reads.log
-
-      - name: read sessions preserve deadlines and recover bounded cleanup
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --lib read_session -- --test-threads=1 | tee /tmp/read-sessions.log
-          grep -q '^test result: ok. 13 passed' /tmp/read-sessions.log
-          cargo test --locked --all-features --test read_session_leases -- --test-threads=1 | tee /tmp/read-sessions.log
-          grep -q '^test result: ok. 3 passed' /tmp/read-sessions.log
-          cargo test --locked --all-features --test network_metadata_consensus read_sessions_survive_lagging_voter_transfer_and_expire_after_quorum_recovery -- --exact | tee /tmp/read-sessions.log
-          grep -q '^test result: ok. 1 passed' /tmp/read-sessions.log
-
-      - name: prepared staging binds retry identity through durable recovery
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --lib prepared_staging -- --test-threads=1 | tee /tmp/prepared-staging.log
-          grep -q '^test result: ok. 4 passed' /tmp/prepared-staging.log
-          cargo test --locked --all-features --test staged_request_identity | tee /tmp/prepared-staging.log
-          grep -q '^test result: ok. 1 passed' /tmp/prepared-staging.log
-          cargo test --locked --all-features --test network_metadata_consensus prepared_staging_identity_survives_lagging_voter_transfer_leader_loss_and_retirement -- --exact | tee /tmp/prepared-staging.log
-          grep -q '^test result: ok. 1 passed' /tmp/prepared-staging.log
+          grep -q '^test result: ok. 4 passed' /tmp/compact-grants.log
 
       - name: namespace fences bind immutable repair and survive checkpoints
         run: |
@@ -1008,18 +641,6 @@ jobs:
           cargo test --locked --all-features --test network_chunk_consensus namespace_fences_transfer_to_lagging_voters_and_survive_leader_loss_and_total_restart -- --exact | tee /tmp/namespace-fences.log
           grep -q '^test result: ok. 1 passed' /tmp/namespace-fences.log
 
-      - name: sequential writes reuse one freshly routed group connection
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test object_writer_connections sequential_writes_reuse_a_route_matched_group_connection -- --exact | tee /tmp/object-connections.log
-          grep -q 'test result: ok. 1 passed' /tmp/object-connections.log
-
-      - name: changed routes replace cached group connections
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test object_writer_connections changed_route_replaces_the_cached_group_connection -- --exact | tee /tmp/object-connections.log
-          grep -q 'test result: ok. 1 passed' /tmp/object-connections.log
-
       - name: failed pipelined writes retire the socket without replay
         run: |
           set -o pipefail
@@ -1031,12 +652,6 @@ jobs:
           set -o pipefail
           cargo test --locked --all-features --test object_writer_connections large_pages_keep_bounded_individual_writes -- --exact | tee /tmp/object-connections.log
           grep -q 'test result: ok. 1 passed' /tmp/object-connections.log
-
-      - name: unavailable data group is isolated and recovers without losing objects
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::unavailable_data_group_is_isolated_and_recovers_without_losing_objects -- --exact --nocapture | tee /tmp/group-isolation.log
-          grep -q 'test result: ok. 1 passed' /tmp/group-isolation.log
 
       - name: raft preparation preserves outcomes without runtime caches
         run: |
@@ -1051,13 +666,6 @@ jobs:
           cargo test --locked --all-features --lib replica_service::preparation_clone_tests::preparation_clone_preserves_state_without_copying_read_caches -- --exact --nocapture | tee /tmp/raft-preparation.log
           grep -q '^running 1 test$' /tmp/raft-preparation.log
           grep -q '^test result: ok. 1 passed' /tmp/raft-preparation.log
-
-      - name: striped payloads preserve bytes and accounting through recovery
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::striped_payloads_recover_with_exact_bytes_and_capacity_accounting -- --exact --nocapture | tee /tmp/striped-payload.log
-          grep -q '^running 1 test$' /tmp/striped-payload.log
-          grep -q '^test result: ok. 1 passed' /tmp/striped-payload.log
 
       - name: bootstrap catalog reads obey limits and failure state without queueing
         run: |
@@ -1077,12 +685,6 @@ jobs:
           cargo test --locked --all-features --test metadata_catalog_routing failed_metadata_identity_exchange_can_try_another_voter_before_mutation -- --exact | tee /tmp/identity-fallback.log
           grep -q 'test result: ok. 1 passed' /tmp/identity-fallback.log
 
-      - name: suspended leaders rejoin without serving stale objects
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::suspended_leaders_rejoin_without_serving_stale_objects -- --exact --nocapture | tee /tmp/suspended-leaders.log
-          grep -q 'test result: ok. 1 passed' /tmp/suspended-leaders.log
-
       - name: full manifest catalog preserves replay and recovery capacity fences
         run: |
           set -o pipefail
@@ -1094,12 +696,6 @@ jobs:
           set -o pipefail
           cargo test --locked --all-features --lib cluster::meta_checkpoint::tests::full_manifest_catalog_transfers_between_raft_voters_and_recovers_later_publication -- --exact --nocapture | tee /tmp/catalog-transfer.log
           grep -q 'test result: ok. 1 passed' /tmp/catalog-transfer.log
-
-      - name: full catalog survives live metadata server recovery
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --lib cluster::meta_server::catalog_recovery_tests::full_catalog_tcp_servers_checkpoint_rejoin_and_restart -- --exact --nocapture | tee /tmp/catalog-server.log
-          grep -q 'test result: ok. 1 passed' /tmp/catalog-server.log
 
       - name: slow peer frames do not block healthy packets or shutdown
         run: |
@@ -1118,12 +714,6 @@ jobs:
           set -o pipefail
           cargo test --locked --all-features --lib cluster::replica_set::tests::quorum_vote_returns_received_payload_and_rejects_conflicting_bytes -- --exact --nocapture | tee /tmp/quorum-payload.log
           grep -q 'test result: ok. 1 passed' /tmp/quorum-payload.log
-
-      - name: maximum default object survives group failover and total restart
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::maximum_default_object_survives_group_failover_and_total_restart -- --exact --nocapture | tee /tmp/maximum-object.log
-          grep -q 'test result: ok. 1 passed' /tmp/maximum-object.log
 
       - name: star writes exclude divergent page state before mutation
         run: |
@@ -1325,25 +915,11 @@ jobs:
             grep -q 'test result: ok. 1 passed' /tmp/report-suppression.log
           done
 
-      - name: unavailable group preserves striped objects and other writes
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::unavailable_group_preserves_striped_objects_and_other_group_writes -- --exact --nocapture | tee /tmp/striped-isolation.log
-          grep -q 'test result: ok. 1 passed' /tmp/striped-isolation.log
-
       - name: a full metadata catalog refuses a create with 507 and serves what exists
         run: |
           set -o pipefail
           cargo test --locked --all-features --test network_metadata_consensus cluster_gateway_processes::a_full_catalog_refuses_a_new_object_with_507_and_still_serves_what_exists -- --exact --nocapture | tee /tmp/catalog-full.log
           grep -q 'test result: ok. 1 passed' /tmp/catalog-full.log
-          cargo test --locked --all-features --lib catalog_admission_tests -- --nocapture | tee /tmp/catalog-admission.log
-          grep -q 'test result: ok. 3 passed' /tmp/catalog-admission.log
-          cargo test --locked --all-features --lib catalog_full_tests -- --nocapture | tee /tmp/catalog-full-lib.log
-          grep -q 'test result: ok. 2 passed' /tmp/catalog-full-lib.log
-          cargo test --locked --all-features --lib a_catalog_full_refusal_is_a_507_answered_once_and_never_corruption -- --nocapture | tee /tmp/catalog-full-gw.log
-          grep -q 'test result: ok. 1 passed' /tmp/catalog-full-gw.log
-          cargo test --locked --all-features --lib a_refusal_that_names_a_changed_manifest_proves_the_publication_was_not_admitted -- --nocapture | tee /tmp/catalog-full-sdk.log
-          grep -q 'test result: ok. 1 passed' /tmp/catalog-full-sdk.log
 
       - name: an ambiguous append is resolved exactly once over real processes
         run: |
@@ -1355,36 +931,12 @@ jobs:
             grep -q 'test result: ok. 1 passed' /tmp/append-resolve.log
           done
 
-      - name: forgetting never-reused keys keeps the catalog bounded and deterministic
-        run: |
-          set -o pipefail
-          for name in \
-            forget_prefix_keeps_the_catalog_bounded_across_rollovers \
-            forget_prefix_survives_a_leader_kill_and_a_total_restart; do
-            cargo test --locked --all-features --test network_metadata_consensus "$name" -- --exact --nocapture | tee /tmp/forget-prefix.log
-            grep -q 'test result: ok. 1 passed' /tmp/forget-prefix.log
-          done
-          cargo test --locked --all-features --lib forget_prefix_tests -- --nocapture | tee /tmp/forget-prefix-lib.log
-          grep -q 'test result: ok. 5 passed' /tmp/forget-prefix-lib.log
-
       - name: live peer partitions preserve objects and recover
         run: |
           set -o pipefail
           bash tools/network_partition_test.sh | tee /tmp/live-peer-partitions.log
           test "$(grep -c '^running 1 test$' /tmp/live-peer-partitions.log)" -eq 3
           test "$(grep -c '^test result: ok. 1 passed' /tmp/live-peer-partitions.log)" -eq 3
-
-      - name: external probe verifies data across leader loss and restart
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::external_probe_verifies_striped_objects_after_leader_loss_and_restart -- --exact --nocapture | tee /tmp/external-probe.log
-          grep -q 'test result: ok. 1 passed' /tmp/external-probe.log
-
-      - name: striped objects recover across multiple data groups
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::striped_objects_preserve_pages_across_group_failover_and_restart -- --exact --nocapture | tee /tmp/striped-recovery.log
-          grep -q 'test result: ok. 1 passed' /tmp/striped-recovery.log
 
       - name: star fanout delayed response measurement validates every copy
         run: |
@@ -1472,18 +1024,6 @@ jobs:
           cargo test --locked --all-features --test replica_restart_recovery star_set_reconnects_recovered_members_but_excludes_missed_writes -- --exact --nocapture | tee /tmp/star-reconnect.log
           grep -q 'test result: ok. 1 passed' /tmp/star-reconnect.log
 
-      - name: object writer publishes verified pages across groups and recovery
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::object_writer_publishes_verified_pages_across_groups_and_recovery -- --exact --nocapture | tee /tmp/object-writer.log
-          grep -q 'test result: ok. 1 passed' /tmp/object-writer.log
-
-      - name: object writer data refusal never publishes partial objects
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::object_writer_data_refusal_never_publishes_partial_objects -- --exact --nocapture | tee /tmp/object-writer.log
-          grep -q 'test result: ok. 1 passed' /tmp/object-writer.log
-
       - name: object allocations require canonical bounded protobuf and page indexes
         run: |
           set -o pipefail
@@ -1502,12 +1042,6 @@ jobs:
           cargo test --locked --all-features --test meta_restart_recovery object_page_allocations_survive_local_journal_restart -- --exact --nocapture | tee /tmp/object-allocation.log
           grep -q 'test result: ok. 1 passed' /tmp/object-allocation.log
 
-      - name: allocated pages span data groups and stay unique after metadata recovery
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::allocated_pages_span_data_groups_and_stay_unique_after_metadata_recovery -- --exact --nocapture | tee /tmp/object-allocation.log
-          grep -q 'test result: ok. 1 passed' /tmp/object-allocation.log
-
       - name: manifest requests and replies require canonical bounded protobuf
         run: |
           set -o pipefail
@@ -1518,18 +1052,6 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --all-features --lib cluster::meta_consensus::tests::manifest_batch_preparation_restores_catalog_and_commits_in_order -- --exact --nocapture | tee /tmp/manifest-network.log
-          grep -q 'test result: ok. 1 passed' /tmp/manifest-network.log
-
-      - name: binary manifest publication survives local process restart
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test meta_restart_recovery binary_manifest_publication_survives_local_process_restart -- --exact --nocapture | tee /tmp/manifest-network.log
-          grep -q 'test result: ok. 1 passed' /tmp/manifest-network.log
-
-      - name: binary manifests bind immutable data through failover and restart
-        run: |
-          set -o pipefail
-          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::binary_manifests_bind_immutable_data_through_failover_and_restart -- --exact --nocapture | tee /tmp/manifest-network.log
           grep -q 'test result: ok. 1 passed' /tmp/manifest-network.log
 
       - name: manifest journal recovers atomic publication and torn suffixes
@@ -2114,13 +1636,13 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --lib native_log_ -- --test-threads=1 | tee /tmp/native-log-rpc-cost.log
-          grep -q '^test result: ok. 5 passed; 0 failed;' /tmp/native-log-rpc-cost.log
+          grep -q '^test result: ok. 2 passed; 0 failed;' /tmp/native-log-rpc-cost.log
 
       - name: native Star writes and seals require every durable replica
         run: |
           set -euo pipefail
           cargo test --locked --lib native_star_all_replicas_ -- --test-threads=1 | tee /tmp/native-star-all-replicas.log
-          grep -q '^test result: ok. 10 passed; 0 failed;' /tmp/native-star-all-replicas.log
+          grep -q '^test result: ok. 8 passed; 0 failed;' /tmp/native-star-all-replicas.log
 
       - name: three real nodes all persist pipelined log appends before success
         run: |
@@ -2674,12 +2196,6 @@ jobs:
           cargo test --locked --all-features --lib cluster::reclaim_loop::tests::a_door_with_the_sweep_off_refuses_to_start_unless_the_leak_is_acknowledged -- --exact --test-threads=1 2>&1 | tee /tmp/reclaim-loop.log
           grep -q '^running 1 test$' /tmp/reclaim-loop.log
           grep -q '^test result: ok. 1 passed' /tmp/reclaim-loop.log
-      - name: the reclaim loop frees after the grace, survives a failed open and refuses while page objects exist
-        run: |
-          set -euo pipefail
-          cargo test --locked --all-features --test network_metadata_consensus the_reclaim_loop_frees_after_the_grace_survives_a_failed_open_and_refuses_while_page_objects_exist -- --exact | tee /tmp/reclaim-loop-cluster.log
-          grep -q '^running 1 test$' /tmp/reclaim-loop-cluster.log
-          grep -q '^test result: ok. 1 passed' /tmp/reclaim-loop-cluster.log
       - name: a chunk manifest is shown with one identity per extent and two writes never share one
         run: |
           set -euo pipefail
@@ -2692,12 +2208,6 @@ jobs:
           cargo test --locked --all-features --lib cluster::reclaim_loop::tests::the_refusal_over_an_older_data_directory_names_it_and_says_there_is_no_migration -- --exact --test-threads=1 2>&1 | tee /tmp/older-data.log
           grep -q '^running 1 test$' /tmp/older-data.log
           grep -q '^test result: ok. 1 passed' /tmp/older-data.log
-      - name: a door refuses to start over an older data directory and starts once it holds none
-        run: |
-          set -euo pipefail
-          cargo test --locked --all-features --test network_metadata_consensus a_door_refuses_to_start_over_an_older_data_directory_and_starts_once_it_holds_none -- --exact | tee /tmp/older-data-cluster.log
-          grep -q '^running 1 test$' /tmp/older-data-cluster.log
-          grep -q '^test result: ok. 1 passed' /tmp/older-data-cluster.log
       - name: every guard the workflow pins by name exists
         run: |
           set -euo pipefail
@@ -2729,12 +2239,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install protocol build tools
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler autoconf automake libtool
-      - name: Ordered staged publication and record packing
-        run: |
-          set -euo pipefail
-          cargo test --locked --all-features --test network_metadata_consensus ordered_staged_appends:: -- --test-threads=1 2>&1 | tee /tmp/ordered-staged-publication.log
-          grep -q '^test result: ok. 4 passed; 0 failed' /tmp/ordered-staged-publication.log
-
       - name: process quorum preserves outcomes across leader loss and total restart
         run: |
           set -o pipefail
@@ -2862,12 +2366,6 @@ jobs:
           grep -q '^running 1 test$' /tmp/chunk-capacity.log
           grep -q '^test result: ok. 1 passed' /tmp/chunk-capacity.log
 
-      - name: metadata Raft recovers chunk catalog and group health
-        run: |
-          set -euo pipefail
-          cargo test --locked --features metadata-consensus --test network_metadata_consensus metadata_raft_recovers_chunk_catalog_and_group_health -- --exact | tee /tmp/group-catalog.log
-          grep -q '^running 1 test$' /tmp/group-catalog.log
-          grep -q '^test result: ok. 1 passed' /tmp/group-catalog.log
       - name: catalog canonical binary roundtrip and corruption
         run: |
           set -euo pipefail
@@ -2986,13 +2484,6 @@ jobs:
           cargo test --locked --features metadata-consensus --test network_metadata_consensus metadata_checkpoints_restore_placements_roster_and_lagging_processes -- --exact | tee /tmp/node-checkpoint.log
           grep -q '^running 1 test$' /tmp/node-checkpoint.log
           grep -q '^test result: ok. 1 passed' /tmp/node-checkpoint.log
-
-      - name: Compact SDK startup works with an existing publication fence
-        run: |
-          set -euo pipefail
-          cargo test --locked --all-features --test network_metadata_consensus compact_sdk_startup_ -- --test-threads=1 | tee /tmp/compact-sdk-network-startup.log
-          grep -q '^running 1 test$' /tmp/compact-sdk-network-startup.log
-          grep -q '^test result: ok. 1 passed' /tmp/compact-sdk-network-startup.log
 
   chunk-consensus:
     name: network chunk consensus
@@ -3158,13 +2649,6 @@ jobs:
           set -o pipefail
           cargo test --locked --features metadata-consensus,chunk-consensus --test network_chunk_consensus coupled_groups::conditional_data_and_metadata_updates_survive_conflicts_failover_and_restart -- --exact | tee /tmp/conditional-consensus.log
           grep -q 'test result: ok. 1 passed' /tmp/conditional-consensus.log
-
-      - name: concurrent groups recover placement and data together
-        run: |
-          set -euo pipefail
-          cargo test --locked --features metadata-consensus,chunk-consensus --test network_chunk_consensus coupled_groups::concurrent_groups_preserve_placement_and_data_through_failover_and_restart -- --exact | tee /tmp/multiple-groups.log
-          grep -q '^running 1 test$' /tmp/multiple-groups.log
-          grep -q '^test result: ok. 1 passed' /tmp/multiple-groups.log
 
       - name: checkpoint restores pages discards and usage without changing limits
         run: |
