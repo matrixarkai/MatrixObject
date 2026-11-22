@@ -207,7 +207,6 @@ pub fn object_id(bucket: &str, key: &str) -> ObjectId {
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaRequest {
-    CopyManifest(crate::manifest_copy::ManifestCopyRequest),
     Features(super::features_commands::FeaturesRequest),
     LogChunk(super::log_chunk_commands::LogChunkRequest),
     PublishChunkManifest(crate::chunk_catalog::ChunkOutcome),
@@ -346,7 +345,6 @@ impl MetaRequest {
             MetaRequest::ListManifests(_) => MetaRequestCode::ListManifests,
             MetaRequest::ManifestRetention(_) => MetaRequestCode::ManifestRetention,
             MetaRequest::StagedAllocation(_) => MetaRequestCode::StagedAllocation,
-            MetaRequest::CopyManifest(_) => MetaRequestCode::CopyManifest,
             MetaRequest::Features(_) => MetaRequestCode::Features,
             MetaRequest::LogChunk(_) => MetaRequestCode::LogChunk,
             MetaRequest::PublishChunkManifest(_) => MetaRequestCode::PublishChunkManifest,
@@ -432,7 +430,6 @@ impl MetaRequest {
             MetaRequest::ListManifests(request) | MetaRequest::ListChunkManifests(request) => return request.encode_to_vec(),
             MetaRequest::ManifestRetention(request) => return request.encode_to_vec(),
             MetaRequest::StagedAllocation(request) => return request.encode_to_vec(),
-            MetaRequest::CopyManifest(request) => return request.encode_to_vec(),
             MetaRequest::Features(request) => return request.encode_to_vec(),
             MetaRequest::LogChunk(request) => return request.encode_to_vec(),
             // An outcome that cannot be framed encodes to nothing, which the server refuses by name.
@@ -601,9 +598,6 @@ impl MetaRequest {
         if code == MetaRequestCode::PlanAppendRoutes {
             return super::append_plan::AppendPlanRequest::from_payload(payload).map(Self::PlanAppendRoutes);
         }
-        if code == MetaRequestCode::CopyManifest {
-            return crate::manifest_copy::ManifestCopyRequest::from_payload(payload).map(Self::CopyManifest);
-        }
         if code == MetaRequestCode::Features {
             return super::features_commands::FeaturesRequest::from_payload(payload).map(Self::Features);
         }
@@ -756,7 +750,6 @@ impl MetaRequest {
             | MetaRequestCode::ListManifests
             | MetaRequestCode::ManifestRetention
             | MetaRequestCode::StagedAllocation
-            | MetaRequestCode::CopyManifest
             | MetaRequestCode::Features
             | MetaRequestCode::LogChunk
             | MetaRequestCode::PlanAppendRoutes
@@ -1149,7 +1142,7 @@ impl MetaReply {
         }
         if matches!(
             code,
-            MetaRequestCode::ReadManifest | MetaRequestCode::PublishManifest | MetaRequestCode::CopyManifest
+            MetaRequestCode::ReadManifest | MetaRequestCode::PublishManifest
         ) {
             if payload.len() > 1024 * 1024 {
                 return Err(ObjectError::Corruption(
@@ -1332,7 +1325,6 @@ impl MetaReply {
             | MetaRequestCode::ListManifests
             | MetaRequestCode::ManifestRetention
             | MetaRequestCode::StagedAllocation
-            | MetaRequestCode::CopyManifest
             | MetaRequestCode::Features
             | MetaRequestCode::LogChunk
             | MetaRequestCode::PublishChunkManifest

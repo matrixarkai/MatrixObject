@@ -817,7 +817,6 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::GroupIdentity
         | MetaRequest::Ping => true,
         MetaRequest::ChunkCatalog(_)
-        | MetaRequest::CopyManifest(_)
         | MetaRequest::AllocateObjectPages { .. }
         | MetaRequest::PublishManifest { .. }
         | MetaRequest::PublishChunkManifest(_)
@@ -1459,20 +1458,6 @@ fn prepare_batch(
     let mut lease_keys: BTreeSet<(String, String)> = BTreeSet::new();
     for request in queued.iter() {
         match &request.request {
-            MetaRequest::CopyManifest(command) => {
-                for id in [
-                    crate::ObjectId::new(command.source_bucket.clone(), command.source_key.clone()),
-                    crate::ObjectId::new(command.bucket.clone(), command.key.clone()),
-                ] {
-                    if let Some(manifest) = service.object_manifests.get(&id) {
-                        nodes.extend(manifest.extents.iter().map(|extent| extent.group.clone()));
-                    }
-                }
-                objects.insert(crate::ObjectId::new(
-                    command.bucket.clone(),
-                    command.key.clone(),
-                ));
-            }
             MetaRequest::LogChunk(command) if !command.is_read() => {
                 log_chunk_records(service, command, &mut nodes, &mut objects, &mut lease_keys);
             }
@@ -1696,11 +1681,6 @@ fn prepare_with(
     };
     let request = stamped.as_ref().unwrap_or(request);
     groups.check_request(request)?;
-    if let MetaRequest::CopyManifest(command) = request {
-        let (outcome, reply) =
-            super::manifest_copy_commands::prepare(service, groups, command, limit)?;
-        return Ok((outcome.to_payload()?, Some(reply)));
-    }
     if let MetaRequest::Features(command) = request {
         if !command.is_read() {
             return Ok(match super::features_commands::prepare(service, command)? {
@@ -4214,99 +4194,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn publication_fence_and_copy_restore_speculative_state_and_commit_in_order() {
-        use crate::object_manifest::{ManifestOutcome, ObjectManifest};
-        let (_files, mut peer) = batch_peer();
-        let (mut service, groups) = fixture(1, 0);
-        let source = ObjectManifest {
-            format_version: 2,
-            bucket: "bucket".into(),
-            key: "source".into(),
-            generation: 1,
-            length: 0,
-            extents: Vec::new(),
-            deleted: false,
-        };
-        PlacementOutcome::publish_manifest(
-            &service,
-            ManifestOutcome::decide(None, source).unwrap(),
-            0,
-        )
-        .unwrap()
-        .apply(&mut service)
-        .unwrap();
-        let enable =
-            MetaRequest::StagedAllocation(crate::staged_allocation::StagedAllocationRequest {
-                version: 1,
-                action: 6,
-                ..Default::default()
-            });
-        let copy = MetaRequest::CopyManifest(crate::manifest_copy::ManifestCopyRequest {
-            version: 1,
-            source_bucket: "bucket".into(),
-            source_key: "source".into(),
-            bucket: "bucket".into(),
-            key: "copy".into(),
-            max_bytes: 0,
-            ..Default::default()
-        });
-        let late = ObjectManifest {
-            format_version: 2,
-            bucket: "bucket".into(),
-            key: "late".into(),
-            generation: 1,
-            length: 1,
-            deleted: false,
-            extents: vec![crate::object_manifest::ObjectExtent {
-                group: "group-0".into(),
-                chunk_id: 999,
-                length: 1,
-                write_sequence: 1,
-                data_sha256: vec![1; 32],
-                ..Default::default()
-            }],
-        };
-        let late = MetaRequest::PublishManifest {
-            outcome: ManifestOutcome::decide(None, late).unwrap(),
-            update_time_ms: 0,
-        };
-        let saved = service.export_snapshot().to_bytes().unwrap();
-        let mut requests = VecDeque::new();
-        let mut receivers = Vec::new();
-        let mut pending = VecDeque::new();
-        for command in [enable, copy, late] {
-            let (request, receiver) = queued(command, Instant::now() + Duration::from_secs(10));
-            requests.push_back(request);
-            receivers.push(receiver);
-        }
-        propose_batch(
-            &mut peer,
-            &mut service,
-            &groups,
-            65536,
-            &mut requests,
-            &mut pending,
-        )
-        .unwrap();
-        assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
-        peer.process_ready(|id, bytes| {
-            apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)
-        })
-        .unwrap();
-        assert!(receivers[0].try_recv().unwrap().is_ok());
-        assert!(receivers[1].try_recv().unwrap().is_ok());
-        assert!(receivers[2].try_recv().unwrap().is_err());
-        assert!(service.object_manifests.publication_fence() > 0);
-        assert!(service
-            .object_manifests
-            .get(&crate::ObjectId::new("bucket", "copy"))
-            .is_some());
-        assert!(service
-            .object_manifests
-            .get(&crate::ObjectId::new("bucket", "late"))
-            .is_none());
-    }
     #[test]
     fn object_allocations_commit_unique_namespaces_and_restore_speculative_batches() {
         let (_files, mut peer) = batch_peer();

@@ -40,8 +40,6 @@ use crate::cluster::wire::{StatusCode, HEADER_BYTES, MAX_PAYLOAD_BYTES};
 use crate::ObjectError;
 
 #[cfg(test)]
-#[path = "manifest_copy_client_tests.rs"]
-mod manifest_copy_client_tests;
 
 /// How long a read may be asked to wait before the client gives up on it.
 pub const SHORT_READ: Duration = Duration::from_secs(30);
