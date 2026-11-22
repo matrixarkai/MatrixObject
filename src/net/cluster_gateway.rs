@@ -288,9 +288,6 @@ pub struct GatewayOptions {
     pub cache_bytes: usize,
     /// Idle metadata connections kept for reuse.
     pub pool_max: usize,
-    /// Refuse a request to a bucket that has no record (`NoSuchBucket`). Off, buckets are implicit and exist as
-    /// soon as an object is written under them, which is what a process that never creates buckets wants.
-    pub require_buckets: bool,
 }
 
 impl Default for GatewayOptions {
@@ -303,7 +300,6 @@ impl Default for GatewayOptions {
             cache_entries: 4096,
             cache_bytes: 64 * 1024 * 1024,
             pool_max: 8,
-            require_buckets: false,
         }
     }
 }
@@ -502,10 +498,7 @@ impl ClusterGateway {
     fn route(&self, request: &Request) -> Response {
         match request.path.as_str() {
             "/healthz" | "/health" => return self.health(request),
-            "/" => {
-                // implicit buckets cannot be enumerated: the gateway names the one it was started for
-                return if self.options.require_buckets { self.list_buckets_from_records(request) } else { self.list_buckets(request) };
-            }
+            "/" => return self.list_buckets_from_records(request),
             _ => {}
         }
         let trimmed = request.path.trim_start_matches('/');
@@ -715,15 +708,8 @@ impl ClusterGateway {
         }
         for sub in ["versioning", "tagging", "cors", "policy", "lifecycle", "object-lock", "quota", "changefeed"] {
             if request.query_param(sub).is_some() {
-                if self.options.require_buckets {
-                    if let Some(reply) = self.bucket_configuration(request, bucket, sub) {
-                        return reply;
-                    }
-                } else if sub == "versioning" && method == "GET" {
-                    // buckets are implicit here, so they hold no configuration: not versioned, and nothing to change
-                    return self.probe_answer("versioning");
-                } else {
-                    return not_implemented(&format!("the bucket sub-resource ?{sub} (this gateway keeps no bucket records)"), &resource);
+                if let Some(reply) = self.bucket_configuration(request, bucket, sub) {
+                    return reply;
                 }
             }
         }
@@ -2163,14 +2149,17 @@ mod tests {
         }
     }
 
+    /// The buckets a test of `gateway()` addresses; each has its record before the test starts.
+    const SEEDED_BUCKETS: [&str; 18] = [
+        "b", "vault", "wiki", "cold", "orders", "ops", "docs", "photos", "web", "small", "plain", "logs", "big", "vh", "race", "hist",
+        "bulk", "archive",
+    ];
+
     fn gateway() -> (ClusterGateway, Arc<Mutex<Shared>>) {
-        let shared = Arc::new(Mutex::new(Shared::default()));
-        let handle = Arc::clone(&shared);
-        let gateway = ClusterGateway::new(
-            move || Ok(Box::new(MemoryPlane(Arc::clone(&handle))) as Box<dyn ObjectPlane>),
-            GatewayOptions::default(),
-            "b",
-        );
+        let (gateway, shared) = gateway_without_buckets();
+        for bucket in SEEDED_BUCKETS {
+            gateway.ensure_bucket(bucket).unwrap();
+        }
         (gateway, shared)
     }
 
@@ -2427,6 +2416,7 @@ mod tests {
             GatewayOptions::default(),
             "b",
         );
+        gateway.ensure_bucket("b").unwrap();
         (gateway, armed)
     }
 
@@ -3241,12 +3231,13 @@ mod tests {
         }
     }
 
-    fn gateway_requiring_buckets() -> (ClusterGateway, Arc<Mutex<Shared>>) {
+    /// A gateway over an empty store: no bucket has a record until a test creates it.
+    fn gateway_without_buckets() -> (ClusterGateway, Arc<Mutex<Shared>>) {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let handle = Arc::clone(&shared);
         let gateway = ClusterGateway::new(
             move || Ok(Box::new(MemoryPlane(Arc::clone(&handle))) as Box<dyn ObjectPlane>),
-            GatewayOptions { require_buckets: true, ..GatewayOptions::default() },
+            GatewayOptions::default(),
             "b",
         );
         (gateway, shared)
@@ -3254,7 +3245,7 @@ mod tests {
 
     #[test]
     fn a_bucket_is_created_probed_listed_and_deleted_and_its_record_is_not_a_client_object() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         assert_eq!(gateway.handle(&request("PUT", "/photos", &[], b"")).status, 200);
         assert_eq!(gateway.handle(&request("PUT", "/photos", &[], b"")).status, 200, "creating a bucket that exists succeeds");
         assert_eq!(gateway.handle(&request("PUT", "/docs", &[], b"")).status, 200);
@@ -3279,8 +3270,8 @@ mod tests {
     }
 
     #[test]
-    fn a_gateway_that_requires_buckets_refuses_requests_to_one_that_does_not_exist() {
-        let (gateway, _) = gateway_requiring_buckets();
+    fn a_gateway_refuses_requests_to_a_bucket_that_does_not_exist() {
+        let (gateway, _) = gateway_without_buckets();
         let refused = gateway.handle(&request("PUT", "/b/k", &[], b"x"));
         assert_eq!(refused.status, 404, "{}", text(&refused));
         assert!(text(&refused).contains("NoSuchBucket"), "{}", text(&refused));
@@ -3292,14 +3283,11 @@ mod tests {
         assert_eq!(gateway.ensure_bucket("start").unwrap(), true);
         assert_eq!(gateway.ensure_bucket("start").unwrap(), false);
         assert_eq!(gateway.handle(&request("PUT", "/start/k", &[], b"y")).status, 200);
-        // a gateway that does not require them keeps buckets implicit
-        let (implicit, _) = self::gateway();
-        assert_eq!(implicit.handle(&request("PUT", "/anything/k", &[], b"x")).status, 200);
     }
 
     #[test]
     fn bucket_configuration_is_stored_read_back_and_removed() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         gateway.handle(&request("PUT", "/cfg", &[], b""));
         let tagging = "<Tagging><TagSet><Tag><Key>team</Key><Value>storage</Value></Tag></TagSet></Tagging>";
         assert_eq!(gateway.handle(&request("PUT", "/cfg?tagging", &[], tagging.as_bytes())).status, 200);
@@ -3344,7 +3332,7 @@ mod tests {
 
     #[test]
     fn malformed_configuration_and_configuration_of_a_missing_bucket_are_refused() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         gateway.handle(&request("PUT", "/cfg", &[], b""));
         for (sub, body) in [
             ("tagging", "not xml"),
@@ -3365,7 +3353,7 @@ mod tests {
 
     #[test]
     fn concurrent_changes_to_one_buckets_configuration_all_land() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         gateway.handle(&request("PUT", "/race", &[], b""));
         let gateway = Arc::new(gateway);
         let mut workers = Vec::new();
@@ -3418,7 +3406,7 @@ mod tests {
 
     #[test]
     fn an_object_carries_its_content_type_metadata_and_tags_until_it_is_overwritten() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         bucket_with(&gateway, "docs", &[]);
         let put = gateway.handle(&request(
             "PUT",
@@ -3459,7 +3447,7 @@ mod tests {
 
     #[test]
     fn a_retention_or_legal_hold_refuses_overwrite_and_delete_and_only_governance_can_be_bypassed() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         bucket_with(&gateway, "vault", &[("object-lock", LOCKED_BUCKET)]);
         let until = "2099-01-01T00:00:00Z";
         // retention headers are refused where object lock was not enabled
@@ -3515,7 +3503,7 @@ mod tests {
 
     #[test]
     fn a_default_retention_locks_what_the_bucket_receives() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         let configuration = "<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled><Rule><DefaultRetention><Mode>GOVERNANCE</Mode><Days>30</Days></DefaultRetention></Rule></ObjectLockConfiguration>";
         bucket_with(&gateway, "archive", &[("object-lock", configuration)]);
         assert_eq!(gateway.handle(&request("PUT", "/archive/k", &[], b"x")).status, 200);
@@ -3526,7 +3514,7 @@ mod tests {
 
     #[test]
     fn a_quota_refuses_the_write_that_would_pass_it_and_counts_an_overwrite_once() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         bucket_with(&gateway, "small", &[("quota", "<Quota><Bytes>10</Bytes></Quota>")]);
         assert_eq!(gateway.handle(&request("PUT", "/small/a", &[], b"123456")).status, 200);
         let over = gateway.handle(&request("PUT", "/small/b", &[], b"123456"));
@@ -3545,7 +3533,7 @@ mod tests {
 
     #[test]
     fn cors_rules_answer_a_preflight_and_dress_a_cross_origin_response() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         let cors = "<CORSConfiguration><CORSRule><AllowedOrigin>https://app.example</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedMethod>PUT</AllowedMethod><AllowedHeader>x-amz-*</AllowedHeader><ExposeHeader>etag</ExposeHeader><MaxAgeSeconds>600</MaxAgeSeconds></CORSRule></CORSConfiguration>";
         bucket_with(&gateway, "web", &[("cors", cors)]);
         assert_eq!(gateway.handle(&request("PUT", "/web/page", &[], b"<html>")).status, 200);
@@ -3579,7 +3567,7 @@ mod tests {
 
     #[test]
     fn a_lifecycle_pass_expires_old_objects_under_the_prefix_and_leaves_locked_ones() {
-        let (gateway, shared) = gateway_requiring_buckets();
+        let (gateway, shared) = gateway_without_buckets();
         let rules = "<LifecycleConfiguration><Rule><ID>tmp</ID><Filter><Prefix>tmp/</Prefix></Filter><Status>Enabled</Status><Expiration><Days>1</Days></Expiration></Rule></LifecycleConfiguration>";
         bucket_with(&gateway, "logs", &[("object-lock", LOCKED_BUCKET), ("lifecycle", rules)]);
         for key in ["tmp/a", "tmp/b", "keep/c"] {
@@ -3616,7 +3604,7 @@ mod tests {
 
     #[test]
     fn versioning_keeps_what_an_overwrite_or_a_delete_replaces_and_serves_each_version() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         bucket_with(&gateway, "wiki", &[("versioning", VERSIONED)]);
         let first = gateway.handle(&request("PUT", "/wiki/page", &[("content-type", "text/plain")], b"one"));
         let second = gateway.handle(&request("PUT", "/wiki/page", &[], b"two!"));
@@ -3667,7 +3655,7 @@ mod tests {
 
     #[test]
     fn a_bucket_without_versioning_keeps_nothing_and_a_lock_protects_a_kept_version() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         bucket_with(&gateway, "plain", &[]);
         assert_eq!(gateway.handle(&request("PUT", "/plain/k", &[], b"one")).status, 200);
         assert_eq!(gateway.handle(&request("PUT", "/plain/k", &[], b"two")).status, 200);
@@ -3684,7 +3672,7 @@ mod tests {
 
     #[test]
     fn a_noncurrent_expiration_removes_old_versions_and_an_expiration_leaves_a_marker() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         let rules = "<LifecycleConfiguration><Rule><ID>old</ID><Status>Enabled</Status><NoncurrentVersionExpiration><NoncurrentDays>1</NoncurrentDays></NoncurrentVersionExpiration><Expiration><Days>5</Days></Expiration></Rule></LifecycleConfiguration>";
         bucket_with(&gateway, "hist", &[("versioning", VERSIONED), ("lifecycle", rules)]);
         for body in ["a", "b", "c"] {
@@ -3703,7 +3691,7 @@ mod tests {
 
     #[test]
     fn a_bucket_that_opts_in_keeps_an_ordered_change_feed_read_by_cursor_and_trimmed_by_the_consumer() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         bucket_with(&gateway, "orders", &[]);
         // a bucket that did not opt in has no feed, and its mutations write nothing for one
         assert_eq!(gateway.handle(&request("PUT", "/orders/early", &[], b"x")).status, 200);
@@ -3741,7 +3729,7 @@ mod tests {
 
     #[test]
     fn a_multipart_upload_publishes_what_it_was_begun_with_and_respects_a_lock() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         bucket_with(&gateway, "big", &[("quota", "<Quota><Bytes>20</Bytes></Quota>")]);
         let started = gateway.handle(&request("POST", "/big/file?uploads", &[("content-type", "video/mp4"), ("x-amz-meta-camera", "north"), ("x-amz-tagging", "kind=clip")], &[]));
         assert_eq!(started.status, 200, "{}", text(&started));
@@ -3780,7 +3768,7 @@ mod tests {
 
     #[test]
     fn a_kept_version_carries_its_own_tags_and_retention_and_is_read_by_range() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         bucket_with(&gateway, "vh", &[("versioning", VERSIONED), ("object-lock", LOCKED_BUCKET)]);
         let v1 = header_of(&gateway.handle(&request("PUT", "/vh/k", &[], b"0123456789")), "x-amz-version-id").unwrap();
         let v2 = header_of(&gateway.handle(&request("PUT", "/vh/k", &[], b"abcdefghij")), "x-amz-version-id").unwrap();
@@ -3812,7 +3800,7 @@ mod tests {
 
     #[test]
     fn lifecycle_rules_filter_by_tag_keep_versions_transition_objects_and_remove_empty_markers() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         let rules = "<LifecycleConfiguration>\
             <Rule><ID>tagged</ID><Filter><Tag><Key>team</Key><Value>x</Value></Tag></Filter><Status>Enabled</Status><Expiration><Days>1</Days></Expiration></Rule>\
             <Rule><ID>cold</ID><Filter><Prefix>arch/</Prefix></Filter><Status>Enabled</Status><Transition><Days>1</Days><StorageClass>STANDARD_IA</StorageClass></Transition></Rule>\
@@ -3858,7 +3846,7 @@ mod tests {
 
     #[test]
     fn an_object_in_a_colder_class_is_restored_for_a_window_and_a_version_is_copied_back() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         bucket_with(&gateway, "cold", &[("versioning", VERSIONED)]);
         let put = gateway.handle(&request("PUT", "/cold/deep", &[("x-amz-storage-class", "GLACIER")], b"frozen"));
         assert_eq!(put.status, 200, "{}", text(&put));
@@ -3894,7 +3882,7 @@ mod tests {
 
     #[test]
     fn versions_are_listed_in_pages_and_a_prefix_is_deleted_in_batches() {
-        let (gateway, _) = gateway_requiring_buckets();
+        let (gateway, _) = gateway_without_buckets();
         bucket_with(&gateway, "pg", &[("versioning", VERSIONED), ("object-lock", LOCKED_BUCKET)]);
         for key in ["a", "b"] {
             for body in ["1", "2", "3"] {

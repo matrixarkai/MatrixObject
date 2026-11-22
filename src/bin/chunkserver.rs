@@ -29,7 +29,6 @@
 //! | `MATRIXOBJECT_REPLICA_THREADS` | `4` | request executors |
 //! | `MATRIXOBJECT_REPLICA_IO_THREADS` | request executors | I/O loops; positive and at most request executors; 128 connection slots and one payload byte budget per loop |
 //! | `MATRIXOBJECT_REPLICA_LOCAL_RECOVERY` | `xor` | `peers` uses a durable journal and configured replica repair instead of a local XOR sidecar |
-//! | `MATRIXOBJECT_REPLICA_GROUP_COMMIT` | `true` | share sync across waiting standalone journal mutations; `false` keeps individual-request sync |
 //! | `MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
 //! | `MATRIXOBJECT_REPLICA_CAPACITY_BYTES` | `268435456` | total page payload bytes; positive |
 //! | `MATRIXOBJECT_REPLICA_MAX_PAGES` | `65536` | page identities, including empty pages; positive |
@@ -153,17 +152,6 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let journal_group_commit = match std::env::var("MATRIXOBJECT_REPLICA_GROUP_COMMIT") {
-        Err(std::env::VarError::NotPresent) => true,
-        Ok(raw) => raw.trim().parse::<bool>().unwrap_or_else(|_| {
-            eprintln!("MATRIXOBJECT_REPLICA_GROUP_COMMIT must be true or false");
-            std::process::exit(2);
-        }),
-        Err(_) => {
-            eprintln!("MATRIXOBJECT_REPLICA_GROUP_COMMIT must be valid text");
-            std::process::exit(2);
-        }
-    };
     let journal_deferred_completion =
         match std::env::var("MATRIXOBJECT_REPLICA_DEFERRED_COMPLETION") {
             Err(std::env::VarError::NotPresent) => false,
@@ -195,7 +183,6 @@ fn main() {
             }),
         maintenance,
         local_recovery_sidecar,
-        journal_group_commit,
         journal_deferred_completion,
         max_payload_bytes,
         worker_threads,
@@ -494,7 +481,7 @@ fn main() {
         }
     }
 
-    let group_commit = journal_group_commit && matches!(storage, "journal" | "segmented-outcomes");
+    let group_commit = matches!(storage, "journal" | "segmented-outcomes");
     let deferred_completion = group_commit && journal_deferred_completion;
     println!(
         "chunkserver listening on {bound} pid={} protocol_stamp={PROTOCOL_STAMP} \

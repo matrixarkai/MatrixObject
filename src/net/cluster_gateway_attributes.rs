@@ -178,11 +178,8 @@ impl Change {
 }
 
 impl ClusterGateway {
-    /// Whether `bucket` was created with object lock (always false where buckets are implicit).
+    /// Whether `bucket` was created with object lock.
     fn object_lock_enabled(&self, bucket: &str) -> Result<bool, ObjectError> {
-        if !self.options.require_buckets {
-            return Ok(false);
-        }
         Ok(self.bucket_rules(bucket)?.is_some_and(|rules| rules.object_lock_enabled))
     }
 

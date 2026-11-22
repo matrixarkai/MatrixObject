@@ -942,7 +942,7 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
           cargo test --locked --all-features --lib net::cluster_gateway::tests::concurrent_changes_to_one_buckets_configuration_all_land -- --exact | tee /tmp/gateway-features.log
           grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
-          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_gateway_that_requires_buckets_refuses_requests_to_one_that_does_not_exist -- --exact | tee /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_gateway_refuses_requests_to_a_bucket_that_does_not_exist -- --exact | tee /tmp/gateway-features.log
           grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
           cargo test --locked --all-features --lib net::cluster_gateway::tests::an_object_carries_its_content_type_metadata_and_tags_until_it_is_overwritten -- --exact | tee /tmp/gateway-features.log
           grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
@@ -2248,12 +2248,6 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --all-features --lib cluster::reclaim_loop::tests::a_setting_that_is_out_of_range_or_not_a_number_is_refused_not_defaulted -- --exact --test-threads=1 2>&1 | tee /tmp/reclaim-loop.log
-          grep -q '^running 1 test$' /tmp/reclaim-loop.log
-          grep -q '^test result: ok. 1 passed' /tmp/reclaim-loop.log
-      - name: a door with the sweep off refuses to start without the acknowledgement
-        run: |
-          set -euo pipefail
-          cargo test --locked --all-features --lib cluster::reclaim_loop::tests::a_door_with_the_sweep_off_refuses_to_start_unless_the_leak_is_acknowledged -- --exact --test-threads=1 2>&1 | tee /tmp/reclaim-loop.log
           grep -q '^running 1 test$' /tmp/reclaim-loop.log
           grep -q '^test result: ok. 1 passed' /tmp/reclaim-loop.log
       - name: a chunk manifest is shown with one identity per extent and two writes never share one

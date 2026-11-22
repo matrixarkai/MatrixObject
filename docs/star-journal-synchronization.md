@@ -8,14 +8,9 @@ replication thresholds remain the client's `N=3, W=3, R=1`.
 
 ## Configuration
 
-`ReplicaNodeOptions::journal_group_commit` defaults to `true`.
-`MATRIXOBJECT_REPLICA_GROUP_COMMIT=true` is the equivalent process setting;
-`false` selects individual-request synchronization for controlled measurements
-or operational diagnosis. Invalid settings are refused before serving.
-
-The setting applies only to a standalone durable journal. In-memory nodes and
+Group commit is always on for a standalone durable journal. In-memory nodes and
 Raft groups retain their existing execution paths. The startup line reports
-the effective `group_commit=true` or `group_commit=false` setting.
+the effective `group_commit=true` or `group_commit=false` for the node's storage.
 
 `ReplicaNodeOptions::journal_deferred_completion` defaults to `false`.
 `MATRIXOBJECT_REPLICA_DEFERRED_COMPLETION=true` enables experimental deferred

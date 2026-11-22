@@ -58,7 +58,7 @@ fn decode(cursor: &str, text: &str) -> Option<Change> {
 impl ClusterGateway {
     /// Record that `operation` happened to `key`, if the bucket keeps a feed. Never fails the request.
     pub(super) fn note_change(&self, bucket: &str, operation: &str, key: &str, version: u64, size: u64) {
-        if !self.options.require_buckets || s3_verbs::is_reserved(key) {
+        if s3_verbs::is_reserved(key) {
             return;
         }
         match self.bucket_rules(bucket) {

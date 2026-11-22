@@ -142,7 +142,8 @@ impl Group {
             .collect::<Vec<_>>()
             .join(",");
         let id = (i + 1).to_string();
-        let checkpoint_bytes = self.checkpoint_bytes.to_string();
+        // 0 means "the server's default interval": the server refuses 0 as a setting, and an empty value is the default
+        let checkpoint_bytes = if self.checkpoint_bytes == 0 { String::new() } else { self.checkpoint_bytes.to_string() };
         let request_timeout_ms = self.request_timeout_ms.to_string();
         let zero_fill = self.zero_fill.map(|bytes| bytes.to_string());
         let object_cap = self.object_cap.map(|cap| cap.to_string());
@@ -971,6 +972,7 @@ fn a_chunk_object_round_trips_through_a_star_quorum_and_a_wrong_digest_fails_its
             gateway_options,
             "gw",
         );
+        gateway.ensure_bucket("gw").unwrap();
         let call = |method: &str, target: &str, headers: &[(&str, &str)], body: &[u8]| {
             let (path, query) = target.split_once('?').unwrap_or((target, ""));
             gateway.handle(&Request {
@@ -3040,6 +3042,7 @@ fn the_s3_door_over_chunk_objects_serves_listing_conditions_copy_batch_multipart
     };
     let gateway_options = GatewayOptions { write: options.clone(), replica: options.replica.clone(), ..Default::default() };
     let gateway = ClusterGateway::over_chunk_objects(move || RemoteMetaClient::connect(&meta_endpoint, &meta_options()), gateway_options, "gw");
+    gateway.ensure_bucket("gw").unwrap();
     let call = |method: &str, target: &str, headers: &[(&str, &str)], body: &[u8]| -> Response {
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         gateway.handle(&Request {
@@ -3233,7 +3236,7 @@ fn the_s3_door_over_chunk_objects_creates_configures_lists_and_deletes_buckets()
         },
         ..Default::default()
     };
-    let gateway_options = GatewayOptions { write: options.clone(), replica: options.replica.clone(), require_buckets: true, ..Default::default() };
+    let gateway_options = GatewayOptions { write: options.clone(), replica: options.replica.clone(), ..Default::default() };
     let open = {
         let endpoint = meta_endpoint.clone();
         move || RemoteMetaClient::connect(&endpoint, &meta_options())
@@ -3358,7 +3361,7 @@ fn the_s3_door_over_chunk_objects_keeps_attributes_locks_versions_quotas_and_a_c
         },
         ..Default::default()
     };
-    let gateway_options = GatewayOptions { write: options.clone(), replica: options.replica.clone(), require_buckets: true, ..Default::default() };
+    let gateway_options = GatewayOptions { write: options.clone(), replica: options.replica.clone(), ..Default::default() };
     let open = {
         let endpoint = meta_endpoint.clone();
         move || RemoteMetaClient::connect(&endpoint, &meta_options())

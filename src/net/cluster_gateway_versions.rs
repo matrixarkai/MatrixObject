@@ -46,9 +46,6 @@ fn parse_retained(hidden: &str) -> Option<(String, u64)> {
 impl ClusterGateway {
     /// Whether writes to `bucket` keep the version they replace.
     pub(super) fn versioning_on(&self, bucket: &str) -> Result<bool, ObjectError> {
-        if !self.options.require_buckets {
-            return Ok(false);
-        }
         Ok(self.bucket_rules(bucket)?.is_some_and(|rules| rules.versioning == bc::VERSIONING_ENABLED))
     }
 

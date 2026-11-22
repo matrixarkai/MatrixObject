@@ -65,38 +65,15 @@ fn number(name: &str, value: &str, low: u64, high: u64) -> Result<u64, String> {
     }
 }
 
-/// The settings a door runs with, from its environment, or `None` when it runs no sweep.
+/// The settings a door sweeps with, from its environment. The sweep always runs.
 ///
 /// A value that does not parse or is out of range is REFUSED, never replaced by the default.
 ///
-/// * `reclaim`: `MATRIXOBJECT_RECLAIM`: unset or `on` runs the sweep, `off` is the only way to
-///   turn it off.
 /// * `grace`: `MATRIXOBJECT_RECLAIM_GRACE_MS`, [`MIN_GRACE_MS`] to [`MAX_GRACE_MS`], default
 ///   [`DEFAULT_GRACE_MS`].
 /// * `interval`: `MATRIXOBJECT_RECLAIM_INTERVAL_MS`, [`MIN_INTERVAL_MS`] to the grace, default a
 ///   quarter of the grace.
-/// * `ack_leak`: `MATRIXOBJECT_RECLAIM_ACK_LEAK`: `1` lets a door that stores chunk objects
-///   start with the sweep off, which leaks every page of a deleted or overwritten object.
-pub fn resolve_reclaim(
-    reclaim: Option<&str>,
-    grace: Option<&str>,
-    interval: Option<&str>,
-    ack_leak: Option<&str>,
-) -> Result<Option<ReclaimSettings>, String> {
-    let on = match present(reclaim) {
-        None => true,
-        Some("on") => true,
-        Some("off") => false,
-        Some(other) => return Err(format!("MATRIXOBJECT_RECLAIM={other:?} must be on or off")),
-    };
-    if !on {
-        return match present(ack_leak) {
-            Some("1") => Ok(None),
-            _ => Err("this door stores chunk objects with MATRIXOBJECT_RECLAIM=off, so the pages of deleted and \
-                 overwritten objects are never freed; set MATRIXOBJECT_RECLAIM_ACK_LEAK=1 to run that way on purpose"
-                .into()),
-        };
-    }
+pub fn resolve_reclaim(grace: Option<&str>, interval: Option<&str>) -> Result<ReclaimSettings, String> {
     let grace_ms = match present(grace) {
         None => DEFAULT_GRACE_MS,
         Some(value) => number("MATRIXOBJECT_RECLAIM_GRACE_MS", value, MIN_GRACE_MS, MAX_GRACE_MS)?,
@@ -105,7 +82,7 @@ pub fn resolve_reclaim(
         None => (grace_ms / 4).max(MIN_INTERVAL_MS),
         Some(value) => number("MATRIXOBJECT_RECLAIM_INTERVAL_MS", value, MIN_INTERVAL_MS, grace_ms)?,
     };
-    Ok(Some(ReclaimSettings { grace_ms, interval_ms }))
+    Ok(ReclaimSettings { grace_ms, interval_ms })
 }
 
 /// What a sweeper has done, readable from any thread, so "the sweep never runs" is visible.
@@ -272,42 +249,24 @@ where
 mod tests {
     use super::*;
 
-    fn resolve(reclaim: Option<&str>, grace: Option<&str>, interval: Option<&str>, ack: Option<&str>) -> Result<Option<ReclaimSettings>, String> {
-        resolve_reclaim(reclaim, grace, interval, ack)
-    }
-
     #[test]
     fn the_sweep_runs_by_default_with_an_hour_of_grace_and_a_quarter_of_it_between_rounds() {
-        assert_eq!(
-            resolve(None, None, None, None),
-            Ok(Some(ReclaimSettings { grace_ms: 3_600_000, interval_ms: 900_000 }))
-        );
-        assert_eq!(resolve(Some("on"), Some(" 120000 "), None, None), Ok(Some(ReclaimSettings { grace_ms: 120_000, interval_ms: 30_000 })));
-        assert_eq!(resolve(Some(""), Some("60000"), Some("1000"), None), Ok(Some(ReclaimSettings { grace_ms: 60_000, interval_ms: 1_000 })));
+        assert_eq!(resolve_reclaim(None, None), Ok(ReclaimSettings { grace_ms: 3_600_000, interval_ms: 900_000 }));
+        assert_eq!(resolve_reclaim(Some(" 120000 "), None), Ok(ReclaimSettings { grace_ms: 120_000, interval_ms: 30_000 }));
+        assert_eq!(resolve_reclaim(Some("60000"), Some("1000")), Ok(ReclaimSettings { grace_ms: 60_000, interval_ms: 1_000 }));
+        assert_eq!(resolve_reclaim(Some(""), Some(" ")), Ok(ReclaimSettings { grace_ms: 3_600_000, interval_ms: 900_000 }));
     }
 
     #[test]
     fn a_setting_that_is_out_of_range_or_not_a_number_is_refused_not_defaulted() {
         for grace in ["59999", "604800001", "x", "-1", "1.5"] {
-            assert!(resolve(None, Some(grace), None, None).is_err(), "grace {grace}");
+            assert!(resolve_reclaim(Some(grace), None).is_err(), "grace {grace}");
         }
         for interval in ["999", "0", "x"] {
-            assert!(resolve(None, None, Some(interval), None).is_err(), "interval {interval}");
+            assert!(resolve_reclaim(None, Some(interval)).is_err(), "interval {interval}");
         }
         // the interval may not exceed the grace
-        assert!(resolve(None, Some("60000"), Some("60001"), None).is_err());
-        assert!(resolve(Some("never"), None, None, None).is_err());
-        assert!(resolve(Some("OFF"), None, None, None).is_err());
-    }
-
-    #[test]
-    fn a_door_with_the_sweep_off_refuses_to_start_unless_the_leak_is_acknowledged() {
-        assert!(resolve(Some("off"), None, None, None).is_err());
-        assert!(resolve(Some("off"), None, None, Some("0")).is_err());
-        assert!(resolve(Some("off"), None, None, Some("")).is_err());
-        assert_eq!(resolve(Some("off"), None, None, Some("1")), Ok(None));
-        // the acknowledgement does not turn the sweep on
-        assert_eq!(resolve(None, None, None, Some("1")).map(|s| s.is_some()), Ok(true));
+        assert!(resolve_reclaim(Some("60000"), Some("60001")).is_err());
     }
 
     #[test]

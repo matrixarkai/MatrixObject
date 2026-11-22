@@ -5,10 +5,6 @@ client expects of a bucket and of an object: buckets that are created and config
 metadata and tags, object lock, quotas, CORS, lifecycle rules, versioning and a change feed. This page says
 what each one does, where it is stored, and what it does not promise.
 
-Everything here applies when buckets are explicit (`MATRIXOBJECT_REQUIRE_BUCKETS`, on by default in
-`object_server`). A gateway embedded in a process that never creates buckets leaves them implicit and none
-of the bucket rules below are read for its requests.
-
 ## Buckets
 
 A bucket is a record, [`BucketConfig`](../src/bucket_config.rs), stored as an ordinary chunk object in the
@@ -112,7 +108,7 @@ versions is not empty.
 ## Lifecycle
 
 `PUT /{b}?lifecycle` rules are acted on by a pass the door runs every `MATRIXOBJECT_LIFECYCLE_INTERVAL_MS`
-(default one hour; `0` turns it off): an expiration deletes the objects under the rule's prefix last written that
+(default one hour; 1000 to 86400000 ms, any other value is refused): an expiration deletes the objects under the rule's prefix last written that
 many days ago (in a versioned bucket it leaves a delete marker), a noncurrent expiration deletes kept versions
 that stopped being current that many days ago, and an abort rule removes multipart uploads begun that many days
 ago and never completed. An object an object lock still protects is left alone and counted. A pass is safe to
@@ -166,5 +162,4 @@ version and are safe to replay.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MATRIXOBJECT_REQUIRE_BUCKETS` | `1` | a request to a bucket that was never created is refused with `NoSuchBucket`; `0` keeps buckets implicit and turns every rule on this page off |
-| `MATRIXOBJECT_LIFECYCLE_INTERVAL_MS` | `3600000` | time between lifecycle passes, 1000 to 86400000; `0` turns them off |
+| `MATRIXOBJECT_LIFECYCLE_INTERVAL_MS` | `3600000` | time between lifecycle passes, 1000 to 86400000; any other value is refused |
