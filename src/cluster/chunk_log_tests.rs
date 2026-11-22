@@ -634,7 +634,6 @@ pub(super) struct FaultProxy {
     worker: Option<thread::JoinHandle<()>>,
 }
 impl FaultProxy {
-    pub(super) fn connection_count(&self) -> usize { self.sockets.lock().unwrap().len() / 2 }
     pub(super) fn new(target: String, operation: u32, drop_reply: bool) -> Self {
         use prost::Message as _;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

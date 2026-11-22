@@ -13,8 +13,7 @@
 #   META       single | raft3 : one metadata server, or a three-voter quorum (default single)
 #   BUCKET     bucket the gateway reports as ready                 (default temporalstore)
 #   THREADS    gateway accept threads                              (default 8)
-#   GATEWAY_ENV   extra NAME=VALUE pairs for the gateway, space separated, e.g.
-#                 "MATRIXOBJECT_CLUSTER_COMPACT_APPEND=1"
+#   GATEWAY_ENV   extra NAME=VALUE pairs for the gateway, space separated
 #   CHECKPOINT_BYTES  MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES for raft3 voters (default unset)
 #   CHUNK_HEARTBEAT_MS chunk server heartbeat interval (default 3000, the product default; a shorter value
 #                     is only for quick tests and needs HEARTBEAT_TTL_MS of at least three intervals)

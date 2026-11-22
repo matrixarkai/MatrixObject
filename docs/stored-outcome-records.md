@@ -34,7 +34,7 @@ serve partial recovery. Older committed reads do not wait for writer sync.
 The file header uses payload profile 2. Profile 1 raw extent files and profile 2
 outcome files refuse each other's readers. There is no in-place conversion.
 The stable identity lock, directory synchronization and capacity checks follow
-[durable payload extents](durable-payload-extents.md). Header byte 4095 records
+durable payload extents. Header byte 4095 records
 whether the file has held records, preventing a lost first record from reopening
 as a new empty log.
 

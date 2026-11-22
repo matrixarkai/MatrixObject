@@ -3762,7 +3762,6 @@ mod tests {
     include!("compact_append_command_tests.rs");
     include!("reservation_tests.rs");
     include!("append_plan_command_tests.rs");
-    include!("ranged_manifest_read_tests.rs");
     include!("feature_draft_tests.rs");
     include!("log_chunk_outcome_command_tests.rs");
     include!("log_chunk_commands_tests.rs");

@@ -210,12 +210,16 @@ mod probe {
                     replica: self.replica(started),
                     ..Default::default()
                 };
+                // one stripe per group, so an object is spread over `groups` groups as it always was
+                let page = self.page_bytes.max(1) as u64;
+                let stripe = (self.bytes as u64).div_ceil(u64::from(self.groups.max(1))).div_ceil(page).max(1) * page;
                 client
-                    .write_object(&self.bucket, &key, None, &expected, &options)
-                    .map_err(|e| format!("{key}: {e}; outcome must be inspected, not replayed"))?;
+                    .write_chunk_object(&self.bucket, &key, None, &expected, &options, stripe)
+                    .map_err(|e| format!("{key}: {}; outcome must be inspected, not replayed", e.into_error()))?;
             } else {
+                let options = ObjectWriteOptions { replica: self.replica(started), ..Default::default() };
                 let (manifest, actual) = client
-                    .read_object(&self.bucket, &key, self.bytes, &self.replica(started))
+                    .read_chunk_object(&self.bucket, &key, &options)
                     .map_err(|e| format!("{key}: {e}"))?;
                 if actual != expected || manifest.generation != 1 {
                     return Err(format!("{key}: recovered bytes or generation do not match"));

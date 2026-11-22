@@ -4,7 +4,7 @@
 #[allow(dead_code)]
 mod node_regime;
 use matrixobjectstore_rs::cluster::{
-    ChunkRaftOptions, ObjectWriteOptions, RemoteReplicaClient, ReplicaClientOptions, ReplicaNodeOptions,
+    ChunkRaftOptions, RemoteReplicaClient, ReplicaClientOptions, ReplicaNodeOptions,
     ReplicaNodeServer,
 };
 use matrixobjectstore_rs::{ChunkId, PageId};
@@ -1588,1755 +1588,6 @@ mod coupled_groups {
     }
 
     #[test]
-    fn binary_manifests_bind_immutable_data_through_failover_and_restart() {
-        use matrixobjectstore_rs::object_manifest::{
-            ManifestOutcome, ObjectExtent, ObjectManifest,
-        };
-        use matrixobjectstore_rs::ObjectError;
-        fn checksum(bytes: &[u8]) -> u64 {
-            bytes.iter().fold(0xcbf29ce484222325u64, |h, b| {
-                (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
-            })
-        }
-        let mut chunks = Group::configured(65536);
-        chunks.checkpoint_bytes = 1024;
-        let mut metadata = MetadataGroup::new(&chunks);
-        chunks.report = Some((metadata.api.join(","), chunks.api_addresses.clone()));
-        for id in 0..3 {
-            chunks.start(id);
-        }
-        let mut meta = metadata.ready();
-        chunks.leader();
-        health(&mut meta, true, 0, 0);
-        let mut data = meta
-            .connect_chunk_group("group-a", &chunk_options())
-            .unwrap();
-        let mut current = None;
-        for generation in 1..=16 {
-            let bytes = vec![generation as u8; 4];
-            data.write_chunk_if_sequence(page(800 + generation), 0, &bytes, 0)
-                .unwrap();
-            let manifest = ObjectManifest {
-                format_version: 1,
-                bucket: "manifests".into(),
-                key: "object".into(),
-                generation,
-                length: 4,
-                deleted: false,
-                extents: vec![ObjectExtent {
-                    group: "group-a".into(),
-                    volume_id: 3,
-                    chunk_id: 7,
-                    page_index: 800 + generation,
-                    object_offset: 0,
-                    page_offset: 0,
-                    length: 4,
-                    write_sequence: 1,
-                    data_checksum: checksum(&bytes),
-                    data_sha256: Vec::new(), ..Default::default()
-                }],
-            };
-            let outcome = ManifestOutcome::decide(current.clone(), manifest.clone()).unwrap();
-            if generation == 1 {
-                let mut wrong = manifest.clone();
-                wrong.extents[0].group = "unknown-group".into();
-                assert!(meta
-                    .publish_manifest(ManifestOutcome::decide(None, wrong).unwrap(), 1)
-                    .is_err());
-            }
-            assert_eq!(
-                meta.publish_manifest(outcome, generation).unwrap(),
-                manifest
-            );
-            current = Some(manifest);
-        }
-        let current = current.unwrap();
-        assert_eq!(
-            meta.read_object("manifests", "object", 4, &chunk_options())
-                .unwrap(),
-            (current.clone(), vec![16; 4])
-        );
-        assert!(matches!(
-            meta.read_object("manifests", "object", 3, &chunk_options()),
-            Err(ObjectError::PreconditionFailed(_))
-        ));
-        // Verify assembly with page offsets and multiple extents, including a late
-        // invalid extent: a failed read must never expose a successful prefix.
-        let mut composite = current.clone();
-        composite.key = "composite".into();
-        composite.generation = 1;
-        composite.length = 4;
-        composite.extents[0].page_offset = 1;
-        composite.extents[0].length = 2;
-        composite.extents[0].data_checksum = checksum(&[16; 2]);
-        let mut second = composite.extents[0].clone();
-        second.page_index = 815;
-        second.object_offset = 2;
-        second.data_checksum = checksum(&[15; 2]);
-        composite.extents.push(second);
-        meta.publish_manifest(
-            ManifestOutcome::decide(None, composite.clone()).unwrap(),
-            20,
-        )
-        .unwrap();
-        assert_eq!(
-            meta.read_object("manifests", "composite", 4, &chunk_options())
-                .unwrap()
-                .1,
-            vec![16, 16, 15, 15]
-        );
-        let mut invalid = composite.clone();
-        invalid.key = "invalid-checksum".into();
-        invalid.extents[1].data_checksum ^= 1;
-        meta.publish_manifest(ManifestOutcome::decide(None, invalid).unwrap(), 21)
-            .unwrap();
-        assert!(matches!(
-            meta.read_object("manifests", "invalid-checksum", 4, &chunk_options()),
-            Err(ObjectError::Corruption(_))
-        ));
-        let mut invalid = composite;
-        invalid.key = "invalid-sequence".into();
-        invalid.extents[1].write_sequence += 1;
-        meta.publish_manifest(ManifestOutcome::decide(None, invalid).unwrap(), 22)
-            .unwrap();
-        assert!(matches!(
-            meta.read_object("manifests", "invalid-sequence", 4, &chunk_options()),
-            Err(ObjectError::Corruption(_))
-        ));
-        assert_eq!(meta.read_manifest("manifests", "object").unwrap(), current);
-        health(&mut meta, true, 64, 16);
-        let meta_leader = metadata
-            .api
-            .iter()
-            .position(|a| a == meta.endpoint())
-            .unwrap();
-        node_regime::checkpoints::wait_for_checkpoint(
-            &metadata
-                .root
-                .join(meta_leader.to_string())
-                .join("metadata.peer.wal"),
-            2,
-        );
-        metadata.kill(meta_leader);
-        chunks.kill(chunks.leader());
-        meta = metadata.ready();
-        chunks.leader();
-        assert_eq!(meta.read_manifest("manifests", "object").unwrap(), current);
-        assert_eq!(
-            meta.read_object("manifests", "object", 4, &chunk_options())
-                .unwrap(),
-            (current.clone(), vec![16; 4])
-        );
-        for id in 0..3 {
-            if chunks.nodes[id].is_some() {
-                chunks.kill(id);
-            }
-            if metadata.nodes[id].is_some() {
-                metadata.kill(id);
-            }
-        }
-        for id in 0..3 {
-            metadata.start(id);
-            chunks.start(id);
-        }
-        meta = metadata.ready();
-        chunks.leader();
-        data = meta
-            .connect_chunk_group("group-a", &chunk_options())
-            .unwrap();
-        let restored = meta.read_manifest("manifests", "object").unwrap();
-        assert_eq!(restored, current);
-        assert_eq!(
-            meta.read_object("manifests", "object", 4, &chunk_options())
-                .unwrap(),
-            (current.clone(), vec![16; 4])
-        );
-        for generation in 1..=16 {
-            let read = data.read_chunk(&page(800 + generation), 0, 4).unwrap();
-            assert_eq!(read.data, vec![generation as u8; 4]);
-            assert_eq!(
-                data.head_chunk(&page(800 + generation))
-                    .unwrap()
-                    .write_sequence,
-                1
-            );
-        }
-        assert_eq!(
-            checksum(&data.read_chunk(&page(816), 0, 4).unwrap().data),
-            restored.extents[0].data_checksum
-        );
-        data.write_chunk_if_sequence(page(815), 0, &[15; 4], 1)
-            .unwrap();
-        assert!(matches!(
-            meta.read_object("manifests", "composite", 4, &chunk_options()),
-            Err(ObjectError::Corruption(_))
-        ));
-        let mut deleted = restored.clone();
-        deleted.generation += 1;
-        deleted.length = 0;
-        deleted.extents.clear();
-        deleted.deleted = true;
-        meta.publish_manifest(
-            ManifestOutcome::decide(Some(restored.clone()), deleted.clone()).unwrap(),
-            30,
-        )
-        .unwrap();
-        assert_eq!(meta.read_manifest("manifests", "object").unwrap(), deleted);
-        assert!(matches!(
-            meta.read_object("manifests", "object", 4, &chunk_options()),
-            Err(ObjectError::NotFound(_))
-        ));
-        assert!(meta
-            .publish_manifest(
-                ManifestOutcome::decide(Some(restored), deleted.clone()).unwrap(),
-                30
-            )
-            .is_err());
-        // Exercise empty manifests alongside the deletion before another restart.
-        for generation in 1..=16 {
-            let empty = ObjectManifest {
-                format_version: 1,
-                bucket: "empty".into(),
-                key: format!("key-{generation}"),
-                generation: 1,
-                length: 0,
-                extents: vec![],
-                deleted: false,
-            };
-            meta.publish_manifest(
-                ManifestOutcome::decide(None, empty).unwrap(),
-                40 + generation,
-            )
-            .unwrap();
-        }
-        for id in 0..3 {
-            metadata.kill(id);
-        }
-        for id in 0..3 {
-            metadata.start(id);
-        }
-        meta = metadata.ready();
-        assert_eq!(meta.read_manifest("manifests", "object").unwrap(), deleted);
-        assert!(matches!(
-            meta.read_object("manifests", "object", 4, &chunk_options()),
-            Err(ObjectError::NotFound(_))
-        ));
-        assert!(meta
-            .read_object("empty", "key-1", 0, &chunk_options())
-            .unwrap()
-            .1
-            .is_empty());
-        assert!(matches!(
-            meta.read_object("empty", "missing", 0, &chunk_options()),
-            Err(ObjectError::NotFound(_))
-        ));
-        let leader = metadata
-            .api
-            .iter()
-            .position(|a| a == meta.endpoint())
-            .unwrap();
-        for id in 0..3 {
-            if id != leader {
-                metadata.kill(id);
-            }
-        }
-        assert!(meta.read_manifest("manifests", "object").is_err());
-    }
-
-    #[test]
-    fn allocated_pages_span_data_groups_and_stay_unique_after_metadata_recovery() {
-        use matrixobjectstore_rs::cluster::ObjectWriteOptions;
-        use matrixobjectstore_rs::object_manifest::{ObjectExtent, ObjectManifest};
-        let mut groups: Vec<_> = (1..=2)
-            .map(|id| {
-                let mut group = Group::configured(1024 * 1024);
-                group.group_id = id;
-                group.checkpoint_bytes = 1024;
-                group
-            })
-            .collect();
-        let mut metadata = MetadataGroup::for_groups(&groups);
-        for group in &mut groups {
-            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
-            for id in 0..3 {
-                group.start(id);
-            }
-        }
-        let mut meta = metadata.ready();
-        for group in &groups {
-            group.leader();
-        }
-        group_usage(&metadata.api, &groups, &[]);
-        let ids: Vec<String> = groups.iter().map(Group::placement_id).collect();
-        let routes = meta.read_chunk_routes(&ids).unwrap();
-        assert_eq!(routes.len(), ids.len());
-        assert!(routes.iter().zip(&ids).all(|(route, id)|
-            route.group.as_ref().is_some_and(|group| &group.placement_id == id)));
-        let allocation = meta.allocate_object_pages(8).unwrap();
-        let mut extents = Vec::new();
-        for index in 0..8 {
-            let group = &groups[index % groups.len()];
-            let page = allocation.page(index as u32).unwrap();
-            let bytes = vec![index as u8 + 1; 4];
-            let mut data = meta
-                .connect_chunk_group(&group.placement_id(), &chunk_options())
-                .unwrap();
-            if index == 0 {
-                data.write_chunk_if_sequence(page.clone(), 0, &bytes, 0)
-                    .unwrap();
-                assert!(data
-                    .write_chunk_if_sequence(page.clone(), 0, b"late", 0)
-                    .is_err());
-                assert_eq!(data.read_chunk(&page, 0, 4).unwrap().data, bytes);
-            }
-            extents.push(ObjectExtent {
-                group: group.placement_id(),
-                volume_id: page.chunk_id.volume_id(),
-                chunk_id: page.chunk_id.id(),
-                page_index: page.page_index,
-                object_offset: index as u64 * 4,
-                page_offset: 0,
-                length: 4,
-                write_sequence: 1,
-                data_checksum: bytes.iter().fold(0xcbf29ce484222325u64, |h, b| {
-                    (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
-                }),
-                data_sha256: Vec::new(), ..Default::default()
-            });
-        }
-        let manifest = ObjectManifest {
-            format_version: 1,
-            bucket: "allocated".into(),
-            key: "object".into(),
-            generation: 1,
-            length: 32,
-            extents,
-            deleted: false,
-        };
-        let write_options = ObjectWriteOptions {
-            page_bytes: 4,
-            target_groups: 2,
-            update_time_ms: 10,
-            replica: chunk_options(),
-            ..Default::default()
-        };
-        let bytes: Vec<u8> = (1..=8).flat_map(|value| [value; 4]).collect();
-        assert!(matches!(
-            meta.resume_unpublished_object(None, manifest.clone(), b"bad data", &write_options),
-            Err(matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication { .. })
-        ));
-        assert_eq!(
-            meta.resume_unpublished_object(None, manifest.clone(), &bytes, &write_options).unwrap(),
-            manifest
-        );
-        assert_eq!(
-            meta.resume_unpublished_object(None, manifest.clone(), &bytes, &write_options).unwrap(),
-            manifest
-        );
-        assert_eq!(
-            meta.read_object("allocated", "object", 32, &chunk_options())
-                .unwrap(),
-            (manifest.clone(), bytes.to_vec())
-        );
-        // Independent clients race allocations through the same committed sequence.
-        let mut threads = Vec::new();
-        for _ in 0..4 {
-            let endpoints = metadata.api.clone();
-            threads.push(std::thread::spawn(move || {
-                let mut client =
-                    RemoteMetaClient::connect_catalog(&endpoints, &MetaClientOptions::default())
-                        .unwrap();
-                (0..8)
-                    .map(|_| client.allocate_object_pages(2).unwrap().allocation_id)
-                    .collect::<Vec<_>>()
-            }));
-        }
-        let ids: std::collections::BTreeSet<_> = threads
-            .into_iter()
-            .flat_map(|t| t.join().unwrap())
-            .collect();
-        assert_eq!(ids.len(), 32);
-        assert!(ids.iter().all(|id| *id > allocation.allocation_id));
-        let mut last = *ids.last().unwrap();
-        let leader = metadata
-            .api
-            .iter()
-            .position(|a| a == meta.endpoint())
-            .unwrap();
-        node_regime::checkpoints::wait_for_checkpoint(
-            &metadata
-                .root
-                .join(leader.to_string())
-                .join("metadata.peer.wal"),
-            2,
-        );
-        metadata.kill(leader);
-        for group in &mut groups {
-            group.kill(group.leader());
-        }
-        meta = metadata.ready();
-        for group in &groups {
-            group.leader();
-        }
-        let next = meta.allocate_object_pages(2).unwrap();
-        assert!(next.allocation_id > last);
-        last = next.allocation_id;
-        assert_eq!(
-            meta.read_object("allocated", "object", 32, &chunk_options())
-                .unwrap()
-                .1,
-            bytes.to_vec()
-        );
-        for id in 0..3 {
-            if metadata.nodes[id].is_some() {
-                metadata.kill(id);
-            }
-            for group in &mut groups {
-                if group.nodes[id].is_some() {
-                    group.kill(id);
-                }
-            }
-        }
-        for id in 0..3 {
-            metadata.start(id);
-            for group in &mut groups {
-                group.start(id);
-            }
-        }
-        meta = metadata.ready();
-        for group in &groups {
-            group.leader();
-        }
-        assert!(meta.allocate_object_pages(2).unwrap().allocation_id > last);
-        assert_eq!(
-            meta.read_object("allocated", "object", 32, &chunk_options())
-                .unwrap(),
-            (manifest, bytes.to_vec())
-        );
-        let leader = metadata
-            .api
-            .iter()
-            .position(|a| a == meta.endpoint())
-            .unwrap();
-        for id in 0..3 {
-            if id != leader {
-                metadata.kill(id);
-            }
-        }
-        assert!(meta.allocate_object_pages(1).is_err());
-    }
-
-    #[test]
-    fn object_writer_publishes_verified_pages_across_groups_and_recovery() {
-        object_writer_recovery(4);
-    }
-    #[test]
-    fn striped_write_uses_each_groups_capacity() {
-        let mut groups: Vec<_> = (1..=2).map(|id| {
-            let mut group = Group::configured(80);
-            group.group_id = id;
-            group.checkpoint_bytes = 1024;
-            group
-        }).collect();
-        let mut metadata = MetadataGroup::for_groups(&groups);
-        for group in &mut groups {
-            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
-            for id in 0..3 {
-                group.start(id);
-            }
-            group.leader();
-        }
-        let mut meta = metadata.ready();
-        group_usage(&metadata.api, &groups, &[]);
-        let options = ObjectWriteOptions {
-            page_bytes: 4,
-            target_groups: 2,
-            replica: chunk_options(),
-            ..Default::default()
-        };
-        let bytes: Vec<u8> = (0..144).collect();
-        let manifest = meta.write_object("striped", "capacity", None, &bytes, &options).unwrap();
-        assert_eq!(manifest.extents.len(), 36);
-        assert_ne!(manifest.extents[0].group, manifest.extents[1].group);
-        assert_eq!(meta.read_object("striped", "capacity", 144, &options.replica).unwrap(),
-            (manifest, bytes.clone()));
-        let nodes = meta.list_placement_nodes().unwrap();
-        for group in &groups {
-            let node = nodes.iter().find(|node| node.node_id == group.placement_id()).unwrap();
-            assert_eq!(node.committed_bytes, 72);
-        }
-        assert!(meta.plan_object_placement("striped", "overflow", 9, 2).is_err());
-        for id in 0..3 {
-            metadata.kill(id);
-        }
-        for id in 0..3 {
-            metadata.start(id);
-        }
-        let mut recovered = metadata.ready();
-        assert_eq!(recovered.read_object("striped", "capacity", 144, &options.replica).unwrap().1,
-            bytes);
-        let nodes = recovered.list_placement_nodes().unwrap();
-        for group in &groups {
-            let node = nodes.iter().find(|node| node.node_id == group.placement_id()).unwrap();
-            assert_eq!(node.committed_bytes, 72);
-        }
-    }
-    #[test]
-    fn serial_object_writer_preserves_verified_recovery() {
-        object_writer_recovery(1);
-    }
-    fn object_writer_recovery(max_parallel_groups: usize) {
-        use matrixobjectstore_rs::cluster::{ObjectWriteFailure, ObjectWriteOptions};
-        let mut groups: Vec<_> = (1..=2)
-            .map(|id| {
-                let mut group = Group::configured(1024 * 1024);
-                group.group_id = id;
-                group.checkpoint_bytes = 1024;
-                group
-            })
-            .collect();
-        let mut metadata = MetadataGroup::for_groups(&groups);
-        for group in &mut groups {
-            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
-            for id in 0..3 {
-                group.start(id);
-            }
-        }
-        let mut meta = metadata.ready();
-        for group in &groups {
-            group.leader();
-        }
-        group_usage(&metadata.api, &groups, &[]);
-        let options = ObjectWriteOptions {
-            page_bytes: 4,
-            target_groups: 2,
-            max_parallel_groups,
-            replica: ReplicaClientOptions {
-                deadline: Some(Instant::now() + Duration::from_secs(60)),
-                ..chunk_options()
-            },
-            ..Default::default()
-        };
-        let first = meta
-            .write_object("written", "object", None, b"abcdefghijklmnopq", &options)
-            .unwrap();
-        let owned = meta.allocate_staged_object("written", "owned", None, 4, false).unwrap();
-        let owned_base = meta.write_staged_object(&owned, None, b"owned raft bytes", &options).unwrap();
-        assert!(meta.read_staged_allocation(owned.allocation_id).is_err());
-        let pending_owned = meta.allocate_staged_object("written", "owned", Some(owned_base.generation), 2, true).unwrap();
-        assert_eq!(first.extents.len(), 5);
-        assert_ne!(first.extents[0].group, first.extents[1].group);
-        assert_eq!(
-            meta.read_object("written", "object", 100, &options.replica)
-                .unwrap(),
-            (first.clone(), b"abcdefghijklmnopq".to_vec())
-        );
-        let second = meta
-            .write_object(
-                "written",
-                "object",
-                Some(first.clone()),
-                b"new bytes",
-                &options,
-            )
-            .unwrap();
-        assert_eq!(second.generation, 2);
-        assert!(matches!(
-            meta.write_object("written", "object", Some(first.clone()), b"stale", &options),
-            Err(ObjectWriteFailure::BeforePublication { staged: None, .. })
-        ));
-        // Old generations stay readable from their retained pages.
-        let old = &first.extents[0];
-        let mut data = meta
-            .connect_chunk_group(&old.group, &options.replica)
-            .unwrap();
-        let page = matrixobjectstore_rs::PageId {
-            chunk_id: matrixobjectstore_rs::ChunkId::new(old.volume_id, old.chunk_id).unwrap(),
-            page_index: old.page_index,
-        };
-        assert_eq!(data.read_chunk(&page, 0, old.length).unwrap().data, b"abcd");
-        let empty = meta
-            .write_object("written", "empty", None, b"", &options)
-            .unwrap();
-        assert!(empty.extents.is_empty());
-        let mut deleted = second.clone();
-        deleted.generation += 1;
-        deleted.deleted = true;
-        deleted.length = 0;
-        deleted.extents.clear();
-        meta.publish_manifest(
-            matrixobjectstore_rs::object_manifest::ManifestOutcome::decide(
-                Some(second),
-                deleted.clone(),
-            )
-            .unwrap(),
-            30,
-        )
-        .unwrap();
-        assert!(matches!(
-            meta.write_object("written", "object", None, b"old absent writer", &options),
-            Err(ObjectWriteFailure::BeforePublication { .. })
-        ));
-        let recreated = meta
-            .write_object("written", "object", Some(deleted), b"recreated", &options)
-            .unwrap();
-        assert_eq!(recreated.generation, 4);
-        let leader = metadata
-            .api
-            .iter()
-            .position(|a| a == meta.endpoint())
-            .unwrap();
-        metadata.kill(leader);
-        for group in &mut groups {
-            group.kill(group.leader());
-        }
-        meta = metadata.ready();
-        for group in &groups {
-            group.leader();
-        }
-        let updated = meta
-            .write_object(
-                "written",
-                "object",
-                Some(recreated),
-                b"after failover",
-                &options,
-            )
-            .unwrap();
-        let owned_updated = meta.write_staged_object(&pending_owned, Some(owned_base.clone()), b"+tail", &options).unwrap();
-        assert_eq!(&owned_updated.extents[..owned_base.extents.len()], &owned_base.extents);
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let mut racers = Vec::new();
-        for payload in [b"racer-a".to_vec(), b"racer-b".to_vec()] {
-            let endpoints = metadata.api.clone();
-            let expected = updated.clone();
-            let options = options.clone();
-            let barrier = barrier.clone();
-            racers.push(std::thread::spawn(move || {
-                let mut client =
-                    RemoteMetaClient::connect_catalog(&endpoints, &MetaClientOptions::default())
-                        .unwrap();
-                barrier.wait();
-                let result =
-                    client.write_object("written", "object", Some(expected), &payload, &options);
-                (result, payload)
-            }));
-        }
-        let mut winners = Vec::new();
-        for racer in racers {
-            let (result, payload) = racer.join().unwrap();
-            match result {
-                Ok(manifest) => winners.push((manifest, payload)),
-                Err(
-                    ObjectWriteFailure::BeforePublication { .. }
-                    | ObjectWriteFailure::PublicationUnconfirmed { .. },
-                ) => {}
-            }
-        }
-        assert_eq!(winners.len(), 1);
-        let winning = winners.pop().unwrap();
-        let post_fence = meta.allocate_staged_object("written", "post-fence", None, 1, false).unwrap();
-        let publication_fence = meta.enable_publication_fence().unwrap();
-        assert_eq!(meta.read_publication_fence().unwrap(), publication_fence);
-        assert!(meta.allocate_object_pages(1).is_err());
-        let post_fence_value = meta.write_staged_object(&post_fence, None, b"OK", &options).unwrap();
-        let mut selected = None;
-        for _ in 0..16 {
-            let prepared = meta.prepare_staged_allocation("written", "leased", None, 1, false, 60_000).unwrap();
-            match meta.try_allocate_prepared_staged_object(&prepared) {
-                Ok(record) => { selected = Some((prepared, record)); break; }
-                Err(matrixobjectstore_rs::staged_allocation::StagedAllocationFailure::PositionConsumed) => {}
-                Err(other) => panic!("allocation was not a known position conflict: {other:?}"),
-            }
-        }
-        let (prepared, leased) = selected.expect("foreground allocation must progress beside heartbeats");
-        assert_eq!(meta.allocate_prepared_staged_object(&prepared).unwrap(), leased);
-        let leased = meta.renew_staged_allocation(&leased, 120_000).unwrap();
-        let leased_value = meta.write_staged_object(&leased, None, b"LS", &options).unwrap();
-        assert!(meta.allocate_prepared_staged_object(&prepared).is_err());
-        let copied = meta.copy_object_atomic("written", "owned", "written", "fenced-copy", None, 100, 0).unwrap();
-        assert!(meta.write_object("written", "late-legacy", None, b"legacy", &options).is_err());
-        assert!(meta.read_manifest("written", "late-legacy").is_err());
-
-        for id in 0..3 {
-            if metadata.nodes[id].is_some() {
-                metadata.kill(id);
-            }
-            for group in &mut groups {
-                if group.nodes[id].is_some() {
-                    group.kill(id);
-                }
-            }
-        }
-        for id in 0..3 {
-            metadata.start(id);
-            for group in &mut groups {
-                group.start(id);
-            }
-        }
-        meta = metadata.ready();
-        for group in &groups {
-            group.leader();
-        }
-        assert_eq!(
-            meta.read_object("written", "object", 100, &options.replica)
-                .unwrap(),
-            winning
-        );
-        assert_eq!(meta.read_object("written", "owned", 100, &options.replica).unwrap(),
-            (owned_updated, b"owned raft bytes+tail".to_vec()));
-        assert!(meta.read_staged_allocation(pending_owned.allocation_id).is_err());
-        assert_eq!(meta.read_publication_fence().unwrap(), publication_fence);
-        assert_eq!(meta.read_object("written", "post-fence", 100, &options.replica).unwrap(), (post_fence_value, b"OK".to_vec()));
-        assert_eq!(meta.read_object("written", "fenced-copy", 100, &options.replica).unwrap(),
-            (copied, b"owned raft bytes+tail".to_vec()));
-
-    assert_eq!(meta.read_object("written", "leased", 100, &options.replica).unwrap(),
-        (leased_value.clone(), b"LS".to_vec()));
-    assert_eq!(meta.read_object_range("written", "leased", 1, 1, 1, &options.replica).unwrap().1,
-        b"S");
-    assert_eq!(meta.read_objects(&[("written", "leased", 100), ("written", "leased", 100)],
-        &options.replica).unwrap(),
-        vec![(leased_value.clone(), b"LS".to_vec()); 2]);
-    assert!(meta.list_retained_manifests(0, 32).unwrap().0.is_empty());
-        assert_eq!(meta.read_object_in_session("written", "leased", 100, &options.replica, 60_000).unwrap(),
-            (leased_value, b"LS".to_vec()));
-        assert!(meta.read_staged_allocation(leased.allocation_id).is_err());
-    }
-
-    #[test]
-    fn maximum_default_object_survives_group_failover_and_total_restart() {
-        use matrixobjectstore_rs::cluster::{ObjectWriteFailure, ObjectWriteOptions};
-        let mut groups: Vec<_> = (1..=2)
-            .map(|id| {
-                let mut group = Group::configured(128 * 1024 * 1024);
-                group.group_id = id;
-                group.max_pages = 128;
-                group.checkpoint_bytes = 16 * 1024 * 1024;
-                group.heartbeat_ms = "1000";
-                group
-            })
-            .collect();
-        let mut metadata = MetadataGroup::for_groups_with_threads(&groups, 16);
-        for group in &mut groups {
-            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
-            for id in 0..3 {
-                group.start(id);
-            }
-        }
-        let mut meta = metadata.ready();
-        for group in &groups {
-            group.leader();
-        }
-        group_usage(&metadata.api, &groups, &[]);
-        let options = ObjectWriteOptions {
-            target_groups: 2,
-            replica: chunk_options(),
-            ..Default::default()
-        };
-        assert_eq!(options.max_object_bytes, 64 * 1024 * 1024);
-        let data: Vec<u8> = (0..options.max_object_bytes)
-            .map(|i| ((i * 31 + i / 1024) % 251) as u8)
-            .collect();
-        let started = Instant::now();
-        let manifest = meta
-            .write_object("large", "object", None, &data, &options)
-            .unwrap();
-        assert_eq!(manifest.extents.len(), 64);
-        assert_eq!(manifest.length, data.len() as u64);
-        for group in &groups {
-            assert_eq!(
-                manifest
-                    .extents
-                    .iter()
-                    .filter(|e| e.group == group.placement_id())
-                    .count(),
-                32
-            );
-        }
-        assert!(manifest
-            .extents
-            .iter()
-            .all(|e| e.length == 1024 * 1024 && e.write_sequence == 1));
-        println!(
-            "LARGE_OBJECT write_bytes={} elapsed_ms={}",
-            data.len(),
-            started.elapsed().as_millis()
-        );
-        let verify = |meta: &mut RemoteMetaClient| {
-            let (actual, bytes) = meta
-                .read_object("large", "object", data.len(), &chunk_options())
-                .unwrap();
-            assert_eq!(actual, manifest);
-            assert!(bytes == data, "large object payload differs");
-        };
-        verify(&mut meta);
-        assert!(meta
-            .read_object("large", "object", data.len() - 1, &chunk_options())
-            .is_err());
-        let mut oversized = data.clone();
-        oversized.push(0);
-        assert!(matches!(
-            meta.write_object("large", "too-large", None, &oversized, &options),
-            Err(ObjectWriteFailure::BeforePublication { staged: None, .. })
-        ));
-        drop(oversized);
-        assert!(matches!(
-            meta.read_manifest("large", "too-large"),
-            Err(matrixobjectstore_rs::ObjectError::NotFound(_))
-        ));
-        for group in &groups {
-            let leader = group.leader();
-            node_regime::checkpoints::wait_for_checkpoint(
-                &group.root.join(leader.to_string()).join("chunk.peer.wal"),
-                2,
-            );
-        }
-        let leader = metadata
-            .api
-            .iter()
-            .position(|a| a == meta.endpoint())
-            .unwrap();
-        metadata.kill(leader);
-        for group in &mut groups {
-            group.kill(group.leader());
-        }
-        meta = metadata.ready();
-        for group in &groups {
-            group.leader();
-        }
-        verify(&mut meta);
-        // Quorums that survived leader loss must still accept fresh publication.
-        let later = meta
-            .write_object("large", "later", None, b"after leader loss", &options)
-            .unwrap();
-        for group in &mut groups {
-            for id in 0..3 {
-                if group.nodes[id].is_some() {
-                    group.kill(id);
-                }
-            }
-        }
-        for id in 0..3 {
-            if metadata.nodes[id].is_some() {
-                metadata.kill(id);
-            }
-        }
-        for id in 0..3 {
-            metadata.start(id);
-            for group in &mut groups {
-                group.start(id);
-            }
-        }
-        meta = metadata.ready();
-        for group in &groups {
-            group.leader();
-        }
-        verify(&mut meta);
-        let (actual, bytes) = meta
-            .read_object("large", "later", 64, &chunk_options())
-            .unwrap();
-        assert_eq!(actual, later);
-        assert_eq!(bytes, b"after leader loss");
-        println!(
-            "LARGE_OBJECT recovered_bytes={} processes=9 groups=2",
-            data.len()
-        );
-    }
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn suspended_leaders_rejoin_without_serving_stale_objects() {
-        use matrixobjectstore_rs::cluster::ObjectWriteOptions;
-        fn signal(node: &NodeProcess, value: &str) {
-            assert!(std::process::Command::new("kill")
-                .args([value, &node.pid.to_string()])
-                .status()
-                .unwrap()
-                .success());
-        }
-        fn suspend(node: NodeProcess) -> NodeProcess {
-            signal(&node, "-STOP");
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                let status = std::fs::read_to_string(format!("/proc/{}/status", node.pid)).unwrap();
-                if status
-                    .lines()
-                    .any(|line| line.starts_with("State:") && line.contains("T (stopped)"))
-                {
-                    break;
-                }
-                assert!(Instant::now() < deadline, "child did not suspend");
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            node
-        }
-        let mut groups: Vec<_> = (1..=2)
-            .map(|id| {
-                let mut group = Group::configured(1024 * 1024);
-                group.group_id = id;
-                group.checkpoint_bytes = 1024;
-                group
-            })
-            .collect();
-        let mut metadata = MetadataGroup::for_groups_with_threads(&groups, 16);
-        for group in &mut groups {
-            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
-            for id in 0..3 {
-                group.start(id);
-            }
-            group.leader();
-        }
-        let mut meta = metadata.ready();
-        group_usage(&metadata.api, &groups, &[]);
-        let options = ObjectWriteOptions {
-            page_bytes: 4,
-            target_groups: 2,
-            replica: ReplicaClientOptions {
-                read_timeout: Duration::from_secs(2),
-                ..chunk_options()
-            },
-            ..Default::default()
-        };
-        let first = meta
-            .write_object("suspended", "object", None, b"abcdefgh", &options)
-            .unwrap();
-        let old_meta = metadata
-            .api
-            .iter()
-            .position(|e| e == meta.endpoint())
-            .unwrap();
-        let old_data: Vec<_> = groups.iter().map(Group::leader).collect();
-        let suspended_meta = suspend(metadata.nodes[old_meta].take().unwrap());
-        let suspended_data: Vec<_> = groups
-            .iter_mut()
-            .zip(&old_data)
-            .map(|(group, id)| suspend(group.nodes[*id].take().unwrap()))
-            .collect();
-        let quick_meta = MetaClientOptions {
-            read_timeout: Duration::from_millis(200),
-            ..load_options()
-        };
-        let quick_data = ReplicaClientOptions {
-            read_timeout: Duration::from_millis(200),
-            ..chunk_options()
-        };
-        assert!(
-            RemoteMetaClient::connect(&metadata.api[old_meta], &quick_meta)
-                .unwrap()
-                .read_manifest("suspended", "object")
-                .is_err()
-        );
-        for (group, id) in groups.iter().zip(&old_data) {
-            assert!(RemoteReplicaClient::connect(
-                &group.api_addresses[*id].to_string(),
-                &quick_data
-            )
-            .unwrap()
-            .ping()
-            .is_err());
-            group.leader();
-        }
-        meta = metadata.ready();
-        let second = meta
-            .write_object(
-                "suspended",
-                "object",
-                Some(first.clone()),
-                b"ijklmnop",
-                &options,
-            )
-            .unwrap();
-        assert_eq!(
-            meta.read_object("suspended", "object", 8, &options.replica)
-                .unwrap(),
-            (second.clone(), b"ijklmnop".to_vec())
-        );
-        // These requests can remain queued in the suspended voters' sockets.
-        // Their replies time out, so they are uncertain rather than retried.
-        // Once resumed, stale conditions must not overwrite the newer state.
-        let mut stale = first.clone();
-        stale.generation += 1;
-        let stale_outcome =
-            matrixobjectstore_rs::object_manifest::ManifestOutcome::decide(Some(first), stale)
-                .unwrap();
-        assert!(
-            RemoteMetaClient::connect(&metadata.api[old_meta], &quick_meta)
-                .unwrap()
-                .publish_manifest(stale_outcome, 0)
-                .is_err()
-        );
-        for (group, id) in groups.iter().zip(&old_data) {
-            let extent = second
-                .extents
-                .iter()
-                .find(|e| e.group == group.placement_id())
-                .unwrap();
-            let page_id = matrixobjectstore_rs::PageId {
-                chunk_id: matrixobjectstore_rs::ChunkId::new(extent.volume_id, extent.chunk_id)
-                    .unwrap(),
-                page_index: extent.page_index,
-            };
-            assert!(RemoteReplicaClient::connect(
-                &group.api_addresses[*id].to_string(),
-                &quick_data
-            )
-            .unwrap()
-            .write_chunk_if_sequence(page_id, 0, b"zzzz", 0)
-            .is_err());
-        }
-        signal(&suspended_meta, "-CONT");
-        metadata.nodes[old_meta] = Some(suspended_meta);
-        for ((group, id), node) in groups.iter_mut().zip(&old_data).zip(suspended_data) {
-            signal(&node, "-CONT");
-            group.nodes[*id] = Some(node);
-        }
-        // A resumed voter may refuse while catching up. Any successful quorum
-        // read must reflect the write acknowledged while that voter was frozen.
-        for _ in 0..8 {
-            let mut old = RemoteMetaClient::connect(&metadata.api[old_meta], &quick_meta).unwrap();
-            match old.read_manifest("suspended", "object") {
-                Ok(value) => assert_eq!(value, second),
-                Err(matrixobjectstore_rs::ObjectError::NotFound(_)) => {
-                    panic!("resumed metadata returned stale absence")
-                }
-                Err(_) => {}
-            }
-            for (group, id) in groups.iter().zip(&old_data) {
-                let extent = second
-                    .extents
-                    .iter()
-                    .find(|e| e.group == group.placement_id())
-                    .unwrap();
-                let page_id = matrixobjectstore_rs::PageId {
-                    chunk_id: matrixobjectstore_rs::ChunkId::new(extent.volume_id, extent.chunk_id)
-                        .unwrap(),
-                    page_index: extent.page_index,
-                };
-                let mut old = RemoteReplicaClient::connect(
-                    &group.api_addresses[*id].to_string(),
-                    &quick_data,
-                )
-                .unwrap();
-                match old.read_chunk(&page_id, 0, extent.length) {
-                    Ok(read) => {
-                        assert_eq!(read.write_sequence, 1);
-                        assert_eq!(
-                            read.data,
-                            b"ijklmnop"[extent.object_offset as usize
-                                ..(extent.object_offset + extent.length) as usize]
-                        );
-                    }
-                    Err(matrixobjectstore_rs::ObjectError::NotFound(_)) => {
-                        panic!("resumed data voter returned stale absence")
-                    }
-                    Err(_) => {}
-                }
-            }
-        }
-        // Remove another voter so progress now requires each resumed process.
-        metadata.kill((old_meta + 1) % 3);
-        for (group, id) in groups.iter_mut().zip(&old_data) {
-            group.kill((*id + 1) % 3);
-            group.leader();
-        }
-        meta = metadata.ready();
-        assert_eq!(
-            meta.read_object("suspended", "object", 8, &options.replica)
-                .unwrap(),
-            (second.clone(), b"ijklmnop".to_vec())
-        );
-        // A recovered data quorum can serve reads before its next capacity
-        // report makes the group eligible for a new placement. Observe that
-        // readiness explicitly; do not retry the object mutation.
-        let placement_deadline = Instant::now() + Duration::from_secs(15);
-        loop {
-            let observed = meta.list_placement_nodes();
-            if observed.as_ref().is_ok_and(|nodes| {
-                groups.iter().all(|group| {
-                    nodes.iter().any(|node| {
-                        node.node_id == group.placement_id()
-                            && node.online
-                            && node.data_eligible
-                    })
-                })
-            }) {
-                break;
-            }
-            assert!(
-                Instant::now() < placement_deadline,
-                "resumed groups did not become eligible for placement: {observed:?}"
-            );
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let third = meta
-            .write_object("suspended", "object", Some(second), b"qrstuvwx", &options)
-            .unwrap();
-        for id in 0..3 {
-            if metadata.nodes[id].is_some() {
-                metadata.kill(id);
-            }
-            for group in &mut groups {
-                if group.nodes[id].is_some() {
-                    group.kill(id);
-                }
-            }
-        }
-        for id in 0..3 {
-            metadata.start(id);
-            for group in &mut groups {
-                group.start(id);
-            }
-        }
-        for group in &groups {
-            group.leader();
-        }
-        assert_eq!(
-            metadata
-                .ready()
-                .read_object("suspended", "object", 8, &options.replica)
-                .unwrap(),
-            (third, b"qrstuvwx".to_vec())
-        );
-    }
-
-    #[test]
-    fn object_writer_data_refusal_never_publishes_partial_objects() {
-        use matrixobjectstore_rs::cluster::{ObjectWriteFailure, ObjectWriteOptions};
-        let mut chunks = Group::configured(65536);
-        chunks.max_pages = 1;
-        let metadata = MetadataGroup::new(&chunks);
-        chunks.report = Some((metadata.api.join(","), chunks.api_addresses.clone()));
-        for id in 0..3 {
-            chunks.start(id);
-        }
-        let mut meta = metadata.ready();
-        chunks.leader();
-        health(&mut meta, true, 0, 0);
-        let options = ObjectWriteOptions {
-            page_bytes: 4,
-            replica: chunk_options(),
-            ..Default::default()
-        };
-        let error = meta
-            .write_object("written", "partial", None, b"abcdefgh", &options)
-            .unwrap_err();
-        let ObjectWriteFailure::BeforePublication {
-            staged: Some(manifest),
-            ..
-        } = error
-        else {
-            panic!("partial write must remain unpublished");
-        };
-        assert_eq!(manifest.extents.len(), 2);
-        assert!(matches!(
-            meta.read_manifest("written", "partial"),
-            Err(matrixobjectstore_rs::ObjectError::NotFound(_))
-        ));
-        let mut data = meta
-            .connect_chunk_group("group-a", &chunk_options())
-            .unwrap();
-        assert_eq!(data.ping().unwrap(), 1);
-        let extent = &manifest.extents[0];
-        let page = matrixobjectstore_rs::PageId {
-            chunk_id: matrixobjectstore_rs::ChunkId::new(extent.volume_id, extent.chunk_id)
-                .unwrap(),
-            page_index: extent.page_index,
-        };
-        assert_eq!(data.read_chunk(&page, 0, 4).unwrap().data, b"abcd");
-    }
-
-    #[test]
-    fn concurrent_group_refusal_drains_siblings_without_publishing() {
-        use matrixobjectstore_rs::cluster::{ObjectWriteFailure, ObjectWriteOptions};
-        let mut groups: Vec<_> = (1..=2).map(|id| {
-            let mut group = Group::configured(65536);
-            group.group_id = id;
-            group.max_pages = if id == 1 { 1 } else { 16 };
-            group
-        }).collect();
-        let metadata = MetadataGroup::for_groups(&groups);
-        for group in &mut groups {
-            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
-            for id in 0..3 { group.start(id); }
-            group.leader();
-        }
-        let mut meta = metadata.ready();
-        group_usage(&metadata.api, &groups, &[]);
-        let bytes = b"abcdefghijklmnop";
-        let error = meta.write_object("written", "partial-groups", None, bytes, &ObjectWriteOptions {
-            page_bytes: 4, target_groups: 2, max_parallel_groups: 2,
-            replica: ReplicaClientOptions {
-                deadline: Some(Instant::now() + Duration::from_secs(10)),
-                ..chunk_options()
-            },
-            ..Default::default()
-        }).unwrap_err();
-        let ObjectWriteFailure::BeforePublication { staged: Some(manifest), .. } = error else {
-            panic!("group refusal must keep the object unpublished");
-        };
-        assert_eq!(manifest.extents.len(), 4);
-        assert!(matches!(meta.read_manifest("written", "partial-groups"), Err(matrixobjectstore_rs::ObjectError::NotFound(_))));
-        let healthy = groups[1].placement_id();
-        let mut data = meta.connect_chunk_group(&healthy, &chunk_options()).unwrap();
-        // All started siblings finish before failure is returned, including their verification.
-        assert_eq!(data.ping().unwrap(), 2);
-        for extent in manifest.extents.iter().filter(|extent| extent.group == healthy) {
-            let page = matrixobjectstore_rs::PageId {
-                chunk_id: matrixobjectstore_rs::ChunkId::new(extent.volume_id, extent.chunk_id).unwrap(),
-                page_index: extent.page_index,
-            };
-            let read = data.read_chunk(&page, 0, extent.length).unwrap();
-            assert_eq!(read.write_sequence, 1);
-            let start = extent.object_offset as usize;
-            assert_eq!(read.data, bytes[start..start + extent.length as usize]);
-        }
-    }
-
-    fn load_data(n: u64) -> Vec<u8> {
-        load_data_sized(n, 1024)
-    }
-    fn load_data_sized(n: u64, bytes: u64) -> Vec<u8> {
-        assert!((8..=4 * 1024 * 1024).contains(&bytes));
-        let mut bytes: Vec<u8> = (0..bytes)
-            .map(|i| (n.wrapping_mul(31).wrapping_add(i) % 251) as u8)
-            .collect();
-        bytes[..8].copy_from_slice(&n.to_be_bytes());
-        bytes
-    }
-    fn load_options() -> MetaClientOptions {
-        MetaClientOptions {
-            connect_timeout: Duration::from_secs(1),
-            read_timeout: Duration::from_secs(10),
-            write_timeout: Duration::from_secs(5),
-            ..Default::default()
-        }
-    }
-    fn chunk_options() -> ReplicaClientOptions {
-        ReplicaClientOptions {
-            connect_timeout: Duration::from_secs(1),
-            read_timeout: Duration::from_secs(10),
-            write_timeout: Duration::from_secs(5),
-            ..Default::default()
-        }
-    }
-    fn load_batch_with_groups(
-        api: &[String],
-        start: u64,
-        end: u64,
-        workers: usize,
-        objects: bool,
-        target_groups: u32,
-    ) -> Vec<(u64, CommittedPlacement)> {
-        load_batch_sized(&LoadEndpoint { api, tls: None }, start, end, workers, objects, target_groups, 1024)
-    }
-    struct LoadEndpoint<'a> {
-        api: &'a [String],
-        tls: Option<matrixobjectstore_rs::cluster::ApiTlsConfig>,
-    }
-    impl LoadEndpoint<'_> {
-        fn metadata_options(&self) -> MetaClientOptions {
-            MetaClientOptions { tls: self.tls.clone(), ..load_options() }
-        }
-        fn replica_options(&self) -> ReplicaClientOptions {
-            ReplicaClientOptions { tls: self.tls.clone(), ..chunk_options() }
-        }
-    }
-    fn load_batch_sized(
-        endpoint: &LoadEndpoint<'_>,
-        start: u64,
-        end: u64,
-        workers: usize,
-        objects: bool,
-        target_groups: u32,
-        object_bytes: u64,
-    ) -> Vec<(u64, CommittedPlacement)> {
-        load_batch_sized_with_attempts(endpoint, start, end, workers, objects, target_groups, object_bytes, 1)
-    }
-    fn load_batch_sized_with_attempts(
-        endpoint: &LoadEndpoint<'_>,
-        start: u64,
-        end: u64,
-        workers: usize,
-        objects: bool,
-        target_groups: u32,
-        object_bytes: u64,
-        max_attempts: usize,
-    ) -> Vec<(u64, CommittedPlacement)> {
-        load_batch_sized_with_page_bytes_attempts(
-            endpoint,
-            start,
-            end,
-            workers,
-            objects,
-            target_groups,
-            object_bytes,
-            object_bytes / 4,
-            max_attempts,
-        )
-    }
-    fn load_batch_sized_with_page_bytes_attempts(
-        endpoint: &LoadEndpoint<'_>,
-        start: u64,
-        end: u64,
-        workers: usize,
-        objects: bool,
-        target_groups: u32,
-        object_bytes: u64,
-        page_bytes: u64,
-        max_attempts: usize,
-    ) -> Vec<(u64, CommittedPlacement)> {
-        assert!(objects || object_bytes == 1024);
-        assert!(page_bytes > 0 && object_bytes % page_bytes == 0);
-        assert!(object_bytes / page_bytes <= 4096);
-        assert!(max_attempts > 0);
-        let begin = Instant::now();
-        let results = std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..workers)
-                .map(|worker| {
-                    scope.spawn(move || {
-                        let mut meta =
-                            RemoteMetaClient::connect_catalog(endpoint.api, &endpoint.metadata_options()).unwrap();
-                        let mut clients = BTreeMap::new();
-                        let mut saved = Vec::new();
-                        let mut latencies = Vec::new();
-                        let mut stages = [0u128; 4];
-                        let mut retries = 0usize;
-                        for n in ((start + worker as u64)..end).step_by(workers) {
-                            assert!(
-                                begin.elapsed() < Duration::from_secs(180),
-                                "bounded workload exceeded deadline after {} writes in worker {worker}; plan/connect/write/commit_us={stages:?}", saved.len()
-                            );
-                            let started = Instant::now();
-                            if objects {
-                                let key = format!("object-{n}");
-                                let data = load_data_sized(n, object_bytes);
-                                let mut attempts = 0;
-                                let mut staged = None;
-                                let manifest = loop {
-                                    attempts += 1;
-                                    let options = matrixobjectstore_rs::cluster::ObjectWriteOptions {
-                                        page_bytes: page_bytes as usize, update_time_ms: n + 1, target_groups,
-                                        replica: ReplicaClientOptions { deadline: Some(Instant::now() + Duration::from_secs(10)), ..endpoint.replica_options() }, ..Default::default()
-                                    };
-                                    let result = match staged.take() {
-                                        Some(candidate) => meta.resume_unpublished_object(None, candidate, &data, &options),
-                                        None => meta.write_object("load", &key, None, &data, &options),
-                                    };
-                                    match result {
-                                        Ok(manifest) => break manifest,
-                                        Err(matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication { error, staged: candidate })
-                                            if attempts < max_attempts =>
-                                        {
-                                            let read_deadline = Instant::now() + Duration::from_secs(10);
-                                            loop {
-                                                match meta.read_manifest("load", &key) {
-                                                    Err(matrixobjectstore_rs::ObjectError::NotFound(_)) => break,
-                                                    Err(matrixobjectstore_rs::ObjectError::PreconditionFailed(_))
-                                                        if Instant::now() < read_deadline =>
-                                                    {
-                                                        std::thread::sleep(Duration::from_millis(50));
-                                                    }
-                                                    other => panic!("cannot start a new write after {error}: {other:?}"),
-                                                }
-                                            }
-                                            staged = candidate.map(|manifest| *manifest);
-                                            retries += 1;
-                                            std::thread::sleep(Duration::from_millis(50));
-                                        }
-                                        Err(error) => panic!("object {key} write failed after {attempts} attempts: {error}"),
-                                    }
-                                };
-                                let page_count = usize::try_from(object_bytes / page_bytes).unwrap();
-                                assert_eq!(manifest.extents.len(), page_count);
-                                let distinct = manifest.extents.iter().map(|e| &e.group).collect::<std::collections::BTreeSet<_>>();
-                                assert_eq!(distinct.len(), target_groups as usize);
-                                for group in distinct {
-                                    assert_eq!(manifest.extents.iter().filter(|e| &e.group == group).count(), page_count / target_groups as usize);
-                                }
-                                if target_groups == 2 && page_count == 4 {
-                                    assert_eq!(manifest.extents[0].group, manifest.extents[2].group);
-                                    assert_eq!(manifest.extents[1].group, manifest.extents[3].group);
-                                    assert_ne!(manifest.extents[0].group, manifest.extents[1].group);
-                                }
-                                let node_ids = manifest.extents.iter().map(|e| e.group.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-                                saved.push((n, CommittedPlacement { bucket: manifest.bucket, key: manifest.key, length: manifest.length, node_ids, version: manifest.generation, update_time_ms: n + 1 }));
-                                latencies.push(started.elapsed().as_micros());
-                                if saved.len() % 32 == 0 { println!("OBJECT_WRITER worker={worker} completed={}", saved.len()); }
-                                continue;
-                            }
-                            let plan = meta
-                                .plan_object_placement("load", &format!("object-{n}"), 1024, 1)
-                                .unwrap();
-                            stages[0] += started.elapsed().as_micros();
-                            let phase = Instant::now();
-                            assert_eq!(plan.node_ids.len(), 1);
-                            let group = plan.node_ids[0].clone();
-                            let chunk = clients.entry(group.clone()).or_insert_with(|| {
-                                meta.connect_chunk_group(&group, &endpoint.replica_options()).unwrap()
-                            });
-                            stages[1] += phase.elapsed().as_micros();
-                            let phase = Instant::now();
-                            // No mutation retry: a failure after admission remains uncertain.
-                            chunk.write_chunk(page(n), 0, &load_data(n)).unwrap();
-                            stages[2] += phase.elapsed().as_micros();
-                            let phase = Instant::now();
-                            let placement = meta
-                                .commit_object_placement(
-                                    CommittedPlacement {
-                                        bucket: plan.bucket,
-                                        key: plan.key,
-                                        length: 1024,
-                                        node_ids: plan.node_ids,
-                                        version: 1,
-                                        update_time_ms: n + 1,
-                                    },
-                                    &plan.plan_checksum,
-                                )
-                                .unwrap();
-                            stages[3] += phase.elapsed().as_micros();
-                            saved.push((n, placement));
-                            latencies.push(started.elapsed().as_micros());
-                            if saved.len() % 32 == 0 {
-                                println!("MULTIGROUP_STAGE worker={worker} completed={} plan_us={} connect_us={} write_us={} commit_us={}", saved.len(), stages[0], stages[1], stages[2], stages[3]);
-                            }
-                        }
-                        (saved, latencies, retries)
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| h.join().unwrap())
-                .collect::<Vec<_>>()
-        });
-        let elapsed = begin.elapsed();
-        let mut saved = Vec::new();
-        let mut latencies = Vec::new();
-        let mut retries = 0usize;
-        for (records, timings, worker_retries) in results {
-            saved.extend(records);
-            latencies.extend(timings);
-            retries += worker_retries;
-        }
-        saved.sort_by_key(|(n, _)| *n);
-        latencies.sort_unstable();
-        assert_eq!(saved.len() as u64, end - start);
-        println!("MULTIGROUP objects={objects} object_bytes={object_bytes} writes={} workers={} retries={retries} elapsed_ms={} operations_per_second={:.1} p50_us={} p95_us={} p99_us={}", saved.len(), workers, elapsed.as_millis(), saved.len() as f64 / elapsed.as_secs_f64(), latencies[latencies.len()/2], latencies[latencies.len()*95/100], latencies[latencies.len()*99/100]);
-        saved
-    }
-    fn group_usage(api: &[String], groups: &[Group], saved: &[(u64, CommittedPlacement)]) {
-        let mut options = load_options();
-        options.tls = api_tls_config(groups[0].api_tls.as_ref());
-        let mut meta = RemoteMetaClient::connect_catalog(api, &options).unwrap();
-        let expected: BTreeMap<_, _> = groups
-            .iter()
-            .map(|g| {
-                let id = g.placement_id();
-                let mut physical = 0;
-                let mut committed = 0;
-                for (_, placement) in saved.iter().filter(|(_, p)| p.node_ids.contains(&id)) {
-                    assert_eq!(placement.length % placement.node_ids.len() as u64, 0);
-                    physical += placement.length / placement.node_ids.len() as u64;
-                    committed += placement.length / placement.node_ids.len() as u64;
-                }
-                (id, (physical, committed))
-            })
-            .collect();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let nodes = match meta.list_placement_nodes() {
-                Ok(nodes) => nodes,
-                Err(matrixobjectstore_rs::ObjectError::PreconditionFailed(_))
-                    if Instant::now() < deadline =>
-                {
-                    std::thread::sleep(Duration::from_millis(100));
-                    continue;
-                }
-                Err(error) => panic!("cannot read multi-group accounting: {error}"),
-            };
-            assert_eq!(nodes.len(), groups.iter().map(|g| g.nodes.len() + 1).sum::<usize>());
-            if groups.iter().all(|g| {
-                let id = g.placement_id();
-                let node = nodes.iter().find(|n| n.node_id == id).unwrap();
-                node.online
-                    && node.data_eligible
-                    && node.used_bytes == expected[&id].0
-                    && node.committed_bytes == expected[&id].1
-                    && node.capacity_bytes == g.capacity
-            }) {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "multi-group accounting did not converge: {nodes:?}"
-            );
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    }
-    fn verify_load(api: &[String], saved: &[(u64, CommittedPlacement)], objects: bool) {
-        verify_load_with_transport(&LoadEndpoint { api, tls: None }, saved, objects);
-    }
-    fn verify_load_with_transport(endpoint: &LoadEndpoint<'_>, saved: &[(u64, CommittedPlacement)], objects: bool) {
-        if objects {
-            let began = Instant::now();
-            let mut samples = std::thread::scope(|scope| {
-                let handles: Vec<_> = (0..8)
-                    .map(|worker| {
-                        scope.spawn(move || {
-                            let mut samples = Vec::new();
-                            let mut meta =
-                                RemoteMetaClient::connect_catalog(endpoint.api, &endpoint.metadata_options()).unwrap();
-                            let assigned = saved.iter().enumerate().skip(worker).step_by(8)
-                                .collect::<Vec<_>>();
-                            for batch in assigned.chunks(8) {
-                                assert!(
-                                    began.elapsed() < Duration::from_secs(180),
-                                    "object read workload exceeded deadline"
-                                );
-                                let started = Instant::now();
-                                let requests = batch.iter().map(|(_, (_, placement))| (
-                                    placement.bucket.as_str(),
-                                    placement.key.as_str(),
-                                    usize::try_from(placement.length).unwrap(),
-                                )).collect::<Vec<_>>();
-                                let results = meta.read_objects(
-                                    &requests,
-                                    &ReplicaClientOptions {
-                                        deadline: Some(started + Duration::from_secs(10)),
-                                        ..endpoint.replica_options()
-                                    },
-                                ).unwrap();
-                                let batch_latency = started.elapsed().as_micros();
-                                samples.push(batch_latency);
-                                for ((index, (n, placement)), (manifest, bytes))
-                                    in batch.iter().zip(results)
-                                {
-                                    assert_eq!(bytes, load_data_sized(*n, placement.length));
-                                    assert_eq!(manifest.generation, placement.version);
-                                    assert_eq!(manifest.length, placement.length);
-                                    assert!(!manifest.extents.is_empty());
-                                    assert!(manifest.extents.iter().all(|e| e.write_sequence == 1));
-                                    let actual: Vec<_> = manifest
-                                        .extents
-                                        .iter()
-                                        .map(|e| e.group.clone())
-                                        .collect::<std::collections::BTreeSet<_>>()
-                                        .into_iter()
-                                        .collect();
-                                    assert_eq!(actual, placement.node_ids);
-                                    for group in &actual {
-                                        assert_eq!(
-                                            manifest.extents.iter()
-                                                .filter(|e| &e.group == group).count(),
-                                            manifest.extents.len() / actual.len()
-                                        );
-                                    }
-                                    if *index % 128 == 0 {
-                                        println!("OBJECT_READ worker={worker} index={index}");
-                                    }
-                                }
-                            }
-                            samples
-                        })
-                    })
-                    .collect();
-                handles.into_iter().flat_map(|handle| handle.join().unwrap()).collect::<Vec<_>>()
-            });
-            let expected_batches: usize = (0..8)
-                .map(|worker| saved.iter().skip(worker).step_by(8).count().div_ceil(8))
-                .sum();
-            assert_eq!(samples.len(), expected_batches);
-            samples.sort_unstable();
-            let elapsed = began.elapsed();
-            let bytes: u64 = saved.iter().map(|(_, placement)| placement.length).sum();
-            println!(
-                "OBJECT_READ verified={} elapsed_ms={} verified_mib_s={:.2} batch_p50_us={} batch_p95_us={} batch_p99_us={}",
-                saved.len(), elapsed.as_millis(), bytes as f64 / (1024.0 * 1024.0) / elapsed.as_secs_f64(),
-                samples[samples.len()/2], samples[samples.len()*95/100], samples[samples.len()*99/100]
-            );
-            return;
-        }
-        let mut meta = RemoteMetaClient::connect_catalog(endpoint.api, &endpoint.metadata_options()).unwrap();
-        let mut clients = BTreeMap::new();
-        for (n, placement) in saved {
-            assert_eq!(
-                meta.object_placement(&placement.bucket, &placement.key)
-                    .unwrap(),
-                *placement
-            );
-            let id = &placement.node_ids[0];
-            let chunk = clients
-                .entry(id.clone())
-                .or_insert_with(|| meta.connect_chunk_group(id, &endpoint.replica_options()).unwrap());
-            assert_eq!(
-                chunk.read_chunk(&page(*n), 0, 1024).unwrap().data,
-                load_data(*n)
-            );
-            assert_eq!(chunk.head_chunk(&page(*n)).unwrap().write_sequence, 1);
-        }
-    }
-    #[test]
-    fn unavailable_data_group_is_isolated_and_recovers_without_losing_objects() {
-        unavailable_group_objects(1);
-    }
-    #[test]
-    fn unavailable_group_preserves_striped_objects_and_other_group_writes() {
-        unavailable_group_objects(2);
-    }
-    fn unavailable_group_objects(target_groups: u32) {
-        let mut groups: Vec<_> = (0..3)
-            .map(|index| {
-                let mut group = Group::configured(64 * 1024 * 1024);
-                group.group_id = index + 1;
-                group.max_pages = 2048;
-                group.checkpoint_bytes = 16 * 1024;
-                group.heartbeat_ms = "1000";
-                group
-            })
-            .collect();
-        let mut metadata = MetadataGroup::for_groups_with_threads(&groups, 16);
-        for group in &mut groups {
-            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
-            for id in 0..3 {
-                group.start(id);
-            }
-            group.leader();
-        }
-        metadata.ready();
-        group_usage(&metadata.api, &groups, &[]);
-        let mut saved = load_batch_with_groups(&metadata.api, 0, 48, 4, true, target_groups);
-        group_usage(&metadata.api, &groups, &saved);
-        for group in &groups {
-            assert!(saved
-                .iter()
-                .any(|(_, p)| p.node_ids.contains(&group.placement_id())));
-        }
-        let unavailable = groups[0].placement_id();
-        let isolated = saved
-            .iter()
-            .find(|(_, p)| p.node_ids.contains(&unavailable))
-            .unwrap()
-            .0;
-        let mut meta = metadata.ready();
-        let original = meta
-            .read_manifest("load", &format!("object-{isolated}"))
-            .unwrap();
-        groups[0].kill(0);
-        groups[0].kill(1);
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let nodes = meta.list_placement_nodes().unwrap();
-            let down = nodes.iter().find(|n| n.node_id == unavailable).unwrap();
-            if !down.online {
-                for group in &groups[1..] {
-                    assert!(
-                        nodes
-                            .iter()
-                            .find(|n| n.node_id == group.placement_id())
-                            .unwrap()
-                            .online
-                    );
-                }
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "minority group remained eligible: {nodes:?}"
-            );
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        if target_groups == 2 {
-            let leader = metadata.ready().endpoint().to_string();
-            let leader = metadata
-                .api
-                .iter()
-                .position(|endpoint| endpoint == &leader)
-                .unwrap();
-            metadata.kill(leader);
-            metadata.ready();
-            // The existing catalog client must follow leadership while one data
-            // group remains unavailable; its immutable manifest must survive.
-            assert_eq!(
-                meta.read_manifest("load", &format!("object-{isolated}"))
-                    .unwrap(),
-                original
-            );
-            assert!(
-                !meta
-                    .list_placement_nodes()
-                    .unwrap()
-                    .iter()
-                    .find(|n| n.node_id == unavailable)
-                    .unwrap()
-                    .online
-            );
-        }
-        // Metadata remains readable, but one surviving data voter cannot serve
-        // an object from this group or acknowledge a replacement page.
-        let short = ReplicaClientOptions {
-            connect_timeout: Duration::from_millis(200),
-            read_timeout: Duration::from_millis(500),
-            write_timeout: Duration::from_millis(500),
-            ..Default::default()
-        };
-        assert!(meta
-            .read_object("load", &format!("object-{isolated}"), 1024, &short)
-            .is_err());
-        assert_eq!(
-            meta.read_manifest("load", &format!("object-{isolated}"))
-                .unwrap(),
-            original
-        );
-        let mut minority = meta.connect_chunk_group(&unavailable, &short).unwrap();
-        let extent = original
-            .extents
-            .iter()
-            .find(|e| e.group == unavailable)
-            .unwrap();
-        let existing_page = matrixobjectstore_rs::PageId {
-            chunk_id: matrixobjectstore_rs::ChunkId::new(extent.volume_id, extent.chunk_id)
-                .unwrap(),
-            page_index: extent.page_index,
-        };
-        // Even if this timed-out request finishes after quorum restoration, the
-        // expected-zero condition cannot overwrite an already published page.
-        assert!(minority
-            .write_chunk_if_sequence(existing_page, 0, b"uncommitted", 0)
-            .is_err());
-        let available: Vec<_> = saved
-            .iter()
-            .filter(|(_, p)| !p.node_ids.contains(&unavailable))
-            .cloned()
-            .collect();
-        assert!(!available.is_empty());
-        verify_load(&metadata.api, &available, true);
-        let newer = load_batch_with_groups(&metadata.api, 48, 72, 4, true, target_groups);
-        assert!(newer
-            .iter()
-            .all(|(_, p)| !p.node_ids.contains(&unavailable)));
-        verify_load(&metadata.api, &newer, true);
-        saved.extend(newer);
-        // Restore only one voter first: the restored quorum must catch up and
-        // make original objects readable while the third voter remains stopped.
-        groups[0].start(0);
-        groups[0].leader();
-        group_usage(&metadata.api, &groups, &saved);
-        verify_load(&metadata.api, &saved, true);
-        groups[0].start(1);
-        group_usage(&metadata.api, &groups, &saved);
-        assert_eq!(
-            meta.read_manifest("load", &format!("object-{isolated}"))
-                .unwrap(),
-            original
-        );
-    }
-
-    #[test]
-    fn external_probe_verifies_striped_objects_after_leader_loss_and_restart() {
-        probe_recovery(false);
-    }
-
-    #[test]
     #[ignore = "requires a private network namespace; use tools/network_partition_test.sh"]
     fn live_peer_partitions_preserve_objects_and_recover() {
         node_regime::network::require_isolated();
@@ -3355,19 +1606,6 @@ mod coupled_groups {
         probe_recovery_with_transport(true, Some(certificates.root.clone()));
     }
 
-    fn probe_recovery(partition: bool) {
-        probe_recovery_with_transport(partition, None);
-    }
-    #[cfg(feature = "peer-tls")]
-    #[test]
-    fn authenticated_api_and_peer_objects_recover_after_restart() {
-        let certificates = node_regime::tls::TlsFiles::new();
-        for i in 0..3 {
-            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
-        }
-        probe_recovery_with_security(false, Some(certificates.root.clone()), true);
-    }
-
     #[cfg(feature = "peer-tls")]
     #[test]
     #[ignore = "requires a private network namespace; use tools/network_partition_test.sh"]
@@ -3380,23 +1618,35 @@ mod coupled_groups {
         probe_recovery_with_security(true, Some(certificates.root.clone()), true);
     }
 
+    fn probe_recovery(partition: bool) {
+        probe_recovery_with_transport(partition, None);
+    }
+
     fn probe_recovery_with_transport(partition: bool, peer_tls: Option<PathBuf>) {
         probe_recovery_with_security(partition, peer_tls, false);
     }
+
     fn probe_recovery_with_security(partition: bool, peer_tls: Option<PathBuf>, api_tls: bool) {
         fn wait_for_write_placement(metadata: &MetadataGroup, groups: &[Group]) {
+            // placement admits the workload when a chunk object spanning every group can be written
+            use matrixobjectstore_rs::cluster::ObjectWriteOptions;
+            static ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let mut client = metadata.ready();
+            let options = ObjectWriteOptions {
+                page_bytes: 256,
+                target_groups: groups.len() as u32,
+                max_parallel_groups: groups.len(),
+                replica: ReplicaClientOptions { tls: api_tls_config(metadata.api_tls.as_ref()), ..Default::default() },
+                ..Default::default()
+            };
             let until = Instant::now() + Duration::from_secs(30);
             loop {
-                let observed = match client.plan_object_write_routes("probe-bucket", "probe/readiness", 1025, groups.len() as u64) {
-                    Ok((None, plan, routes)) if plan.node_ids.len() == groups.len()
-                        && routes.len() == groups.len()
-                        && groups.iter().all(|group| plan.node_ids.contains(&group.placement_id())) => return,
-                    Ok(value) => format!("unexpected write plan: {value:?}"),
-                    Err(error) => error.to_string(),
+                let key = format!("probe/readiness/{:08}", ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+                let observed = match client.write_chunk_object("probe-bucket", &key, None, &[7u8; 1025], &options, 512) {
+                    Ok(_) => return,
+                    Err(error) => format!("{error:?}"),
                 };
-                assert!(Instant::now() < until, "recovered placement did not admit the workload: {observed}; nodes={:?}",
-                    client.list_placement_nodes());
+                assert!(Instant::now() < until, "recovered placement did not admit the workload: {observed}; nodes={:?}", client.list_placement_nodes());
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
@@ -3475,11 +1725,10 @@ mod coupled_groups {
         check(run("write", "1025", "recovery"));
         let (_, first) = metadata
             .ready()
-            .read_object(
+            .read_chunk_object(
                 "probe-bucket",
                 "probe/recovery/00000000",
-                1025,
-                &replica_options,
+                &matrixobjectstore_rs::cluster::ObjectWriteOptions { page_bytes: 256, replica: replica_options.clone(), ..Default::default() },
             )
             .unwrap();
         // Keep workload version 1 reproducible across client upgrades.
@@ -3538,7 +1787,7 @@ mod coupled_groups {
             let mut isolated =
                 RemoteMetaClient::connect(&endpoint, &MetaClientOptions { tls: api_tls_config(metadata.api_tls.as_ref()), ..Default::default() }).unwrap();
             assert!(isolated
-                .read_manifest("probe-bucket", "probe/recovery/00000000")
+                .read_chunk_manifest("probe-bucket", "probe/recovery/00000000")
                 .is_err());
             check(run("verify", "1025", "recovery"));
             wait_for_write_placement(&metadata, &groups);
@@ -3612,513 +1861,209 @@ mod coupled_groups {
         }
     }
 
-    fn multiple_group_load(group_count: usize, writes: u64, workers: usize, objects: bool) {
-        multiple_group_load_with_groups(group_count, writes, workers, objects, 1);
-    }
-    fn multiple_group_load_with_groups(
-        group_count: usize,
-        writes: u64,
-        workers: usize,
-        objects: bool,
-        target_groups: u32,
-    ) {
-        multiple_group_load_sized(group_count, writes, workers, objects, target_groups, 1024);
-    }
-    fn multiple_group_load_sized(
-        group_count: usize,
-        writes: u64,
-        workers: usize,
-        objects: bool,
-        target_groups: u32,
-        object_bytes: u64,
-    ) {
-        multiple_group_load_with_transport(
-            group_count,
-            writes,
-            workers,
-            objects,
-            target_groups,
-            object_bytes,
-            VoterSetup { peer_tls: None, api_tls: false, voters: 3 },
-        );
-    }
-    struct VoterSetup {
-        peer_tls: Option<PathBuf>,
-        api_tls: bool,
-        voters: usize,
-    }
-    fn multiple_group_load_with_transport(
-        group_count: usize,
-        writes: u64,
-        workers: usize,
-        objects: bool,
-        target_groups: u32,
-        object_bytes: u64,
-        setup: VoterSetup,
-    ) {
-        multiple_group_load_with_transport_checkpoint(
-            group_count, writes, workers, objects, target_groups, object_bytes,
-            setup, 16 * 1024, true,
-        );
-    }
-    fn multiple_group_load_with_transport_checkpoint(
-        group_count: usize,
-        writes: u64,
-        workers: usize,
-        objects: bool,
-        target_groups: u32,
-        object_bytes: u64,
-        setup: VoterSetup,
-        checkpoint_bytes: u64,
-        require_checkpoint: bool,
-    ) {
-        multiple_group_load_with_transport_checkpoint_mode(
-            group_count, writes, workers, objects, target_groups, object_bytes,
-            setup, checkpoint_bytes, require_checkpoint, false,
-        );
-    }
-    fn multiple_group_load_with_transport_checkpoint_mode(
-        group_count: usize,
-        writes: u64,
-        workers: usize,
-        objects: bool,
-        target_groups: u32,
-        object_bytes: u64,
-        setup: VoterSetup,
-        checkpoint_bytes: u64,
-        require_checkpoint: bool,
-        overlap_reads: bool,
-    ) {
-        multiple_group_load_with_transport_checkpoint_mode_page_bytes(
-            group_count,
-            writes,
-            workers,
-            objects,
-            target_groups,
-            object_bytes,
-            setup,
-            checkpoint_bytes,
-            require_checkpoint,
-            overlap_reads,
-            object_bytes / 4,
-        );
-    }
-    fn multiple_group_load_with_transport_checkpoint_mode_page_bytes(
-        group_count: usize,
-        writes: u64,
-        workers: usize,
-        objects: bool,
-        target_groups: u32,
-        object_bytes: u64,
-        setup: VoterSetup,
-        checkpoint_bytes: u64,
-        require_checkpoint: bool,
-        overlap_reads: bool,
-        page_bytes: u64,
-    ) {
-        let VoterSetup { peer_tls, api_tls, voters } = setup;
-        assert!(!api_tls || peer_tls.is_some());
-        assert!((8..=4 * 1024 * 1024).contains(&object_bytes));
-        assert!(page_bytes > 0 && object_bytes % page_bytes == 0);
-        assert!(object_bytes / page_bytes <= 4096);
-        assert!(objects || object_bytes == 1024);
-        assert!(target_groups == 1 || (objects && matches!(target_groups, 2 | 4 | 8 | 16)));
-        assert!(target_groups as usize <= group_count);
-        assert!((2..=64).contains(&group_count));
-        assert!(writes > 0 && writes <= 1024);
-        let mut groups: Vec<_> = (0..group_count)
-            .map(|i| {
-                let mut g = Group::configured_voters(64 * 1024 * 1024, voters);
-                g.peer_tls = peer_tls.clone();
-                g.api_tls = if api_tls { peer_tls.clone() } else { None };
-                g.group_id = i as u64 + 1;
-                g.max_pages = 2048;
-                g.checkpoint_bytes = checkpoint_bytes;
-                g.heartbeat_ms = "3000";
-                g
+    /// THE RAFT-MODE OBJECT TEST: chunk objects over two Raft chunk groups of three voters each, through the
+    /// leader loss of the metadata plane and of every group, a race between two writers, an append, and a
+    /// restart of everything. (The Star mode is exercised against real chunk servers in the metadata tests.)
+    #[test]
+    fn chunk_objects_over_raft_groups_survive_leader_loss_races_appends_and_total_restart() {
+        use matrixobjectstore_rs::cluster::{ChunkWriteFailure, ObjectWriteOptions};
+        use matrixobjectstore_rs::ObjectError;
+        let mut groups: Vec<_> = (1..=2)
+            .map(|id| {
+                let mut group = Group::configured(1024 * 1024);
+                group.group_id = id;
+                group.checkpoint_bytes = 1024;
+                group
             })
             .collect();
-        // Every API and peer socket stays reserved until its process starts.
-        let request_threads = if objects { 16 } else { 2 };
-        let mut metadata = MetadataGroup::for_groups_with_voters(&groups, request_threads, voters);
+        let mut metadata = MetadataGroup::for_groups(&groups);
         for group in &mut groups {
             group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
-            for i in 0..voters {
-                group.start(i);
+            for id in 0..3 {
+                group.start(id);
             }
         }
-        metadata.ready();
+        let mut meta = metadata.ready();
         for group in &groups {
             group.leader();
         }
         group_usage(&metadata.api, &groups, &[]);
-        let tls = api_tls_config(metadata.api_tls.as_ref());
-        let attempts = if group_count == 16 && objects { 3 } else { 1 };
-        let mut saved = load_batch_sized_with_page_bytes_attempts(
-            &LoadEndpoint { api: &metadata.api, tls: tls.clone() },
-            0,
-            writes,
-            workers,
-            objects,
-            target_groups,
-            object_bytes,
-            page_bytes,
-            attempts,
-        );
-        group_usage(&metadata.api, &groups, &saved);
-        for group in &groups {
-            assert!(
-                saved
-                    .iter()
-                    .any(|(_, p)| p.node_ids.contains(&group.placement_id())),
-                "every group must carry data"
-            );
-        }
-        let leader = metadata.ready().endpoint().to_string();
-        let leader = metadata.api.iter().position(|a| *a == leader).unwrap();
-        if require_checkpoint {
-            node_regime::checkpoints::wait_for_checkpoint(
-                &metadata
-                    .root
-                    .join(leader.to_string())
-                    .join("metadata.peer.wal"),
-                2,
-            );
-            for group in &groups {
-                let leader = group.leader();
-                node_regime::checkpoints::wait_for_checkpoint(
-                    &group.root.join(leader.to_string()).join("chunk.peer.wal"),
-                    2,
-                );
-            }
-        }
-        metadata.kill(leader);
-        for _ in 1..voters / 2 {
-            let follower = metadata.nodes.iter().position(Option::is_some).unwrap();
-            metadata.kill(follower);
-        }
-        for group in &mut groups {
-            let leader = group.leader();
-            group.kill(leader);
-            for _ in 1..voters / 2 {
-                let follower = group.nodes.iter().position(Option::is_some).unwrap();
-                group.kill(follower);
-            }
-            assert_eq!(group.nodes.iter().filter(|n| n.is_some()).count(), voters / 2 + 1);
-        }
-        assert_eq!(metadata.nodes.iter().filter(|n| n.is_some()).count(), voters / 2 + 1);
-        metadata.ready();
-        for group in &groups {
-            group.leader();
-        }
-        let write_after_failover = || load_batch_sized_with_page_bytes_attempts(
-            &LoadEndpoint { api: &metadata.api, tls: tls.clone() },
-            writes, writes + writes / 4, workers, objects, target_groups,
-            object_bytes, page_bytes, attempts,
-        );
-        let later = if overlap_reads {
-            std::thread::scope(|scope| {
-                let reader = scope.spawn(|| verify_load_with_transport(
-                    &LoadEndpoint { api: &metadata.api, tls: tls.clone() }, &saved, objects,
-                ));
-                let later = write_after_failover();
-                reader.join().unwrap();
-                later
-            })
-        } else {
-            verify_load_with_transport(&LoadEndpoint { api: &metadata.api, tls: tls.clone() }, &saved, objects);
-            write_after_failover()
+        let options = ObjectWriteOptions {
+            page_bytes: 4096,
+            target_groups: 2,
+            max_parallel_groups: 2,
+            replica: ReplicaClientOptions {
+                deadline: Some(Instant::now() + Duration::from_secs(120)),
+                ..chunk_options()
+            },
+            ..Default::default()
         };
-        saved.extend(later);
-        group_usage(&metadata.api, &groups, &saved);
+        // two pages per stripe: a 12,000-byte object is two extents, one on each group
+        let stripe = 8192;
+        let bytes = |length: usize, salt: usize| -> Vec<u8> { (0..length).map(|index| (index * 31 + salt) as u8).collect() };
+        let data = bytes(12_000, 1);
+        let first = meta.write_chunk_object("written", "object", None, &data, &options, stripe).unwrap();
+        assert_eq!(first.extents.len(), 2);
+        assert_ne!(first.extents[0].group, first.extents[1].group);
+        assert_eq!(meta.read_chunk_object("written", "object", &options).unwrap(), (first.clone(), data.clone()));
+
+        // an overwrite is the next generation; a writer that decided from the old one is refused before publication
+        let second_data = bytes(5000, 2);
+        let second = meta.write_chunk_object("written", "object", Some(&first), &second_data, &options, stripe).unwrap();
+        assert_eq!(second.generation, 2);
+        assert!(matches!(
+            meta.write_chunk_object("written", "object", Some(&first), b"stale", &options, stripe),
+            Err(ChunkWriteFailure::BeforePublication(ObjectError::PreconditionFailed(_)))
+        ));
+        // the old generation's pages are still there until a sweep frees them
+        assert_eq!(meta.read_chunk_object_range(&first, 0, first.length, &options).unwrap(), data);
+
+        // an empty object, a delete, and a rewrite on top of the tombstone
+        meta.write_chunk_object("written", "empty", None, b"", &options, stripe).unwrap();
+        assert!(meta.read_chunk_object("written", "empty", &options).unwrap().1.is_empty());
+        let tombstone = meta.delete_chunk_object("written", "object").unwrap();
+        assert!(matches!(meta.read_chunk_object("written", "object", &options), Err(ObjectError::NotFound(_))));
+        assert!(matches!(
+            meta.write_chunk_object("written", "object", None, b"old absent writer", &options, stripe),
+            Err(ChunkWriteFailure::BeforePublication(_))
+        ));
+        let recreated = meta.write_chunk_object("written", "object", Some(&tombstone), b"recreated", &options, stripe).unwrap();
+        assert_eq!(recreated.generation, tombstone.generation + 1);
+
+        // every leader is lost, and the writes go on
+        let leader = metadata.api.iter().position(|a| a == meta.endpoint()).unwrap();
+        metadata.kill(leader);
         for group in &mut groups {
-            for i in 0..voters {
-                if group.nodes[i].is_some() {
-                    group.kill(i);
-                }
-            }
+            group.kill(group.leader());
         }
-        for i in 0..voters {
-            if metadata.nodes[i].is_some() {
-                metadata.kill(i);
-            }
-        }
-        for i in 0..voters {
-            metadata.start(i);
-        }
-        for group in &mut groups {
-            for i in 0..voters {
-                group.start(i);
-            }
-        }
-        metadata.ready();
+        meta = metadata.ready();
         for group in &groups {
             group.leader();
         }
-        group_usage(&metadata.api, &groups, &saved);
-        verify_load_with_transport(&LoadEndpoint { api: &metadata.api, tls: tls.clone() }, &saved, objects);
-        if peer_tls.is_some() {
-            for root in std::iter::once(&metadata.root).chain(groups.iter().map(|g| &g.root)) {
-                for i in 0..voters {
-                    assert_eq!(
-                        std::fs::read(root.join(i.to_string()).join("peer.transport")).unwrap(),
-                        b"tls-v1\n"
-                    );
-                    if api_tls {
-                        assert_eq!(
-                            std::fs::read(root.join(i.to_string()).join("api.transport")).unwrap(),
-                            b"tls-v1\n"
-                        );
-                    }
+        let updated = meta.write_chunk_object("written", "object", Some(&recreated), &bytes(9000, 3), &options, stripe).unwrap();
+
+        // two writers race on one generation: exactly one publishes
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut racers = Vec::new();
+        for payload in [bytes(3000, 4), bytes(3001, 5)] {
+            let endpoints = metadata.api.clone();
+            let expected = updated.clone();
+            let options = options.clone();
+            let barrier = barrier.clone();
+            racers.push(std::thread::spawn(move || {
+                let mut client = RemoteMetaClient::connect_catalog(&endpoints, &MetaClientOptions::default()).unwrap();
+                barrier.wait();
+                let result = client.write_chunk_object("written", "object", Some(&expected), &payload, &options, 8192);
+                (result, payload)
+            }));
+        }
+        let mut winners = Vec::new();
+        for racer in racers {
+            let (result, payload) = racer.join().unwrap();
+            if let Ok(manifest) = result {
+                winners.push((manifest, payload));
+            }
+        }
+        assert_eq!(winners.len(), 1, "exactly one of two writers on one generation publishes");
+        let (winning, winning_bytes) = winners.pop().unwrap();
+
+        // an append adds extents after the last one and reads back whole
+        let grown = meta.append_chunk_object(&winning, b"+tail", &options, stripe).unwrap();
+        assert_eq!((grown.generation, grown.length), (winning.generation + 1, winning.length + 5));
+        let whole: Vec<u8> = [winning_bytes.as_slice(), b"+tail".as_slice()].concat();
+        assert_eq!(meta.read_chunk_object("written", "object", &options).unwrap(), (grown.clone(), whole.clone()));
+
+        // everything is restarted: the same bytes come back, verified
+        for id in 0..3 {
+            if metadata.nodes[id].is_some() {
+                metadata.kill(id);
+            }
+            for group in &mut groups {
+                if group.nodes[id].is_some() {
+                    group.kill(id);
                 }
             }
         }
-        println!(
-            "MULTIGROUP verified api_tls={api_tls} objects={objects} object_bytes={object_bytes} groups={group_count} groups_per_object={target_groups} metadata_threads={request_threads} processes={} recovered_objects={}",
-            (group_count + 1) * voters,
-            saved.len()
-        );
-    }
-    #[test]
-    fn concurrent_groups_preserve_placement_and_data_through_failover_and_restart() {
-        multiple_group_load(3, 96, 6, false);
-    }
-    #[test]
-    #[ignore = "bounded 51-process local load and recovery measurement"]
-    fn sixteen_groups_preserve_concurrent_writes_through_recovery() {
-        multiple_group_load(16, 1024, 8, false);
-    }
-    #[test]
-    #[ignore = "51-process eight-group object write and recovery measurement; run explicitly in WSL"]
-    fn sixteen_groups_preserve_eight_way_objects_through_recovery() {
-        multiple_group_load_with_transport_checkpoint_mode_page_bytes(
-            16,
-            320,
-            8,
-            true,
-            8,
-            8 * 1024,
-            VoterSetup {
-                peer_tls: None,
-                api_tls: false,
-                voters: 3,
-            },
-            16 * 1024,
-            true,
-            false,
-            1024,
-        );
-    }
-    #[test]
-    #[ignore = "51-process sixteen-group object write and recovery measurement; run explicitly in WSL"]
-    fn sixteen_groups_preserve_sixteen_way_objects_through_recovery() {
-        multiple_group_load_with_transport_checkpoint_mode_page_bytes(
-            16,
-            64,
-            4,
-            true,
-            16,
-            16 * 1024,
-            VoterSetup {
-                peer_tls: None,
-                api_tls: false,
-                voters: 3,
-            },
-            16 * 1024,
-            true,
-            false,
-            1024,
-        );
-    }
-    #[test]
-    #[ignore = "51-process 32-page object write and recovery measurement; run explicitly in WSL"]
-    fn sixteen_groups_batch_small_pages_through_failover_and_recovery() {
-        multiple_group_load_with_transport_checkpoint_mode_page_bytes(
-            16,
-            256,
-            8,
-            true,
-            4,
-            1024,
-            VoterSetup {
-                peer_tls: None,
-                api_tls: false,
-                voters: 3,
-            },
-            16 * 1024,
-            true,
-            false,
-            32,
-        );
-    }
-    #[test]
-    fn object_writer_load_preserves_manifests_and_pages_through_recovery() {
-        multiple_group_load(3, 96, 6, true);
-    }
-    #[test]
-    fn striped_objects_preserve_pages_across_group_failover_and_restart() {
-        multiple_group_load_with_groups(3, 96, 6, true, 2);
-    }
-    #[cfg(feature = "peer-tls")]
-    fn api_tls_load(groups: usize, writes: u64, bytes: u64) {
-        let certificates = node_regime::tls::TlsFiles::new();
-        for i in 0..3 {
-            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
+        for id in 0..3 {
+            metadata.start(id);
+            for group in &mut groups {
+                group.start(id);
+            }
         }
-        multiple_group_load_with_transport(
-            groups, writes, 4, true, 4, bytes,
-            VoterSetup { peer_tls: Some(certificates.root.clone()), api_tls: true, voters: 3 },
-        );
-    }
-    #[cfg(feature = "peer-tls")]
-    #[test]
-    fn encrypted_api_load_recovers_four_way_objects() {
-        api_tls_load(4, 24, 64 * 1024);
-    }
-    #[cfg(feature = "peer-tls")]
-    #[test]
-    #[ignore = "51-process API and Raft TLS load; run explicitly in WSL"]
-    fn encrypted_api_sixteen_groups_recover_four_way_objects() {
-        api_tls_load(16, 128, 1024 * 1024);
-    }
-    #[cfg(feature = "peer-tls")]
-    #[test]
-    #[ignore = "51-process WSL load: 640 object publications and recovery"]
-    fn encrypted_api_sixteen_groups_recover_many_small_objects() {
-        api_tls_load(16, 512, 64 * 1024);
-    }
-    #[cfg(feature = "peer-tls")]
-    #[test]
-    #[ignore = "51-process WSL write and read load with recovery"]
-    fn encrypted_api_sixteen_groups_sustained_load_recovers() {
-        let certificates = node_regime::tls::TlsFiles::new();
-        for i in 0..3 {
-            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
+        meta = metadata.ready();
+        for group in &groups {
+            group.leader();
         }
-        multiple_group_load_with_transport_checkpoint(
-            16, 512, 16, true, 4, 64 * 1024,
-            VoterSetup { peer_tls: Some(certificates.root.clone()), api_tls: true, voters: 3 },
-            32 * 1024 * 1024, false,
-        );
+        assert_eq!(meta.read_chunk_object("written", "object", &options).unwrap(), (grown, whole));
+        assert!(meta.read_chunk_object("written", "empty", &options).unwrap().1.is_empty());
     }
-    #[cfg(feature = "peer-tls")]
-    #[test]
-    #[ignore = "99-process WSL write and read load with recovery"]
-    fn encrypted_api_thirty_two_groups_sustained_load_recovers() {
-        let certificates = node_regime::tls::TlsFiles::new();
-        for i in 0..3 {
-            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
+
+    fn load_options() -> MetaClientOptions {
+        MetaClientOptions {
+            connect_timeout: Duration::from_secs(1),
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(5),
+            ..Default::default()
         }
-        multiple_group_load_with_transport_checkpoint(
-            32, 512, 16, true, 4, 64 * 1024,
-            VoterSetup { peer_tls: Some(certificates.root.clone()), api_tls: true, voters: 3 },
-            32 * 1024 * 1024, false,
-        );
     }
-    #[cfg(feature = "peer-tls")]
-    #[test]
-    #[ignore = "99-process WSL mixed reads and writes with recovery"]
-    fn encrypted_api_thirty_two_groups_mixed_load_recovers() {
-        let certificates = node_regime::tls::TlsFiles::new();
-        for i in 0..3 {
-            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
+    fn chunk_options() -> ReplicaClientOptions {
+        ReplicaClientOptions {
+            connect_timeout: Duration::from_secs(1),
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(5),
+            ..Default::default()
         }
-        multiple_group_load_with_transport_checkpoint_mode(
-            32, 512, 16, true, 4, 64 * 1024,
-            VoterSetup { peer_tls: Some(certificates.root.clone()), api_tls: true, voters: 3 },
-            32 * 1024 * 1024, false, true,
-        );
     }
-    #[cfg(feature = "peer-tls")]
-    #[test]
-    #[ignore = "195-process WSL write and read load with recovery"]
-    fn encrypted_api_sixty_four_groups_sustained_load_recovers() {
-        let certificates = node_regime::tls::TlsFiles::new();
-        for i in 0..3 {
-            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
-        }
-        multiple_group_load_with_transport_checkpoint(
-            64, 512, 16, true, 4, 64 * 1024,
-            VoterSetup { peer_tls: Some(certificates.root.clone()), api_tls: true, voters: 3 },
-            32 * 1024 * 1024, false,
-        );
-    }
-    #[cfg(feature = "peer-tls")]
-    fn tls_payload_recovery(groups: usize, writes: u64, bytes: u64) {
-        tls_payload_recovery_with_width(groups, writes, bytes, 2);
-    }
-    #[cfg(feature = "peer-tls")]
-    fn tls_payload_recovery_with_width(groups: usize, writes: u64, bytes: u64, target_groups: u32) {
-        let certificates = node_regime::tls::TlsFiles::new();
-        for i in 0..3 {
-            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
-        }
-        multiple_group_load_with_transport(
-            groups,
-            writes,
-            4,
-            true,
-            target_groups,
-            bytes,
-            VoterSetup { peer_tls: Some(certificates.root.clone()), api_tls: false, voters: 3 },
-        );
-    }
-    #[cfg(feature = "peer-tls")]
-    #[test]
-    fn larger_authenticated_quorums_recover_after_maximum_voter_loss() {
-        let certificates = node_regime::tls::TlsFiles::new();
-        for i in 0..7 {
-            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
-        }
-        for voters in [5, 7] {
-            println!("AUTHENTICATED_VOTERS voters={voters} failures_per_group={}", voters / 2);
-            multiple_group_load_with_transport(
-                3, 24, 4, true, 2, 64 * 1024,
-                VoterSetup { peer_tls: Some(certificates.root.clone()), api_tls: false, voters },
+    fn group_usage(api: &[String], groups: &[Group], saved: &[(u64, CommittedPlacement)]) {
+        let mut options = load_options();
+        options.tls = api_tls_config(groups[0].api_tls.as_ref());
+        let mut meta = RemoteMetaClient::connect_catalog(api, &options).unwrap();
+        let expected: BTreeMap<_, _> = groups
+            .iter()
+            .map(|g| {
+                let id = g.placement_id();
+                let mut physical = 0;
+                let mut committed = 0;
+                for (_, placement) in saved.iter().filter(|(_, p)| p.node_ids.contains(&id)) {
+                    assert_eq!(placement.length % placement.node_ids.len() as u64, 0);
+                    physical += placement.length / placement.node_ids.len() as u64;
+                    committed += placement.length / placement.node_ids.len() as u64;
+                }
+                (id, (physical, committed))
+            })
+            .collect();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let nodes = match meta.list_placement_nodes() {
+                Ok(nodes) => nodes,
+                Err(matrixobjectstore_rs::ObjectError::PreconditionFailed(_))
+                    if Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+                Err(error) => panic!("cannot read multi-group accounting: {error}"),
+            };
+            assert_eq!(nodes.len(), groups.iter().map(|g| g.nodes.len() + 1).sum::<usize>());
+            if groups.iter().all(|g| {
+                let id = g.placement_id();
+                let node = nodes.iter().find(|n| n.node_id == id).unwrap();
+                node.online
+                    && node.data_eligible
+                    && node.used_bytes == expected[&id].0
+                    && node.committed_bytes == expected[&id].1
+                    && node.capacity_bytes == g.capacity
+            }) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "multi-group accounting did not converge: {nodes:?}"
             );
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
-    #[cfg(feature = "peer-tls")]
-    #[test]
-    fn authenticated_peer_quorums_recover_striped_payloads_and_capacity() {
-        tls_payload_recovery(3, 24, 64 * 1024);
-    }
-    #[cfg(feature = "peer-tls")]
-    #[test]
-    #[ignore = "51-process mutually authenticated peer recovery; run explicitly in WSL"]
-    fn authenticated_sixteen_groups_recover_one_mib_objects() {
-        tls_payload_recovery(16, 128, 1024 * 1024);
-    }
-    #[cfg(feature = "peer-tls")]
-    #[test]
-    fn four_way_authenticated_objects_recover_after_leader_loss_and_restart() {
-        tls_payload_recovery_with_width(4, 24, 64 * 1024, 4);
-    }
-    #[cfg(feature = "peer-tls")]
-    #[test]
-    #[ignore = "51-process four-way authenticated object recovery; run explicitly in WSL"]
-    fn authenticated_sixteen_groups_recover_four_way_objects() {
-        tls_payload_recovery_with_width(16, 128, 1024 * 1024, 4);
-    }
-    #[test]
-    fn striped_payloads_recover_with_exact_bytes_and_capacity_accounting() {
-        multiple_group_load_sized(3, 24, 4, true, 2, 64 * 1024);
-    }
-    #[test]
-    #[ignore = "bounded 51-process one-MiB striped-object recovery measurement"]
-    fn sixteen_groups_recover_one_mib_striped_objects() {
-        multiple_group_load_sized(16, 128, 8, true, 2, 1024 * 1024);
-    }
-    #[test]
-    #[ignore = "bounded 51-process striped-object load and recovery measurement"]
-    fn sixteen_groups_preserve_striped_objects_through_recovery() {
-        multiple_group_load_with_groups(16, 1024, 8, true, 2);
-    }
-    #[test]
-    #[ignore = "bounded 51-process complete-object load and recovery measurement"]
-    fn sixteen_groups_preserve_object_writes_and_reads_through_recovery() {
-        multiple_group_load(16, 1024, 8, true);
-    }
+
 }
 
 #[test]

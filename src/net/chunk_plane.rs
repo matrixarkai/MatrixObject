@@ -212,6 +212,33 @@ impl ObjectPlane for ChunkPlane {
 }
 
 impl ClusterGateway {
+    /// The constructor of the retired page plane, kept so a caller written against it still builds: the
+    /// gateway it returns stores objects as chunk manifests, exactly as [`Self::over_chunk_objects`] does.
+    #[deprecated(note = "the gateway stores chunk objects only; use over_chunk_objects")]
+    pub fn over_sdk<F>(open: F, options: GatewayOptions, bucket_hint: impl Into<String>) -> Self
+    where
+        F: Fn() -> Result<RemoteMetaClient, ObjectError> + Send + Sync + 'static,
+    {
+        Self::over_chunk_objects(open, options, bucket_hint)
+    }
+
+    /// The constructor of the retired compact page plane. Chunk objects need no publication fence, so this
+    /// only checks that a connection can be opened and returns the same gateway as [`Self::over_chunk_objects`].
+    #[deprecated(note = "the gateway stores chunk objects only; use over_chunk_objects")]
+    pub fn over_sdk_with_publication_fence<F>(
+        open: F,
+        options: GatewayOptions,
+        bucket_hint: impl Into<String>,
+    ) -> Result<Self, ObjectError>
+    where
+        F: Fn() -> Result<RemoteMetaClient, ObjectError> + Send + Sync + 'static,
+    {
+        open()?;
+        Ok(Self::over_chunk_objects(open, options, bucket_hint))
+    }
+}
+
+impl ClusterGateway {
     /// A gateway whose connections are metadata clients opened with `open`, storing objects as chunk
     /// manifests. The default `copy` of [`ObjectPlane`] reads and writes the bytes, which is the copy
     /// a chunk object has (no extent is shared, so no page is ever owned by two objects).

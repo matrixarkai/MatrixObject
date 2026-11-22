@@ -8,7 +8,7 @@ manifests, per-page integrity checks, and explicit repair paths. New version 2
 manifests authenticate page reads against committed SHA-256 digests; version 1
 manifests retain exact quorum-voted reads. Configure repair workers explicitly;
 automatic returning-node repair scheduling is not complete. See
-[authenticated reads](docs/authenticated-object-reads.md) and
+authenticated reads and
 [repair scheduling](docs/star-repair-worker.md).
 
 ## Related Projects
@@ -74,12 +74,7 @@ before interpreting storage amplification. The guides below describe these paths
 | Serve object requests | [Network access](#reaching-the-store-over-a-network) and [API TLS](docs/api-tls.md) |
 | Run metadata independently | [Metadata consensus and recovery](docs/metadata-consensus.md) |
 | Place data on independent replicas | [Chunk consensus](docs/chunk-consensus.md) and [group catalog](docs/chunk-group-catalog.md) |
-| Understand publication and reads | [Object manifests](docs/object-manifests.md) and [authenticated reads](docs/authenticated-object-reads.md) |
-| Understand metadata clone and rollback costs | [Immutable catalog sharing](docs/manifest-catalog-sharing.md) |
-| Protect reads across overwrite or delete | [Read-session leases](docs/read-session-leases.md) |
-| Append without sending the stored prefix again | [Compact append planning](docs/compact-append-planning.md) and [publication](docs/compact-staged-append.md) |
 | Append to a very large log without a metadata write per append | [Chunk-granular manifests and log objects](docs/chunk-granular-manifest.md) |
-| Size repair and append work | [Repair worker](docs/star-repair-worker.md) and [append amplification](docs/star-append-amplification.md) |
 | Plan distributed deployment work | [Distributed delivery](docs/distributed-delivery.md) |
 
 The object store is a cluster: a metadata quorum, chunk groups and the doors that serve them run as
@@ -91,19 +86,6 @@ production qualification.
 Objects are stored as chunk manifests (see [chunk-granular manifests](docs/chunk-granular-manifest.md)
 and [the gateway](docs/cluster-gateway.md)). **Data directories from earlier builds are not supported**:
 a door refuses to start over a cluster that still holds page-granular objects, and there is no migration.
-
-### Resume uncertain staged allocations
-
-For recoverable allocation, persist the prepared request handle before submitting
-it, then retry that exact handle after a timeout or client restart. Preparation
-does not reserve pages or its metadata position. A consumed position can indicate
-contention or a previously retired operation; absence of active ownership is not
-permission to allocate a replacement or delete data.
-
-See [staged request identity](docs/staged-request-identity.md) for admission and
-uncertain outcomes, and [compact staged append](docs/compact-staged-append.md)
-for publication. Upgrade all participating metadata consumers before using the
-new ownership records; keep placement and metadata recovery state together.
 
 ## Deployment Responsibilities
 
@@ -157,100 +139,18 @@ policies. A local embedding example does not exercise these independent service 
   binaries is not a cluster deployment.
 - Preserve metadata checkpoints and journals together with the data replicas
   they describe. An object API process alone is not a backup of the store.
-- Upgrade protocol consumers before enabling compact append publication or
-  nonempty namespace fences. Consult the linked protocol guides for refused
-  operations rather than assuming an older peer will transparently downgrade.
-- Budget separately for staged bytes, published objects, retained reader
-  generations, and repair work. A successful delete is not proof that physical
-  storage has been reclaimed; physical reclamation remains disabled.
+- Upgrade protocol consumers before enabling nonempty namespace fences. Consult
+  the linked protocol guides for refused operations rather than assuming an older
+  peer will transparently downgrade.
+- Budget separately for published objects and repair work. A delete publishes a
+  tombstone; the pages no manifest names are freed by the reclaim sweep after its
+  grace, not by the delete.
 - Use [distributed delivery](docs/distributed-delivery.md) to distinguish local
   multi-process behavior from independent-host availability and capacity claims.
 
-## Object Workflow Map
-
-| Operation | Start with | Boundary |
-|---|---|---|
-| Publish or replace an object | [Object manifests](docs/object-manifests.md) | Data placement and manifest publication are separate steps; generation checks prevent publishing against another version. |
-| Recover an interrupted write | [Staged writes](docs/staged-object-writes.md) and [request identity](docs/staged-request-identity.md) | Retain the prepared handle and exact candidate. A lost reply is not permission to allocate another namespace. |
-| Append a suffix | [Compact planning](docs/compact-append-planning.md) and [staged append](docs/compact-staged-append.md) | The stored prefix is not resent, but validation and hashing can still scale with it. |
-| Read a generation across replacement | [Read-session leases](docs/read-session-leases.md) | Open a session for the current or exact expected generation. Once granted, its manifest survives replacement until its bounded deadline; direct data-node reads do not acquire this protection. |
-| Repair data on replicas | [Repair worker](docs/star-repair-worker.md) | Repair scheduling and durable replica placement require explicit configuration. |
-| Delete and recover capacity | [Namespace fences](docs/chunk-namespace-fences.md) | Removing visibility or closing a namespace does not reclaim physical storage. Physical reclamation remains disabled. |
-
-These guides describe different API layers. Do not infer network behavior from
-an embedded call, or treat a successful staged allocation, page write, and object
-publication as interchangeable acknowledgements. Configure metadata and data
-services using their own deployment contracts.
-
-Read-session TTLs range from 1 second to 1 hour. Sessions and permanent retained
-handles share the 128-handle and 64-MiB catalog bounds; exhaustion refuses
-admission rather than silently dropping protection. Renewal compares the exact
-previous deadline and must extend a live session. After an uncertain renewal,
-inspect the handle instead of assuming the deadline advanced. Expired sessions
-refuse reads even if background cleanup has not removed their records.
-
-For recoverable staged allocation, persist the exact prepared handle before
-submission and retry that handle after a transport failure. An uncertain reply
-is not permission to allocate a replacement. After ownership retires, a refusal
-does not distinguish earlier publication from abort or expiry: reconcile the
-saved candidate with the manifest. Preparation itself does not reserve pages or
-its proposed metadata position, so concurrent mutations can consume that position.
-See [request identity and uncertain outcomes](docs/staged-request-identity.md).
-
 ## How storage is laid out
 
-### Immutable metadata catalogs
-
-Catalog clones used by snapshot capture and Raft preparation share immutable
-manifest entries instead of copying every extent. Publishing replaces an entry;
-earlier catalog clones retain their selected generation across append, delete,
-and recreation. Speculative rollback restores the original entry and its cached
-encoded size. Canonical catalog and checkpoint formats remain unchanged.
-
-This reduces catalog-clone work, not every append cost: candidate construction,
-validation, hashing, public manifest copies, and checkpoint serialization can
-still copy or traverse extents. See [immutable catalog sharing](docs/manifest-catalog-sharing.md)
-for the allocation measurement and its limits.
-
-### Recoverable staged writes
-
-The metadata service supports durable staged ownership, optional renewable deadlines,
-and bounded expiry sweeps. A prepared allocation request binds a nonce and its ownership
-parameters to a durable metadata position. Persist the exact prepared handle before
-allocation to recover an active reservation after a lost reply; retrying is not permission
-to allocate again after publication, abort, or expiry. Existing allocation APIs remain
-available. Preparation requires an additional quorum read and can conflict with concurrent
-metadata mutations.
-
-Chunk namespace fences survive journals, checkpoints, and replica recovery. Closing a
-namespace refuses ordinary writes and discards while allowing exact pinned-page repair;
-later generations cannot reopen it. These are explicit controls, not an automatic
-publication-to-reclamation pipeline. Physical reclamation remains disabled. Configure
-metadata clock synchronization and upgrade snapshot consumers before using nonempty fences.
-
-Read [staged writes](docs/staged-object-writes.md),
-[request identities](docs/staged-request-identity.md),
-[ownership leases](docs/staged-ownership-leases.md), and
-[namespace fences](docs/chunk-namespace-fences.md) before adopting these APIs.
-
-### Append planning and reader protection
-
-`append_staged_object_compact` plans against the exact current generation and
-canonical manifest digest, sends only the new immutable suffix for publication,
-and refuses a concurrent change rather than silently appending to another version.
-Compact planning does not return the stored prefix extent list. Wider placement
-plans fetch routes in bounded batches. Hashing and catalog validation still scale
-with the prefix; bounded wire traffic is not constant CPU or memory cost. Upgrade
-metadata voters before using the compact protocol; unsupported peers are refused
-without silently falling back to a full-manifest append.
-
-In publication-fenced catalogs, supported ordinary object, range, and batch reads
-acquire bounded sessions for their selected generations before payload I/O. A
-session protects that generation across overwrite or delete, subject to its deadline.
-Admission is bounded, cleanup is explicit or expiry-driven, and direct data-node
-reads do not acquire this protection. Reader leases do not enable physical
-reclamation: that remains disabled pending the rollout requirements in the
-[read-session guide](docs/read-session-leases.md).
+An object is a manifest of chunk extents (see [chunk-granular manifests](docs/chunk-granular-manifest.md)): runs of pages in a chunk of a replica group, with a digest the manifest commits to.
 
 ### Storage units
 
@@ -352,27 +252,6 @@ Set it to `false` to get the other behaviour — the garbage accumulates where t
 can see it, and `compact_all(min_stale_bytes)` takes it back on demand. Either way a
 retained version's bytes are never stale, so neither route can take them.
 
-### What a lease closes, and what it does not
-
-A metadata lease is held over a key prefix by an owner at an epoch. While it is active, a
-mutation of a key under that prefix must carry the owner and the epoch, and every object
-door checks it: put, append, copy, delete, tags, retention, legal hold, restore, and all
-four multipart doors -- create, upload-part, complete and abort.
-
-A **multipart upload is fenced on the credentials recorded when it was created**, not on
-anything the caller passes later. An upload created under a lease keeps working for the
-writer holding it; a second writer is refused. The consequence: an upload created with no
-credentials cannot be continued or aborted while a lease covers its key, until the lease
-expires.
-
-A **batch or prefix delete does not fail** when a lease protects one of its objects. It
-reports that item as failed -- `deleted=0, failed=1, error_code=PreconditionFailed` -- and
-leaves the object alone, so one protected key does not abandon the rest of the batch. Read
-the report, not the return value.
-
-The same doors also check the **metadata shard fence**, which refuses a mutation whose shard
-is draining or owned elsewhere.
-
 ### A replica that missed a write does not get a vote
 
 A page carries a write sequence on each replica that holds it, and a read takes a majority
@@ -439,7 +318,7 @@ comment claiming they do.
 - **Quorum publication and verified reads.** An object is a manifest published with a generation
   check; every page a read returns is checked against the digests the manifest committed, so a replica
   that has fallen behind or been corrupted cannot answer with stale or wrong bytes. See
-  [object manifests](docs/object-manifests.md) and [authenticated reads](docs/authenticated-object-reads.md).
+  object manifests and authenticated reads.
 - **Replicas are their own processes.** Metadata voters and chunk groups run as separate processes; see
   [replicas in their own processes](#replicas-in-their-own-processes) for the kill test and for what is
   not remote yet.
@@ -660,7 +539,7 @@ page batches from a matching source quorum. Returning nodes can remain in mainte
 excluded from placement and ordinary writes, until an operator explicitly resumes them.
 The [five-replica repair workload](docs/star-repair-scale.md) verifies this sequence through
 metadata failover and full process restart. Automatic repair scheduling remains unfinished.
-New object writes use [authenticated object reads](docs/authenticated-object-reads.md)
+New object writes use authenticated object reads
 to accept one digest-matching star copy and retry a missing, stale, or slow member.
 Replicated metadata uses the separate [MatrixRaft configuration](docs/metadata-consensus.md).
 
@@ -724,7 +603,7 @@ replica-call surface. It temporarily substitutes the replica element type and cl
 compiler diagnostics before restoring the file. Its historical counts are not a current
 readiness score. Read [chunk consensus](docs/chunk-consensus.md),
 [chunk-group routing and membership](docs/chunk-group-catalog.md), and
-[object manifests](docs/object-manifests.md) for the implemented remote contracts and limits.
+object manifests for the implemented remote contracts and limits.
 The local multi-process tests do not establish sustained large-scale availability or
 independent-host production qualification.
 
@@ -816,7 +695,7 @@ On pushes to `main` and on every pull request, four jobs:
   verifies append copies and recovery while a foreground checkpoint runs.
   [Shared journal sync](docs/star-journal-synchronization.md) guards also cover
   conditional ordering, durable completion, failure fencing and group bounds.
-  [Durable payload extents](docs/durable-payload-extents.md) add binary-format,
+  Durable payload extents add binary-format,
   integrity, killed-writer recovery and bounded allocation guards.
   [Stored outcome records](docs/stored-outcome-records.md) test one-sync binary
   decisions, metadata-only reads and three killed storage writers; live server
