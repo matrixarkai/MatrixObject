@@ -633,10 +633,6 @@ impl PlacementOutcome {
         Self::publish_manifest_with_staging(service, manifest, update_time_ms,
             Some(crate::staged_allocation::StagedAllocationChange { before: Some(allocation), after: None }), None)
     }
-    pub(crate) fn publish_copied_manifest(service: &MatrixMetaService, manifest: ManifestOutcome,
-        update_time_ms: u64, source: crate::manifest_copy::LiveCopySource) -> Result<Self, ObjectError> {
-        Self::publish_manifest_with_staging(service, manifest, update_time_ms, None, Some(source))
-    }
     /// The outcome that publishes a compact append: `after` is `before`, the stored manifest,
     /// plus the new extents of `append` (see `ManifestAppend::expand_shared`). The outcome
     /// carries the decision, not the manifests; everything it must be bound to is read from

@@ -180,7 +180,6 @@ pub mod gateway_picker;
 #[cfg(feature = "meta-server")]
 pub mod gateway_roster;
 #[cfg(feature = "meta-server")]
-mod manifest_copy_commands;
 #[cfg(feature = "meta-server")]
 pub mod meta_message;
 #[cfg(feature = "meta-server")]

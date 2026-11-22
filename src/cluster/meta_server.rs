@@ -867,8 +867,6 @@ fn apply(
     }
     let request = super::health_report::stamp(request, &guard.service)?;
     let decision = match &request {
-        MetaRequest::CopyManifest(command) => Some(super::manifest_copy_commands::prepare(
-            &guard.service, &guard.groups, command, max_payload_bytes)?),
         MetaRequest::Features(command) if !command.is_read() => match super::features_commands::prepare(&guard.service, command)? {
             Some(outcome) => {
                 let after = outcome.features.as_ref().and_then(|change| change.after.clone())
@@ -1194,11 +1192,6 @@ pub(super) fn apply_with_groups(
     groups: &super::ChunkGroupCatalog,
 ) -> Result<MetaReply, ObjectError> {
     groups.check_request(&request)?;
-    if let MetaRequest::CopyManifest(command) = &request {
-        let (outcome, reply) = super::manifest_copy_commands::prepare(service, groups, command, limit)?;
-        outcome.apply(service)?;
-        return Ok(reply);
-    }
     if let MetaRequest::Features(command) = &request {
         if !command.is_read() {
             return match super::features_commands::prepare(service, command)? {
@@ -1478,7 +1471,6 @@ pub(super) fn apply_to_meta(
     max_payload_bytes: usize,
 ) -> Result<MetaReply, ObjectError> {
     match request {
-        MetaRequest::CopyManifest(_) => Err(ObjectError::InvalidArgument("atomic copy requires catalog dispatch".into())),
         MetaRequest::Features(command) if command.is_read() => super::features_commands::read(guard, &command),
         MetaRequest::Features(_) => Err(ObjectError::InvalidArgument("feature changes require catalog dispatch".into())),
         MetaRequest::LogChunk(command) if command.is_read() => super::log_chunk_commands::read(guard, &command),
