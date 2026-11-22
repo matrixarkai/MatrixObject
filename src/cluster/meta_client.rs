@@ -39,8 +39,6 @@ use crate::cluster::meta_wire::MetaRequestCode;
 use crate::cluster::wire::{StatusCode, HEADER_BYTES, MAX_PAYLOAD_BYTES};
 use crate::ObjectError;
 
-#[cfg(test)]
-
 /// How long a read may be asked to wait before the client gives up on it.
 pub const SHORT_READ: Duration = Duration::from_secs(30);
 
