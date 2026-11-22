@@ -3168,3 +3168,295 @@ fn the_s3_door_over_chunk_objects_serves_listing_conditions_copy_batch_multipart
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// BUCKETS ON THE CHUNK PATH, AGAINST REAL PROCESSES: a bucket is a replicated record that survives what an object
+/// survives. Created, configured, listed, refused when it is missing and removed, through the S3 door over chunk objects.
+#[cfg(feature = "replica-server")]
+#[test]
+fn the_s3_door_over_chunk_objects_creates_configures_lists_and_deletes_buckets() {
+    use matrixobjectstore_rs::cluster::{
+        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ObjectWriteOptions, ReplicaClientOptions,
+    };
+    use matrixobjectstore_rs::net::cluster_gateway::{ClusterGateway, GatewayOptions};
+    use matrixobjectstore_rs::net::{Request, RequestHandler, Response};
+
+    let root = std::env::temp_dir().join(node_regime::run_token("s3-buckets"));
+    std::fs::create_dir(&root).unwrap();
+    let mut chunks = Vec::new();
+    for index in 0..3 {
+        let journal = root.join(format!("{index}.log"));
+        chunks.push(processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", journal.to_str().unwrap()),
+            ],
+        ));
+    }
+    let endpoints: Vec<_> = chunks.iter().map(|node| node.endpoint.clone()).collect();
+    let members: Vec<_> = (1..=3).map(|id| format!("star-{id}")).collect();
+    let config = ChunkGroupConfig {
+        placement_id: "group-a".into(),
+        failure_domain: "rack-a".into(),
+        identity: Some(ChunkGroupIdentity {
+            version: 3,
+            group_id: 1,
+            node_id: 1,
+            capacity_bytes: 1 << 28,
+            max_pages: 4096,
+            voters: vec![1, 2, 3],
+            peer_endpoints: Vec::new(),
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
+        }),
+        api_endpoints: endpoints,
+        member_ids: members.clone(),
+    };
+    let catalog = ChunkGroupCatalog::new(vec![config]).unwrap();
+    let metadata = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let meta_endpoint = metadata.nodes[metadata.leader()].as_ref().unwrap().endpoint.clone();
+    let meta_options = || MetaClientOptions {
+        read_timeout: Duration::from_secs(10),
+        write_timeout: Duration::from_secs(10),
+        ..Default::default()
+    };
+    let mut client = RemoteMetaClient::connect(&meta_endpoint, &meta_options()).unwrap();
+    for member in &members {
+        client.heartbeat_placement_node(member, 0, 1 << 28, false, true, 100).unwrap();
+    }
+    let options = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        replica: ReplicaClientOptions {
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let gateway_options = GatewayOptions { write: options.clone(), replica: options.replica.clone(), require_buckets: true, ..Default::default() };
+    let open = {
+        let endpoint = meta_endpoint.clone();
+        move || RemoteMetaClient::connect(&endpoint, &meta_options())
+    };
+    let gateway = ClusterGateway::over_chunk_objects(open.clone(), gateway_options.clone(), "start");
+    let call = |gateway: &ClusterGateway, method: &str, target: &str, headers: &[(&str, &str)], body: &[u8]| -> Response {
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        gateway.handle(&Request {
+            method: method.into(),
+            path: path.into(),
+            query: query.into(),
+            headers: headers.iter().map(|(name, value)| (name.to_ascii_lowercase(), (*value).to_string())).collect(),
+            body: body.to_vec(),
+            keep_alive: true,
+        })
+    };
+    let text = |response: &Response| String::from_utf8_lossy(&response.body).to_string();
+
+    // nothing exists until it is created
+    assert_eq!(call(&gateway, "PUT", "/photos/cat", &[], b"meow").status, 404);
+    assert_eq!(call(&gateway, "HEAD", "/photos", &[], &[]).status, 404);
+    assert!(gateway.ensure_bucket("start").unwrap());
+    assert_eq!(call(&gateway, "PUT", "/photos", &[], &[]).status, 200);
+    assert_eq!(call(&gateway, "PUT", "/photos", &[], &[]).status, 200, "creating one that exists succeeds");
+    assert_eq!(call(&gateway, "PUT", "/photos/cat", &[], b"meow").status, 200);
+    let listed = text(&call(&gateway, "GET", "/", &[], &[]));
+    assert!(listed.contains("<Name>photos</Name>") && listed.contains("<Name>start</Name>"), "{listed}");
+
+    // configuration is stored and read back
+    let tagging = "<Tagging><TagSet><Tag><Key>team</Key><Value>storage</Value></Tag></TagSet></Tagging>";
+    assert_eq!(call(&gateway, "PUT", "/photos?tagging", &[], tagging.as_bytes()).status, 200);
+    let cors = "<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>";
+    assert_eq!(call(&gateway, "PUT", "/photos?cors", &[], cors.as_bytes()).status, 200);
+    // versioning is configured on a bucket that stays: deleting an object of a versioned bucket keeps a version, so
+    // that bucket is not empty
+    assert_eq!(call(&gateway, "PUT", "/archive", &[], &[]).status, 200);
+    let on = "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>";
+    assert_eq!(call(&gateway, "PUT", "/archive?versioning", &[], on.as_bytes()).status, 200);
+
+    // ANOTHER GATEWAY on the same cluster sees the same buckets and the same configuration: the record is the cluster's, not the door's
+    let other = ClusterGateway::over_chunk_objects(open, gateway_options, "start");
+    assert_eq!(call(&other, "HEAD", "/photos", &[], &[]).status, 200);
+    assert!(text(&call(&other, "GET", "/photos?tagging", &[], &[])).contains("<Key>team</Key>"));
+    assert!(text(&call(&other, "GET", "/photos?cors", &[], &[])).contains("<AllowedOrigin>*</AllowedOrigin>"));
+    assert!(text(&call(&other, "GET", "/archive?versioning", &[], &[])).contains("<Status>Enabled</Status>"));
+    assert_eq!(call(&other, "GET", "/photos/cat", &[], &[]).body, b"meow");
+
+    // a bucket with an object is not deleted; an empty one is, and is then missing everywhere
+    assert_eq!(call(&gateway, "DELETE", "/photos", &[], &[]).status, 409);
+    assert_eq!(call(&gateway, "DELETE", "/photos/cat", &[], &[]).status, 204);
+    assert_eq!(call(&gateway, "DELETE", "/photos", &[], &[]).status, 204);
+    std::thread::sleep(Duration::from_millis(2100));
+    assert_eq!(call(&other, "HEAD", "/photos", &[], &[]).status, 404);
+    assert_eq!(call(&other, "PUT", "/photos/cat", &[], b"x").status, 404);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// ATTRIBUTES, OBJECT LOCK, VERSIONING, QUOTAS AND THE CHANGE FEED, AGAINST REAL PROCESSES. The unit tests run the rules
+/// over an in-memory plane; this runs the three things only the chunk plane does for them: publish a manifest again with
+/// other attributes, name the same pages under a second key (a kept version), and delete exactly the manifest a lock
+/// check read, over three chunk servers and a metadata group, with the data read back from the pages.
+#[cfg(feature = "replica-server")]
+#[test]
+fn the_s3_door_over_chunk_objects_keeps_attributes_locks_versions_quotas_and_a_change_feed() {
+    use matrixobjectstore_rs::cluster::{
+        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ObjectWriteOptions, ReplicaClientOptions,
+    };
+    use matrixobjectstore_rs::net::cluster_gateway::{ClusterGateway, GatewayOptions};
+    use matrixobjectstore_rs::net::{Request, RequestHandler, Response};
+
+    let root = std::env::temp_dir().join(node_regime::run_token("s3-features"));
+    std::fs::create_dir(&root).unwrap();
+    let mut chunks = Vec::new();
+    for index in 0..3 {
+        let journal = root.join(format!("{index}.log"));
+        chunks.push(processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", journal.to_str().unwrap()),
+            ],
+        ));
+    }
+    let endpoints: Vec<_> = chunks.iter().map(|node| node.endpoint.clone()).collect();
+    let members: Vec<_> = (1..=3).map(|id| format!("star-{id}")).collect();
+    let config = ChunkGroupConfig {
+        placement_id: "group-a".into(),
+        failure_domain: "rack-a".into(),
+        identity: Some(ChunkGroupIdentity {
+            version: 3,
+            group_id: 1,
+            node_id: 1,
+            capacity_bytes: 1 << 28,
+            max_pages: 4096,
+            voters: vec![1, 2, 3],
+            peer_endpoints: Vec::new(),
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
+        }),
+        api_endpoints: endpoints,
+        member_ids: members.clone(),
+    };
+    let catalog = ChunkGroupCatalog::new(vec![config]).unwrap();
+    let metadata = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let meta_endpoint = metadata.nodes[metadata.leader()].as_ref().unwrap().endpoint.clone();
+    let meta_options = || MetaClientOptions {
+        read_timeout: Duration::from_secs(10),
+        write_timeout: Duration::from_secs(10),
+        ..Default::default()
+    };
+    let mut client = RemoteMetaClient::connect(&meta_endpoint, &meta_options()).unwrap();
+    for member in &members {
+        client.heartbeat_placement_node(member, 0, 1 << 28, false, true, 100).unwrap();
+    }
+    let options = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        replica: ReplicaClientOptions {
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let gateway_options = GatewayOptions { write: options.clone(), replica: options.replica.clone(), require_buckets: true, ..Default::default() };
+    let open = {
+        let endpoint = meta_endpoint.clone();
+        move || RemoteMetaClient::connect(&endpoint, &meta_options())
+    };
+    let gateway = ClusterGateway::over_chunk_objects(open, gateway_options, "start");
+    let call = |method: &str, target: &str, headers: &[(&str, &str)], body: &[u8]| -> Response {
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        gateway.handle(&Request {
+            method: method.into(),
+            path: path.into(),
+            query: query.into(),
+            headers: headers.iter().map(|(name, value)| (name.to_ascii_lowercase(), (*value).to_string())).collect(),
+            body: body.to_vec(),
+            keep_alive: true,
+        })
+    };
+    let text = |response: &Response| String::from_utf8_lossy(&response.body).to_string();
+    let header = |response: &Response, name: &str| response.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone());
+    let count = |body: &str, needle: &str| body.matches(needle).count();
+    let lock = "<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled></ObjectLockConfiguration>";
+    let versioned = "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>";
+    for bucket in ["docs", "vault", "hist", "small", "feed"] {
+        assert_eq!(call("PUT", &format!("/{bucket}"), &[], &[]).status, 200, "{bucket}");
+    }
+    assert_eq!(call("PUT", "/vault?object-lock", &[], lock.as_bytes()).status, 200);
+    assert_eq!(call("PUT", "/hist?versioning", &[], versioned.as_bytes()).status, 200);
+    assert_eq!(call("PUT", "/small?quota", &[], b"<Quota><Bytes>10</Bytes></Quota>").status, 200);
+    let on = "<ChangeFeedConfiguration><Status>Enabled</Status></ChangeFeedConfiguration>";
+    assert_eq!(call("PUT", "/feed?changefeed", &[], on.as_bytes()).status, 200);
+
+    // ATTRIBUTES: written with the object, republished without moving a byte, dropped by an overwrite
+    let body: Vec<u8> = (0..9000u32).map(|i| (i % 251) as u8).collect();
+    let put = call("PUT", "/docs/report", &[("content-type", "text/csv"), ("x-amz-meta-owner", "ana"), ("x-amz-tagging", "team=storage")], &body);
+    assert_eq!(put.status, 200, "{}", text(&put));
+    let head = call("HEAD", "/docs/report", &[], &[]);
+    assert_eq!(header(&head, "content-type").as_deref(), Some("text/csv"));
+    assert_eq!(header(&head, "x-amz-meta-owner").as_deref(), Some("ana"));
+    assert!(header(&head, "last-modified").is_some());
+    let retag = "<Tagging><TagSet><Tag><Key>team</Key><Value>data</Value></Tag><Tag><Key>tier</Key><Value>hot</Value></Tag></TagSet></Tagging>";
+    assert_eq!(call("PUT", "/docs/report?tagging", &[], retag.as_bytes()).status, 200);
+    let tags = text(&call("GET", "/docs/report?tagging", &[], &[]));
+    assert!(tags.contains("<Key>tier</Key>") && tags.contains("<Value>data</Value>"), "{tags}");
+    assert_eq!(call("GET", "/docs/report", &[], &[]).body, body, "the bytes are what was written");
+    assert_eq!(header(&call("HEAD", "/docs/report", &[], &[]), "content-type").as_deref(), Some("text/csv"), "an attribute change keeps the rest");
+    assert_eq!(call("PUT", "/docs/report", &[], b"plain").status, 200);
+    assert!(header(&call("HEAD", "/docs/report", &[], &[]), "x-amz-meta-owner").is_none(), "an overwrite names its own attributes");
+
+    // OBJECT LOCK: a governance retention refuses an overwrite and a delete, and a bypass deletes exactly what was checked
+    let until = "2099-01-01T00:00:00Z";
+    let held = call("PUT", "/vault/g", &[("x-amz-object-lock-mode", "GOVERNANCE"), ("x-amz-object-lock-retain-until-date", until)], &body);
+    assert_eq!(held.status, 200, "{}", text(&held));
+    assert_eq!(call("PUT", "/vault/g", &[], b"again").status, 403);
+    assert_eq!(call("DELETE", "/vault/g", &[], &[]).status, 403);
+    assert_eq!(call("GET", "/vault/g", &[], &[]).body, body, "a refused overwrite and delete changed nothing");
+    assert_eq!(call("DELETE", "/vault/g", &[("x-amz-bypass-governance-retention", "true")], &[]).status, 204);
+    assert_eq!(call("GET", "/vault/g", &[], &[]).status, 404);
+    let compliance = "<Retention><Mode>COMPLIANCE</Mode><RetainUntilDate>2099-01-01T00:00:00Z</RetainUntilDate></Retention>";
+    assert_eq!(call("PUT", "/vault/c", &[], b"c").status, 200);
+    assert_eq!(call("PUT", "/vault/c?retention", &[], compliance.as_bytes()).status, 200);
+    assert_eq!(call("DELETE", "/vault/c", &[("x-amz-bypass-governance-retention", "true")], &[]).status, 403, "compliance is not bypassed");
+
+    // VERSIONING: the replaced manifest is kept under a hidden key that names the same pages
+    let (first, second) = (vec![1u8; 5000], vec![2u8; 6000]);
+    let v1 = header(&call("PUT", "/hist/page", &[("content-type", "text/plain")], &first), "x-amz-version-id").unwrap();
+    let v2 = header(&call("PUT", "/hist/page", &[], &second), "x-amz-version-id").unwrap();
+    let old = call("GET", &format!("/hist/page?versionId={v1}"), &[], &[]);
+    assert_eq!((old.status, old.body.as_slice()), (200, first.as_slice()), "an old version is read from the pages it always had");
+    assert_eq!(header(&old, "content-type").as_deref(), Some("text/plain"));
+    assert_eq!(call("GET", "/hist/page", &[], &[]).body, second);
+    let deleted = call("DELETE", "/hist/page", &[], &[]);
+    assert_eq!(header(&deleted, "x-amz-delete-marker").as_deref(), Some("true"));
+    assert_eq!(call("GET", "/hist/page", &[], &[]).status, 404);
+    assert_eq!(call("GET", &format!("/hist/page?versionId={v2}"), &[], &[]).body, second);
+    let listing = text(&call("GET", "/hist?versions", &[], &[]));
+    assert_eq!(count(&listing, "<VersionId>"), 3, "{listing}");
+    assert_eq!(call("PUT", "/hist/page", &[], b"three").status, 200);
+    let current = header(&call("HEAD", "/hist/page", &[], &[]), "x-amz-version-id").unwrap();
+    // removing the current version brings the latest kept one (the marker) back; removing v1 frees only its manifest
+    assert_eq!(call("DELETE", &format!("/hist/page?versionId={current}"), &[], &[]).status, 204);
+    assert_eq!(call("GET", "/hist/page", &[], &[]).status, 404);
+    assert_eq!(call("DELETE", &format!("/hist/page?versionId={v1}"), &[], &[]).status, 204);
+    assert_eq!(call("GET", &format!("/hist/page?versionId={v1}"), &[], &[]).status, 404);
+    assert_eq!(call("GET", &format!("/hist/page?versionId={v2}"), &[], &[]).body, second, "the other version still reads");
+
+    // QUOTA: the write that would pass it is refused and stores nothing
+    assert_eq!(call("PUT", "/small/a", &[], b"123456").status, 200);
+    let over = call("PUT", "/small/b", &[], b"123456");
+    assert_eq!(over.status, 403, "{}", text(&over));
+    assert!(text(&over).contains("QuotaExceeded"));
+    assert_eq!(call("GET", "/small/b", &[], &[]).status, 404);
+
+    // CHANGE FEED: what happened to the bucket, in order, read by cursor
+    assert_eq!(call("PUT", "/feed/a", &[], b"one").status, 200);
+    assert_eq!(call("PUT", "/feed/a", &[("x-amz-write-offset-bytes", "3")], b"two").status, 200);
+    assert_eq!(call("DELETE", "/feed/a", &[], &[]).status, 204);
+    let changes = text(&call("GET", "/feed?changes", &[], &[]));
+    let operations: Vec<&str> = changes.split("<Operation>").skip(1).filter_map(|rest| rest.split_once("</Operation>").map(|(op, _)| op)).collect();
+    assert_eq!(operations, ["put", "append", "delete"], "{changes}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+

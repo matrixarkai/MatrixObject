@@ -206,6 +206,22 @@ impl RemoteMetaClient {
         options: &ObjectWriteOptions,
         stripe_bytes: u64,
     ) -> Result<crate::chunk_manifest::ChunkManifest, ChunkWriteFailure> {
+        self.write_chunk_object_with(bucket, key, expected, data, options, stripe_bytes, &crate::chunk_manifest::ChunkAttributes::default())
+    }
+
+    /// [`Self::write_chunk_object`] with the content type, metadata, tags and retention the object carries from
+    /// this generation on. A write names them all: an overwrite does not inherit the attributes of what it replaces.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_chunk_object_with(
+        &mut self,
+        bucket: &str,
+        key: &str,
+        expected: Option<&crate::chunk_manifest::ChunkManifest>,
+        data: &[u8],
+        options: &ObjectWriteOptions,
+        stripe_bytes: u64,
+        attributes: &crate::chunk_manifest::ChunkAttributes,
+    ) -> Result<crate::chunk_manifest::ChunkManifest, ChunkWriteFailure> {
         let before = ChunkWriteFailure::BeforePublication;
         self.check_operation_deadline().map_err(before)?;
         crate::validate_bucket(bucket).map_err(before)?;
@@ -229,7 +245,12 @@ impl RemoteMetaClient {
         let page_bytes = options.page_bytes as u64;
         let extents = self.write_chunk_stripes(bucket, key, data, options, stripe_bytes, 0).map_err(before)?;
         self.check_operation_deadline().map_err(before)?;
-        let manifest = crate::chunk_object::build_manifest(bucket, key, generation, page_bytes, extents).map_err(before)?;
+        let mut manifest = crate::chunk_object::build_manifest(bucket, key, generation, page_bytes, extents).map_err(before)?;
+        attributes.put_on(&mut manifest);
+        if manifest.modified_ms == 0 {
+            manifest.modified_ms = unix_ms();
+        }
+        manifest.validate().map_err(before)?;
         let outcome = crate::chunk_catalog::ChunkOutcome::decide(expected.cloned(), manifest).map_err(before)?;
         self.publish_chunk_outcome(bucket, key, outcome)
     }
@@ -283,7 +304,10 @@ impl RemoteMetaClient {
             .generation
             .checked_add(1)
             .ok_or_else(|| before(ObjectError::InvalidArgument("object generation exhausted".into())))?;
-        let manifest = crate::chunk_object::build_manifest(&expected.bucket, &expected.key, generation, expected.page_bytes, extents).map_err(before)?;
+        let mut manifest = crate::chunk_object::build_manifest(&expected.bucket, &expected.key, generation, expected.page_bytes, extents).map_err(before)?;
+        // an append keeps what the object carries
+        crate::chunk_manifest::ChunkAttributes::of(expected).put_on(&mut manifest);
+        manifest.modified_ms = unix_ms();
         debug_assert_eq!(manifest.length, new_length);
         let outcome = crate::chunk_catalog::ChunkOutcome::decide(Some(expected.clone()), manifest).map_err(before)?;
         self.publish_chunk_outcome(&expected.bucket, &expected.key, outcome)
@@ -304,6 +328,57 @@ impl RemoteMetaClient {
             .ok_or_else(|| before(ObjectError::InvalidArgument("object generation exhausted".into())))?;
         let outcome = crate::chunk_catalog::ChunkOutcome::decide(Some(expected.clone()), again).map_err(before)?;
         self.publish_chunk_outcome(&expected.bucket, &expected.key, outcome)
+    }
+
+    /// Publish `expected` again one generation later with `attributes` in place of the ones it carries and exactly its
+    /// extents: tags, retention and a legal hold change without a byte of data moving.
+    pub fn update_chunk_attributes(
+        &mut self,
+        expected: &crate::chunk_manifest::ChunkManifest,
+        attributes: &crate::chunk_manifest::ChunkAttributes,
+    ) -> Result<crate::chunk_manifest::ChunkManifest, ChunkWriteFailure> {
+        let before = ChunkWriteFailure::BeforePublication;
+        expected.validate().map_err(before)?;
+        if expected.deleted {
+            return Err(before(ObjectError::NotFound("a deleted object carries no attributes".into())));
+        }
+        let mut again = expected.clone();
+        attributes.put_on(&mut again);
+        again.validate().map_err(before)?;
+        again.generation = expected
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| before(ObjectError::InvalidArgument("object generation exhausted".into())))?;
+        let outcome = crate::chunk_catalog::ChunkOutcome::decide(Some(expected.clone()), again).map_err(before)?;
+        self.publish_chunk_outcome(&expected.bucket, &expected.key, outcome)
+    }
+
+    /// Publish the manifest `source` under another key of its bucket: the same extents, attributes and length, a new
+    /// name, one generation after `expected` (or the first when the key has none). No data moves: two manifests name
+    /// the same pages, and the reclaim sweep frees a page only when no manifest names it. A tombstone can be
+    /// aliased, which is how a delete marker is kept.
+    pub fn alias_chunk_manifest(
+        &mut self,
+        source: &crate::chunk_manifest::ChunkManifest,
+        to_key: &str,
+        expected: Option<&crate::chunk_manifest::ChunkManifest>,
+    ) -> Result<crate::chunk_manifest::ChunkManifest, ChunkWriteFailure> {
+        let before = ChunkWriteFailure::BeforePublication;
+        source.validate().map_err(before)?;
+        crate::validate_key(to_key).map_err(before)?;
+        let generation = match expected {
+            Some(previous) => previous
+                .generation
+                .checked_add(1)
+                .ok_or_else(|| before(ObjectError::InvalidArgument("object generation exhausted".into())))?,
+            None => 1,
+        };
+        let mut alias = source.clone();
+        alias.key = to_key.to_string();
+        alias.generation = generation;
+        alias.validate().map_err(before)?;
+        let outcome = crate::chunk_catalog::ChunkOutcome::decide(expected.cloned(), alias).map_err(before)?;
+        self.publish_chunk_outcome(&source.bucket, to_key, outcome)
     }
 
     /// Publish a decided outcome. A refusal the leader decided (the generation moved, the catalog is
@@ -336,6 +411,14 @@ impl RemoteMetaClient {
     pub fn delete_chunk_object(&mut self, bucket: &str, key: &str) -> Result<crate::chunk_manifest::ChunkManifest, ChunkWriteFailure> {
         let before = ChunkWriteFailure::BeforePublication;
         let current = self.read_chunk_manifest(bucket, key).map_err(before)?;
+        self.delete_chunk_manifest(&current)
+    }
+
+    /// Delete the object `current` describes: the tombstone is published on top of exactly that manifest, so a caller
+    /// that decided from it (a retention check, say) deletes what it checked or nothing.
+    pub fn delete_chunk_manifest(&mut self, current: &crate::chunk_manifest::ChunkManifest) -> Result<crate::chunk_manifest::ChunkManifest, ChunkWriteFailure> {
+        let before = ChunkWriteFailure::BeforePublication;
+        let (bucket, key) = (current.bucket.as_str(), current.key.as_str());
         if current.deleted {
             return Err(before(ObjectError::NotFound(format!("{bucket}/{key} is already deleted"))));
         }
@@ -347,7 +430,7 @@ impl RemoteMetaClient {
             deleted: true,
             ..Default::default()
         };
-        let outcome = crate::chunk_catalog::ChunkOutcome::decide(Some(current), tombstone).map_err(before)?;
+        let outcome = crate::chunk_catalog::ChunkOutcome::decide(Some(current.clone()), tombstone).map_err(before)?;
         self.publish_chunk_outcome(bucket, key, outcome)
     }
 
@@ -423,4 +506,11 @@ impl RemoteMetaClient {
         let bytes = self.read_chunk_object_range(&manifest, 0, manifest.length, options)?;
         Ok((manifest, bytes))
     }
+}
+
+/// Now, in milliseconds since the epoch: the time a write stamps on the generation it publishes.
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }

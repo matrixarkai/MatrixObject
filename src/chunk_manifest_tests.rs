@@ -49,6 +49,7 @@ fn paged_manifest(extents: Vec<ChunkExtent>) -> ChunkManifest {
         deleted: false,
         kind: CHUNK_KIND_PAGED,
         page_bytes: PAGE,
+        ..Default::default()
     }
 }
 
@@ -64,6 +65,7 @@ fn log_manifest(extents: Vec<ChunkExtent>) -> ChunkManifest {
         deleted: false,
         kind: CHUNK_KIND_LOG,
         page_bytes: 0,
+        ..Default::default()
     }
 }
 
@@ -335,10 +337,10 @@ fn the_framed_bytes_are_checked_for_magic_checksum_and_canonical_form() {
 fn a_manifest_that_is_not_in_canonical_form_is_refused() {
     use prost::Message;
     let manifest = paged_manifest(vec![paged("group-a", 9, 3, 0, 4096)]);
-    // an unknown field (tag 15, varint 1) is skipped by the decoder, so the bytes decode to an
+    // an unknown field (tag 31, varint 1) is skipped by the decoder, so the bytes decode to an
     // equal manifest but are not what this build would have written
     let mut payload = manifest.encode_to_vec();
-    payload.extend_from_slice(&[0x78, 0x01]);
+    payload.extend_from_slice(&[0xf8, 0x01, 0x01]);
     assert_eq!(ChunkManifest::decode(payload.as_slice()).unwrap(), manifest, "the extra field is ignored");
     let mut bytes = b"MOCM".to_vec();
     bytes.extend_from_slice(&payload);

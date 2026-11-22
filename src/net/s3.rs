@@ -46,6 +46,17 @@ pub enum S3ErrorCode {
     BucketNotEmpty,
     NoSuchUpload,
     NoSuchCorsConfiguration,
+    NoSuchBucketPolicy,
+    NoSuchLifecycleConfiguration,
+    NoSuchTagSet,
+    /// The bucket has no object-lock configuration.
+    ObjectLockConfigurationNotFound,
+    /// The object is locked by a retention period or a legal hold and cannot be overwritten or deleted.
+    AccessDenied,
+    /// A version that does not exist.
+    NoSuchVersion,
+    /// The bucket would hold more than its quota.
+    QuotaExceeded,
     InvalidRequest,
     InvalidPart,
     InvalidPartOrder,
@@ -77,6 +88,13 @@ impl S3ErrorCode {
             // is what a client matches, so the two differ here on purpose -- as for
             // MalformedXML above.
             S3ErrorCode::NoSuchCorsConfiguration => "NoSuchCORSConfiguration",
+            S3ErrorCode::NoSuchBucketPolicy => "NoSuchBucketPolicy",
+            S3ErrorCode::NoSuchLifecycleConfiguration => "NoSuchLifecycleConfiguration",
+            S3ErrorCode::NoSuchTagSet => "NoSuchTagSet",
+            S3ErrorCode::ObjectLockConfigurationNotFound => "ObjectLockConfigurationNotFoundError",
+            S3ErrorCode::AccessDenied => "AccessDenied",
+            S3ErrorCode::NoSuchVersion => "NoSuchVersion",
+            S3ErrorCode::QuotaExceeded => "QuotaExceeded",
             S3ErrorCode::InvalidRequest => "InvalidRequest",
             S3ErrorCode::InvalidPart => "InvalidPart",
             S3ErrorCode::InvalidPartOrder => "InvalidPartOrder",
@@ -104,7 +122,15 @@ impl S3ErrorCode {
             S3ErrorCode::InvalidRange => 416,
             S3ErrorCode::PreconditionFailed => 412,
             S3ErrorCode::BucketNotEmpty => 409,
-            S3ErrorCode::NoSuchUpload | S3ErrorCode::NoSuchCorsConfiguration => 404,
+            S3ErrorCode::NoSuchUpload
+            | S3ErrorCode::NoSuchCorsConfiguration
+            | S3ErrorCode::NoSuchBucketPolicy
+            | S3ErrorCode::NoSuchLifecycleConfiguration
+            | S3ErrorCode::NoSuchTagSet
+            | S3ErrorCode::ObjectLockConfigurationNotFound
+            | S3ErrorCode::NoSuchVersion => 404,
+            S3ErrorCode::AccessDenied => 403,
+            S3ErrorCode::QuotaExceeded => 403,
             S3ErrorCode::InvalidRequest => 400,
             S3ErrorCode::InvalidPart
             | S3ErrorCode::InvalidPartOrder

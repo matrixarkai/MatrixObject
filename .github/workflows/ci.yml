@@ -187,6 +187,14 @@ jobs:
           grep -q '^running 1 test$' /tmp/fenced-health.log
           grep -q '^test result: ok. 1 passed' /tmp/fenced-health.log
 
+      - name: chunk objects and the gateway features over Raft data groups
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus chunk_objects_over_raft_groups_survive_leader_loss_races_appends_and_total_restart | tee /tmp/raft-chunk-objects.log
+          grep -q '^test result: ok. 1 passed' /tmp/raft-chunk-objects.log
+          cargo test --locked --all-features --test network_chunk_consensus the_gateway_features_run_over_raft_data_groups_and_survive_leader_loss | tee /tmp/raft-gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/raft-gateway-features.log
+
       - name: heartbeat observations reject stale state and preserve bounded shutdown
         run: |
           set -euo pipefail
@@ -920,6 +928,50 @@ jobs:
           set -o pipefail
           cargo test --locked --all-features --test network_metadata_consensus cluster_gateway_processes::a_full_catalog_refuses_a_new_object_with_507_and_still_serves_what_exists -- --exact --nocapture | tee /tmp/catalog-full.log
           grep -q 'test result: ok. 1 passed' /tmp/catalog-full.log
+
+      - name: buckets, object attributes and locks, quotas, CORS, lifecycle, versioning and the change feed
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib bucket_config::tests:: -- --test-threads=1 | tee /tmp/bucket-config.log
+          grep -q '^test result: ok. 6 passed' /tmp/bucket-config.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_bucket_is_created_probed_listed_and_deleted_and_its_record_is_not_a_client_object -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::bucket_configuration_is_stored_read_back_and_removed -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::malformed_configuration_and_configuration_of_a_missing_bucket_are_refused -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::concurrent_changes_to_one_buckets_configuration_all_land -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_gateway_that_requires_buckets_refuses_requests_to_one_that_does_not_exist -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::an_object_carries_its_content_type_metadata_and_tags_until_it_is_overwritten -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_multipart_upload_publishes_what_it_was_begun_with_and_respects_a_lock -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_retention_or_legal_hold_refuses_overwrite_and_delete_and_only_governance_can_be_bypassed -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_default_retention_locks_what_the_bucket_receives -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_quota_refuses_the_write_that_would_pass_it_and_counts_an_overwrite_once -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::cors_rules_answer_a_preflight_and_dress_a_cross_origin_response -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_lifecycle_pass_expires_old_objects_under_the_prefix_and_leaves_locked_ones -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::versioning_keeps_what_an_overwrite_or_a_delete_replaces_and_serves_each_version -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_bucket_without_versioning_keeps_nothing_and_a_lock_protects_a_kept_version -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_noncurrent_expiration_removes_old_versions_and_an_expiration_leaves_a_marker -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::a_bucket_that_opts_in_keeps_an_ordered_change_feed_read_by_cursor_and_trimmed_by_the_consumer -- --exact | tee /tmp/gateway-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --test network_metadata_consensus the_s3_door_over_chunk_objects_creates_configures_lists_and_deletes_buckets -- --exact | tee /tmp/buckets-real.log
+          grep -q '^test result: ok. 1 passed' /tmp/buckets-real.log
+          cargo test --locked --all-features --test network_metadata_consensus the_s3_door_over_chunk_objects_keeps_attributes_locks_versions_quotas_and_a_change_feed -- --exact | tee /tmp/features-real.log
+          grep -q '^test result: ok. 1 passed' /tmp/features-real.log
+          cargo test --locked --all-features --test network_metadata_consensus cluster_gateway_processes::the_door_process_serves_buckets_attributes_locks_versions_and_the_change_feed -- --exact | tee /tmp/door-features.log
+          grep -q '^test result: ok. 1 passed' /tmp/door-features.log
 
       - name: an ambiguous append is resolved exactly once over real processes
         run: |

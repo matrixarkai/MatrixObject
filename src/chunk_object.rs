@@ -122,6 +122,7 @@ pub fn build_manifest(
         deleted: false,
         kind: CHUNK_KIND_PAGED,
         page_bytes,
+        ..Default::default()
     };
     manifest.validate()?;
     Ok(manifest)

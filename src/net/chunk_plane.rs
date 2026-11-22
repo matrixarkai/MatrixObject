@@ -17,7 +17,7 @@
 //! Bytes move through `RemoteMetaClient::write_chunk_object`, `read_chunk_object_range` and
 //! `delete_chunk_object`, which verify every page they read against the manifest's digests.
 
-use crate::chunk_manifest::{ChunkExtent, ChunkManifest};
+use crate::chunk_manifest::{ChunkAttributes, ChunkExtent, ChunkManifest};
 use crate::chunk_object::DEFAULT_STRIPE_BYTES;
 use crate::cluster::{ChunkWriteFailure, ObjectWriteOptions, RemoteMetaClient, ReplicaClientOptions};
 use crate::object_manifest::{ManifestListPage, ManifestListRequest, ObjectExtent, ObjectManifest};
@@ -118,12 +118,39 @@ impl ObjectPlane for ChunkPlane {
         self.client.read_chunk_manifest(bucket, key).map(|manifest| head(&manifest))
     }
 
+    fn read_manifest_with_attributes(&mut self, bucket: &str, key: &str) -> Result<(ObjectManifest, ChunkAttributes), ObjectError> {
+        let manifest = self.client.read_chunk_manifest(bucket, key)?;
+        Ok((head(&manifest), ChunkAttributes::of(&manifest)))
+    }
+
     fn write(
         &mut self,
         bucket: &str,
         key: &str,
         expected: Option<ObjectManifest>,
         data: &[u8],
+    ) -> Result<ObjectManifest, PlaneFailure> {
+        self.write_with(bucket, key, expected, data, &ChunkAttributes::default())
+    }
+
+    fn update_attributes(&mut self, expected: &ObjectManifest, attributes: &ChunkAttributes) -> Result<ObjectManifest, PlaneFailure> {
+        let current = self.live(&expected.bucket, &expected.key)?;
+        if current.generation != expected.generation {
+            return Err(ObjectError::PreconditionFailed("object manifest changed before the attributes were set".into()).into());
+        }
+        self.client
+            .update_chunk_attributes(&current, attributes)
+            .map(|manifest| head(&manifest))
+            .map_err(|error| failure(error, current.extents.len()))
+    }
+
+    fn write_with(
+        &mut self,
+        bucket: &str,
+        key: &str,
+        expected: Option<ObjectManifest>,
+        data: &[u8],
+        attributes: &ChunkAttributes,
     ) -> Result<ObjectManifest, PlaneFailure> {
         let current = self.current(bucket, key)?;
         // The caller decided from the manifest it read. If the catalog holds another generation the
@@ -133,7 +160,7 @@ impl ObjectPlane for ChunkPlane {
         }
         let options = self.write_options();
         self.client
-            .write_chunk_object(bucket, key, current.as_ref(), data, &options, DEFAULT_STRIPE_BYTES)
+            .write_chunk_object_with(bucket, key, current.as_ref(), data, &options, DEFAULT_STRIPE_BYTES, attributes)
             .map(|manifest| head(&manifest))
             .map_err(|error| failure(error, usize::MAX))
     }
@@ -190,6 +217,32 @@ impl ObjectPlane for ChunkPlane {
         let options = self.write_options();
         let bytes = self.client.read_chunk_object_range(&manifest, offset, length, &options)?;
         Ok((head(&manifest), bytes))
+    }
+
+    fn alias(&mut self, bucket: &str, from_key: &str, to_key: &str, expected: Option<&ObjectManifest>) -> Result<ObjectManifest, PlaneFailure> {
+        let source = self
+            .current(bucket, from_key)?
+            .ok_or_else(|| ObjectError::NotFound(format!("{bucket}/{from_key} does not exist")))?;
+        let existing = self.current(bucket, to_key)?;
+        // the caller decided from the manifest it read: another generation, or a key that exists, means it moved
+        if expected.map(|manifest| manifest.generation) != existing.as_ref().map(|manifest| manifest.generation) {
+            return Err(ObjectError::PreconditionFailed("object manifest changed before the version was kept".into()).into());
+        }
+        self.client
+            .alias_chunk_manifest(&source, to_key, existing.as_ref())
+            .map(|manifest| head(&manifest))
+            .map_err(|error| failure(error, source.extents.len()))
+    }
+
+    fn delete_at(&mut self, expected: &ObjectManifest) -> Result<ObjectManifest, ObjectError> {
+        let current = self.live(&expected.bucket, &expected.key)?;
+        if current.generation != expected.generation {
+            return Err(ObjectError::PreconditionFailed("object manifest changed before delete".into()));
+        }
+        self.client
+            .delete_chunk_manifest(&current)
+            .map(|manifest| head(&manifest))
+            .map_err(ChunkWriteFailure::into_error)
     }
 
     fn delete(&mut self, bucket: &str, key: &str) -> Result<ObjectManifest, ObjectError> {
