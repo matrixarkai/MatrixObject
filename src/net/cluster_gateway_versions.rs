@@ -260,6 +260,7 @@ impl ClusterGateway {
         let resource = format!("/{bucket}");
         let prefix = request.query_param("prefix").unwrap_or_default();
         let marker = request.query_param("key-marker").unwrap_or_default();
+        let version_marker = request.query_param("version-id-marker").and_then(|raw| raw.parse::<u64>().ok());
         let max_keys = request.query_param("max-keys").and_then(|raw| raw.parse::<usize>().ok()).unwrap_or(1000).clamp(1, 1000);
         let collected = self.with_plane(|plane| {
             // (key, generation, is_latest, deleted, length)
@@ -287,9 +288,14 @@ impl ClusterGateway {
             Ok(rows) => rows,
             Err(error) => return error_response(error, &resource, true),
         };
-        rows.retain(|row| row.0.as_str() > marker.as_str() || (marker.is_empty()));
         // by key, newest version first
         rows.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+        // resume after the last row of the previous page: past its key, or past its version within the same key
+        rows.retain(|row| match (marker.is_empty(), version_marker) {
+            (true, _) => true,
+            (false, None) => row.0.as_str() > marker.as_str(),
+            (false, Some(version)) => row.0.as_str() > marker.as_str() || (row.0 == marker && row.1 < version),
+        });
         let truncated = rows.len() > max_keys;
         rows.truncate(max_keys);
         let mut body = format!(
@@ -299,7 +305,11 @@ impl ClusterGateway {
         );
         if truncated {
             if let Some(last) = rows.last() {
-                body.push_str(&format!("<NextKeyMarker>{}</NextKeyMarker>", bc::xml_escape(&last.0)));
+                body.push_str(&format!(
+                    "<NextKeyMarker>{}</NextKeyMarker><NextVersionIdMarker>{}</NextVersionIdMarker>",
+                    bc::xml_escape(&last.0),
+                    last.1
+                ));
             }
         }
         for (key, generation, latest, deleted, length) in &rows {

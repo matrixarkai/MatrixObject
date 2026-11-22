@@ -200,6 +200,61 @@ impl ClusterGateway {
         }
     }
 
+    /// `DELETE /{bucket}?delete-prefix=P[&limit=N][&marker=K]`: delete up to `limit` live objects whose keys start with `P`
+    /// and come after `marker`, as `DeleteObjects` would (a lock refuses an object, versioning leaves a delete marker).
+    /// The answer counts what was deleted and what was refused, and names the key to resume after when more remain.
+    pub(super) fn delete_prefix(&self, request: &Request, bucket: &str) -> Response {
+        let resource = format!("/{bucket}");
+        let prefix = request.query_param("delete-prefix").unwrap_or_default();
+        if prefix.is_empty() {
+            return s3::error_response(s3::S3ErrorCode::InvalidArgument, "delete-prefix names the prefix to delete; an empty one would empty the bucket", &resource);
+        }
+        let limit = request.query_param("limit").and_then(|raw| raw.parse::<usize>().ok()).unwrap_or(1000).clamp(1, 10_000);
+        let marker = request.query_param("marker").unwrap_or_default();
+        let lock = match self.lock_check(request, bucket, &resource) {
+            Ok(lock) => lock,
+            Err(refusal) => return refusal,
+        };
+        let versioned = match self.versioning_on(bucket) {
+            Ok(on) => on,
+            Err(error) => return error_response(error, &resource, true),
+        };
+        let keys = match self.keys_under(bucket, &prefix) {
+            Ok(keys) => keys,
+            Err(error) => return error_response(error, &resource, true),
+        };
+        let mut pending: Vec<String> = keys.into_iter().filter(|key| marker.is_empty() || key.as_str() > marker.as_str()).collect();
+        let more = pending.len() > limit;
+        pending.truncate(limit);
+        let (mut deleted, mut refused) = (0u64, 0u64);
+        for key in &pending {
+            self.forget(bucket, key);
+            let removed = if versioned {
+                self.versioned_delete(bucket, key, lock).and_then(|marker| marker.ok_or_else(|| ObjectError::NotFound("already deleted".into())))
+            } else {
+                self.delete_checked(bucket, key, lock)
+            };
+            match removed {
+                Ok(manifest) => {
+                    self.remember(&manifest);
+                    self.note_change(bucket, "delete", key, manifest.generation, 0);
+                    deleted += 1;
+                }
+                Err(ObjectError::NotFound(_)) => {}
+                Err(ObjectError::PreconditionFailed(_)) => refused += 1,
+                Err(error) => return error_response(error, &resource, true),
+            }
+        }
+        let mut body = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<DeletePrefixResult><Deleted>{deleted}</Deleted><Refused>{refused}</Refused><IsTruncated>{more}</IsTruncated>");
+        if more {
+            if let Some(last) = pending.last() {
+                body.push_str(&format!("<NextMarker>{}</NextMarker>", crate::bucket_config::xml_escape(last)));
+            }
+        }
+        body.push_str("</DeletePrefixResult>\n");
+        s3::xml_response(200, body)
+    }
+
     /// `DeleteObjects`: `POST /{bucket}?delete` with a list of keys.
     pub(super) fn delete_objects(&self, request: &Request, bucket: &str) -> Response {
         let resource = format!("/{bucket}");

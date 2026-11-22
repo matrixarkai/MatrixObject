@@ -70,7 +70,7 @@ impl ClusterGateway {
     }
 
     /// The live keys of `bucket` under `prefix`.
-    fn keys_under(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, ObjectError> {
+    pub(super) fn keys_under(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, ObjectError> {
         self.with_plane(|plane| {
             let mut keys = Vec::new();
             let mut after: Option<String> = None;

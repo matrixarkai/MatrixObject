@@ -15,7 +15,7 @@ fn configured() -> BucketConfig {
         max_age_seconds: 600,
     });
     config.policy = "{\"Version\":\"2012-10-17\"}".into();
-    config.lifecycle.push(LifecycleRule { id: "old".into(), prefix: "logs/".into(), enabled: true, expiration_days: 30, abort_multipart_days: 7, noncurrent_expiration_days: 0 });
+    config.lifecycle.push(LifecycleRule { id: "old".into(), prefix: "logs/".into(), enabled: true, expiration_days: 30, abort_multipart_days: 7, noncurrent_expiration_days: 0, ..Default::default() });
     config.quota_bytes = 1 << 30;
     config.object_lock_enabled = true;
     config.default_retention = Some(DefaultRetention { mode: RETENTION_GOVERNANCE, days: 5 });

@@ -707,6 +707,9 @@ impl ClusterGateway {
         if method == "POST" && request.query_param("delete").is_some() {
             return self.delete_objects(request, bucket);
         }
+        if method == "DELETE" && request.query_param("delete-prefix").is_some() {
+            return self.delete_prefix(request, bucket);
+        }
         if request.query_param("changes").is_some() && matches!(method, "GET" | "DELETE") {
             return self.change_feed_request(request, bucket);
         }
@@ -2990,7 +2993,8 @@ mod tests {
         assert_eq!(missing.status, 404);
         assert!(text(&missing).contains("/b/absent"), "the missing thing is the source: {}", text(&missing));
         assert_eq!(copy("/b/dst", &[]).status, 400, "onto itself");
-        assert_eq!(copy("/b/src?versionId=3", &[]).status, 400, "a version is not served");
+        assert_eq!(copy("/b/src?versionId=3", &[]).status, 404, "a version that does not exist is not copied");
+        assert_eq!(copy("/b/src?versionId=x", &[]).status, 400, "a version id is a number");
         assert_eq!(copy("/b", &[]).status, 400, "no key");
         assert_eq!(copy("/b/.multipart/x/meta", &[]).status, 400, "reserved");
         assert_eq!(copy("/b/src", &[("x-amz-copy-source-if-match", "\"gen-999\"")]).status, 412);
@@ -3885,6 +3889,61 @@ mod tests {
         assert_eq!(all_between(&versions, "VersionId").len(), 3, "the copy over the key kept 'two': {versions}");
         // a version that does not exist is not copied
         assert_eq!(gateway.handle(&request("PUT", "/cold/other", &[("x-amz-copy-source", "/cold/doc?versionId=999")], &[])).status, 404);
+    }
+
+
+    #[test]
+    fn versions_are_listed_in_pages_and_a_prefix_is_deleted_in_batches() {
+        let (gateway, _) = gateway_requiring_buckets();
+        bucket_with(&gateway, "pg", &[("versioning", VERSIONED), ("object-lock", LOCKED_BUCKET)]);
+        for key in ["a", "b"] {
+            for body in ["1", "2", "3"] {
+                assert_eq!(gateway.handle(&request("PUT", &format!("/pg/{key}"), &[], body.as_bytes())).status, 200);
+            }
+        }
+        // six versions in pages of four, resumed inside a key by the version marker
+        let mut seen: Vec<(String, String)> = Vec::new();
+        let (mut key_marker, mut version_marker) = (String::new(), String::new());
+        for _ in 0..4 {
+            let mut target = "/pg?versions&max-keys=4".to_string();
+            if !key_marker.is_empty() {
+                target.push_str(&format!("&key-marker={key_marker}&version-id-marker={version_marker}"));
+            }
+            let page = text(&gateway.handle(&request("GET", &target, &[], &[])));
+            let keys = all_between(&page, "Key");
+            let versions = all_between(&page, "VersionId");
+            seen.extend(keys.into_iter().zip(versions));
+            match (between(&page, "NextKeyMarker"), between(&page, "NextVersionIdMarker")) {
+                (Some(key), Some(version)) => {
+                    key_marker = key;
+                    version_marker = version;
+                }
+                _ => break,
+            }
+        }
+        assert_eq!(seen.len(), 6, "{seen:?}");
+        let unique: std::collections::BTreeSet<_> = seen.iter().cloned().collect();
+        assert_eq!(unique.len(), 6, "no version repeats or is lost across pages: {seen:?}");
+        // newest first within a key, keys in order
+        assert!(seen.windows(2).all(|pair| pair[0].0 < pair[1].0 || (pair[0].0 == pair[1].0 && pair[0].1.parse::<u64>().unwrap() > pair[1].1.parse::<u64>().unwrap())), "{seen:?}");
+
+        // a prefix is deleted in batches; a locked object is refused and counted
+        bucket_with(&gateway, "bulk", &[("object-lock", LOCKED_BUCKET)]);
+        for index in 0..5 {
+            assert_eq!(gateway.handle(&request("PUT", &format!("/bulk/old/{index}"), &[], b"x")).status, 200);
+        }
+        assert_eq!(gateway.handle(&request("PUT", "/bulk/keep/0", &[], b"x")).status, 200);
+        let held = [("x-amz-object-lock-mode", "COMPLIANCE"), ("x-amz-object-lock-retain-until-date", "2099-01-01T00:00:00Z")];
+        assert_eq!(gateway.handle(&request("PUT", "/bulk/old/held", &held, b"x")).status, 200);
+        let empty = gateway.handle(&request("DELETE", "/bulk?delete-prefix=", &[], &[]));
+        assert_eq!(empty.status, 400, "an empty prefix is refused");
+        let first = text(&gateway.handle(&request("DELETE", "/bulk?delete-prefix=old/&limit=3", &[], &[])));
+        assert!(first.contains("<Deleted>3</Deleted>") && first.contains("<IsTruncated>true</IsTruncated>"), "{first}");
+        let next = between(&first, "NextMarker").expect("a marker to resume after");
+        let second = text(&gateway.handle(&request("DELETE", &format!("/bulk?delete-prefix=old/&limit=10&marker={next}"), &[], &[])));
+        assert!(second.contains("<Refused>1</Refused>") && second.contains("<IsTruncated>false</IsTruncated>"), "{second}");
+        let left = text(&gateway.handle(&request("GET", "/bulk?list-type=2", &[], &[])));
+        assert_eq!(all_between(&left, "Key"), ["keep/0", "old/held"], "{left}");
     }
 
 }

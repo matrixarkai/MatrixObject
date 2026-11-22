@@ -177,8 +177,20 @@ impl BucketConfig {
             }
         }
         for rule in &self.lifecycle {
-            if rule.expiration_days == 0 && rule.abort_multipart_days == 0 && rule.noncurrent_expiration_days == 0 {
-                return Err(invalid("a lifecycle rule must expire something"));
+            let acts = rule.expiration_days > 0
+                || rule.abort_multipart_days > 0
+                || rule.noncurrent_expiration_days > 0
+                || rule.noncurrent_versions_to_keep > 0
+                || rule.expire_delete_markers
+                || (rule.transition_days > 0 && !rule.transition_storage_class.is_empty());
+            if !acts {
+                return Err(invalid("a lifecycle rule must expire, transition or clean up something"));
+            }
+            if rule.tag_key.is_empty() != rule.tag_value.is_empty() && rule.tag_key.is_empty() {
+                return Err(invalid("a lifecycle tag filter names a key"));
+            }
+            if rule.transition_storage_class.len() > 32 {
+                return Err(invalid("a storage class is at most 32 bytes"));
             }
             if rule.id.len() > MAX_FIELD_BYTES || rule.prefix.len() > MAX_FIELD_BYTES {
                 return Err(invalid("a lifecycle rule field is too long"));
