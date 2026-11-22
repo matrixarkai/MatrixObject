@@ -32,8 +32,13 @@ fall back and nothing returns a plausible-looking wrong answer.
 | `PUT /{b}`, `HEAD /{b}`, `GET /{b}?location` | answered without a cluster call: buckets are implicit |
 | `GET /healthz` | one `list_manifests` call |
 
-Refused with `NotImplemented`: changing tags, ACLs, versioning, CORS or any other bucket
-configuration, `versionId`, `UploadPartCopy`, `versions`. `If-None-Match: *` on a PUT is honoured.
+Buckets that are created and configured, object attributes (content type, metadata, tags), object lock, quotas,
+CORS, lifecycle rules, versioning (`versionId`, `versions`) and the change feed are served when buckets are explicit
+(`MATRIXOBJECT_REQUIRE_BUCKETS`, on by default in `object_server`) and are described in
+[gateway-buckets-and-object-features.md](gateway-buckets-and-object-features.md). A gateway with implicit buckets
+answers the fixed values in the table above for those requests. Refused with `NotImplemented`: ACL changes,
+`UploadPartCopy`, the bucket policy as an access rule (it is stored and read back, not evaluated). `If-None-Match: *`
+on a PUT is honoured.
 
 ### Multipart uploads
 
@@ -67,12 +72,17 @@ scenarios also run against a fake plane in the gateway's unit tests, so a plane 
 | `POST ?delete` (batch delete), `DELETE` of a bucket (409 while objects remain) | served | the same test |
 | multipart upload (create, part, list, complete, abort) | served | the same test |
 | `GET /healthz` | served | the same test |
-| object tagging (change), bucket CORS, versioning (configuration, `versions`, `versionId`), ACLs | **not served**: answered `NotImplemented`, reads of tags, ACLs and versioning answer a fixed value | refusal is covered by the gateway's unit tests |
-| object lock, retention, lifecycle, bucket policy, quotas, change feed | **not served**: these were methods of the embedded store's own API and never S3 requests the cluster gateway answered | none |
+| buckets (create, head, list, delete) and their configuration: versioning, tags, CORS, policy, lifecycle, object lock, quota, change feed | served: a bucket is a replicated record | `the_s3_door_over_chunk_objects_creates_configures_lists_and_deletes_buckets`, `bucket_configuration_is_stored_read_back_and_removed` |
+| object content type, metadata, tags; retention and legal hold; object lock enforcement | served: attributes are fields of the manifest | `an_object_carries_its_content_type_metadata_and_tags_until_it_is_overwritten`, `a_retention_or_legal_hold_refuses_overwrite_and_delete_and_only_governance_can_be_bypassed`, `the_s3_door_over_chunk_objects_keeps_attributes_locks_versions_quotas_and_a_change_feed` (real processes) |
+| versioning: `versionId`, `?versions`, delete markers | served: a replaced manifest is kept under a hidden key that names the same pages | `versioning_keeps_what_an_overwrite_or_a_delete_replaces_and_serves_each_version` and the real-process test above |
+| quotas | served: soft across gateways, see the feature guide | `a_quota_refuses_the_write_that_would_pass_it_and_counts_an_overwrite_once` |
+| CORS rules and preflight | served | `cors_rules_answer_a_preflight_and_dress_a_cross_origin_response` |
+| lifecycle (expiration, noncurrent expiration, abandoned uploads) | served by a timed pass in the door | `a_lifecycle_pass_expires_old_objects_under_the_prefix_and_leaves_locked_ones`, `a_noncurrent_expiration_removes_old_versions_and_an_expiration_leaves_a_marker` |
+| change feed | served: opt-in per bucket, at most once per mutation | `a_bucket_that_opts_in_keeps_an_ordered_change_feed_read_by_cursor_and_trimmed_by_the_consumer` |
 
-A chunk manifest holds only the object's latest generation, so versioning would need retained manifests
-and is not on the chunk path. The Raft and Star group modes both carry chunk objects; the Star test runs against real
-chunk servers, the Raft test against a Raft group of three voters per group.
+The Raft and Star group modes both carry chunk objects; the Star tests run against real chunk servers, the Raft test
+against a Raft group of three voters per group. The features above run through the same chunk plane in both modes.
+Their real-process test runs on a Star group; a Raft-group run of the feature test is not written yet.
 
 ## Mapping
 

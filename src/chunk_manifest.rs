@@ -121,6 +121,98 @@ pub struct ChunkManifest {
     /// an extent that already exists.
     #[prost(uint64, tag = "9")]
     pub page_bytes: u64,
+    /// The media type the object was written with; empty when none was given.
+    #[prost(string, tag = "10")]
+    pub content_type: String,
+    /// User metadata (`x-amz-meta-*`), keys lower-cased.
+    #[prost(btree_map = "string, string", tag = "11")]
+    pub user_metadata: std::collections::BTreeMap<String, String>,
+    /// The object's tags.
+    #[prost(btree_map = "string, string", tag = "12")]
+    pub tags: std::collections::BTreeMap<String, String>,
+    /// Object-lock retention mode ([`RETENTION_GOVERNANCE`] or [`RETENTION_COMPLIANCE`]); zero for none.
+    #[prost(uint32, tag = "13")]
+    pub retention_mode: u32,
+    /// The time, in milliseconds since the epoch, before which a locked object may not be overwritten or deleted.
+    #[prost(uint64, tag = "14")]
+    pub retain_until_ms: u64,
+    /// A legal hold: the object may not be overwritten or deleted until it is released.
+    #[prost(bool, tag = "15")]
+    pub legal_hold: bool,
+    /// When this generation's data was written, in milliseconds since the epoch; zero when it was not recorded.
+    #[prost(uint64, tag = "16")]
+    pub modified_ms: u64,
+}
+
+pub use crate::bucket_config::{RETENTION_COMPLIANCE, RETENTION_GOVERNANCE};
+/// The most tags and user-metadata bytes an object carries.
+pub const MAX_OBJECT_TAGS: usize = 10;
+pub const MAX_USER_METADATA_BYTES: usize = 2048;
+const MAX_CONTENT_TYPE_BYTES: usize = 256;
+
+/// What an object carries besides its bytes. A new write names them; an update changes them without moving data.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChunkAttributes {
+    pub content_type: String,
+    pub user_metadata: std::collections::BTreeMap<String, String>,
+    pub tags: std::collections::BTreeMap<String, String>,
+    pub retention_mode: u32,
+    pub retain_until_ms: u64,
+    pub legal_hold: bool,
+    /// When the data was written; zero asks the client that publishes to stamp its own clock.
+    pub modified_ms: u64,
+}
+
+impl ChunkAttributes {
+    /// The attributes `manifest` carries.
+    pub fn of(manifest: &ChunkManifest) -> Self {
+        Self {
+            content_type: manifest.content_type.clone(),
+            user_metadata: manifest.user_metadata.clone(),
+            tags: manifest.tags.clone(),
+            retention_mode: manifest.retention_mode,
+            retain_until_ms: manifest.retain_until_ms,
+            legal_hold: manifest.legal_hold,
+            modified_ms: manifest.modified_ms,
+        }
+    }
+
+    /// Put these attributes on `manifest`.
+    pub fn put_on(&self, manifest: &mut ChunkManifest) {
+        manifest.content_type = self.content_type.clone();
+        manifest.user_metadata = self.user_metadata.clone();
+        manifest.tags = self.tags.clone();
+        manifest.retention_mode = self.retention_mode;
+        manifest.retain_until_ms = self.retain_until_ms;
+        manifest.legal_hold = self.legal_hold;
+        manifest.modified_ms = self.modified_ms;
+    }
+}
+
+impl ChunkAttributes {
+    /// Whether an object carrying these may not be overwritten or deleted at `now_ms`: under a legal hold, or inside a
+    /// retention period. A GOVERNANCE retention may be bypassed by a caller that says so; a COMPLIANCE retention and
+    /// a legal hold may not.
+    pub fn locked_at(&self, now_ms: u64, bypass_governance: bool) -> bool {
+        if self.legal_hold {
+            return true;
+        }
+        if self.retain_until_ms > now_ms {
+            return match self.retention_mode {
+                RETENTION_COMPLIANCE => true,
+                RETENTION_GOVERNANCE => !bypass_governance,
+                _ => false,
+            };
+        }
+        false
+    }
+}
+
+impl ChunkManifest {
+    /// [`ChunkAttributes::locked_at`] for a live object; a tombstone is never locked.
+    pub fn locked_at(&self, now_ms: u64, bypass_governance: bool) -> bool {
+        !self.deleted && ChunkAttributes::of(self).locked_at(now_ms, bypass_governance)
+    }
 }
 
 fn invalid(message: &str) -> ObjectError {
@@ -168,6 +260,32 @@ fn log_extent_ok(extent: &ChunkExtent, is_last: bool) -> bool {
 }
 
 impl ChunkManifest {
+    fn carries_attributes(&self) -> bool {
+        !self.content_type.is_empty()
+            || !self.user_metadata.is_empty()
+            || !self.tags.is_empty()
+            || self.retention_mode != 0
+            || self.retain_until_ms != 0
+            || self.legal_hold
+            || self.modified_ms != 0
+    }
+
+    fn validate_attributes(&self) -> Result<(), ObjectError> {
+        let metadata_bytes: usize = self.user_metadata.iter().map(|(k, v)| k.len() + v.len()).sum();
+        if self.content_type.len() > MAX_CONTENT_TYPE_BYTES
+            || metadata_bytes > MAX_USER_METADATA_BYTES
+            || self.tags.len() > MAX_OBJECT_TAGS
+            || self.tags.iter().any(|(k, v)| k.is_empty() || k.len() > 128 || v.len() > 256)
+            || self.user_metadata.keys().any(|k| k.is_empty())
+        {
+            return Err(invalid("an object's content type, metadata or tags are out of bounds"));
+        }
+        if !matches!(self.retention_mode, 0 | RETENTION_GOVERNANCE | RETENTION_COMPLIANCE) || (self.retention_mode == 0) != (self.retain_until_ms == 0) {
+            return Err(invalid("an object's retention names a mode and a time together"));
+        }
+        Ok(())
+    }
+
     pub fn object_id(&self) -> ObjectId {
         ObjectId::new(self.bucket.clone(), self.key.clone())
     }
@@ -183,11 +301,12 @@ impl ChunkManifest {
             return Err(invalid("invalid chunk manifest version, generation or size"));
         }
         if self.deleted {
-            if self.length != 0 || !self.extents.is_empty() || self.kind != 0 || self.page_bytes != 0 {
+            if self.length != 0 || !self.extents.is_empty() || self.kind != 0 || self.page_bytes != 0 || self.carries_attributes() {
                 return Err(invalid("deleted chunk manifest contains data"));
             }
             return Ok(());
         }
+        self.validate_attributes()?;
         let page_bytes = match self.kind {
             CHUNK_KIND_PAGED if (1..=MAX_PAGE_BYTES).contains(&self.page_bytes) => self.page_bytes,
             CHUNK_KIND_LOG if self.page_bytes == 0 => 1,

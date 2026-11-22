@@ -26,6 +26,7 @@ fn chunk_manifest(key: &str, generation: u64, byte: u8) -> ChunkManifest {
         deleted: false,
         kind: CHUNK_KIND_PAGED,
         page_bytes: 1 << 20,
+        ..Default::default()
     }
 }
 

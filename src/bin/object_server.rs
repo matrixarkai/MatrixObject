@@ -16,6 +16,8 @@
 //! |---|---|---|
 //! | `MATRIXOBJECT_HTTP_ADDR` | `127.0.0.1:17200` | address to bind |
 //! | `MATRIXOBJECT_BUCKET` | `default` | bucket created at startup |
+//! | `MATRIXOBJECT_REQUIRE_BUCKETS` | `1` | a request to a bucket that was never created is refused with `NoSuchBucket`; `0` keeps buckets implicit |
+//! | `MATRIXOBJECT_LIFECYCLE_INTERVAL_MS` | `3600000` | time between lifecycle passes (expirations and abandoned multipart uploads of the buckets' rules), 1000 to 86400000; `0` turns them off. Needs `MATRIXOBJECT_REQUIRE_BUCKETS` |
 //! | `MATRIXOBJECT_MAX_BODY_BYTES` | `67108864` | largest object this door accepts |
 //! | `MATRIXOBJECT_THREADS` | `4` | accept threads |
 //! | `MATRIXOBJECT_CLUSTER_META` | *(unset)* | `host:port[,host:port...]`: serve the replicated object plane through these metadata endpoints instead of an in-process store (see below) |
@@ -259,6 +261,7 @@ fn run_cluster_gateway(
         worker_threads,
     );
     let reclaim_write = write.clone();
+    let options_require_buckets = std::env::var("MATRIXOBJECT_REQUIRE_BUCKETS").map_or(true, |value| value.trim() != "0");
     let options = GatewayOptions {
         write,
         replica,
@@ -273,6 +276,8 @@ fn run_cluster_gateway(
             std::env::var("MATRIXOBJECT_CLUSTER_CACHE_MIB").ok().as_deref(),
             GatewayOptions::default().cache_bytes / (1024 * 1024),
         ) * 1024 * 1024,
+        // a bucket exists when it has been created; `MATRIXOBJECT_REQUIRE_BUCKETS=0` keeps buckets implicit
+        require_buckets: options_require_buckets,
         ..GatewayOptions::default()
     };
     let mut meta_options = ClusterGateway::meta_options(timeout);
@@ -324,9 +329,53 @@ fn run_cluster_gateway(
         }
     }
     let gateway = Arc::new(ClusterGateway::over_chunk_objects(move || (*for_gateway)(), options, bucket.to_string()));
+    // the bucket this door serves exists from the start
+    if let Err(err) = gateway.ensure_bucket(&bucket) {
+        eprintln!("the bucket {bucket} could not be created: {err}");
+        std::process::exit(1);
+    }
     // `/livez` and `/readyz` in front of the gateway, and the drain switch behind them.
+    let for_lifecycle = Arc::clone(&gateway);
     let door = matrixobjectstore_rs::net::gateway_door::GatewayDoor::new(gateway);
     let drain_flag = door.drain_flag();
+    // THE LIFECYCLE RULES OF THE BUCKETS are acted on by a pass every interval: expirations and abandoned multipart
+    // uploads. `MATRIXOBJECT_LIFECYCLE_INTERVAL_MS=0` turns the pass off; a pass is safe to repeat and to run from
+    // several doors at once.
+    let lifecycle_interval = match std::env::var("MATRIXOBJECT_LIFECYCLE_INTERVAL_MS") {
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(ms) if ms == 0 || (1_000..=86_400_000).contains(&ms) => ms,
+            _ => {
+                eprintln!("MATRIXOBJECT_LIFECYCLE_INTERVAL_MS must be 0 or from 1000 to 86400000, and {raw:?} is not");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => 3_600_000,
+    };
+    if lifecycle_interval > 0 && options_require_buckets {
+        let stop = Arc::clone(&drain_flag);
+        std::thread::spawn(move || {
+            let mut waited = 0u64;
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                waited += 500;
+                if waited < lifecycle_interval {
+                    continue;
+                }
+                waited = 0;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_millis() as u64);
+                match for_lifecycle.run_lifecycle(now) {
+                    Ok(report) if report.expired + report.expired_versions + report.aborted_uploads + report.kept_locked > 0 => eprintln!(
+                        "lifecycle: {} expired, {} old versions expired, {} kept by a lock, {} uploads aborted in {} buckets",
+                        report.expired, report.expired_versions, report.kept_locked, report.aborted_uploads, report.buckets
+                    ),
+                    Ok(_) => {}
+                    Err(error) => eprintln!("lifecycle pass failed: {error}"),
+                }
+            }
+        });
+    }
     let gateway = Arc::new(door);
     if let Some(settings) = reclaim {
         let stop = Arc::clone(&drain_flag);

@@ -303,8 +303,9 @@ fn a_full_catalog_refuses_a_new_object_with_507_and_still_serves_what_exists() {
     assert_eq!(refusal.0, 507, "{}", refusal.1);
     assert!(refusal.1.contains("catalog full"), "{}", refusal.1);
     assert!(!refusal.1.contains("corruption") && !refusal.1.contains("unconfirmed"), "{}", refusal.1);
-    assert_eq!(created.len() + baseline, 8, "{} created over {} that were there", created.len(), baseline);
-    assert_eq!(listed(), 8, "the refused create left nothing behind");
+    // the bucket's own record is a catalog entry too, so it holds one of the 8 slots
+    assert_eq!(created.len() + baseline + 1, 8, "{} created over {} that were there, and the bucket record", created.len(), baseline);
+    assert_eq!(listed(), created.len() + baseline, "the refused create left nothing behind");
 
     // What does not add a name is still served.
     assert_eq!(decided("PUT", "/gateway/o0", &[], b"overwritten").0, 200, "overwrite");
@@ -480,5 +481,65 @@ fn killing_the_gateway_mid_append_then_resolving_through_another_stores_every_ap
         let (_, _, stored) = http(&survivor, "GET", "/gateway/log", &[], b"");
         assert!(stored == expected, "round {round}: {} bytes stored, {} expected ({resolution})", stored.len(), expected.len());
     }
+}
+
+/// THE FEATURES THROUGH THE REAL DOOR: the `object_server` process in front of a Raft metadata group and three chunk
+/// servers answers bucket configuration, object attributes, an object lock, versions and the change feed, and the
+/// bytes come back from the pages. The gateway's own bucket exists from startup, as the binary creates it.
+#[test]
+fn the_door_process_serves_buckets_attributes_locks_versions_and_the_change_feed() {
+    let cluster = Cluster::new();
+    let addr = cluster.addr().to_string();
+    let call = |method: &str, path: &str, headers: &[(&str, &str)], body: &[u8]| http(&addr, method, path, headers, body);
+    // the bucket the door was started for exists; another is created, configured and listed
+    assert_eq!(call("HEAD", "/gateway", &[], b"").0, 200);
+    assert_eq!(call("HEAD", "/nowhere", &[], b"").0, 404);
+    for bucket in ["vault", "hist", "feed"] {
+        assert_eq!(call("PUT", &format!("/{bucket}"), &[], b"").0, 200, "{bucket}");
+    }
+    let lock = b"<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled></ObjectLockConfiguration>";
+    assert_eq!(call("PUT", "/vault?object-lock", &[], lock).0, 200);
+    let versioning = b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>";
+    assert_eq!(call("PUT", "/hist?versioning", &[], versioning).0, 200);
+    let feed = b"<ChangeFeedConfiguration><Status>Enabled</Status></ChangeFeedConfiguration>";
+    assert_eq!(call("PUT", "/feed?changefeed", &[], feed).0, 200);
+    let listed = String::from_utf8_lossy(&call("GET", "/", &[], b"").2).to_string();
+    for name in ["gateway", "vault", "hist", "feed"] {
+        assert!(listed.contains(&format!("<Name>{name}</Name>")), "{name} is listed: {listed}");
+    }
+
+    // attributes travel with the object and the bytes are the ones written
+    let payload: Vec<u8> = (0..70_000u32).map(|i| (i % 253) as u8).collect();
+    let put = call("PUT", "/vault/doc", &[("content-type", "application/pdf"), ("x-amz-meta-owner", "ana"), ("x-amz-tagging", "kind=report")], &payload);
+    assert_eq!(put.0, 200, "{}", String::from_utf8_lossy(&put.2));
+    let head = call("HEAD", "/vault/doc", &[], b"");
+    assert_eq!(header(&head.1, "content-type"), Some("application/pdf"));
+    assert_eq!(header(&head.1, "x-amz-meta-owner"), Some("ana"));
+    assert_eq!(call("GET", "/vault/doc", &[], b"").2, payload);
+
+    // a retention locks it until it ends; a governance retention is bypassed on purpose
+    let until = "2099-01-01T00:00:00Z";
+    assert_eq!(call("PUT", "/vault/held", &[("x-amz-object-lock-mode", "GOVERNANCE"), ("x-amz-object-lock-retain-until-date", until)], &payload).0, 200);
+    assert_eq!(call("PUT", "/vault/held", &[], b"overwrite").0, 403);
+    assert_eq!(call("DELETE", "/vault/held", &[], b"").0, 403);
+    assert_eq!(call("GET", "/vault/held", &[], b"").2, payload, "a refused overwrite and delete changed nothing");
+    assert_eq!(call("DELETE", "/vault/held", &[("x-amz-bypass-governance-retention", "true")], b"").0, 204);
+
+    // versions: the replaced manifest is kept and read back from the same pages
+    let first = vec![9u8; 40_000];
+    let v1 = header(&call("PUT", "/hist/page", &[], &first).1, "x-amz-version-id").map(str::to_string).unwrap();
+    assert_eq!(call("PUT", "/hist/page", &[], b"second").0, 200);
+    let old = call("GET", &format!("/hist/page?versionId={v1}"), &[], b"");
+    assert_eq!((old.0, old.2.as_slice()), (200, first.as_slice()));
+    assert_eq!(call("DELETE", "/hist/page", &[], b"").0, 204);
+    assert_eq!(call("GET", "/hist/page", &[], b"").0, 404);
+    let versions = String::from_utf8_lossy(&call("GET", "/hist?versions", &[], b"").2).to_string();
+    assert_eq!(versions.matches("<VersionId>").count(), 3, "{versions}");
+
+    // the change feed names what happened
+    assert_eq!(call("PUT", "/feed/a", &[], b"one").0, 200);
+    assert_eq!(call("DELETE", "/feed/a", &[], b"").0, 204);
+    let changes = String::from_utf8_lossy(&call("GET", "/feed?changes", &[], b"").2).to_string();
+    assert!(changes.contains("<Operation>put</Operation>") && changes.contains("<Operation>delete</Operation>"), "{changes}");
 }
 

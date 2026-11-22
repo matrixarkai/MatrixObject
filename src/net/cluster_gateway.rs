@@ -14,8 +14,8 @@
 //! against real metadata and chunk processes is `scripts/cluster_gateway_bringup.sh`.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use super::http::{self, Request, ResolvedRange, Response};
 use super::s3;
@@ -29,11 +29,28 @@ use crate::cluster::{
     ReplicaClientOptions,
 };
 use crate::cluster::{consensus_unavailable, outcome_may_be_committed};
+use crate::chunk_manifest::ChunkAttributes;
 use crate::object_manifest::{ManifestListPage, ObjectManifest};
 use crate::ObjectError;
 
 #[path = "cluster_gateway_s3.rs"]
 mod s3_verbs;
+#[path = "cluster_gateway_buckets.rs"]
+mod buckets;
+#[path = "cluster_gateway_attributes.rs"]
+mod attributes;
+#[path = "cluster_gateway_cors.rs"]
+mod cors;
+#[path = "cluster_gateway_quota.rs"]
+mod quota;
+#[path = "cluster_gateway_lifecycle.rs"]
+mod lifecycle;
+#[path = "cluster_gateway_versions.rs"]
+mod versions;
+#[path = "cluster_gateway_feed.rs"]
+mod feed;
+pub use feed::Change;
+pub use lifecycle::LifecycleReport;
 
 /// The most extents the replica plane lets one object hold.
 pub const MAX_OBJECT_EXTENTS: usize = 4096;
@@ -160,6 +177,45 @@ pub trait ObjectPlane: Send {
         self.append(expected, data)
     }
     fn read(&mut self, bucket: &str, key: &str) -> Result<(ObjectManifest, Vec<u8>), ObjectError>;
+    /// The manifest and what the object carries besides its bytes. A plane that keeps no attributes answers none.
+    fn read_manifest_with_attributes(
+        &mut self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<(ObjectManifest, ChunkAttributes), ObjectError> {
+        Ok((self.read_manifest(bucket, key)?, ChunkAttributes::default()))
+    }
+    /// [`ObjectPlane::write`] with the attributes the new generation carries; a plane that keeps none drops them.
+    fn write_with(
+        &mut self,
+        bucket: &str,
+        key: &str,
+        expected: Option<ObjectManifest>,
+        data: &[u8],
+        _attributes: &ChunkAttributes,
+    ) -> Result<ObjectManifest, PlaneFailure> {
+        self.write(bucket, key, expected, data)
+    }
+    /// Make `to_key` of the same bucket name what `from_key` names, on top of `expected` (the key as the caller read
+    /// it; `None` when it must not exist yet), without moving data. A key that exists when none was expected, or
+    /// that moved, is a precondition failure.
+    fn alias(
+        &mut self,
+        _bucket: &str,
+        _from_key: &str,
+        _to_key: &str,
+        _expected: Option<&ObjectManifest>,
+    ) -> Result<ObjectManifest, PlaneFailure> {
+        Err(PlaneFailure::from(ObjectError::InvalidArgument("this plane keeps no versions".into())))
+    }
+    /// Publish the live manifest `expected` again with other attributes and no change to its bytes.
+    fn update_attributes(
+        &mut self,
+        _expected: &ObjectManifest,
+        _attributes: &ChunkAttributes,
+    ) -> Result<ObjectManifest, PlaneFailure> {
+        Err(PlaneFailure::from(ObjectError::InvalidArgument("this plane keeps no object attributes".into())))
+    }
     fn read_range(
         &mut self,
         bucket: &str,
@@ -168,6 +224,23 @@ pub trait ObjectPlane: Send {
         length: u64,
     ) -> Result<(ObjectManifest, Vec<u8>), ObjectError>;
     fn delete(&mut self, bucket: &str, key: &str) -> Result<ObjectManifest, ObjectError>;
+    /// Delete the object exactly as `expected` describes it; the generation moving since is a precondition failure.
+    fn delete_at(&mut self, expected: &ObjectManifest) -> Result<ObjectManifest, ObjectError> {
+        self.delete(&expected.bucket, &expected.key)
+    }
+    /// [`ObjectPlane::copy`] giving the destination `attributes`.
+    fn copy_with(
+        &mut self,
+        source_bucket: &str,
+        source_key: &str,
+        bucket: &str,
+        key: &str,
+        expected: Option<ObjectManifest>,
+        attributes: &ChunkAttributes,
+    ) -> Result<ObjectManifest, PlaneFailure> {
+        let (_, data) = self.read(source_bucket, source_key)?;
+        self.write_with(bucket, key, expected, &data, attributes)
+    }
     /// Make `bucket`/`key` hold what `source_bucket`/`source_key` holds, on top of `expected` (the
     /// destination as the caller read it). The default reads and writes the bytes; the SDK plane
     /// overrides it with the metadata plane's atomic copy, which moves no data.
@@ -215,6 +288,9 @@ pub struct GatewayOptions {
     pub cache_bytes: usize,
     /// Idle metadata connections kept for reuse.
     pub pool_max: usize,
+    /// Refuse a request to a bucket that has no record (`NoSuchBucket`). Off, buckets are implicit and exist as
+    /// soon as an object is written under them, which is what a process that never creates buckets wants.
+    pub require_buckets: bool,
 }
 
 impl Default for GatewayOptions {
@@ -227,6 +303,7 @@ impl Default for GatewayOptions {
             cache_entries: 4096,
             cache_bytes: 64 * 1024 * 1024,
             pool_max: 8,
+            require_buckets: false,
         }
     }
 }
@@ -334,6 +411,12 @@ pub struct ClusterGateway {
     manifests: Mutex<ManifestCache>,
     /// The attempts of appends this gateway served that carried an attempt id (`?append-resolve` looks them up).
     attempts: Mutex<AttemptTable>,
+    /// Buckets this gateway found to exist, or not to, and when: so an object request costs no extra read.
+    buckets_known: Mutex<std::collections::HashMap<String, (Instant, bool)>>,
+    /// The configuration of the buckets requests recently named, so an object request reads no record to apply a rule.
+    bucket_configs: Mutex<std::collections::HashMap<String, (Instant, Option<Arc<crate::bucket_config::BucketConfig>>)>>,
+    /// The live bytes of the buckets that have a quota, as last listed.
+    bucket_usage: Mutex<std::collections::HashMap<String, (Instant, u64)>>,
     options: GatewayOptions,
     bucket_hint: String,
 }
@@ -356,6 +439,9 @@ impl ClusterGateway {
             pool: Mutex::new(Vec::new()),
             manifests: Mutex::new(ManifestCache::default()),
             attempts: Mutex::new(AttemptTable::default()),
+            buckets_known: Mutex::new(std::collections::HashMap::new()),
+            bucket_configs: Mutex::new(std::collections::HashMap::new()),
+            bucket_usage: Mutex::new(std::collections::HashMap::new()),
             options,
             bucket_hint: bucket_hint.into(),
         }
@@ -417,7 +503,8 @@ impl ClusterGateway {
         match request.path.as_str() {
             "/healthz" | "/health" => return self.health(request),
             "/" => {
-                return self.list_buckets(request);
+                // implicit buckets cannot be enumerated: the gateway names the one it was started for
+                return if self.options.require_buckets { self.list_buckets_from_records(request) } else { self.list_buckets(request) };
             }
             _ => {}
         }
@@ -434,8 +521,18 @@ impl ClusterGateway {
             );
         }
         if key.is_empty() {
+            // creating a bucket and configuring one are what the bucket requires nothing of
+            let creates = request.method == "PUT" && request.query.is_empty();
+            if !creates {
+                if let Some(refusal) = self.bucket_gate(bucket) {
+                    return refusal;
+                }
+            }
             self.bucket_request(request, bucket)
         } else {
+            if let Some(refusal) = self.bucket_gate(bucket) {
+                return refusal;
+            }
             self.object_request(request, bucket, key)
         }
     }
@@ -610,17 +707,32 @@ impl ClusterGateway {
         if method == "POST" && request.query_param("delete").is_some() {
             return self.delete_objects(request, bucket);
         }
-        if method == "GET" {
-            for probe in ["versioning", "acl"] {
-                if request.query_param(probe).is_some() {
-                    return self.probe_answer(probe);
+        if request.query_param("changes").is_some() && matches!(method, "GET" | "DELETE") {
+            return self.change_feed_request(request, bucket);
+        }
+        for sub in ["versioning", "tagging", "cors", "policy", "lifecycle", "object-lock", "quota", "changefeed"] {
+            if request.query_param(sub).is_some() {
+                if self.options.require_buckets {
+                    if let Some(reply) = self.bucket_configuration(request, bucket, sub) {
+                        return reply;
+                    }
+                } else if sub == "versioning" && method == "GET" {
+                    // buckets are implicit here, so they hold no configuration: not versioned, and nothing to change
+                    return self.probe_answer("versioning");
+                } else {
+                    return not_implemented(&format!("the bucket sub-resource ?{sub} (this gateway keeps no bucket records)"), &resource);
                 }
             }
         }
+        if method == "GET" && request.query_param("acl").is_some() {
+            return self.probe_answer("acl");
+        }
+        if method == "GET" && request.query_param("versions").is_some() {
+            return self.list_versions(request, bucket);
+        }
         // Every sub-resource this door does not serve is named in the refusal.
         for sub in [
-            "uploads", "versioning", "versions", "cors", "delete", "tagging", "policy", "acl",
-            "lifecycle", "notification",
+            "uploads", "delete", "acl", "notification",
         ] {
             if request.query_param(sub).is_some() {
                 return not_implemented(&format!("the bucket sub-resource ?{sub}"), &resource);
@@ -632,12 +744,8 @@ impl ClusterGateway {
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><LocationConstraint xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"></LocationConstraint>".to_string(),
             ),
             "GET" => self.list_bucket(request, bucket),
-            // Buckets are implicit in the replica plane: a bucket exists as soon as an object
-            // is published under it, so creating or probing one has nothing to check or store.
-            "PUT" | "HEAD" => match crate::validate_bucket(bucket) {
-                Ok(()) => Response::status(200).with_header("location", resource),
-                Err(error) => error_response(error, &resource, true),
-            },
+            "PUT" => self.create_bucket(request, bucket),
+            "HEAD" => self.head_bucket(bucket),
             "DELETE" => self.delete_bucket(bucket),
             _ => method_not_allowed("GET, PUT, HEAD, DELETE, POST", &resource),
         }
@@ -658,7 +766,7 @@ impl ClusterGateway {
         }
         // The multipart family, selected by `uploads`, `uploadId` and `partNumber`.
         match (method, starts_upload, upload_id.as_deref(), part_number.as_deref()) {
-            ("POST", true, None, None) => return self.create_multipart_upload(bucket, key),
+            ("POST", true, None, None) => return self.create_multipart_upload(request, bucket, key),
             ("PUT", false, Some(id), Some(number)) => {
                 if request.header("x-amz-copy-source").is_some() {
                     return not_implemented("UploadPartCopy", &resource);
@@ -678,7 +786,7 @@ impl ClusterGateway {
         // Reads of an object's ACL and tags are answered (objects are private and untagged);
         // changing them is not served.
         if method == "GET" {
-            for probe in ["acl", "tagging"] {
+            for probe in ["acl"] {
                 if request.query_param(probe).is_some() {
                     return match self.with_plane(|plane| plane.read_manifest(bucket, key)) {
                         Ok(manifest) if !manifest.deleted => self.probe_answer(probe),
@@ -688,8 +796,18 @@ impl ClusterGateway {
                 }
             }
         }
+        for sub in ["tagging", "retention", "legal-hold"] {
+            if request.query_param(sub).is_some() {
+                return self
+                    .object_attribute_request(request, bucket, key, sub)
+                    .unwrap_or_else(|| method_not_allowed("GET, PUT, DELETE", &resource));
+            }
+        }
+        if let Some(version) = request.query_param("versionId") {
+            return self.version_request(request, bucket, key, &version);
+        }
         for sub in [
-            "versionId", "tagging", "acl", "retention", "legal-hold", "restore", "select",
+            "acl", "restore", "select",
         ] {
             if request.query_param(sub).is_some() {
                 return not_implemented(&format!("the object sub-resource ?{sub}"), &resource);
@@ -704,7 +822,7 @@ impl ClusterGateway {
             }
             "GET" => self.get_object(request, bucket, key, false),
             "HEAD" => self.get_object(request, bucket, key, true),
-            "DELETE" => self.delete_object(bucket, key),
+            "DELETE" => self.delete_object(request, bucket, key),
             "POST" if request.query_param("append-resolve").is_some() => {
                 self.append_resolve_request(request, bucket, key)
             }
@@ -748,19 +866,30 @@ impl ClusterGateway {
                 }
             },
         };
+        let attributes = match self.request_attributes(request, bucket, &resource) {
+            Ok(attributes) => attributes,
+            Err(refusal) => return refusal,
+        };
+        let lock = match self.lock_check(request, bucket, &resource).and_then(|lock| self.with_quota(lock, bucket, &resource)) {
+            Ok(lock) => lock,
+            Err(refusal) => return refusal,
+        };
         match offset {
-            Some(offset) => self.append_object(bucket, key, offset, &request.body, attempt),
+            Some(offset) => self.append_object(bucket, key, offset, &request.body, attempt, &attributes, lock),
             None => self.replace_object(
                 bucket,
                 key,
                 &request.body,
                 only_if_absent,
                 required_etag.as_deref(),
+                &attributes,
+                lock,
             ),
         }
     }
 
     /// `PutObject` that replaces: publish a new generation on top of whatever is there.
+    #[allow(clippy::too_many_arguments)]
     fn replace_object(
         &self,
         bucket: &str,
@@ -768,8 +897,10 @@ impl ClusterGateway {
         body: &[u8],
         only_if_absent: bool,
         required_etag: Option<&str>,
+        attributes: &ChunkAttributes,
+        lock: attributes::LockCheck,
     ) -> Response {
-        match self.replace_manifest(bucket, key, body, only_if_absent, required_etag) {
+        match self.replace_manifest_with(bucket, key, body, only_if_absent, required_etag, attributes, lock) {
             Ok(manifest) => object_written(&manifest),
             Err(response) => response,
         }
@@ -785,13 +916,31 @@ impl ClusterGateway {
         only_if_absent: bool,
         required_etag: Option<&str>,
     ) -> Result<ObjectManifest, Response> {
+        self.replace_manifest_with(bucket, key, body, only_if_absent, required_etag, &ChunkAttributes::default(), attributes::LockCheck::OFF)
+    }
+
+    /// [`Self::replace_manifest`] publishing `attributes` with the new generation, and refusing to replace an object a
+    /// retention or a legal hold locks when `lock` is on.
+    #[allow(clippy::too_many_arguments)]
+    fn replace_manifest_with(
+        &self,
+        bucket: &str,
+        key: &str,
+        body: &[u8],
+        only_if_absent: bool,
+        required_etag: Option<&str>,
+        attributes: &ChunkAttributes,
+        lock: attributes::LockCheck,
+    ) -> Result<ObjectManifest, Response> {
         let resource = format!("/{bucket}/{key}");
         const ATTEMPTS: usize = 4;
+        let freed = std::cell::Cell::new(0u64);
+        let versioned = self.versioning_on(bucket).map_err(|error| error_response(error, &resource, true))?;
         for _ in 0..ATTEMPTS {
             let outcome = self.with_plane(|plane| {
-                let current = match plane.read_manifest(bucket, key) {
-                    Ok(manifest) => Some(manifest),
-                    Err(ObjectError::NotFound(_)) => None,
+                let (current, current_attributes) = match plane.read_manifest_with_attributes(bucket, key) {
+                    Ok((manifest, carried)) => (Some(manifest), carried),
+                    Err(ObjectError::NotFound(_)) => (None, ChunkAttributes::default()),
                     Err(error) => return Err(error),
                 };
                 if only_if_absent && current.as_ref().is_some_and(|m| !m.deleted) {
@@ -807,12 +956,31 @@ impl ClusterGateway {
                         ))));
                     }
                 }
-                Ok(plane.write(bucket, key, current, body))
+                let replaced = current.as_ref().filter(|manifest| !manifest.deleted).map_or(0, |manifest| manifest.length);
+                if current.as_ref().is_some_and(|manifest| !manifest.deleted) {
+                    if let Some(refusal) = lock.refuse(&current_attributes) {
+                        return Ok(Err(refusal));
+                    }
+                }
+                if let Some(refusal) = lock.refuse_quota(body.len() as u64, replaced) {
+                    return Ok(Err(refusal));
+                }
+                freed.set(replaced);
+                if versioned {
+                    if let Some(kept) = current.as_ref() {
+                        if let Err(failure) = ClusterGateway::retain(plane, kept) {
+                            return Ok(Err(failure));
+                        }
+                    }
+                }
+                Ok(plane.write_with(bucket, key, current, body, attributes))
             });
             match outcome {
                 Err(error) => return Err(error_response(error, &resource, false)),
                 Ok(Ok(manifest)) => {
                     self.remember(&manifest);
+                    self.note_usage(bucket, body.len() as i64 - freed.get() as i64);
+                    self.note_change(bucket, "put", key, manifest.generation, manifest.length);
                     return Ok(manifest);
                 }
                 Ok(Err(failure)) => {
@@ -849,7 +1017,17 @@ impl ClusterGateway {
     }
 
     /// `PutObject` with a write offset: an append that lands at the end or not at all.
-    fn append_object(&self, bucket: &str, key: &str, offset: u64, body: &[u8], attempt: Option<[u8; 16]>) -> Response {
+    #[allow(clippy::too_many_arguments)]
+    fn append_object(
+        &self,
+        bucket: &str,
+        key: &str,
+        offset: u64,
+        body: &[u8],
+        attempt: Option<[u8; 16]>,
+        attributes: &ChunkAttributes,
+        lock: attributes::LockCheck,
+    ) -> Response {
         let resource = format!("/{bucket}/{key}");
         const ATTEMPTS: usize = 4;
         let mut last_staged_mismatch: Option<ObjectError> = None;
@@ -864,6 +1042,20 @@ impl ClusterGateway {
             };
             let used_cache = cached.is_some();
             let outcome = self.with_plane(|plane| {
+                if let Some(refusal) = lock.refuse_quota(body.len() as u64, 0) {
+                    return Ok(Err((refusal, true)));
+                }
+                if lock.enabled {
+                    match plane.read_manifest_with_attributes(bucket, key) {
+                        Ok((manifest, carried)) if !manifest.deleted => {
+                            if let Some(refusal) = lock.refuse(&carried) {
+                                return Ok(Err((refusal, true)));
+                            }
+                        }
+                        Ok(_) | Err(ObjectError::NotFound(_)) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
                 let current = match cached {
                     Some(manifest) => Some(manifest),
                     None => match plane.read_manifest(bucket, key) {
@@ -897,7 +1089,7 @@ impl ClusterGateway {
                         }
                         plane.append_best(manifest, body)
                     }
-                    other => plane.write(bucket, key, other, body),
+                    other => plane.write_with(bucket, key, other, body, attributes),
                 };
                 Ok(result.map_err(|failure| (failure, false)))
             });
@@ -906,6 +1098,8 @@ impl ClusterGateway {
                 Ok(Ok(manifest)) => {
                     self.note_attempt(attempt, bucket, key, offset, body.len() as u64, &manifest.extents);
                     self.remember(&manifest);
+                    self.note_usage(bucket, body.len() as i64);
+                    self.note_change(bucket, "append", key, manifest.generation, manifest.length);
                     return with_attempt(object_written(&manifest), attempt);
                 }
                 Ok(Err((failure, decided))) => {
@@ -1000,13 +1194,14 @@ impl ClusterGateway {
     fn get_object(&self, request: &Request, bucket: &str, key: &str, head: bool) -> Response {
         let resource = format!("/{bucket}/{key}");
         if head {
-            return match self.with_plane(|plane| plane.read_manifest(bucket, key)) {
-                Ok(manifest) if !manifest.deleted => {
+            return match self.with_plane(|plane| plane.read_manifest_with_attributes(bucket, key)) {
+                Ok((manifest, carried)) if !manifest.deleted => {
                     if let Some(refused) = s3_verbs::read_condition(request, &manifest, &resource) {
                         return refused;
                     }
                     let mut response = Response::status(200);
                     object_headers(&mut response, &manifest);
+                    attributes::apply_attribute_headers(&mut response, &carried);
                     response
                 }
                 Ok(_) => no_such_key(&resource),
@@ -1038,8 +1233,8 @@ impl ClusterGateway {
                 Err(error) => return error_response(error, &resource, false),
             }
         }
-        let manifest = match self.with_plane(|plane| plane.read_manifest(bucket, key)) {
-            Ok(manifest) if !manifest.deleted => manifest,
+        let (manifest, carried) = match self.with_plane(|plane| plane.read_manifest_with_attributes(bucket, key)) {
+            Ok((manifest, carried)) if !manifest.deleted => (manifest, carried),
             Ok(_) => return no_such_key(&resource),
             Err(error) => return error_response(error, &resource, false),
         };
@@ -1055,6 +1250,7 @@ impl ClusterGateway {
                         body: data,
                     };
                     object_headers(&mut response, &manifest);
+                    attributes::apply_attribute_headers(&mut response, &carried);
                     response
                 }
                 Err(error) => error_response(error, &resource, false),
@@ -1068,6 +1264,7 @@ impl ClusterGateway {
                             body: data,
                         };
                         object_headers(&mut response, &manifest);
+                        attributes::apply_attribute_headers(&mut response, &carried);
                         response.headers.push((
                             "content-range".into(),
                             format!("bytes {offset}-{}/{}", offset + length - 1, manifest.length),
@@ -1089,18 +1286,58 @@ impl ClusterGateway {
         }
     }
 
-    fn delete_object(&self, bucket: &str, key: &str) -> Response {
+    fn delete_object(&self, request: &Request, bucket: &str, key: &str) -> Response {
         let resource = format!("/{bucket}/{key}");
+        let lock = match self.lock_check(request, bucket, &resource) {
+            Ok(lock) => lock,
+            Err(refusal) => return refusal,
+        };
         self.forget(bucket, key);
-        match self.with_plane(|plane| plane.delete(bucket, key)) {
+        let versioned = match self.versioning_on(bucket) {
+            Ok(on) => on,
+            Err(error) => return error_response(error, &resource, true),
+        };
+        if versioned {
+            return match self.versioned_delete(bucket, key, lock) {
+                Ok(Some(marker)) => {
+                    self.remember(&marker);
+                    self.note_change(bucket, "delete", key, marker.generation, 0);
+                    Response::status(204)
+                        .with_header("x-amz-delete-marker", "true")
+                        .with_header("x-amz-version-id", marker.generation.to_string())
+                }
+                Ok(None) => Response::status(204),
+                Err(error) => error_response(error, &resource, false),
+            };
+        }
+        match self.delete_checked(bucket, key, lock) {
             Ok(manifest) => {
                 self.remember(&manifest);
+                self.note_change(bucket, "delete", key, manifest.generation, 0);
                 Response::status(204)
             }
             // Deleting what is not there is a success, as S3 has it.
             Err(ObjectError::NotFound(_)) => Response::status(204),
             Err(error) => error_response(error, &resource, false),
         }
+    }
+
+    /// Delete `bucket`/`key` unless `lock` finds it locked. With lock on, the tombstone is published on top of exactly the
+    /// manifest whose attributes were checked.
+    fn delete_checked(&self, bucket: &str, key: &str, lock: attributes::LockCheck) -> Result<ObjectManifest, ObjectError> {
+        self.with_plane(|plane| {
+            if !lock.enabled {
+                return plane.delete(bucket, key);
+            }
+            let (manifest, carried) = plane.read_manifest_with_attributes(bucket, key)?;
+            if manifest.deleted {
+                return Err(ObjectError::NotFound(format!("{bucket}/{key} is already deleted")));
+            }
+            if let Some(refusal) = lock.refuse(&carried) {
+                return Err(refusal.error);
+            }
+            plane.delete_at(&manifest)
+        })
     }
 
     /// `ListObjectsV2`: keys in order, tombstones skipped, paged by the last key returned.
@@ -1207,7 +1444,12 @@ impl ClusterGateway {
 
 impl RequestHandler for ClusterGateway {
     fn handle(&self, request: &Request) -> Response {
-        let response = self.route(request);
+        // a browser's preflight is answered from the bucket's CORS rules; everything else is routed and then dressed
+        if let Some(preflight) = self.cors_preflight(request) {
+            return preflight;
+        }
+        let mut response = self.route(request);
+        self.cors_headers(request, &mut response);
         // The whole reason goes to stderr: a client log may cut the body, and a failed request
         // is rare enough that one line each costs nothing.
         if let Some(line) = failure_log_line(request, &response) {
@@ -1232,7 +1474,7 @@ fn closed_range(header: &str) -> Option<(u64, u64)> {
 /// Whether a refusal says another writer published first, as opposed to a refusal of the
 /// request itself.
 fn lost_race(error: &ObjectError) -> bool {
-    (matches!(error, ObjectError::PreconditionFailed(_))
+    (matches!(error, ObjectError::PreconditionFailed(message) if !message.starts_with(attributes::LOCKED) && !message.starts_with(quota::OVER_QUOTA))
         && !plane_unreachable(error)
         && !placement_unavailable(error)
         && !leader_unavailable(error))
@@ -1374,6 +1616,8 @@ fn error_response(error: ObjectError, resource: &str, missing_is_bucket: bool) -
         ObjectError::InvalidArgument(message) if message.starts_with("append refused") => {
             s3::S3ErrorCode::InvalidRequest
         }
+        ObjectError::PreconditionFailed(message) if message.starts_with(attributes::LOCKED) => s3::S3ErrorCode::AccessDenied,
+        ObjectError::PreconditionFailed(message) if message.starts_with(quota::OVER_QUOTA) => s3::S3ErrorCode::QuotaExceeded,
         // The catalog has no room: permanent until something is removed, so not a 503.
         _ if crate::object_manifest::catalog_full_refusal(&error) => s3::S3ErrorCode::InsufficientStorage,
         _ if plane_unreachable(&error)
@@ -1569,6 +1813,8 @@ mod tests {
         racing_fence: bool,
         /// Pages are allocated per attempt: the next chunk id the plane hands out.
         chunks: u64,
+        /// What each object carries besides its bytes.
+        attributes: BTreeMap<(String, String), ChunkAttributes>,
     }
 
     /// The extent an attempt publishes: its own chunk, which no other attempt shares.
@@ -1601,6 +1847,68 @@ mod tests {
     }
 
     impl ObjectPlane for MemoryPlane {
+        fn read_manifest_with_attributes(&mut self, bucket: &str, key: &str) -> Result<(ObjectManifest, ChunkAttributes), ObjectError> {
+            let manifest = self.read_manifest(bucket, key)?;
+            let carried = self.0.lock().unwrap().attributes.get(&(bucket.to_string(), key.to_string())).cloned().unwrap_or_default();
+            Ok((manifest, carried))
+        }
+        fn write_with(
+            &mut self,
+            bucket: &str,
+            key: &str,
+            expected: Option<ObjectManifest>,
+            data: &[u8],
+            attributes: &ChunkAttributes,
+        ) -> Result<ObjectManifest, PlaneFailure> {
+            let written = self.write(bucket, key, expected, data)?;
+            let mut carried = attributes.clone();
+            if carried.modified_ms == 0 {
+                carried.modified_ms = now_ms();
+            }
+            self.0.lock().unwrap().attributes.insert((bucket.to_string(), key.to_string()), carried);
+            Ok(written)
+        }
+        fn alias(&mut self, bucket: &str, from_key: &str, to_key: &str, expected: Option<&ObjectManifest>) -> Result<ObjectManifest, PlaneFailure> {
+            let mut shared = self.0.lock().unwrap();
+            let from = (bucket.to_string(), from_key.to_string());
+            let to = (bucket.to_string(), to_key.to_string());
+            let Some((source, bytes)) = shared.objects.get(&from).cloned() else {
+                return Err(ObjectError::NotFound("alias source".into()).into());
+            };
+            let existing = shared.objects.get(&to).map(|(m, _)| m.clone());
+            if existing.as_ref() != expected {
+                return Err(ObjectError::PreconditionFailed("object manifest changed before the version was kept".into()).into());
+            }
+            let mut named = source;
+            named.key = to_key.to_string();
+            named.generation = existing.map_or(1, |m| m.generation + 1);
+            let carried = shared.attributes.get(&from).cloned();
+            shared.objects.insert(to.clone(), (named.clone(), bytes));
+            match carried {
+                Some(carried) => {
+                    shared.attributes.insert(to, carried);
+                }
+                None => {
+                    shared.attributes.remove(&to);
+                }
+            }
+            Ok(named)
+        }
+        fn update_attributes(&mut self, expected: &ObjectManifest, attributes: &ChunkAttributes) -> Result<ObjectManifest, PlaneFailure> {
+            let mut shared = self.0.lock().unwrap();
+            let slot = (expected.bucket.clone(), expected.key.clone());
+            let Some((current, bytes)) = shared.objects.get(&slot).cloned() else {
+                return Err(ObjectError::NotFound("manifest".into()).into());
+            };
+            if &current != expected {
+                return Err(ObjectError::PreconditionFailed("object manifest changed before the attributes were set".into()).into());
+            }
+            let mut next = current;
+            next.generation += 1;
+            shared.objects.insert(slot.clone(), (next.clone(), bytes));
+            shared.attributes.insert(slot, attributes.clone());
+            Ok(next)
+        }
         fn read_manifest(&mut self, bucket: &str, key: &str) -> Result<ObjectManifest, ObjectError> {
             let mut shared = self.0.lock().unwrap();
             shared.calls.push("read_manifest");
@@ -1705,6 +2013,7 @@ mod tests {
             tomb.length = 0;
             tomb.extents.clear();
             tomb.deleted = true;
+            shared.attributes.remove(&slot);
             shared.objects.insert(slot, (tomb.clone(), Vec::new()));
             Ok(tomb)
         }
@@ -2375,10 +2684,7 @@ mod tests {
         let (gateway, _) = gateway();
         for (method, target, headers) in [
             ("PUT", "/b/k?partNumber=1&uploadId=u", vec![("x-amz-copy-source", "/b/other")]),
-            ("PUT", "/b/k?tagging", vec![]),
             ("PUT", "/b/k?acl", vec![]),
-            ("GET", "/b/k?versionId=3", vec![]),
-            ("GET", "/b?versions", vec![]),
             ("PUT", "/b?cors", vec![]),
             ("PUT", "/b?versioning", vec![]),
             ("PUT", "/b?acl", vec![]),
@@ -2930,6 +3236,543 @@ mod tests {
             assert_eq!(a.get("log").unwrap(), b"headsame", "one physical copy, claimed by exactly one writer");
         }
     }
+
+    fn gateway_requiring_buckets() -> (ClusterGateway, Arc<Mutex<Shared>>) {
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let handle = Arc::clone(&shared);
+        let gateway = ClusterGateway::new(
+            move || Ok(Box::new(MemoryPlane(Arc::clone(&handle))) as Box<dyn ObjectPlane>),
+            GatewayOptions { require_buckets: true, ..GatewayOptions::default() },
+            "b",
+        );
+        (gateway, shared)
+    }
+
+    #[test]
+    fn a_bucket_is_created_probed_listed_and_deleted_and_its_record_is_not_a_client_object() {
+        let (gateway, _) = gateway_requiring_buckets();
+        assert_eq!(gateway.handle(&request("PUT", "/photos", &[], b"")).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/photos", &[], b"")).status, 200, "creating a bucket that exists succeeds");
+        assert_eq!(gateway.handle(&request("PUT", "/docs", &[], b"")).status, 200);
+        assert_eq!(gateway.handle(&request("HEAD", "/photos", &[], b"")).status, 200);
+        let missing = gateway.handle(&request("HEAD", "/nope", &[], b""));
+        assert_eq!(missing.status, 404);
+        let listed = text(&gateway.handle(&request("GET", "/", &[], b"")));
+        assert_eq!(all_between(&listed, "Name"), ["docs", "photos"], "{listed}");
+        // an object in it keeps it
+        assert_eq!(gateway.handle(&request("PUT", "/photos/k", &[], b"x")).status, 200);
+        assert_eq!(gateway.handle(&request("DELETE", "/photos", &[], b"")).status, 409);
+        assert_eq!(gateway.handle(&request("DELETE", "/photos/k", &[], b"")).status, 204);
+        assert_eq!(gateway.handle(&request("DELETE", "/photos", &[], b"")).status, 204);
+        assert_eq!(gateway.handle(&request("HEAD", "/photos", &[], b"")).status, 404);
+        let listed = text(&gateway.handle(&request("GET", "/", &[], b"")));
+        assert_eq!(all_between(&listed, "Name"), ["docs"], "{listed}");
+        // the records live in the system bucket, which a client cannot address
+        let system = format!("/{}/bucket/docs", crate::bucket_config::SYSTEM_BUCKET);
+        assert_eq!(gateway.handle(&request("GET", &system, &[], b"")).status, 404);
+        assert_eq!(gateway.handle(&request("PUT", &system, &[], b"x")).status, 404);
+        assert_eq!(gateway.handle(&request("PUT", &format!("/{}", crate::bucket_config::SYSTEM_BUCKET), &[], b"")).status, 400);
+    }
+
+    #[test]
+    fn a_gateway_that_requires_buckets_refuses_requests_to_one_that_does_not_exist() {
+        let (gateway, _) = gateway_requiring_buckets();
+        let refused = gateway.handle(&request("PUT", "/b/k", &[], b"x"));
+        assert_eq!(refused.status, 404, "{}", text(&refused));
+        assert!(text(&refused).contains("NoSuchBucket"), "{}", text(&refused));
+        assert_eq!(gateway.handle(&request("GET", "/b?list-type=2", &[], b"")).status, 404);
+        assert_eq!(gateway.handle(&request("PUT", "/b", &[], b"")).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/b/k", &[], b"x")).status, 200);
+        assert_eq!(gateway.handle(&request("GET", "/b/k", &[], b"")).body, b"x");
+        // the gateway's own bucket can be made at startup, and making it twice is harmless
+        assert_eq!(gateway.ensure_bucket("start").unwrap(), true);
+        assert_eq!(gateway.ensure_bucket("start").unwrap(), false);
+        assert_eq!(gateway.handle(&request("PUT", "/start/k", &[], b"y")).status, 200);
+        // a gateway that does not require them keeps buckets implicit
+        let (implicit, _) = self::gateway();
+        assert_eq!(implicit.handle(&request("PUT", "/anything/k", &[], b"x")).status, 200);
+    }
+
+    #[test]
+    fn bucket_configuration_is_stored_read_back_and_removed() {
+        let (gateway, _) = gateway_requiring_buckets();
+        gateway.handle(&request("PUT", "/cfg", &[], b""));
+        let tagging = "<Tagging><TagSet><Tag><Key>team</Key><Value>storage</Value></Tag></TagSet></Tagging>";
+        assert_eq!(gateway.handle(&request("PUT", "/cfg?tagging", &[], tagging.as_bytes())).status, 200);
+        let read = text(&gateway.handle(&request("GET", "/cfg?tagging", &[], b"")));
+        assert!(read.contains("<Key>team</Key><Value>storage</Value>"), "{read}");
+        let cors = "<CORSConfiguration><CORSRule><AllowedOrigin>https://a.example.com</AllowedOrigin><AllowedMethod>GET</AllowedMethod><MaxAgeSeconds>60</MaxAgeSeconds></CORSRule></CORSConfiguration>";
+        assert_eq!(gateway.handle(&request("PUT", "/cfg?cors", &[], cors.as_bytes())).status, 200);
+        let read = text(&gateway.handle(&request("GET", "/cfg?cors", &[], b"")));
+        assert!(read.contains("<AllowedOrigin>https://a.example.com</AllowedOrigin>") && read.contains("<MaxAgeSeconds>60</MaxAgeSeconds>"), "{read}");
+        let policy = "{\"Version\":\"2012-10-17\"}";
+        assert_eq!(gateway.handle(&request("PUT", "/cfg?policy", &[], policy.as_bytes())).status, 200);
+        assert_eq!(gateway.handle(&request("GET", "/cfg?policy", &[], b"")).body, policy.as_bytes());
+        let lifecycle = "<LifecycleConfiguration><Rule><ID>old</ID><Filter><Prefix>logs/</Prefix></Filter><Status>Enabled</Status><Expiration><Days>30</Days></Expiration></Rule></LifecycleConfiguration>";
+        assert_eq!(gateway.handle(&request("PUT", "/cfg?lifecycle", &[], lifecycle.as_bytes())).status, 200);
+        let read = text(&gateway.handle(&request("GET", "/cfg?lifecycle", &[], b"")));
+        assert!(read.contains("<Days>30</Days>") && read.contains("<Prefix>logs/</Prefix>"), "{read}");
+        assert_eq!(gateway.handle(&request("PUT", "/cfg?quota", &[], b"<Quota><Bytes>1048576</Bytes></Quota>")).status, 200);
+        assert!(text(&gateway.handle(&request("GET", "/cfg?quota", &[], b""))).contains("<Bytes>1048576</Bytes>"));
+        // versioning: not configured, then enabled, then suspended
+        assert!(!text(&gateway.handle(&request("GET", "/cfg?versioning", &[], b""))).contains("<Status>"));
+        let on = "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>";
+        assert_eq!(gateway.handle(&request("PUT", "/cfg?versioning", &[], on.as_bytes())).status, 200);
+        assert!(text(&gateway.handle(&request("GET", "/cfg?versioning", &[], b""))).contains("<Status>Enabled</Status>"));
+        // object lock needs versioning on, and once on cannot be turned off by suspending versioning
+        let lock = "<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled><Rule><DefaultRetention><Mode>GOVERNANCE</Mode><Days>1</Days></DefaultRetention></Rule></ObjectLockConfiguration>";
+        assert_eq!(gateway.handle(&request("PUT", "/cfg?object-lock", &[], lock.as_bytes())).status, 200);
+        let read = text(&gateway.handle(&request("GET", "/cfg?object-lock", &[], b"")));
+        assert!(read.contains("<Mode>GOVERNANCE</Mode>") && read.contains("<Days>1</Days>"), "{read}");
+        let off = "<VersioningConfiguration><Status>Suspended</Status></VersioningConfiguration>";
+        assert_eq!(gateway.handle(&request("PUT", "/cfg?versioning", &[], off.as_bytes())).status, 400);
+        // removal
+        for sub in ["tagging", "cors", "policy", "lifecycle", "quota"] {
+            assert_eq!(gateway.handle(&request("DELETE", &format!("/cfg?{sub}"), &[], b"")).status, 204, "{sub}");
+        }
+        assert_eq!(gateway.handle(&request("GET", "/cfg?cors", &[], b"")).status, 404);
+        assert!(text(&gateway.handle(&request("GET", "/cfg?cors", &[], b""))).contains("NoSuchCORSConfiguration"));
+        assert!(text(&gateway.handle(&request("GET", "/cfg?policy", &[], b""))).contains("NoSuchBucketPolicy"));
+        assert!(text(&gateway.handle(&request("GET", "/cfg?lifecycle", &[], b""))).contains("NoSuchLifecycleConfiguration"));
+        // nothing but the removed settings changed
+        assert!(text(&gateway.handle(&request("GET", "/cfg?versioning", &[], b""))).contains("<Status>Enabled</Status>"));
+    }
+
+    #[test]
+    fn malformed_configuration_and_configuration_of_a_missing_bucket_are_refused() {
+        let (gateway, _) = gateway_requiring_buckets();
+        gateway.handle(&request("PUT", "/cfg", &[], b""));
+        for (sub, body) in [
+            ("tagging", "not xml"),
+            ("cors", "<CORSConfiguration/>"),
+            ("lifecycle", "<LifecycleConfiguration><Rule><Status>Maybe</Status></Rule></LifecycleConfiguration>"),
+            ("versioning", "<VersioningConfiguration><Status>Never</Status></VersioningConfiguration>"),
+            ("object-lock", "<ObjectLockConfiguration/>"),
+            ("quota", "<Quota/>"),
+        ] {
+            let reply = gateway.handle(&request("PUT", &format!("/cfg?{sub}"), &[], body.as_bytes()));
+            assert_eq!(reply.status, 400, "{sub}: {}", text(&reply));
+        }
+        // a bucket that was not created with object lock has no object-lock configuration to read
+        assert_eq!(gateway.handle(&request("GET", "/cfg?object-lock", &[], b"")).status, 404);
+        assert_eq!(gateway.handle(&request("PUT", "/missing?tagging", &[], b"<Tagging><TagSet/></Tagging>")).status, 404);
+        assert_eq!(gateway.handle(&request("GET", "/missing?cors", &[], b"")).status, 404);
+    }
+
+    #[test]
+    fn concurrent_changes_to_one_buckets_configuration_all_land() {
+        let (gateway, _) = gateway_requiring_buckets();
+        gateway.handle(&request("PUT", "/race", &[], b""));
+        let gateway = Arc::new(gateway);
+        let mut workers = Vec::new();
+        for worker in 0..4u32 {
+            let gateway = Arc::clone(&gateway);
+            workers.push(std::thread::spawn(move || {
+                for round in 0..10u32 {
+                    let key = format!("w{worker}r{round}");
+                    // each writer adds its own tag by reading the bucket's tags and putting them back with its own
+                    for _ in 0..50 {
+                        let current = text(&gateway.handle(&request("GET", "/race?tagging", &[], b"")));
+                        let mut tags: Vec<(String, String)> = all_between(&current, "Key").into_iter().zip(all_between(&current, "Value")).collect();
+                        tags.push((key.clone(), "1".into()));
+                        let mut body = String::from("<Tagging><TagSet>");
+                        for (k, v) in &tags {
+                            body.push_str(&format!("<Tag><Key>{k}</Key><Value>{v}</Value></Tag>"));
+                        }
+                        body.push_str("</TagSet></Tagging>");
+                        if gateway.handle(&request("PUT", "/race?tagging", &[], body.as_bytes())).status == 200 {
+                            break;
+                        }
+                    }
+                }
+            }));
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        // whatever interleaving happened, the record is one coherent document of valid tags
+        let end = text(&gateway.handle(&request("GET", "/race?tagging", &[], b"")));
+        assert!(!all_between(&end, "Key").is_empty(), "{end}");
+        assert_eq!(gateway.handle(&request("HEAD", "/race", &[], b"")).status, 200);
+    }
+
+    // ----- object attributes, locks, quotas, CORS and lifecycle -----
+
+    fn header_of(response: &Response, name: &str) -> Option<String> {
+        response.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone())
+    }
+
+    fn bucket_with(gateway: &ClusterGateway, name: &str, configuration: &[(&str, &str)]) {
+        assert_eq!(gateway.handle(&request("PUT", &format!("/{name}"), &[], b"")).status, 200);
+        for (sub, body) in configuration {
+            let reply = gateway.handle(&request("PUT", &format!("/{name}?{sub}"), &[], body.as_bytes()));
+            assert_eq!(reply.status, 200, "{sub}: {}", text(&reply));
+        }
+    }
+
+    const LOCKED_BUCKET: &str = "<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled></ObjectLockConfiguration>";
+
+    #[test]
+    fn an_object_carries_its_content_type_metadata_and_tags_until_it_is_overwritten() {
+        let (gateway, _) = gateway_requiring_buckets();
+        bucket_with(&gateway, "docs", &[]);
+        let put = gateway.handle(&request(
+            "PUT",
+            "/docs/report",
+            &[("content-type", "text/csv"), ("x-amz-meta-owner", "ana"), ("x-amz-tagging", "team=storage&tier=cold")],
+            b"a,b",
+        ));
+        assert_eq!(put.status, 200, "{}", text(&put));
+        let head = gateway.handle(&request("HEAD", "/docs/report", &[], &[]));
+        assert_eq!(header_of(&head, "content-type").as_deref(), Some("text/csv"));
+        assert_eq!(header_of(&head, "x-amz-meta-owner").as_deref(), Some("ana"));
+        assert_eq!(header_of(&head, "x-amz-tagging-count").as_deref(), Some("2"));
+        assert!(header_of(&head, "last-modified").is_some(), "a written object says when");
+        let tags = text(&gateway.handle(&request("GET", "/docs/report?tagging", &[], &[])));
+        assert_eq!(all_between(&tags, "Key"), ["team", "tier"], "{tags}");
+
+        // tags are replaced and removed without touching the bytes, and an append keeps what the object carries
+        let replaced = "<Tagging><TagSet><Tag><Key>team</Key><Value>data</Value></Tag></TagSet></Tagging>";
+        assert_eq!(gateway.handle(&request("PUT", "/docs/report?tagging", &[], replaced.as_bytes())).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/docs/report", &[("x-amz-write-offset-bytes", "3")], b",c")).status, 200);
+        let head = gateway.handle(&request("HEAD", "/docs/report", &[], &[]));
+        assert_eq!(header_of(&head, "content-type").as_deref(), Some("text/csv"));
+        assert_eq!(header_of(&head, "x-amz-tagging-count").as_deref(), Some("1"));
+        assert_eq!(gateway.handle(&request("GET", "/docs/report", &[], &[])).body, b"a,b,c");
+        assert_eq!(gateway.handle(&request("DELETE", "/docs/report?tagging", &[], &[])).status, 204);
+        assert!(header_of(&gateway.handle(&request("HEAD", "/docs/report", &[], &[])), "x-amz-tagging-count").is_none());
+
+        // an overwrite names its own attributes: it does not inherit the old ones
+        assert_eq!(gateway.handle(&request("PUT", "/docs/report", &[], b"plain")).status, 200);
+        let head = gateway.handle(&request("HEAD", "/docs/report", &[], &[]));
+        assert!(header_of(&head, "x-amz-meta-owner").is_none());
+        assert_ne!(header_of(&head, "content-type").as_deref(), Some("text/csv"));
+        // too many tags and a missing object are refused
+        let many: String = (0..11).map(|i| format!("k{i}=v")).collect::<Vec<_>>().join("&");
+        assert_eq!(gateway.handle(&request("PUT", "/docs/other", &[("x-amz-tagging", &many)], b"x")).status, 400);
+        assert_eq!(gateway.handle(&request("GET", "/docs/missing?tagging", &[], &[])).status, 404);
+    }
+
+    #[test]
+    fn a_retention_or_legal_hold_refuses_overwrite_and_delete_and_only_governance_can_be_bypassed() {
+        let (gateway, _) = gateway_requiring_buckets();
+        bucket_with(&gateway, "vault", &[("object-lock", LOCKED_BUCKET)]);
+        let until = "2099-01-01T00:00:00Z";
+        // retention headers are refused where object lock was not enabled
+        bucket_with(&gateway, "plain", &[]);
+        let refused = gateway.handle(&request("PUT", "/plain/k", &[("x-amz-object-lock-mode", "GOVERNANCE"), ("x-amz-object-lock-retain-until-date", until)], b"x"));
+        assert_eq!(refused.status, 400, "{}", text(&refused));
+
+        let governed = gateway.handle(&request("PUT", "/vault/g", &[("x-amz-object-lock-mode", "GOVERNANCE"), ("x-amz-object-lock-retain-until-date", until)], b"one"));
+        assert_eq!(governed.status, 200, "{}", text(&governed));
+        let head = gateway.handle(&request("HEAD", "/vault/g", &[], &[]));
+        assert_eq!(header_of(&head, "x-amz-object-lock-mode").as_deref(), Some("GOVERNANCE"));
+        assert!(header_of(&head, "x-amz-object-lock-retain-until-date").unwrap().starts_with("2099-01-01T00:00:00"));
+        for method in ["DELETE", "PUT"] {
+            let refusal = gateway.handle(&request(method, "/vault/g", &[], b"two"));
+            assert_eq!(refusal.status, 403, "{method}: {}", text(&refusal));
+            assert!(text(&refusal).contains("AccessDenied"), "{}", text(&refusal));
+        }
+        let batch = gateway.handle(&request("POST", "/vault?delete", &[], b"<Delete><Object><Key>g</Key></Object></Delete>"));
+        assert!(text(&batch).contains("AccessDenied"), "a batch delete respects the lock: {}", text(&batch));
+        assert_eq!(gateway.handle(&request("PUT", "/vault/copy", &[("x-amz-copy-source", "/vault/g")], &[])).status, 200, "copying out of a locked object is allowed");
+        assert_eq!(gateway.handle(&request("PUT", "/vault/g2", &[], b"x")).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/vault/g", &[("x-amz-copy-source", "/vault/g2")], &[])).status, 403, "a copy onto a locked object is an overwrite");
+        // a governance retention is bypassed on purpose; the bytes are untouched until then
+        assert_eq!(gateway.handle(&request("GET", "/vault/g", &[], &[])).body, b"one");
+        assert_eq!(gateway.handle(&request("DELETE", "/vault/g", &[("x-amz-bypass-governance-retention", "true")], &[])).status, 204);
+        assert_eq!(gateway.handle(&request("GET", "/vault/g", &[], &[])).status, 404);
+
+        // a compliance retention is not bypassed, shortened or relaxed
+        let compliance = "<Retention><Mode>COMPLIANCE</Mode><RetainUntilDate>2099-01-01T00:00:00Z</RetainUntilDate></Retention>";
+        assert_eq!(gateway.handle(&request("PUT", "/vault/c", &[], b"c")).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/vault/c?retention", &[], compliance.as_bytes())).status, 200);
+        assert_eq!(gateway.handle(&request("DELETE", "/vault/c", &[("x-amz-bypass-governance-retention", "true")], &[])).status, 403);
+        let shorter = "<Retention><Mode>COMPLIANCE</Mode><RetainUntilDate>2098-01-01T00:00:00Z</RetainUntilDate></Retention>";
+        assert_eq!(gateway.handle(&request("PUT", "/vault/c?retention", &[("x-amz-bypass-governance-retention", "true")], shorter.as_bytes())).status, 403);
+        let longer = "<Retention><Mode>COMPLIANCE</Mode><RetainUntilDate>2100-01-01T00:00:00Z</RetainUntilDate></Retention>";
+        assert_eq!(gateway.handle(&request("PUT", "/vault/c?retention", &[], longer.as_bytes())).status, 200, "a retention is lengthened");
+        let read = text(&gateway.handle(&request("GET", "/vault/c?retention", &[], &[])));
+        assert!(read.contains("<Mode>COMPLIANCE</Mode>") && read.contains("2100-01-01"), "{read}");
+
+        // a legal hold locks until it is released
+        assert_eq!(gateway.handle(&request("PUT", "/vault/h", &[], b"h")).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/vault/h?legal-hold", &[], b"<LegalHold><Status>ON</Status></LegalHold>")).status, 200);
+        assert!(text(&gateway.handle(&request("GET", "/vault/h?legal-hold", &[], &[]))).contains("<Status>ON</Status>"));
+        assert_eq!(gateway.handle(&request("DELETE", "/vault/h", &[("x-amz-bypass-governance-retention", "true")], &[])).status, 403);
+        assert_eq!(gateway.handle(&request("PUT", "/vault/h?legal-hold", &[], b"<LegalHold><Status>OFF</Status></LegalHold>")).status, 200);
+        assert_eq!(gateway.handle(&request("DELETE", "/vault/h", &[], &[])).status, 204);
+        // retention and a hold cannot be set on an object of a bucket without object lock
+        // refused before the object is looked at: this bucket cannot lock anything
+        assert_eq!(gateway.handle(&request("PUT", "/plain/k?legal-hold", &[], b"<LegalHold><Status>ON</Status></LegalHold>")).status, 400);
+        assert_eq!(gateway.handle(&request("PUT", "/plain/k", &[], b"x")).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/plain/k?legal-hold", &[], b"<LegalHold><Status>ON</Status></LegalHold>")).status, 400);
+    }
+
+    #[test]
+    fn a_default_retention_locks_what_the_bucket_receives() {
+        let (gateway, _) = gateway_requiring_buckets();
+        let configuration = "<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled><Rule><DefaultRetention><Mode>GOVERNANCE</Mode><Days>30</Days></DefaultRetention></Rule></ObjectLockConfiguration>";
+        bucket_with(&gateway, "archive", &[("object-lock", configuration)]);
+        assert_eq!(gateway.handle(&request("PUT", "/archive/k", &[], b"x")).status, 200);
+        let head = gateway.handle(&request("HEAD", "/archive/k", &[], &[]));
+        assert_eq!(header_of(&head, "x-amz-object-lock-mode").as_deref(), Some("GOVERNANCE"));
+        assert_eq!(gateway.handle(&request("DELETE", "/archive/k", &[], &[])).status, 403);
+    }
+
+    #[test]
+    fn a_quota_refuses_the_write_that_would_pass_it_and_counts_an_overwrite_once() {
+        let (gateway, _) = gateway_requiring_buckets();
+        bucket_with(&gateway, "small", &[("quota", "<Quota><Bytes>10</Bytes></Quota>")]);
+        assert_eq!(gateway.handle(&request("PUT", "/small/a", &[], b"123456")).status, 200);
+        let over = gateway.handle(&request("PUT", "/small/b", &[], b"123456"));
+        assert_eq!(over.status, 403, "{}", text(&over));
+        assert!(text(&over).contains("QuotaExceeded"), "{}", text(&over));
+        assert_eq!(gateway.handle(&request("GET", "/small/b", &[], &[])).status, 404, "nothing of the refused write is stored");
+        // replacing an object frees its bytes first; an append adds to them
+        assert_eq!(gateway.handle(&request("PUT", "/small/a", &[], b"12345678")).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/small/a", &[("x-amz-write-offset-bytes", "8")], b"90")).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/small/a", &[("x-amz-write-offset-bytes", "10")], b"1")).status, 403);
+        // a copy counts the bytes it adds, and a bucket with no quota is unbounded
+        assert_eq!(gateway.handle(&request("PUT", "/small/c", &[("x-amz-copy-source", "/small/a")], &[])).status, 403);
+        bucket_with(&gateway, "big", &[]);
+        assert_eq!(gateway.handle(&request("PUT", "/big/a", &[], &vec![7u8; 4096])).status, 200);
+    }
+
+    #[test]
+    fn cors_rules_answer_a_preflight_and_dress_a_cross_origin_response() {
+        let (gateway, _) = gateway_requiring_buckets();
+        let cors = "<CORSConfiguration><CORSRule><AllowedOrigin>https://app.example</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedMethod>PUT</AllowedMethod><AllowedHeader>x-amz-*</AllowedHeader><ExposeHeader>etag</ExposeHeader><MaxAgeSeconds>600</MaxAgeSeconds></CORSRule></CORSConfiguration>";
+        bucket_with(&gateway, "web", &[("cors", cors)]);
+        assert_eq!(gateway.handle(&request("PUT", "/web/page", &[], b"<html>")).status, 200);
+        // an ordinary request from an allowed origin carries the headers; one from another origin does not
+        let allowed = gateway.handle(&request("GET", "/web/page", &[("origin", "https://app.example")], &[]));
+        assert_eq!(header_of(&allowed, "access-control-allow-origin").as_deref(), Some("https://app.example"));
+        assert_eq!(header_of(&allowed, "access-control-expose-headers").as_deref(), Some("etag"));
+        let stranger = gateway.handle(&request("GET", "/web/page", &[("origin", "https://evil.example")], &[]));
+        assert_eq!(stranger.status, 200);
+        assert!(header_of(&stranger, "access-control-allow-origin").is_none());
+        assert!(header_of(&gateway.handle(&request("GET", "/web/page", &[], &[])), "access-control-allow-origin").is_none());
+        // a preflight is answered from the rule, or refused
+        let preflight = gateway.handle(&request("OPTIONS", "/web/page", &[("origin", "https://app.example"), ("access-control-request-method", "PUT")], &[]));
+        assert_eq!(preflight.status, 200, "{}", text(&preflight));
+        assert_eq!(header_of(&preflight, "access-control-max-age").as_deref(), Some("600"));
+        assert!(header_of(&preflight, "access-control-allow-methods").unwrap().contains("PUT"));
+        let with_headers = gateway.handle(&request("OPTIONS", "/web/page", &[("origin", "https://app.example"), ("access-control-request-method", "PUT"), ("access-control-request-headers", "x-amz-meta-a, x-amz-tagging")], &[]));
+        assert_eq!(with_headers.status, 200);
+        for refused in [
+            [("origin", "https://app.example"), ("access-control-request-method", "DELETE"), ("x", "")],
+            [("origin", "https://evil.example"), ("access-control-request-method", "GET"), ("x", "")],
+            [("origin", "https://app.example"), ("access-control-request-method", "PUT"), ("access-control-request-headers", "authorization")],
+        ] {
+            let headers: Vec<(&str, &str)> = refused.iter().copied().filter(|(n, _)| *n != "x").collect();
+            assert_eq!(gateway.handle(&request("OPTIONS", "/web/page", &headers, &[])).status, 403, "{headers:?}");
+        }
+        // a bucket without rules refuses every preflight
+        bucket_with(&gateway, "closed", &[]);
+        assert_eq!(gateway.handle(&request("OPTIONS", "/closed/k", &[("origin", "https://app.example"), ("access-control-request-method", "GET")], &[])).status, 403);
+    }
+
+    #[test]
+    fn a_lifecycle_pass_expires_old_objects_under_the_prefix_and_leaves_locked_ones() {
+        let (gateway, shared) = gateway_requiring_buckets();
+        let rules = "<LifecycleConfiguration><Rule><ID>tmp</ID><Filter><Prefix>tmp/</Prefix></Filter><Status>Enabled</Status><Expiration><Days>1</Days></Expiration></Rule></LifecycleConfiguration>";
+        bucket_with(&gateway, "logs", &[("object-lock", LOCKED_BUCKET), ("lifecycle", rules)]);
+        for key in ["tmp/a", "tmp/b", "keep/c"] {
+            assert_eq!(gateway.handle(&request("PUT", &format!("/logs/{key}"), &[], b"x")).status, 200, "{key}");
+        }
+        let held = gateway.handle(&request("PUT", "/logs/tmp/held", &[("x-amz-object-lock-mode", "COMPLIANCE"), ("x-amz-object-lock-retain-until-date", "2099-01-01T00:00:00Z")], b"x"));
+        assert_eq!(held.status, 200, "{}", text(&held));
+        // too early: nothing is a day old
+        let early = gateway.run_lifecycle(now_ms()).unwrap();
+        assert_eq!((early.expired, early.kept_locked), (0, 0));
+        let later = now_ms() + 2 * 86_400_000;
+        let report = gateway.run_lifecycle(later).unwrap();
+        assert_eq!((report.buckets, report.expired, report.kept_locked), (1, 2, 1), "{report:?}");
+        assert_eq!(gateway.handle(&request("GET", "/logs/tmp/a", &[], &[])).status, 404);
+        assert_eq!(gateway.handle(&request("GET", "/logs/keep/c", &[], &[])).body, b"x", "outside the prefix");
+        assert_eq!(gateway.handle(&request("GET", "/logs/tmp/held", &[], &[])).body, b"x", "a lock outlasts a rule");
+        // a pass repeats harmlessly
+        let again = gateway.run_lifecycle(later).unwrap();
+        assert_eq!((again.expired, again.kept_locked), (0, 1));
+        // an abandoned multipart upload is removed by a rule that names it
+        let abort = "<LifecycleConfiguration><Rule><ID>uploads</ID><Filter><Prefix></Prefix></Filter><Status>Enabled</Status><AbortIncompleteMultipartUpload><DaysAfterInitiation>1</DaysAfterInitiation></AbortIncompleteMultipartUpload></Rule></LifecycleConfiguration>";
+        assert_eq!(gateway.handle(&request("PUT", "/logs?lifecycle", &[], abort.as_bytes())).status, 200);
+        let started = gateway.handle(&request("POST", "/logs/big?uploads", &[], &[]));
+        assert_eq!(started.status, 200, "{}", text(&started));
+        let id = between(&text(&started), "UploadId").expect("an upload id");
+        assert_eq!(gateway.handle(&request("PUT", &format!("/logs/big?uploadId={id}&partNumber=1"), &[], b"part")).status, 200);
+        let swept = gateway.run_lifecycle(now_ms() + 3 * 86_400_000).unwrap();
+        assert_eq!(swept.aborted_uploads, 1, "{swept:?}");
+        assert_eq!(gateway.handle(&request("GET", &format!("/logs/big?uploadId={id}"), &[], &[])).status, 404, "the upload is gone");
+        let _ = shared;
+    }
+
+    const VERSIONED: &str = "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>";
+
+    #[test]
+    fn versioning_keeps_what_an_overwrite_or_a_delete_replaces_and_serves_each_version() {
+        let (gateway, _) = gateway_requiring_buckets();
+        bucket_with(&gateway, "wiki", &[("versioning", VERSIONED)]);
+        let first = gateway.handle(&request("PUT", "/wiki/page", &[("content-type", "text/plain")], b"one"));
+        let second = gateway.handle(&request("PUT", "/wiki/page", &[], b"two!"));
+        let (v1, v2) = (header_of(&first, "x-amz-version-id").unwrap(), header_of(&second, "x-amz-version-id").unwrap());
+        assert_ne!(v1, v2);
+        // the current version is the key; each older one is read by its id, with what it carried
+        assert_eq!(gateway.handle(&request("GET", "/wiki/page", &[], &[])).body, b"two!");
+        let old = gateway.handle(&request("GET", &format!("/wiki/page?versionId={v1}"), &[], &[]));
+        assert_eq!((old.status, old.body.as_slice()), (200, b"one".as_slice()));
+        assert_eq!(header_of(&old, "content-type").as_deref(), Some("text/plain"));
+        assert_eq!(header_of(&old, "x-amz-version-id").as_deref(), Some(v1.as_str()));
+        assert_eq!(gateway.handle(&request("GET", &format!("/wiki/page?versionId={v2}"), &[], &[])).body, b"two!");
+        assert_eq!(gateway.handle(&request("GET", "/wiki/page?versionId=999", &[], &[])).status, 404);
+        // a delete hides the object behind a marker and keeps every version
+        let deleted = gateway.handle(&request("DELETE", "/wiki/page", &[], &[]));
+        assert_eq!(deleted.status, 204);
+        assert_eq!(header_of(&deleted, "x-amz-delete-marker").as_deref(), Some("true"));
+        let marker = header_of(&deleted, "x-amz-version-id").unwrap();
+        assert_eq!(gateway.handle(&request("GET", "/wiki/page", &[], &[])).status, 404);
+        assert_eq!(gateway.handle(&request("GET", &format!("/wiki/page?versionId={v1}"), &[], &[])).body, b"one");
+        assert_eq!(gateway.handle(&request("GET", &format!("/wiki/page?versionId={marker}"), &[], &[])).status, 405, "a marker is not an object");
+        let listed = text(&gateway.handle(&request("GET", "/wiki?list-type=2", &[], &[])));
+        assert!(all_between(&listed, "Key").is_empty(), "a deleted key is not listed: {listed}");
+        let versions = text(&gateway.handle(&request("GET", "/wiki?versions", &[], &[])));
+        assert_eq!(all_between(&versions, "VersionId").len(), 3, "{versions}");
+        assert!(versions.contains("<DeleteMarker>") && versions.contains("<IsLatest>true</IsLatest>"), "{versions}");
+        // writing again restores the key, and the marker is kept as a version
+        assert_eq!(gateway.handle(&request("PUT", "/wiki/page", &[], b"three")).status, 200);
+        assert_eq!(gateway.handle(&request("GET", "/wiki/page", &[], &[])).body, b"three");
+        assert_eq!(all_between(&text(&gateway.handle(&request("GET", "/wiki?versions", &[], &[]))), "VersionId").len(), 4);
+        // deleting the current version brings the latest kept one back; the marker was the latest kept
+        let current = header_of(&gateway.handle(&request("HEAD", "/wiki/page", &[], &[])), "x-amz-version-id").unwrap();
+        assert_eq!(gateway.handle(&request("DELETE", &format!("/wiki/page?versionId={current}"), &[], &[])).status, 204);
+        assert_eq!(gateway.handle(&request("GET", "/wiki/page", &[], &[])).status, 404, "the marker is current again");
+        // a specific old version is deleted for good
+        assert_eq!(gateway.handle(&request("DELETE", &format!("/wiki/page?versionId={v1}"), &[], &[])).status, 204);
+        assert_eq!(gateway.handle(&request("GET", &format!("/wiki/page?versionId={v1}"), &[], &[])).status, 404);
+        // appends extend the current version and keep no copy
+        assert_eq!(gateway.handle(&request("PUT", "/wiki/log", &[], b"a")).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/wiki/log", &[("x-amz-write-offset-bytes", "1")], b"b")).status, 200);
+        assert_eq!(gateway.handle(&request("GET", "/wiki/log", &[], &[])).body, b"ab");
+        let log_versions = text(&gateway.handle(&request("GET", "/wiki?versions&prefix=log", &[], &[])));
+        assert_eq!(all_between(&log_versions, "VersionId").len(), 1, "{log_versions}");
+        // a bucket that holds only kept versions is not empty
+        assert_eq!(gateway.handle(&request("DELETE", "/wiki/log", &[], &[])).status, 204);
+        assert_eq!(gateway.handle(&request("DELETE", "/wiki", &[], &[])).status, 409);
+    }
+
+    #[test]
+    fn a_bucket_without_versioning_keeps_nothing_and_a_lock_protects_a_kept_version() {
+        let (gateway, _) = gateway_requiring_buckets();
+        bucket_with(&gateway, "plain", &[]);
+        assert_eq!(gateway.handle(&request("PUT", "/plain/k", &[], b"one")).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/plain/k", &[], b"two")).status, 200);
+        assert_eq!(all_between(&text(&gateway.handle(&request("GET", "/plain?versions", &[], &[]))), "VersionId").len(), 1);
+        bucket_with(&gateway, "vault", &[("versioning", VERSIONED), ("object-lock", LOCKED_BUCKET)]);
+        let held = gateway.handle(&request("PUT", "/vault/k", &[("x-amz-object-lock-mode", "COMPLIANCE"), ("x-amz-object-lock-retain-until-date", "2099-01-01T00:00:00Z")], b"one"));
+        let version = header_of(&held, "x-amz-version-id").unwrap();
+        // overwriting a locked object is refused even with versioning; a delete only adds a marker
+        assert_eq!(gateway.handle(&request("PUT", "/vault/k", &[], b"two")).status, 403);
+        assert_eq!(gateway.handle(&request("DELETE", "/vault/k", &[], &[])).status, 204);
+        assert_eq!(gateway.handle(&request("GET", &format!("/vault/k?versionId={version}"), &[], &[])).body, b"one");
+        assert_eq!(gateway.handle(&request("DELETE", &format!("/vault/k?versionId={version}"), &[("x-amz-bypass-governance-retention", "true")], &[])).status, 403, "the locked version is not deleted");
+    }
+
+    #[test]
+    fn a_noncurrent_expiration_removes_old_versions_and_an_expiration_leaves_a_marker() {
+        let (gateway, _) = gateway_requiring_buckets();
+        let rules = "<LifecycleConfiguration><Rule><ID>old</ID><Status>Enabled</Status><NoncurrentVersionExpiration><NoncurrentDays>1</NoncurrentDays></NoncurrentVersionExpiration><Expiration><Days>5</Days></Expiration></Rule></LifecycleConfiguration>";
+        bucket_with(&gateway, "hist", &[("versioning", VERSIONED), ("lifecycle", rules)]);
+        for body in ["a", "b", "c"] {
+            assert_eq!(gateway.handle(&request("PUT", "/hist/k", &[], body.as_bytes())).status, 200);
+        }
+        assert_eq!(all_between(&text(&gateway.handle(&request("GET", "/hist?versions", &[], &[]))), "VersionId").len(), 3);
+        let report = gateway.run_lifecycle(now_ms() + 2 * 86_400_000).unwrap();
+        assert_eq!(report.expired_versions, 2, "{report:?}");
+        assert_eq!(gateway.handle(&request("GET", "/hist/k", &[], &[])).body, b"c", "the current version stays");
+        // five days on, the current version expires into a delete marker and the version under it is kept
+        let later = gateway.run_lifecycle(now_ms() + 6 * 86_400_000).unwrap();
+        assert_eq!(later.expired, 1, "{later:?}");
+        assert_eq!(gateway.handle(&request("GET", "/hist/k", &[], &[])).status, 404);
+        assert_eq!(all_between(&text(&gateway.handle(&request("GET", "/hist?versions", &[], &[]))), "VersionId").len(), 2);
+    }
+
+    #[test]
+    fn a_bucket_that_opts_in_keeps_an_ordered_change_feed_read_by_cursor_and_trimmed_by_the_consumer() {
+        let (gateway, _) = gateway_requiring_buckets();
+        bucket_with(&gateway, "orders", &[]);
+        // a bucket that did not opt in has no feed, and its mutations write nothing for one
+        assert_eq!(gateway.handle(&request("PUT", "/orders/early", &[], b"x")).status, 200);
+        assert_eq!(gateway.handle(&request("GET", "/orders?changes", &[], &[])).status, 400);
+        let on = "<ChangeFeedConfiguration><Status>Enabled</Status></ChangeFeedConfiguration>";
+        assert_eq!(gateway.handle(&request("PUT", "/orders?changefeed", &[], on.as_bytes())).status, 200);
+        assert!(text(&gateway.handle(&request("GET", "/orders?changefeed", &[], &[]))).contains("Enabled"));
+        assert_eq!(gateway.handle(&request("PUT", "/orders/a", &[], b"one")).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/orders/a", &[("x-amz-write-offset-bytes", "3")], b"two")).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/orders/b", &[("x-amz-copy-source", "/orders/a")], &[])).status, 200);
+        assert_eq!(gateway.handle(&request("DELETE", "/orders/a", &[], &[])).status, 204);
+        assert_eq!(gateway.handle(&request("POST", "/orders?delete", &[], b"<Delete><Object><Key>b</Key></Object></Delete>")).status, 200);
+        let feed = text(&gateway.handle(&request("GET", "/orders?changes", &[], &[])));
+        let operations = all_between(&feed, "Operation");
+        assert_eq!(operations, ["put", "append", "copy", "delete", "delete"], "{feed}");
+        assert_eq!(all_between(&feed, "Key"), ["a", "a", "b", "a", "b"], "{feed}");
+        assert!(!feed.contains("early"), "what happened before the feed was on is not in it");
+        assert!(!feed.contains(".changes") || feed.contains("<Cursor>.changes/"), "the entries themselves are not changes");
+        // a cursor continues where the last page stopped, and pages are bounded
+        let first = text(&gateway.handle(&request("GET", "/orders?changes&limit=2", &[], &[])));
+        assert_eq!(all_between(&first, "Operation"), ["put", "append"]);
+        assert!(first.contains("<HasMore>true</HasMore>"));
+        let cursor = between(&first, "NextCursor").unwrap();
+        let rest = text(&gateway.handle(&request("GET", &format!("/orders?changes&after={cursor}"), &[], &[])));
+        assert_eq!(all_between(&rest, "Operation"), ["copy", "delete", "delete"], "{rest}");
+        // the feed is not listed with the objects, and a consumer trims what it has processed
+        let listed = text(&gateway.handle(&request("GET", "/orders?list-type=2", &[], &[])));
+        assert_eq!(all_between(&listed, "Key"), ["early"], "{listed}");
+        let trimmed = gateway.handle(&request("DELETE", &format!("/orders?changes&before={cursor}"), &[], &[]));
+        assert_eq!(trimmed.status, 204);
+        assert_eq!(header_of(&trimmed, "x-matrixobject-entries-dropped").as_deref(), Some("2"));
+        let after_trim = text(&gateway.handle(&request("GET", "/orders?changes", &[], &[])));
+        assert_eq!(all_between(&after_trim, "Operation"), ["copy", "delete", "delete"]);
+    }
+
+    #[test]
+    fn a_multipart_upload_publishes_what_it_was_begun_with_and_respects_a_lock() {
+        let (gateway, _) = gateway_requiring_buckets();
+        bucket_with(&gateway, "big", &[("quota", "<Quota><Bytes>20</Bytes></Quota>")]);
+        let started = gateway.handle(&request("POST", "/big/file?uploads", &[("content-type", "video/mp4"), ("x-amz-meta-camera", "north"), ("x-amz-tagging", "kind=clip")], &[]));
+        assert_eq!(started.status, 200, "{}", text(&started));
+        let id = between(&text(&started), "UploadId").unwrap();
+        let part = gateway.handle(&request("PUT", &format!("/big/file?uploadId={id}&partNumber=1"), &[], b"0123456789"));
+        let etag = header_of(&part, "etag").unwrap();
+        let body = format!("<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{etag}</ETag></Part></CompleteMultipartUpload>");
+        let done = gateway.handle(&request("POST", &format!("/big/file?uploadId={id}"), &[], body.as_bytes()));
+        assert_eq!(done.status, 200, "{}", text(&done));
+        let head = gateway.handle(&request("HEAD", "/big/file", &[], &[]));
+        assert_eq!(header_of(&head, "content-type").as_deref(), Some("video/mp4"));
+        assert_eq!(header_of(&head, "x-amz-meta-camera").as_deref(), Some("north"));
+        assert_eq!(header_of(&head, "x-amz-tagging-count").as_deref(), Some("1"));
+        assert_eq!(gateway.handle(&request("GET", "/big/file", &[], &[])).body, b"0123456789");
+        // the quota applies to the assembled object: a second upload that would pass it is refused and the upload survives
+        let started = gateway.handle(&request("POST", "/big/second?uploads", &[], &[]));
+        let id = between(&text(&started), "UploadId").unwrap();
+        let part = gateway.handle(&request("PUT", &format!("/big/second?uploadId={id}&partNumber=1"), &[], b"abcdefghijklm"));
+        let etag = header_of(&part, "etag").unwrap();
+        let body = format!("<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{etag}</ETag></Part></CompleteMultipartUpload>");
+        assert_eq!(gateway.handle(&request("POST", &format!("/big/second?uploadId={id}"), &[], body.as_bytes())).status, 403);
+        assert_eq!(gateway.handle(&request("GET", "/big/second", &[], &[])).status, 404);
+        // a lock stops a completion that would replace a locked object
+        bucket_with(&gateway, "vault", &[("object-lock", LOCKED_BUCKET)]);
+        let until = "2099-01-01T00:00:00Z";
+        assert_eq!(gateway.handle(&request("PUT", "/vault/k", &[("x-amz-object-lock-mode", "COMPLIANCE"), ("x-amz-object-lock-retain-until-date", until)], b"held")).status, 200);
+        let started = gateway.handle(&request("POST", "/vault/k?uploads", &[], &[]));
+        let id = between(&text(&started), "UploadId").unwrap();
+        let part = gateway.handle(&request("PUT", &format!("/vault/k?uploadId={id}&partNumber=1"), &[], b"new"));
+        let etag = header_of(&part, "etag").unwrap();
+        let body = format!("<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{etag}</ETag></Part></CompleteMultipartUpload>");
+        assert_eq!(gateway.handle(&request("POST", &format!("/vault/k?uploadId={id}"), &[], body.as_bytes())).status, 403);
+        assert_eq!(gateway.handle(&request("GET", "/vault/k", &[], &[])).body, b"held");
+    }
+
 }
 
 #[cfg(test)]

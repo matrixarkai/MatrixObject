@@ -1861,6 +1861,134 @@ mod coupled_groups {
         }
     }
 
+    /// THE GATEWAY FEATURES OVER RAFT DATA GROUPS: the `ClusterGateway` over a Raft metadata quorum and two Raft chunk
+    /// groups keeps attributes, enforces an object lock and a quota, keeps versions that name the same pages, and
+    /// still reads them after the leaders of the metadata quorum and of every data group are lost.
+    #[test]
+    fn the_gateway_features_run_over_raft_data_groups_and_survive_leader_loss() {
+        use matrixobjectstore_rs::cluster::ObjectWriteOptions;
+        use matrixobjectstore_rs::net::cluster_gateway::{ClusterGateway, GatewayOptions};
+        use matrixobjectstore_rs::net::{Request, RequestHandler, Response};
+        let mut groups: Vec<_> = (1..=2)
+            .map(|id| {
+                let mut group = Group::configured(1024 * 1024);
+                group.group_id = id;
+                group.checkpoint_bytes = 1024;
+                group
+            })
+            .collect();
+        let mut metadata = MetadataGroup::for_groups(&groups);
+        for group in &mut groups {
+            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
+            for id in 0..3 {
+                group.start(id);
+            }
+        }
+        let _ready = metadata.ready();
+        for group in &groups {
+            group.leader();
+        }
+        group_usage(&metadata.api, &groups, &[]);
+        let options = ObjectWriteOptions { page_bytes: 4096, target_groups: 2, max_parallel_groups: 2, replica: chunk_options(), ..Default::default() };
+        let gateway_options = GatewayOptions { write: options.clone(), replica: options.replica.clone(), require_buckets: true, ..Default::default() };
+        let api = metadata.api.clone();
+        let open = move || {
+            RemoteMetaClient::connect_catalog(
+                &api,
+                &MetaClientOptions {
+                    connect_timeout: Duration::from_secs(1),
+                    read_timeout: Duration::from_secs(10),
+                    write_timeout: Duration::from_secs(10),
+                    ..Default::default()
+                },
+            )
+        };
+        let gateway = ClusterGateway::over_chunk_objects(open, gateway_options, "start");
+        let call = |method: &str, target: &str, headers: &[(&str, &str)], body: &[u8]| -> Response {
+            let (path, query) = target.split_once('?').unwrap_or((target, ""));
+            gateway.handle(&Request {
+                method: method.into(),
+                path: path.into(),
+                query: query.into(),
+                headers: headers.iter().map(|(name, value)| (name.to_ascii_lowercase(), (*value).to_string())).collect(),
+                body: body.to_vec(),
+                keep_alive: true,
+            })
+        };
+        let header = |response: &Response, name: &str| response.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone());
+        for bucket in ["vault", "hist", "small"] {
+            assert_eq!(call("PUT", &format!("/{bucket}"), &[], &[]).status, 200, "{bucket}");
+        }
+        let lock = "<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled></ObjectLockConfiguration>";
+        assert_eq!(call("PUT", "/vault?object-lock", &[], lock.as_bytes()).status, 200);
+        let versioned = "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>";
+        assert_eq!(call("PUT", "/hist?versioning", &[], versioned.as_bytes()).status, 200);
+        assert_eq!(call("PUT", "/small?quota", &[], b"<Quota><Bytes>10</Bytes></Quota>").status, 200);
+
+        // attributes and a lock
+        let payload: Vec<u8> = (0..30_000u32).map(|i| (i % 251) as u8).collect();
+        let put = call("PUT", "/vault/doc", &[("content-type", "text/csv"), ("x-amz-meta-owner", "ana"), ("x-amz-object-lock-mode", "GOVERNANCE"), ("x-amz-object-lock-retain-until-date", "2099-01-01T00:00:00Z")], &payload);
+        assert_eq!(put.status, 200, "{}", String::from_utf8_lossy(&put.body));
+        let head = call("HEAD", "/vault/doc", &[], &[]);
+        assert_eq!(header(&head, "content-type").as_deref(), Some("text/csv"));
+        assert_eq!(header(&head, "x-amz-object-lock-mode").as_deref(), Some("GOVERNANCE"));
+        assert_eq!(call("PUT", "/vault/doc", &[], b"x").status, 403);
+        assert_eq!(call("DELETE", "/vault/doc", &[], &[]).status, 403);
+        assert_eq!(call("GET", "/vault/doc", &[], &[]).body, payload);
+
+        // quota
+        assert_eq!(call("PUT", "/small/a", &[], b"123456").status, 200);
+        assert_eq!(call("PUT", "/small/b", &[], b"123456").status, 403);
+
+        // versions that name the same pages
+        let (first, second) = (vec![1u8; 20_000], vec![2u8; 9_000]);
+        let v1 = header(&call("PUT", "/hist/page", &[], &first), "x-amz-version-id").unwrap();
+        assert_eq!(call("PUT", "/hist/page", &[], &second).status, 200);
+        assert_eq!(call("GET", &format!("/hist/page?versionId={v1}"), &[], &[]).body, first);
+
+        // every leader is lost, and the data and the versions are still there
+        let leader = metadata.api.iter().position(|a| a == _ready.endpoint()).unwrap();
+        metadata.kill(leader);
+        for group in &mut groups {
+            group.kill(group.leader());
+        }
+        let _ready = metadata.ready();
+        for group in &groups {
+            group.leader();
+        }
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let (read_first, read_second) = loop {
+            let old = call("GET", &format!("/hist/page?versionId={v1}"), &[], &[]);
+            let now = call("GET", "/hist/page", &[], &[]);
+            if old.status == 200 && now.status == 200 {
+                break (old.body, now.body);
+            }
+            assert!(Instant::now() < deadline, "the versions were not readable after the leaders were lost: {} {}", old.status, now.status);
+            std::thread::sleep(Duration::from_millis(300));
+        };
+        assert_eq!(read_first, first);
+        assert_eq!(read_second, second);
+        assert_eq!(call("GET", "/vault/doc", &[], &[]).body, payload);
+        // the first write after the leaders were lost may meet a pooled connection to a node that is gone, which is a
+        // retryable 503; a client retries it, and so does this
+        let write_deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let third = call("PUT", "/hist/page", &[], b"three");
+            if third.status == 200 {
+                break;
+            }
+            assert!(
+                third.status == 503 && Instant::now() < write_deadline,
+                "a write after the leaders were lost did not land: {} {}",
+                third.status,
+                String::from_utf8_lossy(&third.body)
+            );
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        assert_eq!(call("GET", "/hist/page", &[], &[]).body, b"three");
+        assert_eq!(call("GET", &format!("/hist/page?versionId={v1}"), &[], &[]).body, first, "an old version still reads after a write");
+    }
+
     /// THE RAFT-MODE OBJECT TEST: chunk objects over two Raft chunk groups of three voters each, through the
     /// leader loss of the metadata plane and of every group, a race between two writers, an append, and a
     /// restart of everything. (The Star mode is exercised against real chunk servers in the metadata tests.)
