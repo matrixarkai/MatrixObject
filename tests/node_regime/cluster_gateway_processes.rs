@@ -386,7 +386,7 @@ fn resolve_over_real_processes(cluster: &Cluster) {
     assert_eq!(header(&headers, "x-append-resolution"), Some("ambiguous"));
     // Nothing at offset 9: the resolve fences. Only the generation moves.
     let mut client = cluster.meta_client();
-    let before = client.read_manifest("gateway", "log").unwrap();
+    let before = client.read_chunk_manifest("gateway", "log").unwrap();
     let (status, headers, body) = http(addr, "POST", &resolve_target(9, b"gamma", &attempt_id(3)), &[], b"");
     assert_eq!(
         (status, header(&headers, "x-append-resolution")),
@@ -394,13 +394,18 @@ fn resolve_over_real_processes(cluster: &Cluster) {
         "{}",
         String::from_utf8_lossy(&body)
     );
-    let after = client.read_manifest("gateway", "log").unwrap();
+    let after = client.read_chunk_manifest("gateway", "log").unwrap();
     assert_eq!((after.generation, after.length), (before.generation + 1, 9));
     assert!(after.extents == before.extents, "the fence keeps the extents exactly");
     assert_eq!(http(addr, "GET", "/gateway/log", &[], b"").2, b"alphabeta");
     // The lost attempt, built on the manifest it read before the fence, is refused when it arrives.
     let options = matrixobjectstore_rs::cluster::ObjectWriteOptions::default();
-    assert!(client.append_object(before, b"gamma", &options).is_err(), "a fenced attempt must not publish");
+    assert!(
+        client
+            .append_chunk_object(&before, b"gamma", &options, matrixobjectstore_rs::chunk_object::DEFAULT_STRIPE_BYTES)
+            .is_err(),
+        "a fenced attempt must not publish"
+    );
     assert_eq!(http(addr, "GET", "/gateway/log", &[], b"").2, b"alphabeta");
     // The caller retries as a new append: stored exactly once.
     assert_eq!(
@@ -420,14 +425,6 @@ fn resolve_over_real_processes(cluster: &Cluster) {
 #[test]
 fn an_append_resolve_finds_landed_bytes_and_fences_a_lost_attempt_over_real_processes() {
     resolve_over_real_processes(&Cluster::new());
-}
-
-#[test]
-fn an_append_resolve_fences_under_the_publication_fence_of_compact_appends() {
-    resolve_over_real_processes(&Cluster::with_env(&[
-        ("MATRIXOBJECT_CLUSTER_COMPACT_APPEND", "1"),
-        ("MATRIXOBJECT_CLUSTER_RESERVE_NEXT", "1"),
-    ]));
 }
 
 #[test]

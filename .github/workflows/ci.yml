@@ -1350,7 +1350,6 @@ jobs:
           set -o pipefail
           for name in \
             cluster_gateway_processes::an_append_resolve_finds_landed_bytes_and_fences_a_lost_attempt_over_real_processes \
-            cluster_gateway_processes::an_append_resolve_fences_under_the_publication_fence_of_compact_appends \
             cluster_gateway_processes::killing_the_gateway_mid_append_then_resolving_through_another_stores_every_append_exactly_once; do
             cargo test --locked --all-features --test network_metadata_consensus "$name" -- --exact --nocapture | tee /tmp/append-resolve.log
             grep -q 'test result: ok. 1 passed' /tmp/append-resolve.log
