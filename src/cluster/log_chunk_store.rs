@@ -62,6 +62,50 @@ fn sync_data(file: &File) -> std::io::Result<()> {
     file.sync_data()
 }
 
+fn create_log_directory(dir: &Path) -> std::io::Result<()> {
+    let directory = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    #[cfg(unix)]
+    let stop = {
+        let mut existing = directory;
+        while !existing.try_exists()? {
+            existing = existing
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+        }
+        existing
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(existing)
+            .to_path_buf()
+    };
+    std::fs::create_dir_all(directory)?;
+    // Persist each new directory entry, including the supplied directory when a caller
+    // just created it. This is startup work, not an append or sealed-read operation.
+    #[cfg(unix)]
+    {
+        let mut current = directory;
+        loop {
+            File::open(current)?.sync_all()?;
+            if current == stop {
+                break;
+            }
+            let parent = current
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            if parent == current {
+                break;
+            }
+            current = parent;
+        }
+    }
+    Ok(())
+}
 /// Make every pending handle durable. Takes no lock: the caller must not hold one.
 pub fn sync_pending(pending: &[PendingSync]) -> Result<(), ObjectError> {
     for one in pending {
@@ -126,7 +170,7 @@ impl LogChunkStore {
         tail_budget: usize,
         cache_bytes: usize,
     ) -> std::io::Result<Self> {
-        std::fs::create_dir_all(dir)?;
+        create_log_directory(dir)?;
         Ok(Self {
             dir: dir.to_path_buf(),
             directory_lock: None,

@@ -11,8 +11,10 @@ magic, kind, flags, reserved bytes, generation, epoch, physical offset, payload
 length and payload CRC32C. Bytes 36 through 51 hold the opaque 16-byte attempt
 tag. Bytes 52 through 59 hold the published chunk length as a little-endian u64.
 Bytes 60 through 63 hold CRC32C of bytes 0 through 59. The payload follows.
-Only append records are valid in this extended format; flags and reserved bytes
-must be zero. `MOL1` and `MOL2` byte encodings are unchanged.
+Append records and an explicit first-record initialization control are valid
+in this extended format; flags and reserved bytes must be zero. The initialization
+control has kind4, zero offset/length/data CRC/published length, a nonzero epoch
+and an opaque initialization identity. It is valid only as the first file record. `MOL1` and `MOL2` byte encodings are unchanged.
 
 A record carries either the prior published length or its own physical end.
 The former retains an unfinished request; the latter publishes all accumulated
