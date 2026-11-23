@@ -9,6 +9,7 @@ mod chunk_catalog_snapshot_tests;
 pub mod chunk_manifest;
 pub mod initialized_log_manifest;
 pub mod native_object_state;
+pub mod native_object_outcome;
 #[cfg(test)]
 mod native_object_state_tests;
 #[cfg(test)]
@@ -313,3 +314,6 @@ pub mod cluster;
 
 #[cfg(test)]
 mod repo_guard_tests;
+
+#[cfg(test)]
+mod native_object_outcome_tests;

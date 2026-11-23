@@ -2347,7 +2347,14 @@ jobs:
           cargo test --locked --lib initialized_log_manifest_tests:: -- --test-threads=1 2>&1 | tee /tmp/native-identities.log
           grep -q '^test result: ok. 10 passed' /tmp/native-identities.log
           cargo test --locked --lib initialized_admission_tests:: -- --test-threads=1 2>&1 | tee /tmp/native-admission.log
-          grep -q '^test result: ok. 2 passed' /tmp/native-admission.log
+          grep -q '^test result: ok. 3 passed' /tmp/native-admission.log
+      - name: native binary commands and checkpoint recovery
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib native_object_outcome_tests:: -- --test-threads=1 2>&1 | tee /tmp/native-outcomes.log
+          grep -q '^test result: ok. 11 passed' /tmp/native-outcomes.log
+          cargo test --locked --lib cluster::meta_snapshot_file::tests::native_journal:: -- --test-threads=1 2>&1 | tee /tmp/native-journal.log
+          grep -q '^test result: ok. 1 passed' /tmp/native-journal.log
       - name: per-member initialization survives read repair and restart
         run: |
           set -euo pipefail

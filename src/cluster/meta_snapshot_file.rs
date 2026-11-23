@@ -158,6 +158,7 @@ fn invalid(error: impl ToString) -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    include!("native_outcome_journal_tests.rs");
     use super::*;
     use crate::object_manifest::{ManifestOutcome, ObjectManifest};
 

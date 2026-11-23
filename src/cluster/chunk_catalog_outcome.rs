@@ -78,6 +78,10 @@ impl ChunkCatalogOutcome {
         }
         Ok(value)
     }
+    pub(super) fn positions(&self) -> Result<(u64, u64), ObjectError> {
+        let placement = self.validated_placement()?;
+        Ok((placement.before_index, placement.after_index))
+    }
     pub(super) fn apply(
         &self,
         service: &mut MatrixMetaService,

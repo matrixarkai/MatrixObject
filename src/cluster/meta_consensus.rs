@@ -1682,6 +1682,25 @@ fn prepare_with(
     groups: &super::ChunkGroupCatalog,
     live: Option<&LeaderLiveness>,
 ) -> Result<(Vec<u8>, Option<MetaReply>), ObjectError> {
+    let result = prepare_with_inner(service, request, limit, groups, live)?;
+    if service
+        .cluster_features
+        .has(crate::cluster_features::FEATURE_NATIVE_OBJECT_STATE)
+        && result
+            .0
+            .starts_with(crate::placement_outcome::PLACEMENT_OUTCOME_MAGIC)
+    {
+        PlacementOutcome::from_payload(&result.0)?.check_legacy_namespace(service)?;
+    }
+    Ok(result)
+}
+fn prepare_with_inner(
+    service: &mut MatrixMetaService,
+    request: &MetaRequest,
+    limit: usize,
+    groups: &super::ChunkGroupCatalog,
+    live: Option<&LeaderLiveness>,
+) -> Result<(Vec<u8>, Option<MetaReply>), ObjectError> {
     let stamped = if matches!(request, MetaRequest::ReportChunkNode { .. }) {
         Some(super::health_report::stamp(request.clone(), service)?)
     } else {

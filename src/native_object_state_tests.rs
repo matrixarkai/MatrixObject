@@ -4,7 +4,7 @@ use crate::chunk_catalog::{ChunkCatalog, ChunkOutcome};
 use crate::chunk_manifest::*;
 use crate::initialized_log_manifest::*;
 use crate::native_object_state::*;
-fn hash(m: &ChunkManifest) -> Vec<u8> {
+pub(crate) fn hash(m: &ChunkManifest) -> Vec<u8> {
     crate::chunk_integrity::sha256(&m.to_bytes().unwrap()).to_vec()
 }
 fn old_manifest() -> ChunkManifest {
@@ -19,7 +19,7 @@ fn catalog() -> ChunkCatalog {
         .unwrap();
     c
 }
-fn start(id: u64, before: Option<&ChunkManifest>, target: u64) -> NativeStageStart {
+pub(crate) fn start(id: u64, before: Option<&ChunkManifest>, target: u64) -> NativeStageStart {
     let mut header = old_manifest();
     header.generation = before.map_or(1, |m| m.generation + 1);
     header.length = 0;
@@ -50,7 +50,7 @@ fn start(id: u64, before: Option<&ChunkManifest>, target: u64) -> NativeStageSta
     s.validate().unwrap();
     s
 }
-fn chunk(
+pub(crate) fn chunk(
     s: &NativeStageStart,
     allocation: u64,
     offset: u64,
@@ -82,7 +82,7 @@ fn chunk(
         }),
     }
 }
-fn publication(s: &NativeStageStart, owned: &[NativeOwnedChunk]) -> ChunkManifest {
+pub(crate) fn publication(s: &NativeStageStart, owned: &[NativeOwnedChunk]) -> ChunkManifest {
     let mut m = s.header.clone().unwrap();
     m.length = s.target_length;
     for (i, c) in owned.iter().enumerate() {

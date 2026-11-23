@@ -33,3 +33,21 @@ fn old_writer_outcomes_cannot_create_initialized_objects() {
     let error = change.validate(0, 1).unwrap_err().to_string();
     assert!(error.contains("native writer outcomes"), "{error}");
 }
+
+#[test]
+fn legacy_chunk_commands_cannot_enter_a_staged_native_namespace() {
+    let mut service = crate::native_object_outcome_tests::service();
+    let (op, now) = crate::native_object_outcome_tests::commands().remove(0);
+    crate::native_object_outcome::NativeObjectChange::decide(&service, op, now)
+        .unwrap()
+        .apply(&mut service)
+        .unwrap();
+    let mut manifest = fixture();
+    manifest.format_version = crate::chunk_manifest::CHUNK_MANIFEST_FORMAT;
+    manifest.initialized_log = None;
+    let outcome = ChunkOutcome::decide(None, manifest).unwrap();
+    let before = service.export_snapshot().to_bytes().unwrap();
+    assert!(prepare(&service, &outcome).is_err());
+    assert!(apply(&mut service, &outcome).is_err());
+    assert_eq!(service.export_snapshot().to_bytes().unwrap(), before);
+}
