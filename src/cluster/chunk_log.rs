@@ -20,6 +20,8 @@ use std::collections::VecDeque;
 use std::sync::mpsc;
 #[path = "identified_log_writer.rs"]
 mod identified_writer;
+#[path = "published_tail_reader.rs"]
+mod published_tail_reader;
 pub use identified_writer::AppendIdentity;
 use identified_writer::{PendingAttempt, PendingRecord};
 use std::time::{Duration, Instant};
