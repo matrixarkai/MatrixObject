@@ -115,3 +115,28 @@ native chunks use that parent's `logchunks` subdirectory. The lock is cooperativ
 do not implement directory ownership before accessing the same directory, and
 retain the lock file while its owner is active. Ownership adds no per-record bytes
 or additional sync barrier.
+
+## Separate-process recovery fixture
+
+Build `identified_log_process_probe` alongside the cluster binaries with
+`cargo build --release --features metadata-consensus --bins --example star_catalog --example identified_log_process_probe`.
+Use a fresh disposable cluster directory and three chunk-server endpoints.
+
+Run `identified_log_process_probe seed EP,EP,EP READY_FILE`. After READY_FILE appears,
+the replicas have committed a legacy prefix and an identified record, and the
+client waits without printing a successful result. A controller can kill that
+client and all three chunk-server processes, then restart the servers against their
+same journals and native log directories. A fresh client running
+`recover EP,EP,EP FENCE_READY_FILE` checks durable identity, rejects a different
+attempt with equal bytes, retries the exact attempt, commits a higher-epoch tail
+fence, and rejects a late old-epoch append. At FENCE_READY_FILE, kill that waiting
+client and all three data processes again. After restarting them, a fresh client
+running `append-second EP,EP,EP` must observe the persisted epoch fence and reject
+the old epoch before appending equal bytes as a distinct record. Restart the three
+servers a third time and run `verify EP,EP,EP` from another fresh client.
+
+The `old-probe EP,EP,EP` mode uses fresh older replicas: version-two queries and
+appends must be definitively refused while version-one writes remain usable.
+This fixture inspects storage and protocol behavior. It does not exercise gateway
+outcome settlement, acquire a metadata lease, inject a crash during publication,
+or measure latency or amplification.
