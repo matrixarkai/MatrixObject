@@ -2307,6 +2307,12 @@ jobs:
           cargo test --locked --lib log_chunk::identified_write_tests -- --test-threads=1 | tee /tmp/identified-log-writes.log
           grep -q '^running 12 tests$' /tmp/identified-log-writes.log
           grep -q '^test result: ok. 12 passed' /tmp/identified-log-writes.log
+      - name: whole object appends remain within one chunk
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::object_append_plan::tests -- --test-threads=1 2>&1 | tee /tmp/object-append-plan.log
+          grep -q '^running 9 tests$' /tmp/object-append-plan.log
+          grep -q '^test result: ok. 9 passed' /tmp/object-append-plan.log
       - name: identified native writers verify uncertain records before acknowledging
         run: |
           set -euo pipefail

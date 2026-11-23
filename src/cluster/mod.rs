@@ -258,6 +258,10 @@ pub use log_op::{LogOpReply, LogOpRequest};
 #[cfg(feature = "replica-server")]
 mod chunk_log;
 #[cfg(feature = "replica-server")]
+mod object_append_plan;
+#[cfg(feature = "replica-server")]
+pub use object_append_plan::{plan_object_append, ObjectAppendPlan, ObjectAppendPlanError};
+#[cfg(feature = "replica-server")]
 pub use chunk_log::{AppendIdentity, ChunkLogError, ChunkLogReader, ChunkLogWriter, LogCallError, SealedFooter, LOG_QUORUM, LOG_REPLICAS};
 #[cfg(all(test, feature = "replica-server"))]
 mod chunk_log_tests;
