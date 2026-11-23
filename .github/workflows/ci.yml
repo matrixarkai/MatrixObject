@@ -2307,6 +2307,12 @@ jobs:
           cargo test --locked --lib log_chunk::identified_write_tests -- --test-threads=1 | tee /tmp/identified-log-writes.log
           grep -q '^running 12 tests$' /tmp/identified-log-writes.log
           grep -q '^test result: ok. 12 passed' /tmp/identified-log-writes.log
+      - name: identified native writers verify uncertain records before acknowledging
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib identified_writer_tests -- --test-threads=1 | tee /tmp/identified-native-writer.log
+          grep -q '^running 13 tests$' /tmp/identified-native-writer.log
+          grep -q '^test result: ok. 13 passed' /tmp/identified-native-writer.log
       - name: unified LOG writer commands preserve catalog ownership and draft rollback
         run: |
           set -euo pipefail

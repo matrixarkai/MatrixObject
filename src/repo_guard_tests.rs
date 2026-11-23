@@ -764,6 +764,7 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRS-CHUNKSERVER-BOOTSTRAP1",
         "MOSRS-CONTROL-PLANE-CATALOG-ENDPOINT-SET1",
         "MOSRS-CONTROL-PLANE-CATALOG-SELECTION1",
+        "MOSRS-LOG-ATTEMPT1",
         "MOSRS-META-SERVICE-CONTROL3",
         "MOSRS-METASERVER-BOOTSTRAP1",
         "MOSRS-METASERVER-COORDINATOR-BOOTSTRAP1",
@@ -937,7 +938,7 @@ fn every_durable_format_constant_is_accounted_for() {
     );
     assert_eq!(
         found.len(),
-        115,
+        116,
         "the count is pinned as well, so a rename that happens to swap two names cannot pass"
     );
 }
