@@ -2,7 +2,17 @@
 // Copyright 2026 MatrixArkAI
 use crate::native_object_outcome::{native_operation::Operation, *};
 use crate::native_object_state::NativeReadPin;
-use crate::native_object_state_tests::{chunk, hash, publication, start};
+use crate::native_object_state_tests::{chunk, hash, publication, start as legacy_start};
+fn start(
+    id: u64,
+    before: Option<&crate::chunk_manifest::ChunkManifest>,
+    target: u64,
+) -> crate::native_object_state::NativeStageStart {
+    let mut s = legacy_start(id, before, target);
+    s.header.as_mut().unwrap().format_version =
+        crate::initialized_log_manifest::CHUNK_MANIFEST_PHYSICAL_FORMAT;
+    s
+}
 use crate::placement_outcome::PlacementOutcome;
 use crate::MatrixMetaService;
 
@@ -188,7 +198,7 @@ fn rejected_stage_commands_leave_full_metadata_snapshot_unchanged() {
             }
         }
         let change = NativeObjectChange {
-            version: 1,
+            version: 2,
             now_ms: 1001,
             operation: Some(Operation::Extend(command)),
         };
@@ -210,7 +220,7 @@ fn outcome_version_and_envelope_fields_are_exclusive() {
         match field {
             0 => bad.version = 17,
             1 => bad.native = None,
-            2 => bad.native.as_mut().unwrap().version = 2,
+            2 => bad.native.as_mut().unwrap().version = 3,
             3 => bad.native.as_mut().unwrap().now_ms = 0,
             4 => bad.after_index += 1,
             _ => bad.forget = true,

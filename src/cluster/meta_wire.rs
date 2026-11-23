@@ -121,6 +121,7 @@ pub enum MetaRequestCode {
     ReadManifestRange = 100,
     /// List a page of the chunk manifest catalog.
     ListChunkManifests = 101,
+    NativeObject = 102,
 }
 
 impl MetaRequestCode {
@@ -168,6 +169,7 @@ impl MetaRequestCode {
             99 => Some(MetaRequestCode::ReadChunkManifest),
             100 => Some(MetaRequestCode::ReadManifestRange),
             101 => Some(MetaRequestCode::ListChunkManifests),
+            102 => Some(MetaRequestCode::NativeObject),
             _ => None,
         }
     }
@@ -208,6 +210,7 @@ impl MetaRequestCode {
             MetaRequestCode::PlanAppendRoutes,
             MetaRequestCode::Features,
             MetaRequestCode::LogChunk,
+            MetaRequestCode::NativeObject,
             MetaRequestCode::PublishChunkManifest,
             MetaRequestCode::ReadChunkManifest,
             MetaRequestCode::ReadManifestRange,

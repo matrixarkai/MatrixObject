@@ -31,6 +31,7 @@ pub(crate) fn fixture() -> ChunkManifest {
                 replicas: (0..3)
                     .map(|i| InitializedReplica {
                         member_id: format!("member-{i}"),
+                        storage_incarnation: Vec::new(),
                         initialization: vec![i + 2; 16],
                     })
                     .collect(),

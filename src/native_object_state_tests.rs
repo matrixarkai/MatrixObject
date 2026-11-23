@@ -76,6 +76,13 @@ pub(crate) fn chunk(
             replicas: (0..3)
                 .map(|i| InitializedReplica {
                     member_id: format!("member-{i}"),
+                    storage_incarnation: if s.header.as_ref().unwrap().format_version
+                        == CHUNK_MANIFEST_PHYSICAL_FORMAT
+                    {
+                        vec![40 + i; 16]
+                    } else {
+                        Vec::new()
+                    },
                     initialization: vec![(allocation as u8).wrapping_mul(3).wrapping_add(i); 16],
                 })
                 .collect(),
@@ -412,7 +419,7 @@ fn native_service() -> crate::MatrixMetaService {
     service
 }
 #[test]
-fn metadata_snapshot_25_preserves_staged_ownership_and_immutable_captures() {
+fn metadata_snapshot_26_preserves_staged_ownership_and_immutable_captures() {
     let mut service = native_service();
     let s = start(10, None, 4);
     let owned = chunk(&s, 11, 0, 4, 0);
@@ -427,7 +434,7 @@ fn metadata_snapshot_25_preserves_staged_ownership_and_immutable_captures() {
     service.placement_commit_index = 11;
     let captured = service.export_snapshot();
     let bytes = captured.to_bytes().unwrap();
-    assert!(bytes.windows(11).any(|b| b == b"MOSRSMETA25"));
+    assert!(bytes.windows(11).any(|b| b == b"MOSRSMETA26"));
     let decoded = crate::MetaSnapshot::from_bytes(&bytes).unwrap();
     assert_eq!(decoded, captured);
     let streamed =
@@ -520,8 +527,8 @@ fn native_snapshot_rejects_downgraded_and_future_floor_and_corrupted_state_blob(
         .unwrap();
     service.placement_commit_index = 10;
     let bytes = service.export_snapshot().to_bytes().unwrap();
-    let magic = bytes.windows(11).position(|b| b == b"MOSRSMETA25").unwrap();
-    for last in [b'4', b'6'] {
+    let magic = bytes.windows(11).position(|b| b == b"MOSRSMETA26").unwrap();
+    for last in [b'4', b'5', b'7'] {
         let mut bad = bytes.clone();
         bad[magic + 10] = last;
         assert!(crate::MetaSnapshot::from_bytes(&bad).is_err());
@@ -637,6 +644,7 @@ fn many_read_pins_encode_one_large_retained_manifest_per_generation() {
                         key.extend_from_slice(&slot.to_le_bytes());
                         InitializedReplica {
                             member_id: format!("member-{slot}"),
+                            storage_incarnation: Vec::new(),
                             initialization: crate::chunk_integrity::sha256(&key)[..16].to_vec(),
                         }
                     })

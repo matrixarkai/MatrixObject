@@ -204,7 +204,7 @@ impl NativeObjectChange {
             .checked_add(1)
             .ok_or_else(|| invalid("native metadata position exhausted"))?;
         let change = Self {
-            version: 1,
+            version: 2,
             now_ms,
             operation: Some(operation),
         };
@@ -215,7 +215,7 @@ impl NativeObjectChange {
             Some(crate::object_manifest::admission_cap()),
         )?;
         let outcome = crate::placement_outcome::PlacementOutcome {
-            version: 18,
+            version: 19,
             before_index,
             after_index,
             native: Some(change),
@@ -225,7 +225,7 @@ impl NativeObjectChange {
         Ok(outcome)
     }
     pub fn validate(&self, before: u64, after: u64) -> Result<(), ObjectError> {
-        if self.version != 1
+        if !matches!(self.version, 1 | 2)
             || self.now_ms == 0
             || before == 0
             || before.checked_add(1) != Some(after)
@@ -243,6 +243,14 @@ impl NativeObjectChange {
                     .as_ref()
                     .ok_or_else(|| invalid("native begin lacks its stage"))?;
                 start.validate()?;
+                if (self.version == 2)
+                    != (start.header()?.format_version
+                        == crate::initialized_log_manifest::CHUNK_MANIFEST_PHYSICAL_FORMAT)
+                {
+                    return Err(invalid(
+                        "native command version does not bind physical member identities",
+                    ));
+                }
                 prior_lease(command.expected_lease.as_ref(), before)?;
                 if start.stage_id != after
                     || start.writer_epoch != after
@@ -265,6 +273,17 @@ impl NativeObjectChange {
                     .chunk
                     .as_ref()
                     .ok_or_else(|| invalid("native extension lacks its chunk"))?;
+                if chunk.initialization.as_ref().is_some_and(|c| {
+                    c.replicas.iter().any(|r| {
+                        (self.version == 2)
+                            != (r.storage_incarnation.len() == 16
+                                && r.storage_incarnation.iter().any(|b| *b != 0))
+                    })
+                }) {
+                    return Err(invalid(
+                        "native extension version does not bind physical members",
+                    ));
+                }
                 if chunk.allocation_id != after
                     || chunk.extent.is_none()
                     || chunk.initialization.is_none()
@@ -287,6 +306,14 @@ impl NativeObjectChange {
                     .as_ref()
                     .ok_or_else(|| invalid("native publication lacks its manifest"))?;
                 manifest.validate()?;
+                if (self.version == 2)
+                    != (manifest.format_version
+                        == crate::initialized_log_manifest::CHUNK_MANIFEST_PHYSICAL_FORMAT)
+                {
+                    return Err(invalid(
+                        "native publication version does not bind physical members",
+                    ));
+                }
                 prior_lease(command.expected_lease.as_ref(), before)?;
                 if manifest.deleted || manifest.initialized_log.is_none() {
                     return Err(invalid("native publication is not initialized live data"));
@@ -400,6 +427,46 @@ impl NativeObjectChange {
             return Err(refused(
                 "native outcome does not follow the activated metadata state",
             ));
+        }
+        if self.version == 1 {
+            let physical = |m: &ChunkManifest| {
+                m.format_version == crate::initialized_log_manifest::CHUNK_MANIFEST_PHYSICAL_FORMAT
+            };
+            let state = &service.native_objects;
+            let stage_id = match self.operation.as_ref().unwrap() {
+                Operation::Extend(c) => c.stage.as_ref().map(|s| s.stage_id),
+                Operation::Publish(c) => c.stage.as_ref().map(|s| s.stage_id),
+                Operation::Abort(c) => Some(c.stage_id),
+                Operation::ExpireStage(c) => Some(c.stage_id),
+                _ => None,
+            };
+            let pin_id = match self.operation.as_ref().unwrap() {
+                Operation::RenewPin(c) => Some(c.pin_id),
+                Operation::ClosePin(c) | Operation::ExpirePin(c) => Some(c.pin_id),
+                _ => None,
+            };
+            let object = match self.operation.as_ref().unwrap() {
+                Operation::Begin(c) => Some(c.start.as_ref().unwrap().header()?.object_id()),
+                Operation::OpenPin(c) => Some(names(&c.bucket, &c.key)?),
+                Operation::RenewWriter(c) => Some(names(&c.bucket, &c.key)?),
+                Operation::ReleaseWriter(c) => Some(names(&c.bucket, &c.key)?),
+                _ => None,
+            };
+            if stage_id
+                .and_then(|id| state.stage_start(id))
+                .is_some_and(|s| physical(s.header.as_ref().unwrap()))
+                || pin_id
+                    .and_then(|id| state.pin(id))
+                    .and_then(|p| state.pinned_manifest(p.pin_id, p.expires_at_ms - 1).ok())
+                    .is_some_and(|m| physical(&m))
+                || object
+                    .and_then(|id| service.chunk_catalog.get(&id))
+                    .is_some_and(|m| physical(m))
+            {
+                return Err(refused(
+                    "physical member state requires native command version2",
+                ));
+            }
         }
         let mut draft = NativeDraft {
             state: service.native_objects.clone(),

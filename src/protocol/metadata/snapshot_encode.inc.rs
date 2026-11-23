@@ -42,7 +42,7 @@ impl MetaSnapshot {
             let has_features = !self.cluster_features.is_default() || has_leases;
             let has_group_bytes = has_group_bytes || has_features;
             let version = if native_objects {
-                "MOSRSMETA25"
+                "MOSRSMETA26"
             } else if unified_writers {
                 "MOSRSMETA24"
             } else if has_chunk_catalog {

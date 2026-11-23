@@ -364,3 +364,7 @@ pub use wal_zero_fill::{
     validate_wal_zero_fill_bytes, wal_zero_fill_from_env, WAL_ZERO_FILL_ENV,
     WAL_ZERO_FILL_MAX_BYTES, WAL_ZERO_FILL_MIN_BYTES,
 };
+
+pub mod native_object_commands;
+
+pub mod native_object_client;

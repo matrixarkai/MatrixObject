@@ -875,6 +875,12 @@ fn apply(
             }
             None => return Ok(super::features_commands::reply(&guard.service.cluster_features)),
         },
+        MetaRequest::NativeObject(command) if !command.is_read() => {
+            if guard.storage.is_none() {
+                return Err(ObjectError::PreconditionFailed("native object mutation requires durable metadata storage".into()));
+            }
+            Some(super::native_object_commands::prepare(&guard.service, &guard.groups, command, max_payload_bytes, super::staged_lease_sweeper::now_ms()?)?)
+        }
         MetaRequest::LogChunk(command) if !command.is_read() => {
             match super::log_chunk_commands::prepare(&guard.service, &guard.groups, command, super::staged_lease_sweeper::now_ms()?)? {
                 super::log_chunk_commands::Decision::Change(outcome, reply) => Some((outcome, reply)),
@@ -1217,6 +1223,13 @@ pub(super) fn apply_with_groups(
             super::chunk_manifest_command::Decision::Unchanged(manifest) => Ok(MetaReply::ChunkManifest(manifest)),
         };
     }
+    if let MetaRequest::NativeObject(command) = &request {
+        if !command.is_read() {
+            let (outcome, reply) = super::native_object_commands::prepare(service, groups, command, limit, super::staged_lease_sweeper::now_ms()?)?;
+            outcome.apply(service)?;
+            return Ok(reply);
+        }
+    }
     if let MetaRequest::LogChunk(command) = &request {
         if !command.is_read() {
             return match super::log_chunk_commands::prepare(service, groups, command, super::staged_lease_sweeper::now_ms()?)? {
@@ -1476,6 +1489,8 @@ pub(super) fn apply_to_meta(
     match request {
         MetaRequest::Features(command) if command.is_read() => super::features_commands::read(guard, &command),
         MetaRequest::Features(_) => Err(ObjectError::InvalidArgument("feature changes require catalog dispatch".into())),
+        MetaRequest::NativeObject(command) if command.is_read() => super::native_object_commands::read(guard, &command, max_payload_bytes, super::staged_lease_sweeper::now_ms()?),
+        MetaRequest::NativeObject(_) => Err(ObjectError::InvalidArgument("native object mutations require catalog dispatch".into())),
         MetaRequest::LogChunk(command) if command.is_read() => super::log_chunk_commands::read(guard, &command),
         MetaRequest::LogChunk(_) => Err(ObjectError::InvalidArgument("log chunk changes require catalog dispatch".into())),
         MetaRequest::PublishChunkManifest(_) => Err(ObjectError::InvalidArgument("chunk manifest publication requires durable dispatch".into())),
@@ -2283,3 +2298,7 @@ mod snapshot_bound_tests {
         assert!(bound.admits_without_measuring(1));
     }
 }
+
+#[cfg(all(test, feature = "metadata-consensus"))]
+#[path = "native_object_path_tests.rs"]
+mod native_object_path_tests;

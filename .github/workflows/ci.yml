@@ -2360,6 +2360,28 @@ jobs:
           grep -q '^test result: ok. 11 passed' /tmp/native-outcomes.log
           cargo test --locked --lib cluster::meta_snapshot_file::tests::native_journal:: -- --test-threads=1 2>&1 | tee /tmp/native-journal.log
           grep -q '^test result: ok. 1 passed' /tmp/native-journal.log
+      - name: physical metadata bindings and pinned readers
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib physical_member_binding_tests:: -- --test-threads=1 2>&1 | tee /tmp/physical-bindings.log
+          grep -q '^test result: ok. 6 passed' /tmp/physical-bindings.log
+          cargo test --locked --lib cluster::chunk_log_tests::physical_pinned_reader_tests:: -- --test-threads=1 2>&1 | tee /tmp/physical-reader.log
+          grep -q '^test result: ok. 3 passed' /tmp/physical-reader.log
+      - name: native object RPC admission and binary receipts
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --lib native_object_commands::tests -- --test-threads=1 2>&1 | tee /tmp/native-object-rpc.log
+          grep -q '^test result: ok. 4 passed' /tmp/native-object-rpc.log
+      - name: native object Raft batches restore uncommitted state
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --lib native_object_batch_tests -- --test-threads=1 2>&1 | tee /tmp/native-object-batches.log
+          grep -q '^test result: ok. 1 passed' /tmp/native-object-batches.log
+      - name: initialized objects survive metadata and data process restarts
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --lib native_object_path_tests -- --test-threads=1 2>&1 | tee /tmp/native-object-processes.log
+          grep -q '^test result: ok. 1 passed; 0 failed; 1 ignored' /tmp/native-object-processes.log
       - name: physical storage authority and recovery
         run: |
           set -euo pipefail

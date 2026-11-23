@@ -29,7 +29,7 @@ impl MetaSnapshot {
         let version = magic
             .strip_prefix("MOSRSMETA")
             .and_then(|suffix| suffix.parse::<u64>().ok())
-            .filter(|version| (1..=25).contains(version))
+            .filter(|version| (1..=26).contains(version))
             .ok_or_else(|| {
                 ObjectError::Corruption("metadata snapshot byte magic mismatch".to_string())
             })?;
@@ -38,8 +38,8 @@ impl MetaSnapshot {
                 "metadata snapshot byte magic mismatch".to_string(),
             ));
         }
-        if cursor.stream.is_some() && !(18..=25).contains(&version) {
-            return Err(ObjectError::Corruption("streamed metadata snapshot needs version 18 through 25".into()));
+        if cursor.stream.is_some() && !(18..=26).contains(&version) {
+            return Err(ObjectError::Corruption("streamed metadata snapshot needs version 18 through 26".into()));
         }
         let has_transaction_read_versions = version >= 2;
         let has_tombstone_compaction_counters = version >= 3;
@@ -371,7 +371,7 @@ impl MetaSnapshot {
         if (version >= 24) != cluster_features.has(crate::cluster_features::FEATURE_UNIFIED_LOG_WRITERS) {
             return Err(ObjectError::Corruption("unified writer snapshot reader floor mismatch".into()));
         }
-        if (version == 25) != cluster_features.has(crate::cluster_features::FEATURE_NATIVE_OBJECT_STATE) {
+        if (version >= 25) != cluster_features.has(crate::cluster_features::FEATURE_NATIVE_OBJECT_STATE) {
             return Err(ObjectError::Corruption("native object snapshot reader floor mismatch".into()));
         }
         let writer_leases = if version >= 22 {
@@ -409,6 +409,9 @@ impl MetaSnapshot {
             let bytes = cursor.read_owned_blob(64 * 1024 * 1024 + 12)?;
             crate::native_object_state::NativeObjectState::from_bytes(&bytes)?
         } else { Default::default() };
+        if version<26 && (native_objects.has_physical_bindings() || chunk_catalog.iter().any(|(_,m)| m.format_version==crate::initialized_log_manifest::CHUNK_MANIFEST_PHYSICAL_FORMAT)) {
+            return Err(ObjectError::Corruption("physical storage bindings require snapshot26".into()));
+        }
         let checksum = cursor.read_string()?;
         let envelope_digest = cursor.prefix_digest();
         let envelope_checksum = cursor.read_string()?;

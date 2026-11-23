@@ -874,3 +874,6 @@ mod initialized_member_binding_tests;
 
 #[path = "storage_incarnation_tests.rs"]
 mod storage_incarnation_tests;
+
+#[path="physical_pinned_reader_tests.rs"]
+mod physical_pinned_reader_tests;
