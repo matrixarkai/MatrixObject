@@ -1,6 +1,6 @@
 # Whole object append placement and publication
 
-The object API accepts a request body up to 64 MiB. Native LOG chunks also hold up
+The default object API body limit is 64 MiB. Native LOG chunks also hold up
 to 64 MiB; the writer splits a body into records up to 1 MiB. Durable record
 prefixes alone do not establish atomic visibility of the original object request.
 
@@ -11,7 +11,11 @@ it fits. Otherwise it selects a new tail starting at the current object end.
 The caller seals the settled old tail and publishes the new empty tail before
 sending any record of the request. An exact fit stays in the current tail. A
 64 MiB request following a nonempty tail switches early and remains one request.
-No padding is required, and the request size limit remains unchanged.
+No padding is required. This helper does not set the object API body limit.
+`MATRIXOBJECT_MAX_BODY_BYTES` can exceed one chunk; such requests require a
+recoverable multi-chunk publication or staging mechanism. The planner refuses a
+request larger than its supplied chunk limit and must not be used to reduce an
+existing configured API limit. Larger configured requests remain integration work.
 
 The helper is allocation-free and checks the expected object end, invalid sizes,
 and logical overflow before selecting placement. Its tail length must describe
