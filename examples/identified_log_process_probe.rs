@@ -220,7 +220,7 @@ fn main() {
         "verify" => {
             verify(&endpoints, true);
             println!(
-                r#"{{"phase":"verified_after_second_restart","replicas":3,"identified_records_per_replica":2,"logical_length":{}}}"#,
+                r#"{{"phase":"verified_after_final_restart","replicas":3,"identified_records_per_replica":2,"logical_length":{}}}"#,
                 next + RECORD.len() as u64
             );
         }
