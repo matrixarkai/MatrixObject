@@ -31,7 +31,7 @@
 //! Any write or sync failure makes this handle unavailable until it is reopened and recovered.
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{File, OpenOptions};
-use std::io::{self, Seek, SeekFrom, Write};
+use std::io::{self, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -967,20 +967,19 @@ impl LogChunk {
     }
     fn write_record(&mut self, header: Header, data: &[u8]) -> Result<(), LogError> {
         let header_len = header.encoded_len();
-        let mut frame = Vec::with_capacity(header_len + data.len());
-        frame.extend_from_slice(&header.encode()[..header_len]);
-        frame.extend_from_slice(data);
-        // one write call per record: a crash leaves a prefix of it, never a hole inside it
+        let encoded = header.encode();
+        // Borrow the header and caller payload for one vectored write in the normal case.
+        // Short writes still leave only a prefix, and any failure poisons this handle.
         self.check_available()?;
         if let Err(error) = self
             .file
             .seek(SeekFrom::Start(self.file_len))
-            .and_then(|_| self.file.write_all(&frame))
+            .and_then(|_| record_write::write_record_parts(&mut self.file, &encoded[..header_len], data))
         {
             self.failed = true;
             return Err(error.into());
         }
-        self.file_len += frame.len() as u64;
+        self.file_len += (header_len + data.len()) as u64;
         Ok(())
     }
 
@@ -1563,3 +1562,6 @@ mod publication_tests;
 #[cfg(test)]
 #[path = "log_chunk_publication_write_tests.rs"]
 mod publication_write_tests;
+
+#[path = "log_chunk_record_write.rs"]
+mod record_write;
