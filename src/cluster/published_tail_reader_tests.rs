@@ -214,3 +214,87 @@ fn published_read_never_exposes_a_durable_unpublished_suffix() {
         .read_published(1, &[PUB_INIT; 3], 0, 4, || Ok(()))
         .is_err());
 }
+
+#[test]
+fn published_read_starts_every_probe_before_waiting_for_any_reply() {
+    let (_dir, nodes) = publication_cluster();
+    pub_init(&nodes);
+    for node in &nodes {
+        pub_append(node, 0, b"complete", 1, 8);
+    }
+    let gate = Arc::new((std::sync::Mutex::new(0usize), std::sync::Condvar::new()));
+    let proxies: Vec<_> = nodes
+        .iter()
+        .map(|node| {
+            FaultProxy::with_probe_gate(node.addr.clone(), 0, false, Some(Arc::clone(&gate)))
+        })
+        .collect();
+    let endpoints: Vec<_> = proxies.iter().map(|proxy| proxy.addr.clone()).collect();
+    let mut config = options();
+    config.read_timeout = Duration::from_secs(5);
+    let mut reader = ChunkLogReader::new(&endpoints, V, C, 1, config);
+    assert_eq!(
+        reader
+            .read_published(1, &[PUB_INIT; 3], 0, 8, || Ok(()))
+            .unwrap(),
+        b"complete"
+    );
+    assert_eq!(*gate.0.lock().unwrap(), 3);
+    let operations: Vec<_> = proxies
+        .iter()
+        .flat_map(|p| p.operations.lock().unwrap().clone())
+        .collect();
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|&&op| op == super::super::log_op::OP_TAIL)
+            .count(),
+        3
+    );
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|&&op| op == super::super::log_op::OP_READ)
+            .count(),
+        1
+    );
+    assert_eq!(operations.len(), 4);
+}
+
+#[test]
+fn published_probe_retries_only_a_reused_failed_connection() {
+    let (_dir, nodes) = publication_cluster();
+    pub_init(&nodes);
+    for node in &nodes {
+        pub_append(node, 0, b"complete", 1, 8);
+    }
+    let proxy = FaultProxy::new(nodes[2].addr.clone(), super::super::log_op::OP_TAIL, false);
+    let mut eps = endpoints(&nodes);
+    eps[2] = proxy.addr.clone();
+    proxy.armed.store(false, Ordering::SeqCst);
+    let mut reader = reader(&eps);
+    assert_eq!(
+        reader
+            .stabilize_publication(1, &[PUB_INIT; 3], || Ok(()))
+            .unwrap(),
+        8
+    );
+    proxy.operations.lock().unwrap().clear();
+    proxy.armed.store(true, Ordering::SeqCst);
+    assert_eq!(
+        reader
+            .stabilize_publication(1, &[PUB_INIT; 3], || Ok(()))
+            .unwrap(),
+        8
+    );
+    assert_eq!(
+        *proxy.operations.lock().unwrap(),
+        vec![super::super::log_op::OP_TAIL, super::super::log_op::OP_TAIL,]
+    );
+    assert_eq!(
+        reader
+            .stabilize_publication(1, &[PUB_INIT; 3], || Ok(()))
+            .unwrap(),
+        8
+    );
+}

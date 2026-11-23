@@ -108,6 +108,87 @@ impl ChunkLogReader {
         Ok(reply)
     }
 
+    // Start every qualified member's read-only probe before waiting for any reply.
+    // Still collect all replies: a later member may report a newer writer epoch.
+    fn publication_probes(&mut self) -> [Result<LogOpReply, LogCallError>; LOG_REPLICAS] {
+        let request = LogOpRequest::publication_probe(self.volume, self.chunk, self.generation);
+        let frame = std::sync::Arc::new(crate::cluster::message::encode_request(
+            &crate::cluster::message::ReplicaRequest::LogOp(request.clone()),
+        ));
+        let reused: [bool; LOG_REPLICAS] = std::array::from_fn(|i| self.clients[i].is_some());
+        let mut failures: [Option<LogCallError>; LOG_REPLICAS] = std::array::from_fn(|_| None);
+        for (member, failure) in failures.iter_mut().enumerate() {
+            if let Err(error) = self.client(member) {
+                *failure = Some(error);
+            }
+        }
+        let mut replies: [Option<Result<crate::cluster::message::ReplicaReply, ObjectError>>;
+            LOG_REPLICAS] = std::array::from_fn(|_| None);
+        {
+            let mut pending: [Option<crate::cluster::client::PendingReplicaReply<'_>>;
+                LOG_REPLICAS] = std::array::from_fn(|_| None);
+            for (member, client) in self.clients.iter_mut().enumerate() {
+                if failures[member].is_some() {
+                    continue;
+                }
+                match client.as_mut().unwrap().begin_encoded_before(
+                    crate::cluster::wire::RequestCode::LogOp,
+                    frame.clone(),
+                    self.options.deadline,
+                ) {
+                    Ok(reply) => pending[member] = Some(reply),
+                    Err(error) => replies[member] = Some(Err(error)),
+                }
+            }
+            while pending.iter().any(Option::is_some) {
+                let mut progress = false;
+                for (member, slot) in pending.iter_mut().enumerate() {
+                    let result = slot.as_mut().and_then(|reply| {
+                        let before = reply.transferred_bytes();
+                        let result = reply.poll();
+                        progress |= result.is_some() || reply.transferred_bytes() != before;
+                        result
+                    });
+                    if let Some(result) = result {
+                        replies[member] = Some(result);
+                        *slot = None;
+                    }
+                }
+                if !progress {
+                    crate::cluster::replica_set::wait_for_pending(&pending);
+                }
+            }
+        }
+        std::array::from_fn(|member| {
+            if let Some(error) = failures[member].take() {
+                return Err(error);
+            }
+            let result = match replies[member].take().unwrap() {
+                Ok(crate::cluster::message::ReplicaReply::LogOp(reply)) => Ok(reply),
+                Ok(_) => Err(LogCallError::Refused(ObjectError::Corruption(
+                    "unexpected publication probe reply".into(),
+                ))),
+                Err(error) => Err(LogCallError::from_object(
+                    error,
+                    self.clients[member]
+                        .as_ref()
+                        .unwrap()
+                        .needs_standalone_reconnect(),
+                )),
+            };
+            if matches!(result, Err(LogCallError::Transport(_))) {
+                self.clients[member] = None;
+                if reused[member] {
+                    // Match read_call: retry an idle connection once, only for this read.
+                    return self
+                        .client(member)
+                        .and_then(|client| client.log_call(request.clone()));
+                }
+            }
+            result
+        })
+    }
+
     fn stabilize_publication_inner(
         &mut self,
         epoch: u64,
@@ -137,9 +218,9 @@ impl ChunkLogReader {
             }
         }
         let mut answers = Vec::with_capacity(LOG_REPLICAS);
-        for (member, initialization) in initializations.iter().enumerate() {
-            let request = LogOpRequest::publication_probe(self.volume, self.chunk, self.generation);
-            let answer = match self.read_call(member, |c| c.log_call(request.clone())) {
+        for (member, result) in self.publication_probes().into_iter().enumerate() {
+            let initialization = initializations[member];
+            let answer = match result {
                 Ok(reply) => {
                     if reply.epoch > epoch {
                         return Err(ChunkLogError::StaleEpoch {
@@ -148,7 +229,7 @@ impl ChunkLogReader {
                     }
                     (reply.epoch == epoch
                         && reply
-                            .initialized_publication_prefix(*initialization)
+                            .initialized_publication_prefix(initialization)
                             .is_some())
                     .then_some(reply)
                 }
