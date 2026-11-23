@@ -98,11 +98,28 @@ fn refused(result: Result<matrixobjectstore_rs::cluster::LogOpReply, LogCallErro
         "expected definitive refusal: {result:?}"
     );
 }
+fn wait_at_barrier(path: &str, phase: &str, length: u64, epoch: u64) -> ! {
+    let ready = Path::new(path);
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(ready)
+        .unwrap();
+    file.write_all(format!(r#"{{"phase":"{phase}","pid":{},"durable_length":{length},"epoch":{epoch},"replicas":3}}"#,std::process::id()).as_bytes()).unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    let deadline = Instant::now() + Duration::from_secs(90);
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("controller did not terminate the client at {phase}");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     assert!(
         args.len() >= 3,
-        "usage: identified_log_process_probe seed|recover|verify|old-probe EP,EP,EP [READY_FILE]"
+        "usage: identified_log_process_probe seed|recover|append-second|verify|old-probe EP,EP,EP [READY_FILE]"
     );
     let endpoints: Vec<&str> = args[2].split(',').collect();
     assert_eq!(endpoints.len(), 3);
@@ -134,22 +151,10 @@ fn main() {
                     next
                 );
             }
-            let ready = Path::new(&args[3]);
-            let mut f = std::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(ready)
-                .unwrap();
-            f.write_all(format!(r#"{{"phase":"replicas_committed_client_waiting","pid":{},"durable_length":{},"replicas":3}}"#, std::process::id(), next).as_bytes()).unwrap();
-            f.sync_all().unwrap();
-            drop(f);
-            let deadline = Instant::now() + Duration::from_secs(90);
-            while Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            panic!("controller did not terminate the client at its barrier");
+            wait_at_barrier(&args[3], "replicas_committed_client_waiting", next, 7);
         }
         "recover" => {
+            assert_eq!(args.len(), 4);
             verify(&endpoints, false);
             for endpoint in &endpoints {
                 let mut client = connect(endpoint);
@@ -180,6 +185,25 @@ fn main() {
                         .record_present
                 );
             }
+            wait_at_barrier(&args[3], "replicas_fenced_client_waiting", next, 8);
+        }
+        "append-second" => {
+            verify(&endpoints, false);
+            for endpoint in &endpoints {
+                let mut client = connect(endpoint);
+                let tail = client.log_tail(VOLUME, CHUNK, GENERATION).unwrap();
+                assert_eq!((tail.epoch, tail.durable_length), (8, next));
+                assert!(
+                    !client
+                        .log_identity(VOLUME, CHUNK, GENERATION, next)
+                        .unwrap()
+                        .record_present
+                );
+                assert_eq!(
+                    client.log_call(append(next, 7, 2)).unwrap_err(),
+                    LogCallError::StaleEpoch { current: 8 }
+                );
+            }
             for endpoint in &endpoints {
                 let mut client = connect(endpoint);
                 assert_eq!(
@@ -189,7 +213,7 @@ fn main() {
             }
             verify(&endpoints, true);
             println!(
-                r#"{{"phase":"recovered","replicas":3,"wrong_attempt_refusals":3,"exact_retries":3,"late_epoch_refusals":3,"logical_length":{}}}"#,
+                r#"{{"phase":"appended_after_fence_restart","replicas":3,"late_epoch_refusals_after_restart":3,"logical_length":{}}}"#,
                 next + RECORD.len() as u64
             );
         }

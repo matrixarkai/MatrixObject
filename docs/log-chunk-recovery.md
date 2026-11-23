@@ -126,11 +126,14 @@ Run `identified_log_process_probe seed EP,EP,EP READY_FILE`. After READY_FILE ap
 the replicas have committed a legacy prefix and an identified record, and the
 client waits without printing a successful result. A controller can kill that
 client and all three chunk-server processes, then restart the servers against their
-same journals and native log directories. A fresh client running `recover EP,EP,EP`
-checks durable identity, rejects a different attempt with equal bytes, retries the
-exact attempt, commits a higher-epoch tail fence, rejects a late old-epoch append,
-and appends equal bytes as a distinct record. Restart the three servers again and
-run `verify EP,EP,EP` from another fresh client.
+same journals and native log directories. A fresh client running
+`recover EP,EP,EP FENCE_READY_FILE` checks durable identity, rejects a different
+attempt with equal bytes, retries the exact attempt, commits a higher-epoch tail
+fence, and rejects a late old-epoch append. At FENCE_READY_FILE, kill that waiting
+client and all three data processes again. After restarting them, a fresh client
+running `append-second EP,EP,EP` must observe the persisted epoch fence and reject
+the old epoch before appending equal bytes as a distinct record. Restart the three
+servers a third time and run `verify EP,EP,EP` from another fresh client.
 
 The `old-probe EP,EP,EP` mode uses fresh older replicas: version-two queries and
 appends must be definitively refused while version-one writes remain usable.
