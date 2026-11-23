@@ -33,13 +33,16 @@ impl MetaSnapshot {
             // Version 23 is only written while a chunk manifest catalog is not empty; it carries
             // everything version 22 does, the lease table included even when empty, and then the
             // catalog image.
-            let has_chunk_catalog = !self.chunk_catalog.is_empty();
+            let unified_writers = self.cluster_features.has(crate::cluster_features::FEATURE_UNIFIED_LOG_WRITERS);
+            let has_chunk_catalog = !self.chunk_catalog.is_empty() || unified_writers;
             let has_leases = !self.writer_leases.is_empty() || has_chunk_catalog;
             // Version 22 is only written while a writer lease exists; it carries everything
             // version 21 does, the feature set included even when empty.
             let has_features = !self.cluster_features.is_default() || has_leases;
             let has_group_bytes = has_group_bytes || has_features;
-            let version = if has_chunk_catalog {
+            let version = if unified_writers {
+                "MOSRSMETA24"
+            } else if has_chunk_catalog {
                 "MOSRSMETA23"
             } else if has_leases {
                 "MOSRSMETA22"

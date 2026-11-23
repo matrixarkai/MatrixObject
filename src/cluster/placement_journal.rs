@@ -134,6 +134,59 @@ impl PlacementJournal {
 mod tests {
     use super::*;
     #[test]
+    fn unified_writer_journal_recovers_both_tables_and_refuses_unactivated_replay() {
+        let base = crate::chunk_writer_outcome_tests::service();
+        let outcome = crate::chunk_writer_outcome_tests::grant();
+        let snapshot = base.export_snapshot().to_bytes().unwrap();
+        let record = PlacementJournal::record(&outcome).unwrap();
+        let path =
+            std::env::temp_dir().join(format!("unified-writer-journal-{}", std::process::id()));
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        drop(file);
+        let mut expected = base.clone();
+        outcome.apply(&mut expected).unwrap();
+        for cut in 0..=record.len() {
+            std::fs::write(&path, &record[..cut]).unwrap();
+            let mut recovered = MatrixMetaService::new();
+            let decoded = crate::MetaSnapshot::from_bytes(&snapshot).unwrap();
+            recovered.install_snapshot(decoded.clone()).unwrap();
+            recovered.install_placement_roster(&decoded).unwrap();
+            drop(PlacementJournal::open(&path, &mut recovered, true).unwrap());
+            let want = if cut == record.len() {
+                &expected
+            } else {
+                &base
+            };
+            assert_eq!(recovered.chunk_catalog, want.chunk_catalog);
+            assert_eq!(recovered.writer_leases, want.writer_leases);
+            assert_eq!(
+                recovered.placement_commit_index,
+                want.placement_commit_index
+            );
+            assert!(recovered.object_manifests.is_empty());
+        }
+        std::fs::write(&path, &record).unwrap();
+        let mut unactivated = base.clone();
+        unactivated.cluster_features.raised = 0;
+        let before = unactivated.export_snapshot();
+        assert!(PlacementJournal::open(&path, &mut unactivated, true).is_err());
+        assert_eq!(unactivated.export_snapshot(), before);
+        assert_eq!(std::fs::read(&path).unwrap(), record);
+        std::fs::write(&path, []).unwrap();
+        let mut original = base.clone();
+        let mut journal = PlacementJournal::open(&path, &mut original, true).unwrap();
+        journal.append(&outcome).unwrap();
+        drop(journal);
+        let mut recovered = base;
+        drop(PlacementJournal::open(&path, &mut recovered, true).unwrap());
+        assert_eq!(recovered.export_snapshot(), expected.export_snapshot());
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
     fn placement_journal_rejects_corruption_and_recovers_every_torn_tail() {
         let base = MatrixMetaService::new().placement_commit_index;
         let first = PlacementOutcome {
@@ -155,6 +208,7 @@ mod tests {
             features: None,
             log_chunk: None,
             lease_batch: None,
+            chunk_writer: None,
             forget: false,
         };
         let second = PlacementOutcome {

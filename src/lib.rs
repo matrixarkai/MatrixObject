@@ -8,6 +8,9 @@ pub mod chunk_catalog;
 mod chunk_catalog_snapshot_tests;
 pub mod chunk_manifest;
 pub mod chunk_namespace_fence;
+pub mod chunk_writer_outcome;
+#[cfg(test)]
+mod chunk_writer_outcome_tests;
 #[cfg(test)]
 mod chunked_manifest_tests;
 #[cfg(any(feature = "replica-server", feature = "meta-server"))]
