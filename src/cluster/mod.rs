@@ -254,7 +254,7 @@ mod replica_payload_relocation;
 mod log_op;
 #[cfg(feature = "replica-server")]
 mod log_chunk_store;
-pub use log_op::{LogOpReply, LogOpRequest};
+pub use log_op::{LogOpReply, LogOpRequest, PublishedPrefixObservation};
 #[cfg(feature = "replica-server")]
 mod chunk_log;
 #[cfg(feature = "replica-server")]

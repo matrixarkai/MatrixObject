@@ -378,11 +378,11 @@ impl LogChunkStore {
         let Some(chunk) = self.chunk(request, request.is_mutation())?
         else {
             // a chunk this replica has never held: it is empty, and asking creates nothing
-            return Ok(LogOpReply::default());
+            return Ok(LogOpReply { publication_supported: request.version == 3, ..LogOpReply::default() });
         };
-        // Current wire versions cannot express object publication boundaries. Even reads must
-        // refuse these files rather than exposing an unpublished physical prefix.
-        if chunk.has_publication_records() {
+        // Wire versions 1 and 2 cannot express object publication boundaries. Their reads
+        // must refuse these files rather than exposing an unpublished physical prefix.
+        if chunk.has_publication_records() && request.version != 3 {
             return Err(ObjectError::PreconditionFailed(
                 "publication-aware log protocol is required".into(),
             ));
@@ -440,29 +440,40 @@ impl LogChunkStore {
                 .map(|d| d.to_vec())
                 .unwrap_or_default(),
             data: Vec::new(),
+            published_length: if request.version == 3 { chunk.durable_published_length().map_err(to_object_error)? } else { 0 },
+            publication_mode: request.version == 3 && chunk.has_publication_records(),
+            publication_supported: request.version == 3,
+            chunk_present: request.version == 3,
             ..Default::default()
         };
-        if request.op == OP_IDENTITY {
-            if let Some(record) = chunk.append_record_identity(request.offset).map_err(to_object_error)? {
-                reply.record_present = true;
-                reply.record_offset = record.offset;
-                reply.record_length = record.length;
-                if let Some(tag) = record.attempt_tag {
-                    reply.record_identified = true;
-                    reply.attempt_hi = u64::from_le_bytes(tag[..8].try_into().unwrap());
-                    reply.attempt_lo = u64::from_le_bytes(tag[8..].try_into().unwrap());
-                }
+        let record = if request.version == 3 && request.op == OP_TAIL {
+            chunk.durable_publication_record().map_err(to_object_error)?
+        } else if request.op == OP_IDENTITY {
+            chunk.durable_record_observation(request.offset).map_err(to_object_error)?
+        } else { None };
+        if let Some(record) = record {
+            reply.record_present = true;
+            reply.record_offset = record.identity.offset;
+            reply.record_length = record.identity.length;
+            if let Some(tag) = record.identity.attempt_tag {
+                reply.record_identified = true;
+                reply.attempt_hi = u64::from_le_bytes(tag[..8].try_into().unwrap());
+                reply.attempt_lo = u64::from_le_bytes(tag[8..].try_into().unwrap());
+            }
+            if request.version == 3 {
+                reply.record_publication = record.published_length.is_some();
+                reply.record_published_length = record.published_length.unwrap_or(0);
             }
         }
         if request.op == OP_READ {
             // never above the durable length: an applied byte that no sync has covered is invisible
             let wanted =
-                (request.length as u64).min(durable.saturating_sub(request.offset)) as usize;
+                (request.length as u64).min((if request.version == 3 { reply.published_length } else { durable }).saturating_sub(request.offset)) as usize;
             let mut data = Vec::new();
             let chunk = self.chunks.get(&key).expect("the chunk was opened above");
-            chunk
-                .read_into(request.offset, wanted, &mut self.cache, &mut data)
-                .map_err(to_object_error)?;
+            if wanted != 0 || request.version != 3 {
+                chunk.read_into(request.offset, wanted, &mut self.cache, &mut data).map_err(to_object_error)?;
+            }
             reply.data = data;
         }
         Ok(reply)
@@ -484,3 +495,7 @@ mod directory_ownership_tests;
 #[cfg(test)]
 #[path = "log_chunk_publication_protocol_tests.rs"]
 mod publication_protocol_tests;
+
+#[cfg(test)]
+#[path = "log_publication_query_tests.rs"]
+mod publication_query_tests;
