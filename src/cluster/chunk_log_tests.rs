@@ -635,6 +635,14 @@ pub(super) struct FaultProxy {
 }
 impl FaultProxy {
     pub(super) fn new(target: String, operation: u32, drop_reply: bool) -> Self {
+        Self::with_probe_gate(target, operation, drop_reply, None)
+    }
+    fn with_probe_gate(
+        target: String,
+        operation: u32,
+        drop_reply: bool,
+        probe_gate: Option<Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>>,
+    ) -> Self {
         use prost::Message as _;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -666,6 +674,7 @@ impl FaultProxy {
                 }
                 let fault = Arc::clone(&fault);
                 let recorded = Arc::clone(&recorded);
+                let probe_gate = probe_gate.clone();
                 scope.spawn(move || {
                     let mut transfer = || -> std::io::Result<()> {
                         loop {
@@ -678,6 +687,17 @@ impl FaultProxy {
                             let seen = (header[1] == crate::cluster::wire::RequestCode::LogOp as u8)
                                 .then(|| LogOpRequest::decode(body.as_slice()).ok().map(|request| request.op)).flatten();
                             if let Some(op) = seen { recorded.lock().unwrap().push(op); }
+                            if seen == Some(super::log_op::OP_TAIL) {
+                                if let Some(gate) = &probe_gate {
+                                    let mut count = gate.0.lock().unwrap();
+                                    *count += 1;
+                                    gate.1.notify_all();
+                                    let (count, _) = gate.1.wait_timeout_while(
+                                        count, Duration::from_secs(3), |count| *count < 3,
+                                    ).unwrap();
+                                    if *count < 3 { return Err(std::io::ErrorKind::TimedOut.into()); }
+                                }
+                            }
                             let selected = seen == Some(operation) && fault.swap(false, Ordering::SeqCst);
                             if selected && !drop_reply { return Ok(()); }
                             upstream.write_all(&header)?;
