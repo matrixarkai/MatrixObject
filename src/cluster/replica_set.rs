@@ -217,7 +217,7 @@ where
 }
 
 #[cfg(unix)]
-fn wait_for_pending(pending: &[Option<super::client::PendingReplicaReply<'_>>]) {
+pub(super) fn wait_for_pending(pending: &[Option<super::client::PendingReplicaReply<'_>>]) {
     use std::os::fd::AsRawFd;
 
     let mut deadline = None;
@@ -280,7 +280,7 @@ fn wait_for_pending(pending: &[Option<super::client::PendingReplicaReply<'_>>]) 
 }
 
 #[cfg(not(unix))]
-fn wait_for_pending(_: &[Option<super::client::PendingReplicaReply<'_>>]) {
+pub(super) fn wait_for_pending(_: &[Option<super::client::PendingReplicaReply<'_>>]) {
     std::thread::sleep(std::time::Duration::from_millis(1));
 }
 
