@@ -380,6 +380,13 @@ impl LogChunkStore {
             // a chunk this replica has never held: it is empty, and asking creates nothing
             return Ok(LogOpReply::default());
         };
+        // Current wire versions cannot express object publication boundaries. Even reads must
+        // refuse these files rather than exposing an unpublished physical prefix.
+        if chunk.has_publication_records() {
+            return Err(ObjectError::PreconditionFailed(
+                "publication-aware log protocol is required".into(),
+            ));
+        }
         match request.op {
             OP_APPEND => {
                 if let Some(tag) = request.attempt_tag() {
@@ -473,3 +480,7 @@ mod generation_fencing_tests;
 #[cfg(test)]
 #[path = "log_chunk_directory_ownership_tests.rs"]
 mod directory_ownership_tests;
+
+#[cfg(test)]
+#[path = "log_chunk_publication_protocol_tests.rs"]
+mod publication_protocol_tests;
