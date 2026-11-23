@@ -364,6 +364,12 @@ pub struct AppendRecordIdentity {
     pub attempt_tag: Option<[u8; 16]>,
 }
 
+struct PendingRecord {
+    data: Vec<u8>,
+    attempt_tag: Option<[u8; 16]>,
+    epoch: u64,
+}
+
 pub struct LogChunk {
     file: File,
     failed: bool,
@@ -385,7 +391,7 @@ pub struct LogChunk {
     file_len: u64,
     /// The length that has been synced.
     durable_length: u64,
-    pending: BTreeMap<u64, Vec<u8>>,
+    pending: BTreeMap<u64, PendingRecord>,
     pending_bytes: usize,
     max_pending_records: usize,
     max_pending_bytes: usize,
@@ -829,6 +835,14 @@ impl LogChunk {
         &self,
         offset: u64,
     ) -> Result<Option<AppendRecordIdentity>, LogError> {
+        self.record_identity(offset, true)
+    }
+
+    fn record_identity(
+        &self,
+        offset: u64,
+        require_durable: bool,
+    ) -> Result<Option<AppendRecordIdentity>, LogError> {
         self.check_available()?;
         let index = self
             .extents
@@ -841,7 +855,7 @@ impl LogChunk {
             return Ok(None);
         };
         if extent.len != extent.record_len
-            || extent.logical + u64::from(extent.len) > self.durable_length
+            || (require_durable && extent.logical + u64::from(extent.len) > self.durable_length)
         {
             return Ok(None);
         }
@@ -880,6 +894,31 @@ impl LogChunk {
     /// acknowledged again if identical and refused if not. Returns the applied length, which is
     /// the acknowledgement: everything below it is held, and it is durable after `commit`.
     pub fn append(&mut self, epoch: u64, offset: u64, data: &[u8]) -> Result<u64, LogError> {
+        self.append_record(epoch, offset, data, None)
+    }
+
+    /// Append one context-bound attempt. Retries must have the same complete range, tag and bytes.
+    /// Out-of-order records retain their tags within the existing bounded reorder window.
+    /// A new writer must truncate and commit its chosen tail before using a different epoch
+    /// while identified records are pending. Callers still enforce the writer lease and quorum.
+    /// As with `append`, success is not durable until a successful commit.
+    pub fn append_identified(
+        &mut self,
+        epoch: u64,
+        offset: u64,
+        data: &[u8],
+        attempt_tag: [u8; 16],
+    ) -> Result<u64, LogError> {
+        self.append_record(epoch, offset, data, Some(attempt_tag))
+    }
+
+    fn append_record(
+        &mut self,
+        epoch: u64,
+        offset: u64,
+        data: &[u8],
+        attempt_tag: Option<[u8; 16]>,
+    ) -> Result<u64, LogError> {
         self.check_epoch(epoch)?;
         if self.sealed.is_some() {
             return Err(LogError::Sealed);
@@ -893,8 +932,46 @@ impl LogChunk {
         if end > self.max_length {
             return Err(LogError::Bounds("chunk full"));
         }
+        for (&start, pending) in &self.pending {
+            let identified = attempt_tag.is_some() || pending.attempt_tag.is_some();
+            if identified && pending.epoch != epoch {
+                return Err(LogError::Overlap);
+            }
+            if identified
+                && start < end
+                && start + pending.data.len() as u64 > offset
+                && (start != offset
+                    || pending.data.len() != data.len()
+                    || pending.attempt_tag != attempt_tag
+                    || pending.data != data)
+            {
+                return Err(LogError::Overlap);
+            }
+        }
         let length = self.length();
+        if attempt_tag.is_none() && offset < length {
+            let first = self
+                .extents
+                .partition_point(|extent| extent.logical + u64::from(extent.len) <= offset);
+            if self.extents[first..]
+                .iter()
+                .take_while(|extent| extent.logical < end)
+                .any(|extent| usize::from(extent.header_len) == IDENTIFIED_LOG_HEADER_LEN)
+            {
+                return Err(LogError::Overlap);
+            }
+        }
         if end <= length {
+            if let Some(tag) = attempt_tag {
+                let expected = AppendRecordIdentity {
+                    offset,
+                    length: data.len() as u32,
+                    attempt_tag: Some(tag),
+                };
+                if self.record_identity(offset, false)? != Some(expected) {
+                    return Err(LogError::Overlap);
+                }
+            }
             let held = &self.data[offset as usize..end as usize];
             return if held == data {
                 Ok(length)
@@ -903,30 +980,39 @@ impl LogChunk {
             };
         }
         if offset > length {
-            return self.hold(epoch, offset, data);
+            return self.hold(epoch, offset, data, attempt_tag);
         }
         // offset <= length < end: the part below `length` must match, the rest is new
         let overlap = (length - offset) as usize;
+        if attempt_tag.is_some() && overlap != 0 {
+            return Err(LogError::Overlap);
+        }
         if self.data[offset as usize..].get(..overlap) != Some(&data[..overlap]) {
             return Err(LogError::Overlap);
         }
-        self.apply_new(epoch, &data[overlap..])?;
+        self.apply_new(epoch, &data[overlap..], attempt_tag)?;
         self.drain_pending(epoch)?;
         Ok(self.length())
     }
 
-    fn hold(&mut self, epoch: u64, offset: u64, data: &[u8]) -> Result<u64, LogError> {
+    fn hold(
+        &mut self,
+        epoch: u64,
+        offset: u64,
+        data: &[u8],
+        attempt_tag: Option<[u8; 16]>,
+    ) -> Result<u64, LogError> {
         let end = offset + data.len() as u64;
         // overlap with a waiting record of another shape is refused; the same record again is not
         if let Some(existing) = self.pending.get(&offset) {
-            return if existing == data {
+            return if existing.data == data && existing.attempt_tag == attempt_tag {
                 Ok(self.length())
             } else {
                 Err(LogError::Overlap)
             };
         }
         if let Some((before, held)) = self.pending.range(..offset).next_back() {
-            if before + held.len() as u64 > offset {
+            if before + held.data.len() as u64 > offset {
                 return Err(LogError::Overlap);
             }
         }
@@ -940,9 +1026,18 @@ impl LogChunk {
         {
             return Err(LogError::Window);
         }
-        let _ = epoch;
         self.pending_bytes += data.len();
-        self.pending.insert(offset, data.to_vec());
+        self.pending.insert(
+            offset,
+            PendingRecord {
+                data: data.to_vec(),
+                attempt_tag,
+                epoch,
+            },
+        );
+        if attempt_tag.is_some() {
+            self.epoch = epoch;
+        }
         Ok(self.length())
     }
 
@@ -955,7 +1050,8 @@ impl LogChunk {
             if next > length {
                 return Ok(());
             }
-            let data = self.pending.remove(&next).unwrap();
+            let pending = self.pending.remove(&next).unwrap();
+            let data = pending.data;
             self.pending_bytes -= data.len();
             let overlap = (length - next) as usize;
             if overlap > data.len()
@@ -964,12 +1060,17 @@ impl LogChunk {
                 return Err(LogError::Overlap);
             }
             if overlap < data.len() {
-                self.apply_new(epoch, &data[overlap..])?;
+                self.apply_new(epoch, &data[overlap..], pending.attempt_tag)?;
             }
         }
     }
 
-    fn apply_new(&mut self, epoch: u64, data: &[u8]) -> Result<(), LogError> {
+    fn apply_new(
+        &mut self,
+        epoch: u64,
+        data: &[u8],
+        attempt_tag: Option<[u8; 16]>,
+    ) -> Result<(), LogError> {
         let offset = self.length();
         let header = Header {
             kind: KIND_APPEND,
@@ -979,7 +1080,7 @@ impl LogChunk {
             offset,
             length: data.len() as u32,
             data_crc: crc32c(data),
-            attempt_tag: None,
+            attempt_tag,
         };
         let data_pos = self.file_len + header.encoded_len() as u64;
         self.write_record(header, data)?;
@@ -1082,3 +1183,7 @@ mod crc32c_tests;
 #[cfg(test)]
 #[path = "log_chunk_identity_tests.rs"]
 mod identity_tests;
+
+#[cfg(test)]
+#[path = "log_chunk_identified_write_tests.rs"]
+mod identified_write_tests;

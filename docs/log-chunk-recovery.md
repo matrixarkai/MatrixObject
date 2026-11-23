@@ -54,6 +54,28 @@ ownership. This reader deployment does not change gateway append routing, provid
 a durable end-to-end receipt, or remove the need to return OutcomeUnknown when
 ownership cannot be established.
 
+## Explicit identified writes
+
+`append_identified` stores the supplied tag with the complete append record. A retry
+must match the tag, exact record range and payload. Equal bytes with another tag,
+partial-record retries and overlapping extensions are refused. Legacy retries
+cannot claim an identified record, and identified retries cannot claim a legacy
+record. An exact retry adds no file record, including after reopening the file.
+
+The existing bounded reorder window retains each waiting record's tag and epoch.
+A pending identified attempt fences lower epochs in the live handle. To change
+writer epoch with pending identified records, truncate to the selected tail and
+commit the fence before appending. A gap fill cannot silently promote another
+writer's pending attempts or discard their identities. Crash recovery still needs
+the external writer lease and replica reconciliation; a volatile pending record
+alone is not a durable fence.
+
+This API uses the ordinary record write and commit path: the identified header
+adds sixteen record bytes, with no new metadata receipt table or sync barrier.
+Existing `append` callers keep emitting legacy records. Replica RPC dispatch and
+gateway append routing do not yet call the identified API, so this storage-level
+change alone does not settle gateway outcomes after restart.
+
 ## Native log directory ownership
 
 One store owns a native log directory at a time. An operation that opens or creates a chunk,
