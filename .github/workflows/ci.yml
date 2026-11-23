@@ -2333,6 +2333,12 @@ jobs:
           cargo test --locked --lib chunk_writer_outcome_tests -- --test-threads=1 | tee /tmp/unified-writer-outcomes.log
           grep -q '^running 18 tests$' /tmp/unified-writer-outcomes.log
           grep -q '^test result: ok. 18 passed' /tmp/unified-writer-outcomes.log
+      - name: publication storage writes retain complete prefixes across fencing
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib log_chunk::publication_write_tests -- --test-threads=1 2>&1 | tee /tmp/log-publication-writes.log
+          grep -q '^running 23 tests$' /tmp/log-publication-writes.log
+          grep -q '^test result: ok. 23 passed' /tmp/log-publication-writes.log
       - name: publication queries preserve complete durable prefix observations
         run: |
           set -euo pipefail
@@ -2366,7 +2372,8 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --lib log_chunk_store::limits_tests -- --test-threads=1 | tee /tmp/log-chunk-limits.log
-          grep -q '^test result: ok. 5 passed' /tmp/log-chunk-limits.log
+          grep -q '^running 6 tests$' /tmp/log-chunk-limits.log
+          grep -q '^test result: ok. 6 passed' /tmp/log-chunk-limits.log
           cargo test --locked --all-features --test log_chunk_flat_memory -- --test-threads=1 | tee /tmp/log-chunk-memory.log
           grep -q '^test result: ok. 2 passed' /tmp/log-chunk-memory.log
 

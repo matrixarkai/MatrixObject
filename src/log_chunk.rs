@@ -6,8 +6,9 @@
 //!
 //! Legacy records have a 40-byte header followed by data. Identified append records use
 //! a 56-byte header: the version magic changes, bytes 36..52 hold an opaque attempt tag,
-//! and bytes 52..56 checksum the preceding header bytes. Readers accept both versions;
-//! production writers continue emitting legacy records during reader deployment.
+//! and bytes 52..56 checksum the preceding header bytes. Publication-aware records use a
+//! 64-byte header with a complete-prefix boundary. Explicit local publication methods require
+//! initialization; distributed wire emission and its activation policy are separate.
 //! The legacy header is:
 //!
 //! ```text
@@ -69,6 +70,7 @@ const PUBLISHED_MAGIC: &[u8; 4] = b"MOL3";
 const KIND_APPEND: u8 = 1;
 const KIND_SEAL: u8 = 2;
 const KIND_TRUNCATE: u8 = 3;
+const KIND_INITIALIZE: u8 = 4;
 const FLAG_SEAL_SHA256: u8 = 1;
 /// One record never carries more than this (a single write is atomic up to here).
 pub const MAX_RECORD_DATA: usize = 4 * 1024 * 1024;
@@ -275,7 +277,9 @@ impl Header {
             },
         };
         let shaped = bytes[6..8] == [0, 0]
-            && (!identified || header.kind == KIND_APPEND)
+            && (!identified
+                || header.kind == KIND_APPEND
+                || (published && header.kind == KIND_INITIALIZE))
             && match header.kind {
                 KIND_APPEND => header.flags == 0 && header.length as usize <= MAX_RECORD_DATA,
                 KIND_SEAL => {
@@ -288,6 +292,15 @@ impl Header {
                             }
                 }
                 KIND_TRUNCATE => header.flags == 0 && header.length == 0 && header.data_crc == 0,
+                KIND_INITIALIZE => {
+                    published
+                        && header.flags == 0
+                        && header.offset == 0
+                        && header.length == 0
+                        && header.data_crc == 0
+                        && header.published_length == Some(0)
+                        && header.epoch != 0
+                }
                 _ => false,
             };
         shaped.then_some(header)
@@ -401,6 +414,7 @@ pub struct AppendRecordObservation {
 struct PendingRecord {
     data: Vec<u8>,
     attempt_tag: Option<[u8; 16]>,
+    published_length: Option<u64>,
     epoch: u64,
 }
 
@@ -420,6 +434,7 @@ pub struct LogChunk {
     published_length: u64,
     /// Sticky across truncation: old append APIs cannot downgrade a publication-aware file.
     publication_mode: bool,
+    initialization_tag: Option<[u8; 16]>,
     /// CRC-32C of the whole chunk, kept running.
     crc: u32,
     epoch: u64,
@@ -467,6 +482,7 @@ impl LogChunk {
             length: 0,
             published_length: 0,
             publication_mode: false,
+            initialization_tag: None,
             crc: 0,
             epoch: 0,
             sealed: None,
@@ -548,6 +564,16 @@ impl LogChunk {
             }
             let data_pos = offset + header_len as u64;
             match header.kind {
+                KIND_INITIALIZE => {
+                    if offset != 0 {
+                        return Err(corrupt(
+                            "publication initialization is not the first record",
+                        ));
+                    }
+                    chunk.publication_mode = true;
+                    chunk.initialization_tag = header.attempt_tag;
+                    chunk.epoch = header.epoch;
+                }
                 KIND_APPEND => {
                     // checked a piece at a time: a record is never held whole
                     let mut record_crc = 0u32;
@@ -662,23 +688,8 @@ impl LogChunk {
             return Err(corrupt("log chunk append does not continue the chunk"));
         }
         let end = length + u64::from(header.length);
-        let published = match header.published_length {
-            Some(value) => {
-                if (value != self.published_length && value != end)
-                    || (length > self.published_length && header.epoch != self.epoch)
-                {
-                    return Err(corrupt(
-                        "log chunk publication boundary or epoch is invalid",
-                    ));
-                }
-                self.publication_mode = true;
-                value
-            }
-            None if self.publication_mode => {
-                return Err(corrupt("legacy append follows publication-aware records"))
-            }
-            None => end,
-        };
+        let published = self.next_publication(header).map_err(corrupt)?;
+        self.publication_mode |= header.published_length.is_some();
         self.extents.push(Extent {
             logical: length,
             file_pos: data_pos,
@@ -692,6 +703,21 @@ impl LogChunk {
         self.crc = total_crc;
         self.epoch = header.epoch;
         Ok(())
+    }
+
+    fn next_publication(&self, header: &Header) -> Result<u64, &'static str> {
+        let end = header.offset + u64::from(header.length);
+        match header.published_length {
+            Some(value)
+                if (value == self.published_length || value == end)
+                    && (self.length == self.published_length || header.epoch == self.epoch) =>
+            {
+                Ok(value)
+            }
+            Some(_) => Err("log chunk publication boundary or epoch is invalid"),
+            None if self.publication_mode => Err("legacy append follows publication-aware records"),
+            None => Ok(end),
+        }
     }
 
     fn replay_record(&mut self, header: &Header, data: &[u8]) -> Result<(), LogError> {
@@ -1067,7 +1093,7 @@ impl LogChunk {
     /// acknowledged again if identical and refused if not. Returns the applied length, which is
     /// the acknowledgement: everything below it is held, and it is durable after `commit`.
     pub fn append(&mut self, epoch: u64, offset: u64, data: &[u8]) -> Result<u64, LogError> {
-        self.append_record(epoch, offset, data, None)
+        self.append_record(epoch, offset, data, None, None)
     }
 
     /// Append one context-bound attempt. Retries must have the same complete range, tag and bytes.
@@ -1082,7 +1108,105 @@ impl LogChunk {
         data: &[u8],
         attempt_tag: [u8; 16],
     ) -> Result<u64, LogError> {
-        self.append_record(epoch, offset, data, Some(attempt_tag))
+        self.append_record(epoch, offset, data, Some(attempt_tag), None)
+    }
+
+    /// Initialize only an authoritatively allocated fresh file. This operation syncs its
+    /// control record before returning; it must never be used to qualify a missing member
+    /// of an existing replica group. Such a member requires validated history transfer.
+    pub fn initialize_publication(&mut self, epoch: u64, tag: [u8; 16]) -> Result<(), LogError> {
+        self.check_epoch(epoch)?;
+        if epoch == 0 {
+            return Err(LogError::Bounds("publication initialization epoch"));
+        }
+        if let Some(existing) = self.initialization_tag {
+            if existing == tag && epoch == self.epoch {
+                self.sync_initialization()?;
+                return Ok(());
+            }
+            return Err(LogError::Overlap);
+        }
+        if self.file_len != 0
+            || self.length != 0
+            || !self.pending.is_empty()
+            || self.sealed.is_some()
+        {
+            return Err(LogError::Bounds(
+                "publication initialization needs a fresh file",
+            ));
+        }
+        let header = Header {
+            kind: KIND_INITIALIZE,
+            flags: 0,
+            generation: self.generation,
+            epoch,
+            offset: 0,
+            length: 0,
+            data_crc: 0,
+            attempt_tag: Some(tag),
+            published_length: Some(0),
+        };
+        self.write_record(header, &[])?;
+        self.sync_initialization()?;
+        self.initialization_tag = Some(tag);
+        self.publication_mode = true;
+        self.epoch = epoch;
+        Ok(())
+    }
+    /// The durable initialization identity recovered from the file. Authoritative replica
+    /// qualification, metadata incarnation and writer ownership remain the caller's duty.
+    pub fn publication_initialization(&self) -> Option<[u8; 16]> {
+        self.initialization_tag
+    }
+    /// Append one identified publication record. Intermediate fragments retain the prior
+    /// published prefix; the final record advances it to its end. Durable after `commit`.
+    pub fn append_published(
+        &mut self,
+        epoch: u64,
+        offset: u64,
+        data: &[u8],
+        tag: [u8; 16],
+        published_length: u64,
+    ) -> Result<u64, LogError> {
+        self.append_record(epoch, offset, data, Some(tag), Some(published_length))
+    }
+    /// Fence at this replica's own complete prefix, preserving every published byte and
+    /// discarding only its incomplete suffix. There is no client-selected truncate length.
+    /// The returned fence is durable only after `commit`.
+    pub fn fence_publication(&mut self, epoch: u64) -> Result<u64, LogError> {
+        self.check_epoch(epoch)?;
+        self.require_publication_initialization()?;
+        if self.sealed.is_some() {
+            return Err(LogError::Sealed);
+        }
+        let length = self.published_length;
+        if epoch != self.epoch || self.length != length || !self.pending.is_empty() {
+            self.truncate_record(epoch, length, true)?;
+        }
+        Ok(length)
+    }
+    fn sync_initialization(&mut self) -> Result<(), LogError> {
+        self.sync()?;
+        // Follow the journal creation contract: Unix must persist the new directory entry.
+        #[cfg(unix)]
+        if let Err(error) = File::open(
+            self.path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new(".")),
+        )
+        .and_then(|directory| directory.sync_all())
+        {
+            self.failed = true;
+            return Err(error.into());
+        }
+        Ok(())
+    }
+    fn require_publication_initialization(&self) -> Result<(), LogError> {
+        if !self.publication_mode || self.initialization_tag.is_none() {
+            return Err(LogError::Bounds("publication initialization is required"));
+        }
+        Ok(())
     }
 
     fn append_record(
@@ -1091,9 +1215,13 @@ impl LogChunk {
         offset: u64,
         data: &[u8],
         attempt_tag: Option<[u8; 16]>,
+        published_length: Option<u64>,
     ) -> Result<u64, LogError> {
         self.check_epoch(epoch)?;
-        if self.publication_mode {
+        if published_length.is_some() {
+            self.require_publication_initialization()?;
+        }
+        if self.publication_mode && published_length.is_none() {
             return Err(LogError::Bounds(
                 "publication-aware mutation protocol required",
             ));
@@ -1110,6 +1238,9 @@ impl LogChunk {
         if end > self.max_length {
             return Err(LogError::Bounds("chunk full"));
         }
+        if published_length.is_some_and(|p| p > offset && p != end) {
+            return Err(LogError::Bounds("publication is inside a record"));
+        }
         for (&start, pending) in &self.pending {
             let identified = attempt_tag.is_some() || pending.attempt_tag.is_some();
             if identified && pending.epoch != epoch {
@@ -1121,6 +1252,7 @@ impl LogChunk {
                 && (start != offset
                     || pending.data.len() != data.len()
                     || pending.attempt_tag != attempt_tag
+                    || pending.published_length != published_length
                     || pending.data != data)
             {
                 return Err(LogError::Overlap);
@@ -1146,7 +1278,10 @@ impl LogChunk {
                     length: data.len() as u32,
                     attempt_tag: Some(tag),
                 };
-                if self.record_identity(offset, false)? != Some(expected) {
+                let observation = self.record_observation(offset, false)?;
+                if !observation.is_some_and(|record| {
+                    record.identity == expected && record.published_length == published_length
+                }) {
                     return Err(LogError::Overlap);
                 }
             }
@@ -1158,7 +1293,7 @@ impl LogChunk {
             };
         }
         if offset > length {
-            return self.hold(epoch, offset, data, attempt_tag);
+            return self.hold(epoch, offset, data, attempt_tag, published_length);
         }
         // offset <= length < end: the part below `length` must match, the rest is new
         let overlap = (length - offset) as usize;
@@ -1168,7 +1303,7 @@ impl LogChunk {
         if self.data[offset as usize..].get(..overlap) != Some(&data[..overlap]) {
             return Err(LogError::Overlap);
         }
-        self.apply_new(epoch, &data[overlap..], attempt_tag)?;
+        self.apply_new(epoch, &data[overlap..], attempt_tag, published_length)?;
         self.drain_pending(epoch)?;
         Ok(self.length())
     }
@@ -1179,11 +1314,15 @@ impl LogChunk {
         offset: u64,
         data: &[u8],
         attempt_tag: Option<[u8; 16]>,
+        published_length: Option<u64>,
     ) -> Result<u64, LogError> {
         let end = offset + data.len() as u64;
         // overlap with a waiting record of another shape is refused; the same record again is not
         if let Some(existing) = self.pending.get(&offset) {
-            return if existing.data == data && existing.attempt_tag == attempt_tag {
+            return if existing.data == data
+                && existing.attempt_tag == attempt_tag
+                && existing.published_length == published_length
+            {
                 Ok(self.length())
             } else {
                 Err(LogError::Overlap)
@@ -1210,6 +1349,7 @@ impl LogChunk {
             PendingRecord {
                 data: data.to_vec(),
                 attempt_tag,
+                published_length,
                 epoch,
             },
         );
@@ -1238,7 +1378,12 @@ impl LogChunk {
                 return Err(LogError::Overlap);
             }
             if overlap < data.len() {
-                self.apply_new(epoch, &data[overlap..], pending.attempt_tag)?;
+                self.apply_new(
+                    epoch,
+                    &data[overlap..],
+                    pending.attempt_tag,
+                    pending.published_length,
+                )?;
             }
         }
     }
@@ -1248,6 +1393,7 @@ impl LogChunk {
         epoch: u64,
         data: &[u8],
         attempt_tag: Option<[u8; 16]>,
+        published_length: Option<u64>,
     ) -> Result<(), LogError> {
         let offset = self.length();
         let header = Header {
@@ -1259,8 +1405,9 @@ impl LogChunk {
             length: data.len() as u32,
             data_crc: crc32c(data),
             attempt_tag,
-            published_length: None,
+            published_length,
         };
+        let published = self.next_publication(&header).map_err(LogError::Bounds)?;
         let data_pos = self.file_len + header.encoded_len() as u64;
         self.write_record(header, data)?;
         self.extents.push(Extent {
@@ -1273,7 +1420,8 @@ impl LogChunk {
         });
         self.data.extend_from_slice(data);
         self.length += data.len() as u64;
-        self.published_length = self.length;
+        self.published_length = published;
+        self.publication_mode |= published_length.is_some();
         self.crc = crc32c_update(self.crc, data);
         self.epoch = epoch;
         Ok(())
@@ -1290,8 +1438,19 @@ impl LogChunk {
     /// Cut the chunk back to `length` (a new writer drops bytes only some replicas hold), at an
     /// epoch at least the current one. Waiting records are dropped. Durable after `commit`.
     pub fn truncate(&mut self, epoch: u64, length: u64) -> Result<(), LogError> {
+        self.truncate_record(epoch, length, false)
+    }
+    fn truncate_record(
+        &mut self,
+        epoch: u64,
+        length: u64,
+        publication: bool,
+    ) -> Result<(), LogError> {
         self.check_epoch(epoch)?;
-        if self.publication_mode {
+        if publication {
+            self.require_publication_initialization()?;
+        }
+        if self.publication_mode && !publication {
             return Err(LogError::Bounds(
                 "publication-aware mutation protocol required",
             ));
@@ -1329,8 +1488,24 @@ impl LogChunk {
     /// Close the chunk at its present length. The footer CRC is the running checksum; the SHA-256
     /// is computed here, once, when asked for. Waiting records must have been applied first.
     pub fn seal(&mut self, epoch: u64, with_sha256: bool) -> Result<Sealed, LogError> {
+        self.seal_record(epoch, with_sha256, false)
+    }
+    /// Seal an initialized publication-aware chunk only after every applied byte belongs
+    /// to a complete request. Like the legacy seal this operation syncs before returning.
+    pub fn seal_publication(&mut self, epoch: u64, with_sha256: bool) -> Result<Sealed, LogError> {
+        self.seal_record(epoch, with_sha256, true)
+    }
+    fn seal_record(
+        &mut self,
+        epoch: u64,
+        with_sha256: bool,
+        publication: bool,
+    ) -> Result<Sealed, LogError> {
         self.check_epoch(epoch)?;
-        if self.publication_mode {
+        if publication {
+            self.require_publication_initialization()?;
+        }
+        if self.publication_mode && !publication {
             return Err(LogError::Bounds(
                 "publication-aware mutation protocol required",
             ));
@@ -1338,7 +1513,7 @@ impl LogChunk {
         if self.sealed.is_some() {
             return Err(LogError::Sealed);
         }
-        if !self.pending.is_empty() {
+        if !self.pending.is_empty() || self.published_length != self.length {
             return Err(LogError::SealMismatch);
         }
         let digest = with_sha256.then(|| sha256(&self.data));
@@ -1384,3 +1559,7 @@ mod identified_write_tests;
 #[cfg(test)]
 #[path = "log_chunk_publication_tests.rs"]
 mod publication_tests;
+
+#[cfg(test)]
+#[path = "log_chunk_publication_write_tests.rs"]
+mod publication_write_tests;
