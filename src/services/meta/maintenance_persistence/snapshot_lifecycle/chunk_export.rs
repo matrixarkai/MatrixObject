@@ -3,10 +3,11 @@
 impl MatrixMetaService {
     fn snapshot_cache_stamp(&self) -> String {
         format!(
-            "meta:{}:{}:{}",
+            "meta:{}:{}:{}:{}",
             self.next_commit_index.saturating_sub(1),
             self.metadata_state_fingerprint(),
-            self.chunk_catalog.revision()
+            self.chunk_catalog.revision(),
+            self.native_objects.revision()
         )
     }
 

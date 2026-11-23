@@ -26,6 +26,10 @@ fn check_catalog(
             "unified LOG writers are not enabled for this cluster",
         ));
     }
+    if service.chunk_catalog.get(&ObjectId::new(&request.bucket, &request.key))
+        .is_some_and(|m| m.initialized_log.is_some()) {
+        return Err(refused("initialized LOG objects require native writer commands"));
+    }
     // A retained tombstone is also owned by its catalog. Crossing catalogs is a migration,
     // not a grant, and must not restart the object's generation counter.
     if service

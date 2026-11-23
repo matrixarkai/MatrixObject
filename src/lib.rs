@@ -7,6 +7,12 @@ pub mod chunk_catalog;
 #[cfg(test)]
 mod chunk_catalog_snapshot_tests;
 pub mod chunk_manifest;
+pub mod initialized_log_manifest;
+pub mod native_object_state;
+#[cfg(test)]
+mod native_object_state_tests;
+#[cfg(test)]
+mod initialized_log_manifest_tests;
 pub mod chunk_namespace_fence;
 pub mod chunk_writer_outcome;
 #[cfg(test)]

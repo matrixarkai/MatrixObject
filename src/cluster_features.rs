@@ -41,6 +41,9 @@ pub const FEATURE_FORGET_PREFIX: u64 = 1 << 5;
 /// Readers support atomic unified LOG catalog and writer-lease outcomes.
 /// Activation is explicit and advances the metadata snapshot reader floor.
 pub const FEATURE_UNIFIED_LOG_WRITERS: u64 = 1 << 6;
+/// Reader support for initialized native manifests, staged ownership and read pins.
+/// Not advertised in SUPPORTED_FEATURES until native committed outcomes are wired.
+pub const FEATURE_NATIVE_OBJECT_STATE: u64 = 1 << 7;
 /// Bits 8 through 15 are held for the gateway recovery records.
 pub const FEATURE_GATEWAY_RESERVED_MASK: u64 = 0xff << 8;
 /// Every bit this build knows how to read.

@@ -48,6 +48,10 @@ impl ChunkWriterChange {
         }
     }
     pub fn validate(&self, before_index: u64, after_index: u64) -> Result<(), ObjectError> {
+        if self.prior().is_some_and(|m| m.initialized_log.is_some())
+            || self.publication.as_ref().and_then(|p| p.after.as_ref()).is_some_and(|m| m.initialized_log.is_some()) {
+            return Err(invalid("initialized LOG objects require native writer outcomes"));
+        }
         let change = self.lease()?;
         change.validate(before_index, after_index)?;
         match &self.publication {

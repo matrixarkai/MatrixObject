@@ -2339,6 +2339,20 @@ jobs:
           cargo test --locked --lib log_chunk::record_write::tests -- --test-threads=1 | tee /tmp/log-record-write.log
           grep -q '^running 7 tests$' /tmp/log-record-write.log
           grep -q '^test result: ok. 7 passed' /tmp/log-record-write.log
+      - name: initialized metadata state and generation protection
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib native_object_state_tests:: -- --test-threads=1 2>&1 | tee /tmp/native-state.log
+          grep -q '^test result: ok. 18 passed' /tmp/native-state.log
+          cargo test --locked --lib initialized_log_manifest_tests:: -- --test-threads=1 2>&1 | tee /tmp/native-identities.log
+          grep -q '^test result: ok. 10 passed' /tmp/native-identities.log
+          cargo test --locked --lib initialized_admission_tests:: -- --test-threads=1 2>&1 | tee /tmp/native-admission.log
+          grep -q '^test result: ok. 2 passed' /tmp/native-admission.log
+      - name: per-member initialization survives read repair and restart
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::chunk_log_tests::initialized_member_binding_tests -- --test-threads=1 2>&1 | tee /tmp/native-member-binding.log
+          grep -q '^test result: ok. 1 passed' /tmp/native-member-binding.log
       - name: initialized active-tail reads stabilize before exposing bytes
         run: |
           set -euo pipefail

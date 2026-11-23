@@ -218,6 +218,12 @@ impl MetaSnapshot {
             digest = fnv1a64_resumed(digest, &material);
             digest = fnv1a64_resumed(digest, &bytes);
         }
+        if !self.native_objects.is_default() {
+            let bytes = self.native_objects.to_bytes().expect("valid native object state");
+            material.clear(); append_string(&mut material, "MONATIVE-STATE1");
+            append_u64(&mut material, bytes.len() as u64); digest = fnv1a64_resumed(digest, &material);
+            digest = fnv1a64_resumed(digest, &bytes);
+        }
         let mut checksum = String::with_capacity(24);
         append_etag_of_digest(&mut checksum, digest);
         checksum
