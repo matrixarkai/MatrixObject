@@ -368,9 +368,23 @@ impl RemoteMetaClient {
             other => Err(unexpected_reply("a chunk manifest page", &other)),
         }
     }
+    /// Lease a LOG object in the unified chunk catalog, opening its tail if needed.
+    pub fn grant_chunk_writer(&mut self, bucket: &str, key: &str, holder: &str, ttl_ms: u64, group: &str) -> Result<super::LogChunkReply, ObjectError> {
+        self.log_chunk_call(super::LogChunkRequest::grant(bucket, key, holder, ttl_ms, group).unified())
+    }
+    /// Atomically seal the unified LOG tail and open the next chunk under the same lease.
+    #[allow(clippy::too_many_arguments)]
+    pub fn switch_chunk_writer(&mut self, bucket: &str, key: &str, holder: &str, epoch: u64, group: &str, sealed_length: u64, footer_crc: u32, footer_sha256: Vec<u8>) -> Result<super::LogChunkReply, ObjectError> {
+        self.log_chunk_call(super::LogChunkRequest::switch(bucket, key, holder, epoch, group, sealed_length, footer_crc, footer_sha256).unified())
+    }
+    /// Read the unified LOG writer lease and tail through the metadata read barrier.
+    pub fn read_chunk_writer(&mut self, bucket: &str, key: &str) -> Result<super::LogChunkReply, ObjectError> {
+        self.log_chunk_call(super::LogChunkRequest::read(bucket, key).unified())
+    }
     fn log_chunk_call(&mut self, request: super::LogChunkRequest) -> Result<super::LogChunkReply, ObjectError> {
+        let version = request.version;
         match self.call(MetaRequest::LogChunk(request))? {
-            MetaReply::LogChunk(reply) => Ok(reply),
+            MetaReply::LogChunk(reply) if reply.version == version => Ok(reply),
             other => Err(unexpected_reply("a log chunk reply", &other)),
         }
     }

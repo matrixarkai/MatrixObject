@@ -1456,10 +1456,14 @@ fn prepare_batch(
     let mut nodes = BTreeSet::new();
     let mut objects = BTreeSet::new();
     let mut lease_keys: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut chunk_keys = BTreeSet::new();
     for request in queued.iter() {
         match &request.request {
             MetaRequest::LogChunk(command) if !command.is_read() => {
                 log_chunk_records(service, command, &mut nodes, &mut objects, &mut lease_keys);
+                if command.version == 2 {
+                    chunk_keys.insert(crate::ObjectId::new(&command.bucket, &command.key));
+                }
             }
             MetaRequest::StagedAllocation(command) if command.action == 4 => {
                 if let Some(outcome) = &command.outcome {
@@ -1520,6 +1524,10 @@ fn prepare_batch(
         .filter(|id| service.nodes.contains_key(id))
         .collect();
     let mut draft = PlacementDraft::with_records(service, nodes, objects.into_iter().collect());
+    draft.chunks = chunk_keys.into_iter().map(|id| {
+        let entry = draft.service.chunk_catalog.entry(&id);
+        (id, entry)
+    }).collect();
     draft.leases = lease_keys
         .into_iter()
         .map(|(bucket, key)| {
@@ -1838,6 +1846,8 @@ fn log_chunk_records(
 /// Undo state for the closed set of placement mutations admitted by `prepare`.
 /// Never use this for membership, health reports, or other metadata operations.
 struct PlacementDraft<'a> {
+    chunks: Vec<(crate::ObjectId, Option<std::sync::Arc<crate::chunk_manifest::ChunkManifest>>)>,
+    chunk_revision: u64,
     service: &'a mut MatrixMetaService,
     nodes: Vec<crate::PlacementNode>,
     objects: Vec<(
@@ -1887,7 +1897,10 @@ impl<'a> PlacementDraft<'a> {
         let index = service.placement_commit_index;
         let publication_fence = service.object_manifests.publication_fence();
         let features = service.cluster_features.clone();
+        let chunk_revision = service.chunk_catalog.revision();
         Self {
+            chunks: Vec::new(),
+            chunk_revision,
             service,
             nodes,
             objects,
@@ -1937,6 +1950,9 @@ impl Drop for PlacementDraft<'_> {
             self.service
                 .writer_leases
                 .restore(&bucket, &key, lease.as_ref());
+        }
+        for (id, entry) in self.chunks.drain(..) {
+            self.service.chunk_catalog.restore_entry(&id, entry, self.chunk_revision);
         }
         self.service.placement_commit_index = self.index;
         self.service.invalidate_snapshot_export_cache();
@@ -3745,6 +3761,7 @@ mod tests {
     include!("feature_draft_tests.rs");
     include!("log_chunk_outcome_command_tests.rs");
     include!("log_chunk_commands_tests.rs");
+    include!("unified_log_writer_command_tests.rs");
     include!("log_chunk_pipeline_tests.rs");
     include!("log_chunk_cost_probes.rs");
     include!("chunk_manifest_batch_tests.rs");

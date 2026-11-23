@@ -195,6 +195,7 @@ mod staged_lease_sweeper;
 #[cfg(feature = "meta-server")]
 mod features_commands;
 mod log_chunk_commands;
+mod unified_log_writer_commands;
 #[cfg(feature = "meta-server")]
 pub use features_commands::FeaturesRequest;
 #[cfg(feature = "meta-server")]

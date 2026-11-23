@@ -147,6 +147,12 @@ impl LogChunkRequest {
     pub fn sweep(drops: Vec<LeaseRef>) -> Self {
         Self { version: 1, action: ACTION_SWEEP, drops, ..Default::default() }
     }
+    /// Select the unified chunk catalog for a grant, switch or read.
+    /// Renewals and sweeps use the shared lease table and keep version 1.
+    pub fn unified(mut self) -> Self {
+        self.version = 2;
+        self
+    }
     pub fn is_read(&self) -> bool {
         self.action == ACTION_READ
     }
@@ -169,7 +175,7 @@ impl LogChunkRequest {
                         && self.footer_crc == 0
                         && self.footer_sha256.is_empty()))
         };
-        let shaped = self.version == 1
+        let shaped = (self.version == 1 || (self.version == 2 && matches!(self.action, ACTION_GRANT | ACTION_SEAL_SWITCH | ACTION_READ)))
             && match self.action {
                 ACTION_GRANT => {
                     object_ok && holder_ok && ttl_ok && group_ok && none_of(true, true, true) && self.epoch == 0
@@ -259,6 +265,9 @@ pub struct LogChunkReply {
     /// Sweep: how many leases were dropped.
     #[prost(uint64, tag = "8")]
     pub dropped: u64,
+    /// Version 2: the open tail in the unified chunk catalog. `open` is absent.
+    #[prost(message, optional, tag = "9")]
+    pub chunk_open: Option<crate::chunk_manifest::ChunkExtent>,
 }
 
 pub fn reply_from_payload(bytes: &[u8]) -> Result<LogChunkReply, ObjectError> {
@@ -266,7 +275,12 @@ pub fn reply_from_payload(bytes: &[u8]) -> Result<LogChunkReply, ObjectError> {
         return Err(invalid("log chunk reply exceeds its bound"));
     }
     let reply = LogChunkReply::decode(bytes).map_err(|_| invalid("invalid log chunk reply"))?;
-    if reply.encode_to_vec() != bytes || reply.version != 1 {
+    let shape = match reply.version {
+        1 => reply.chunk_open.is_none(),
+        2 => reply.open.is_none() && reply.renewed == 0 && reply.lost.is_empty() && reply.dropped == 0,
+        _ => false,
+    };
+    if reply.encode_to_vec() != bytes || !shape {
         return Err(invalid("noncanonical log chunk reply"));
     }
     Ok(reply)
@@ -309,6 +323,10 @@ fn stored_manifest(service: &MatrixMetaService, bucket: &str, key: &str) -> Opti
 /// The answer to a read.
 pub(super) fn read(service: &MatrixMetaService, request: &LogChunkRequest) -> Result<MetaReply, ObjectError> {
     request.validate()?;
+    if request.version == 2 {
+        return super::unified_log_writer_commands::read(service, request);
+    }
+    require_legacy_catalog(service, request)?;
     Ok(reply(
         service.writer_leases.get(&request.bucket, &request.key),
         stored_manifest(service, &request.bucket, &request.key).as_ref(),
@@ -319,6 +337,13 @@ pub(super) fn read(service: &MatrixMetaService, request: &LogChunkRequest) -> Re
 pub(super) enum Decision {
     Unchanged(MetaReply),
     Change(PlacementOutcome, MetaReply),
+}
+
+fn require_legacy_catalog(service: &MatrixMetaService, request: &LogChunkRequest) -> Result<(), ObjectError> {
+    if service.chunk_catalog.get(&ObjectId::new(&request.bucket, &request.key)).is_some() {
+        return Err(refused("this object uses the unified chunk catalog"));
+    }
+    Ok(())
 }
 
 fn require_feature(service: &MatrixMetaService) -> Result<(), ObjectError> {
@@ -362,6 +387,9 @@ pub(super) fn prepare(
     now_ms: u64,
 ) -> Result<Decision, ObjectError> {
     request.validate()?;
+    if request.version == 2 {
+        return super::unified_log_writer_commands::prepare(service, groups, request, now_ms);
+    }
     if request.is_read() {
         return Ok(Decision::Unchanged(read(service, request)?));
     }
@@ -390,6 +418,7 @@ fn grant(
     now_ms: u64,
 ) -> Result<Decision, ObjectError> {
     require_feature(service)?;
+    require_legacy_catalog(service, request)?;
     let index = next_index(service)?;
     let held = service.writer_leases.get(&request.bucket, &request.key);
     let before = stored_manifest(service, &request.bucket, &request.key);
@@ -463,6 +492,7 @@ fn switch(
     now_ms: u64,
 ) -> Result<Decision, ObjectError> {
     require_feature(service)?;
+    require_legacy_catalog(service, request)?;
     let index = next_index(service)?;
     let held = service.writer_leases.get(&request.bucket, &request.key);
     let lease = held
