@@ -32,7 +32,18 @@ allocation positions, shared native storage across objects, overlapping staged
 storage and conflicting ownership across manifest catalogs. Earlier snapshots
 keep their existing representation when the feature is absent.
 
-This is reader preparation. Feature bit 7 is not advertised or raised by startup.
-Native committed outcomes, RPC admission, actual read-pin acquisition, storage
-retirement, conditional object operations and default-backend routing still need
-their coupled implementation. The default object backend remains unchanged.
+Placement outcome version 18 carries one canonical binary protobuf native command.
+It binds the leader's captured clock and consecutive metadata positions. Begin,
+extend, publish, abort, expiry, read-pin and writer-lease transitions validate private
+persistent-table clones before replacing live tables together. The leader checks
+admission limits; followers validate the committed transition without local limits.
+Legacy mutation commands refuse keys owned by staged or published native objects.
+
+Journal recovery checks checksums, canonical encoding and contiguous positions,
+skips the prefix included in its starting snapshot and applies later commands.
+Normal command application continues to reject stale positions.
+
+Feature bit 7 is not advertised or raised by startup. RPC admission, actual read-pin
+acquisition, storage retirement, conditional object operations and default-backend
+routing still need their coupled implementation. The default object backend remains
+unchanged.

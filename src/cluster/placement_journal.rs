@@ -47,6 +47,11 @@ impl PlacementJournal {
         File::open(path.parent().unwrap())?.sync_all()?;
         let length = file.metadata()?.len();
         let mut offset = 0;
+        // A durable snapshot can include an intact prefix of this journal. Keep normal
+        // command application strict; only recovery skips records covered at entry.
+        let checkpoint = service.placement_commit_index;
+        let mut prior_position = None;
+
         while offset < length {
             let remaining = length - offset;
             if remaining < HEADER as u64 {
@@ -77,16 +82,33 @@ impl PlacementJournal {
             if fnv1a64(&bytes) != u64::from_be_bytes(header[16..24].try_into().unwrap()) {
                 return Err(invalid("placement journal checksum mismatch"));
             }
-            if &header[..4] == MAGIC {
-                PlacementOutcome::from_payload(&bytes)
-                    .map_err(invalid)?
-                    .apply(service)
-                    .map_err(invalid)?;
+            let placement = if &header[..4] == MAGIC {
+                Some(PlacementOutcome::from_payload(&bytes).map_err(invalid)?)
             } else {
-                super::chunk_catalog_outcome::ChunkCatalogOutcome::from_payload(&bytes)
-                    .map_err(invalid)?
-                    .apply(service, catalog)
-                    .map_err(invalid)?;
+                None
+            };
+            let membership = if placement.is_none() {
+                Some(super::chunk_catalog_outcome::ChunkCatalogOutcome::from_payload(&bytes).map_err(invalid)?)
+            } else {
+                None
+            };
+            let (before, after) = if let Some(outcome) = &placement {
+                (outcome.before_index, outcome.after_index)
+            } else {
+                membership.as_ref().unwrap().positions().map_err(invalid)?
+            };
+            if !(after == before || before.checked_add(1) == Some(after))
+                || prior_position.is_some_and(|prior| prior != before)
+            {
+                return Err(invalid("placement journal positions are not contiguous"));
+            }
+            prior_position = Some(after);
+            if after > checkpoint {
+                if let Some(outcome) = placement {
+                    outcome.apply(service).map_err(invalid)?;
+                } else {
+                    membership.unwrap().apply(service, catalog).map_err(invalid)?;
+                }
             }
             offset += HEADER as u64 + size as u64;
         }
@@ -209,6 +231,7 @@ mod tests {
             log_chunk: None,
             lease_batch: None,
             chunk_writer: None,
+            native: None,
             forget: false,
         };
         let second = PlacementOutcome {

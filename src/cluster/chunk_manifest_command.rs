@@ -34,6 +34,7 @@ pub(super) enum Decision {
 /// objects, which a voter never applies to a committed entry.
 pub(super) fn prepare(service: &MatrixMetaService, outcome: &ChunkOutcome) -> Result<Decision, ObjectError> {
     reject_initialized(outcome)?;
+    crate::native_object_outcome::reject_legacy_write(service, &outcome.object_id()?)?;
     let after = outcome.after()?.clone();
     if service.chunk_catalog.check(outcome, Some(crate::object_manifest::admission_cap()))? {
         Ok(Decision::Change(outcome.clone(), after))
@@ -45,6 +46,7 @@ pub(super) fn prepare(service: &MatrixMetaService, outcome: &ChunkOutcome) -> Re
 /// Apply a committed outcome. Returns whether the catalog changed.
 pub(super) fn apply(service: &mut MatrixMetaService, outcome: &ChunkOutcome) -> Result<bool, ObjectError> {
     reject_initialized(outcome)?;
+    crate::native_object_outcome::reject_legacy_write(service, &outcome.object_id()?)?;
     let changed = service.chunk_catalog.apply(outcome)?;
     if changed {
         service.invalidate_snapshot_export_cache();

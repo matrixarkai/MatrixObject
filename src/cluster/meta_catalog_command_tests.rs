@@ -158,6 +158,7 @@ fn catalog_journal_recovers_mixed_records_and_every_torn_tail() {
             log_chunk: None,
             lease_batch: None,
             chunk_writer: None,
+        native: None,
             forget: false,
     };
     expiry.apply(&mut service).unwrap();

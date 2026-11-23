@@ -920,6 +920,7 @@ fn apply(
         _ => None,
     };
     if let Some((decided, reply)) = decision {
+        decided.check_legacy_namespace(&guard.service)?;
         if guard.storage.is_some() {
             // Preflight the local snapshot bound before persisting an outcome.
             let renewal_grows = decided.retention_deadline.as_ref().is_some_and(|change|
@@ -1104,6 +1105,7 @@ pub(super) fn decide_allocation(
             log_chunk: None,
             lease_batch: None,
             chunk_writer: None,
+        native: None,
             forget: false,
     };
     outcome.to_payload()?;
