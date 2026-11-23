@@ -844,3 +844,7 @@ fn identified_rpc_records_survive_three_replica_restarts_without_byte_based_owne
 
 #[path = "identified_log_writer_tests.rs"]
 mod identified_writer_tests;
+
+
+#[path = "published_tail_reader_tests.rs"]
+mod published_reader_tests;

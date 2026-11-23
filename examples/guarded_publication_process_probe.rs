@@ -2,9 +2,9 @@
 // Copyright 2026 MatrixArkAI
 //! Storage protocol integration probe with three separate replica processes.
 //! Uses synthetic allocation/epoch context. It does not validate metadata activation,
-//! object APIs, automatic read repair, production readiness or performance.
+//! object APIs, metadata pin acquisition, production readiness or performance.
 use matrixobjectstore_rs::cluster::{
-    AppendIdentity, ChunkLogError, LogOpReply, LogOpRequest, RemoteReplicaClient,
+    AppendIdentity, ChunkLogError, ChunkLogReader, LogOpReply, LogOpRequest, RemoteReplicaClient,
     ReplicaClientOptions, ReplicaNodeOptions, ReplicaNodeServer,
 };
 use std::{
@@ -177,7 +177,7 @@ fn run(root: &Path) -> Result<()> {
         )?;
         let last = index + 1 == pieces.len();
         let published = if last { data.len() as u64 } else { 0 };
-        for peer in &peers[..if last { 2 } else { 3 }] {
+        for peer in &peers[..if last { 1 } else { 3 }] {
             let r = peer.call(LogOpRequest::append_published(
                 VOLUME,
                 CHUNK,
@@ -200,7 +200,7 @@ fn run(root: &Path) -> Result<()> {
         .map(|p| p.probe().map(|r| r.published_length))
         .collect::<Result<_>>()?;
     require(
-        before == vec![4096, 4096, 0],
+        before == vec![4096, 0, 0],
         "lost-final-record setup differs",
     )?;
     for (index, peer) in peers.iter().enumerate() {
@@ -216,66 +216,29 @@ fn run(root: &Path) -> Result<()> {
             "fence discarded complete history",
         )?;
     }
-    // Transfer exact source records. Bytes verify integrity; record tags establish identity.
-    for (index, piece) in pieces.iter().enumerate() {
-        let offset = (index * capacity) as u64;
-        let expected = attempt.record_tag(
-            VOLUME,
-            CHUNK,
-            GENERATION,
-            offset,
-            offset,
-            piece.len() as u32,
-        )?;
-        let source = peers[0].call(LogOpRequest::identity_initialized_publication(
-            VOLUME,
-            CHUNK,
-            GENERATION,
-            offset,
-            INITIALIZATION,
-        ))?;
-        let identity = source
-            .record_identity()
-            .ok_or_else(|| io::Error::other("source record missing"))?;
-        require(
-            identity.attempt_tag == Some(expected) && identity.length == piece.len() as u32,
-            "source identity mismatch",
-        )?;
-        require(source.record_publication, "source has no publication field")?;
-        let body = peers[0]
-            .call(LogOpRequest::read_initialized_publication(
-                VOLUME,
-                CHUNK,
-                GENERATION,
-                offset,
-                identity.length,
-                INITIALIZATION,
-            ))?
-            .data;
-        require(body == *piece, "source bytes changed")?;
-        peers[2].call(LogOpRequest::append_published(
-            VOLUME,
-            CHUNK,
-            GENERATION,
-            2,
-            offset,
-            body,
-            expected,
-            source.record_published_length,
-            INITIALIZATION,
-        ))?;
-    }
-    let expected_tip = attempt.record_tag(VOLUME, CHUNK, GENERATION, 3840, 3840, 256)?;
-    for peer in &peers {
-        let r = peer.probe()?;
-        let p = r
-            .initialized_publication_prefix(INITIALIZATION)
-            .ok_or_else(|| io::Error::other("complete prefix missing"))?;
-        require(
-            p.length == 4096 && p.tip.is_some_and(|t| t.attempt_tag == Some(expected_tip)),
-            "restored prefix identity differs",
-        )?;
-    }
+    let endpoints: Vec<_> = peers.iter().map(|p| p.addr.clone()).collect();
+    let mut reader = ChunkLogReader::new(
+        &endpoints,
+        VOLUME,
+        CHUNK,
+        GENERATION,
+        ReplicaClientOptions::default(),
+    );
+    require(
+        reader.read_published(2, &[INITIALIZATION; 3], 0, data.len(), || Ok(()))? == data,
+        "automatic stabilized read differs",
+    )?;
+    require(
+        peers
+            .iter()
+            .map(|p| p.probe())
+            .collect::<Result<Vec<_>>>()?
+            .iter()
+            .filter(|r| r.published_length == 4096)
+            .count()
+            >= 2,
+        "read escaped before a second durable copy",
+    )?;
     let stale = LogOpRequest::append_published(
         VOLUME,
         CHUNK,
@@ -289,6 +252,17 @@ fn run(root: &Path) -> Result<()> {
     );
     require(peers[1].call(stale).is_err(), "stale epoch was accepted")?;
     peers[0].stop();
+    let mut reader = ChunkLogReader::new(
+        &endpoints,
+        VOLUME,
+        CHUNK,
+        GENERATION,
+        ReplicaClientOptions::default(),
+    );
+    require(
+        reader.read_published(2, &[INITIALIZATION; 3], 0, data.len(), || Ok(()))? == data,
+        "fresh read after source loss differs",
+    )?;
     for peer in &peers[1..] {
         require(
             read_all(peer, data.len(), capacity)? == data,
@@ -311,7 +285,7 @@ fn run(root: &Path) -> Result<()> {
             "restart changed data",
         )?;
     }
-    println!("storage protocol probe passed: three replica processes, bounded records, preserving fences, verified transfer, one unavailable member and full restart; metadata/object integration not exercised");
+    println!("storage protocol probe passed: three replica processes, bounded records, preserving fences, automatic prefix stabilization, one unavailable member and full restart; metadata/object integration not exercised");
     Ok(())
 }
 fn main() -> Result<()> {

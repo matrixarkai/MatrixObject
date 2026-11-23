@@ -2339,6 +2339,12 @@ jobs:
           cargo test --locked --lib log_chunk::record_write::tests -- --test-threads=1 | tee /tmp/log-record-write.log
           grep -q '^running 7 tests$' /tmp/log-record-write.log
           grep -q '^test result: ok. 7 passed' /tmp/log-record-write.log
+      - name: initialized active-tail reads stabilize before exposing bytes
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::chunk_log_tests::published_reader_tests -- --test-threads=1 2>&1 | tee /tmp/published-tail-reads.log
+          grep -q '^running 9 tests$' /tmp/published-tail-reads.log
+          grep -q '^test result: ok. 9 passed' /tmp/published-tail-reads.log
       - name: guarded publication wire writes preserve durable prefixes
         run: |
           set -euo pipefail
