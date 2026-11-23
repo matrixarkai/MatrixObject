@@ -8,7 +8,7 @@ The client SDK for the MatrixObject S3 door. Apache-2.0, two small dependencies 
   gateway links this crate, so a change to the contract is one change that both sides compile
   against.
 * `S3Client` is a blocking client of one bucket: `put`, `get`, `get_range`, `get_range_from`,
-  `length_or_zero`, `delete`, a paged `list`, and `append`. An append that may have landed is
+  `length_or_zero`, `delete`, a paged `list`, `compare_and_swap`, and `append`. An append that may have landed is
   settled by its attempt id, never by comparing bytes, and reports where its bytes landed.
 * `Transport` carries one request to the door. `TcpTransport` is HTTP/1.1 over pooled keep-alive
   sockets and counts what crossed the wire; a door served in the same process implements the trait
@@ -30,3 +30,12 @@ cargo test --locked
 
 See `docs/cluster-gateway.md` ("Appends that may have landed: attempt ids") for what the contract
 means.
+
+`compare_and_swap(key, expected, new)` creates when `expected` is `None`, or
+atomically replaces an object whose current bytes equal `expected`. Creates use
+`If-None-Match: *`; replacements read one strong ETag and send `If-Match`.
+Generation conflicts recheck the expected bytes, with at most eight write attempts.
+`ConditionFailed` means the predicate was false. `ConditionalWriteUnknown` means
+a write may have committed: the client did not resend it, and matching bytes alone
+cannot identify the writer. Applications must preserve that uncertainty when
+settling their own operation.

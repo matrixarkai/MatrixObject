@@ -23,3 +23,6 @@ mod client_tests;
 
 #[cfg(test)]
 mod tcp_tests;
+
+#[cfg(test)]
+mod conditional_write_tests;
