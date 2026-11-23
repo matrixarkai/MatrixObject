@@ -50,6 +50,7 @@ pub struct MetaSnapshot {
     pub writer_leases: crate::log_chunk_outcome::WriterLeaseTable,
     /// Empty on every snapshot written before chunk manifests existed.
     pub chunk_catalog: crate::chunk_catalog::ChunkCatalog,
+    pub native_objects: crate::native_object_state::NativeObjectState,
     pub checksum: String,
 }
 

@@ -24,7 +24,7 @@ use crate::object_manifest::{frame, unframe};
 use crate::{ChunkId, ObjectError, ObjectId};
 use prost::Message;
 
-/// The only manifest version. A manifest of any other version is refused.
+/// The original manifest version, used for paged objects and uninitialized LOG objects.
 pub const CHUNK_MANIFEST_FORMAT: u32 = 1;
 const MAGIC: &[u8; 4] = b"MOCM";
 const MAX_CHUNK_MANIFEST: usize = 1024 * 1024;
@@ -148,6 +148,9 @@ pub struct ChunkManifest {
     /// The time until which a restore keeps the object readable from a colder class; zero when none was asked.
     #[prost(uint64, tag = "18")]
     pub restore_until_ms: u64,
+    /// Version 2 only: durable object and per-member storage initialization identities.
+    #[prost(message, optional, tag = "19")]
+    pub initialized_log: Option<crate::initialized_log_manifest::InitializedLogManifest>,
 }
 
 pub use crate::bucket_config::{RETENTION_COMPLIANCE, RETENTION_GOVERNANCE};
@@ -308,12 +311,17 @@ impl ChunkManifest {
     pub fn validate(&self) -> Result<(), ObjectError> {
         crate::validate_bucket(&self.bucket)?;
         crate::validate_key(&self.key)?;
-        if self.format_version != CHUNK_MANIFEST_FORMAT
+        if !matches!(self.format_version, CHUNK_MANIFEST_FORMAT | crate::initialized_log_manifest::CHUNK_MANIFEST_INITIALIZED_FORMAT)
             || self.generation == 0
             || self.extents.len() > MAX_CHUNK_EXTENTS
             || self.encoded_len() > MAX_CHUNK_MANIFEST
         {
             return Err(invalid("invalid chunk manifest version, generation or size"));
+        }
+        match (&self.initialized_log, self.format_version) {
+            (None, CHUNK_MANIFEST_FORMAT) => {}
+            (Some(initialized), crate::initialized_log_manifest::CHUNK_MANIFEST_INITIALIZED_FORMAT) => initialized.validate_for(self)?,
+            _ => return Err(invalid("chunk manifest initialization fields do not match its version")),
         }
         if self.deleted {
             if self.length != 0 || !self.extents.is_empty() || self.kind != 0 || self.page_bytes != 0 || self.carries_attributes() {

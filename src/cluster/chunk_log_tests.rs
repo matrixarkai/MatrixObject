@@ -848,3 +848,6 @@ mod identified_writer_tests;
 
 #[path = "published_tail_reader_tests.rs"]
 mod published_reader_tests;
+
+#[path = "initialized_member_binding_tests.rs"]
+mod initialized_member_binding_tests;

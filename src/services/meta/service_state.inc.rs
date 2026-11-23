@@ -33,6 +33,7 @@ pub struct MatrixMetaService {
     pub(crate) cluster_features: crate::cluster_features::ClusterFeatures,
     pub(crate) writer_leases: crate::log_chunk_outcome::WriterLeaseTable,
     pub(crate) chunk_catalog: crate::chunk_catalog::ChunkCatalog,
+    pub(crate) native_objects: crate::native_object_state::NativeObjectState,
     placement_snapshot_export_cache: RefCell<Option<PlacementSnapshotExportCache>>,
     root_state_fingerprint_cache: RefCell<Option<String>>,
     /// Ordered by each record's own key, which the record already holds -- see

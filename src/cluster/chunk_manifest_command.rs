@@ -33,6 +33,7 @@ pub(super) enum Decision {
 /// validity, the object and image bounds) and, on top of them, the leader's admission limit on new
 /// objects, which a voter never applies to a committed entry.
 pub(super) fn prepare(service: &MatrixMetaService, outcome: &ChunkOutcome) -> Result<Decision, ObjectError> {
+    reject_initialized(outcome)?;
     let after = outcome.after()?.clone();
     if service.chunk_catalog.check(outcome, Some(crate::object_manifest::admission_cap()))? {
         Ok(Decision::Change(outcome.clone(), after))
@@ -43,11 +44,21 @@ pub(super) fn prepare(service: &MatrixMetaService, outcome: &ChunkOutcome) -> Re
 
 /// Apply a committed outcome. Returns whether the catalog changed.
 pub(super) fn apply(service: &mut MatrixMetaService, outcome: &ChunkOutcome) -> Result<bool, ObjectError> {
+    reject_initialized(outcome)?;
     let changed = service.chunk_catalog.apply(outcome)?;
     if changed {
         service.invalidate_snapshot_export_cache();
     }
     Ok(changed)
+}
+
+// Initialized objects need the staged publication and read-pin protocol. Older publication
+// commands cannot create them, mutate them or drop their storage identities.
+fn reject_initialized(outcome: &ChunkOutcome) -> Result<(), ObjectError> {
+    if outcome.before.iter().chain(outcome.after.iter()).any(|m| m.initialized_log.is_some()) {
+        return Err(ObjectError::PreconditionFailed("initialized LOG publication requires native staging".into()));
+    }
+    Ok(())
 }
 
 /// A leader applies each outcome of a batch to the live catalog so the next is prepared against
@@ -94,3 +105,7 @@ impl Drop for ChunkDraft<'_> {
         self.service.invalidate_snapshot_export_cache();
     }
 }
+
+#[cfg(test)]
+#[path = "initialized_manifest_admission_tests.rs"]
+mod initialized_admission_tests;

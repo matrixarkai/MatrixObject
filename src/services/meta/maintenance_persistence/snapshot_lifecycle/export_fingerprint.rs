@@ -100,6 +100,7 @@ impl MatrixMetaService {
             cluster_features: self.cluster_features.clone(),
             writer_leases: self.writer_leases.clone(),
             chunk_catalog: self.chunk_catalog.clone(),
+            native_objects: self.native_objects.clone(),
             next_change_sequence: self.next_change_sequence,
             compacted_tombstone_count: self.compacted_tombstone_count,
             last_tombstone_compaction_commit_index: self.last_tombstone_compaction_commit_index,
