@@ -954,7 +954,7 @@ jobs:
           cargo test --locked --all-features --lib net::cluster_gateway::tests::concurrent_changes_to_one_buckets_configuration_all_land -- --exact | tee /tmp/gateway-features.log
           grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
           cargo test --locked --all-features --lib net::cluster_gateway::tests -- --test-threads=1 | tee /tmp/gateway-module.log
-          grep -q 'test result: ok. 84 passed; 0 failed' /tmp/gateway-module.log
+          grep -q 'test result: ok. 89 passed; 0 failed' /tmp/gateway-module.log
           cargo test --locked --all-features --lib net::cluster_gateway::tests::bucket_creation_refuses_a_placement_failure_without_a_stored_record -- --exact | tee /tmp/gateway-bucket-write.log
           grep -q 'test result: ok. 1 passed; 0 failed' /tmp/gateway-bucket-write.log
           cargo test --locked --all-features --lib net::cluster_gateway::tests::bucket_startup_refuses_a_placement_failure_without_a_stored_record -- --exact | tee /tmp/gateway-bucket-write.log

@@ -150,6 +150,14 @@ fn extents_over(extents: &[crate::object_manifest::ObjectExtent], offset: u64, e
         .collect()
 }
 
+/// The original append request, kept unchanged across metadata retries.
+/// Storage backends bind its ID to object incarnation and record ranges before persisting it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppendContext {
+    pub id: Option<[u8; 16]>,
+    pub offset: u64,
+}
+
 /// One connection's worth of cluster operations.
 pub trait ObjectPlane: Send {
     fn read_manifest(&mut self, bucket: &str, key: &str) -> Result<ObjectManifest, ObjectError>;
@@ -175,6 +183,23 @@ pub trait ObjectPlane: Send {
         data: &[u8],
     ) -> Result<ObjectManifest, PlaneFailure> {
         self.append(expected, data)
+    }
+    /// Append with the original client identity, including an append that creates or revives
+    /// an object. Backends with durable record identity override this entry point.
+    /// The default retains the established page append and creation paths.
+    fn append_with_attempt(
+        &mut self,
+        bucket: &str,
+        key: &str,
+        expected: Option<ObjectManifest>,
+        data: &[u8],
+        attributes: &ChunkAttributes,
+        _context: AppendContext,
+    ) -> Result<ObjectManifest, PlaneFailure> {
+        match expected {
+            Some(manifest) if !manifest.deleted => self.append_best(manifest, data),
+            other => self.write_with(bucket, key, other, data, attributes),
+        }
     }
     fn read(&mut self, bucket: &str, key: &str) -> Result<(ObjectManifest, Vec<u8>), ObjectError>;
     /// The manifest and what the object carries besides its bytes. A plane that keeps no attributes answers none.
@@ -1019,6 +1044,7 @@ impl ClusterGateway {
     ) -> Response {
         let resource = format!("/{bucket}/{key}");
         const ATTEMPTS: usize = 4;
+        let context = AppendContext { id: attempt, offset };
         let mut last_staged_mismatch: Option<ObjectError> = None;
         // The refusal that made the last attempt retry, so a gateway that gives up can say why.
         let mut last_retried = String::new();
@@ -1076,9 +1102,9 @@ impl ClusterGateway {
                                 true,
                             )));
                         }
-                        plane.append_best(manifest, body)
+                        plane.append_with_attempt(bucket, key, Some(manifest), body, attributes, context)
                     }
-                    other => plane.write_with(bucket, key, other, body, attributes),
+                    other => plane.append_with_attempt(bucket, key, other, body, attributes, context),
                 };
                 Ok(result.map_err(|failure| (failure, false)))
             });
@@ -1798,6 +1824,8 @@ mod tests {
     struct Shared {
         objects: BTreeMap<(String, String), (ObjectManifest, Vec<u8>)>,
         calls: Vec<&'static str>,
+        append_attempts: Vec<(String, String, AppendContext, bool)>,
+        append_refusals: usize,
         /// Another writer moves the generation under every fence attempt.
         racing_fence: bool,
         /// Pages are allocated per attempt: the next chunk id the plane hands out.
@@ -1929,6 +1957,28 @@ mod tests {
             shared.objects.insert(slot, (m.clone(), data.to_vec()));
             Ok(m)
         }
+        fn append_with_attempt(
+            &mut self,
+            bucket: &str,
+            key: &str,
+            expected: Option<ObjectManifest>,
+            data: &[u8],
+            attributes: &ChunkAttributes,
+            context: AppendContext,
+        ) -> Result<ObjectManifest, PlaneFailure> {
+            {
+                let mut shared = self.0.lock().unwrap();
+                shared.append_attempts.push((bucket.into(), key.into(), context, expected.as_ref().is_some_and(|m| m.deleted)));
+                if shared.append_refusals > 0 {
+                    shared.append_refusals -= 1;
+                    return Err(ObjectError::InvalidArgument("staged allocation does not match object write".into()).into());
+                }
+            }
+            match expected {
+                Some(manifest) if !manifest.deleted => self.append_best(manifest, data),
+                other => self.write_with(bucket, key, other, data, attributes),
+            }
+        }
         fn append(&mut self, expected: ObjectManifest, data: &[u8]) -> Result<ObjectManifest, PlaneFailure> {
             let mut shared = self.0.lock().unwrap();
             shared.calls.push("append");
@@ -2043,6 +2093,75 @@ mod tests {
     }
 
     /// An attempt id: 32 hex characters.
+    #[test]
+    fn append_context_reaches_the_backend_for_creation_and_existing_objects() {
+        let (gateway, shared) = gateway();
+        let first = attempt(11);
+        let second = attempt(22);
+        let response = gateway.handle(&request("PUT", "/b/k", &[(WRITE_OFFSET_HEADER, "0"), (ATTEMPT_HEADER, &first), ("content-type", "text/plain")], b"abc"));
+        assert_eq!(response.status, 200);
+        assert_eq!(header(&response, ATTEMPT_HEADER), Some(first.as_str()));
+        assert_eq!(resolve_test_append(&gateway, 3, b"de", &second).status, 200);
+        let state = shared.lock().unwrap();
+        assert_eq!(state.append_attempts, vec![
+            ("b".into(), "k".into(), AppendContext { id: Some(AttemptId::parse(&first).unwrap().into_bytes()), offset: 0 }, false),
+            ("b".into(), "k".into(), AppendContext { id: Some(AttemptId::parse(&second).unwrap().into_bytes()), offset: 3 }, false),
+        ]);
+        assert_eq!(state.attributes[&("b".into(), "k".into())].content_type, "text/plain");
+        assert_eq!(state.objects[&("b".into(), "k".into())].1, b"abcde");
+    }
+
+    #[test]
+    fn a_metadata_retry_keeps_the_original_append_identity_and_offset() {
+        let (gateway, shared) = gateway();
+        assert_eq!(resolve_test_append(&gateway, 0, b"abc", &attempt(1)).status, 200);
+        shared.lock().unwrap().append_refusals = 1;
+        let id = attempt(2);
+        let response = resolve_test_append(&gateway, 3, b"de", &id);
+        assert_eq!(response.status, 200, "{}", String::from_utf8_lossy(&response.body));
+        let state = shared.lock().unwrap();
+        assert_eq!(state.append_attempts.len(), 3);
+        assert_eq!(state.append_attempts[1], state.append_attempts[2]);
+        assert_eq!(state.append_attempts[2].2, AppendContext { id: Some(AttemptId::parse(&id).unwrap().into_bytes()), offset: 3 });
+        assert_eq!(state.objects[&("b".into(), "k".into())].1, b"abcde");
+    }
+
+    #[test]
+    fn an_append_without_a_client_identity_preserves_its_absence() {
+        let (gateway, shared) = gateway();
+        let response = gateway.handle(&request("PUT", "/b/k", &[(WRITE_OFFSET_HEADER, "0")], b"abc"));
+        assert_eq!(response.status, 200);
+        assert_eq!(header(&response, ATTEMPT_HEADER), None);
+        let state = shared.lock().unwrap();
+        assert_eq!(state.append_attempts.len(), 1);
+        assert_eq!(state.append_attempts[0].2, AppendContext { id: None, offset: 0 });
+    }
+
+    #[test]
+    fn an_append_that_revives_a_tombstone_carries_its_new_request_identity() {
+        let (gateway, shared) = gateway();
+        assert_eq!(resolve_test_append(&gateway, 0, b"old", &attempt(1)).status, 200);
+        assert_eq!(gateway.handle(&request("DELETE", "/b/k", &[], b"")).status, 204);
+        let id = attempt(2);
+        assert_eq!(resolve_test_append(&gateway, 0, b"new", &id).status, 200);
+        let state = shared.lock().unwrap();
+        assert_eq!(state.append_attempts.len(), 2);
+        assert_eq!(state.append_attempts[1], ("b".into(), "k".into(), AppendContext { id: Some(AttemptId::parse(&id).unwrap().into_bytes()), offset: 0 }, true));
+        assert_eq!(state.objects[&("b".into(), "k".into())].1, b"new");
+        assert_eq!(state.objects[&("b".into(), "k".into())].0.generation, 3);
+    }
+
+    #[test]
+    fn invalid_identity_and_wrong_offset_never_reach_the_append_backend() {
+        let (gateway, shared) = gateway();
+        assert_eq!(resolve_test_append(&gateway, 0, b"abc", &attempt(1)).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/b/k", &[(WRITE_OFFSET_HEADER, "3"), (ATTEMPT_HEADER, "invalid")], b"de")).status, 400);
+        assert_eq!(resolve_test_append(&gateway, 99, b"de", &attempt(2)).status, 412);
+        let state = shared.lock().unwrap();
+        assert_eq!(state.append_attempts.len(), 1);
+        assert_eq!(state.objects[&("b".into(), "k".into())].1, b"abc");
+    }
+
     fn attempt(n: u128) -> String {
         format!("{n:032x}")
     }
