@@ -76,7 +76,7 @@ a SHA-256 of them. The last entry may instead be marked as the tail: still being
 written, its recorded length only a lower bound. Only the last entry may be the
 tail. Readers older than this format reject the new fields.
 
-**Record format.** A chunk file is a sequence of records, each a 40-byte header
+**Record format.** Legacy writes use records with a 40-byte header
 followed by its data. The header holds the magic `MOL1`, the record kind (append,
 seal or truncate), the chunk generation, the writer epoch, the offset, the data
 length, a CRC-32C of the data and a CRC-32C of the header. A record carries at
@@ -581,3 +581,8 @@ extents the attempt published as its identity, as it does for page-granular obje
 Known limits: an append adds at least one extent, and a manifest names at most 4,096, so an object that has
 reached the bound refuses the append whole and is rewritten; a log chunk writer (several appends in one
 chunk, no extent per append) is not part of this path.
+
+Readers also accept identified 56-byte append headers, with an opaque 16-byte tag
+covered by the header checksum. Ordinary writes retain the legacy encoding during
+reader deployment. See [log chunk recovery](log-chunk-recovery.md) for byte layout
+and the limits of storage-level identity lookup.

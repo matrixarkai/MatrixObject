@@ -4,7 +4,11 @@
 //! anywhere. Every record is self-describing (its offset, length and checksums), so the length of
 //! the chunk is DERIVED when the file is replayed, and a write costs one append and one sync.
 //!
-//! The file is a sequence of records, each a 40-byte header followed by its data:
+//! Legacy records have a 40-byte header followed by data. Identified append records use
+//! a 56-byte header: the version magic changes, bytes 36..52 hold an opaque attempt tag,
+//! and bytes 52..56 checksum the preceding header bytes. Readers accept both versions;
+//! production writers continue emitting legacy records during reader deployment.
+//! The legacy header is:
 //!
 //! ```text
 //! 0   magic "MOL1"
@@ -54,6 +58,10 @@ fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
 
 pub const LOG_HEADER_LEN: usize = 40;
 const MAGIC: &[u8; 4] = b"MOL1";
+/// Identified append records carry sixteen CRC-protected opaque attempt bytes.
+/// Ordinary writes continue emitting the legacy forty-byte record header.
+pub const IDENTIFIED_LOG_HEADER_LEN: usize = 56;
+const IDENTIFIED_MAGIC: &[u8; 4] = b"MOL2";
 const KIND_APPEND: u8 = 1;
 const KIND_SEAL: u8 = 2;
 const KIND_TRUNCATE: u8 = 3;
@@ -176,11 +184,23 @@ struct Header {
     offset: u64,
     length: u32,
     data_crc: u32,
+    attempt_tag: Option<[u8; 16]>,
 }
 impl Header {
-    fn encode(&self) -> [u8; LOG_HEADER_LEN] {
-        let mut out = [0u8; LOG_HEADER_LEN];
-        out[..4].copy_from_slice(MAGIC);
+    fn encoded_len(&self) -> usize {
+        if self.attempt_tag.is_some() {
+            IDENTIFIED_LOG_HEADER_LEN
+        } else {
+            LOG_HEADER_LEN
+        }
+    }
+    fn encode(&self) -> [u8; IDENTIFIED_LOG_HEADER_LEN] {
+        let mut out = [0u8; IDENTIFIED_LOG_HEADER_LEN];
+        out[..4].copy_from_slice(if self.attempt_tag.is_some() {
+            IDENTIFIED_MAGIC
+        } else {
+            MAGIC
+        });
         out[4] = self.kind;
         out[5] = self.flags;
         out[8..12].copy_from_slice(&self.generation.to_le_bytes());
@@ -188,16 +208,29 @@ impl Header {
         out[20..28].copy_from_slice(&self.offset.to_le_bytes());
         out[28..32].copy_from_slice(&self.length.to_le_bytes());
         out[32..36].copy_from_slice(&self.data_crc.to_le_bytes());
-        let crc = crc32c(&out[..36]);
-        out[36..40].copy_from_slice(&crc.to_le_bytes());
+        let crc_at = if let Some(tag) = self.attempt_tag {
+            out[36..52].copy_from_slice(&tag);
+            52
+        } else {
+            36
+        };
+        let crc = crc32c(&out[..crc_at]);
+        out[crc_at..crc_at + 4].copy_from_slice(&crc.to_le_bytes());
         out
     }
-    /// `None` when the bytes are not a well-formed header (bad magic, checksum or shape).
+    /// `None` for an unknown version or a damaged complete header.
     fn decode(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < LOG_HEADER_LEN || &bytes[..4] != MAGIC {
+        if bytes.len() < LOG_HEADER_LEN {
             return None;
         }
-        if crc32c_stored_record(&bytes[..36]) != u32::from_le_bytes(bytes[36..40].try_into().ok()?)
+        let identified = &bytes[..4] == IDENTIFIED_MAGIC;
+        if !identified && &bytes[..4] != MAGIC {
+            return None;
+        }
+        let crc_at = if identified { 52 } else { 36 };
+        if bytes.len() < crc_at + 4
+            || crc32c_stored_record(&bytes[..crc_at])
+                != u32::from_le_bytes(bytes[crc_at..crc_at + 4].try_into().ok()?)
         {
             return None;
         }
@@ -209,8 +242,14 @@ impl Header {
             offset: u64::from_le_bytes(bytes[20..28].try_into().ok()?),
             length: u32::from_le_bytes(bytes[28..32].try_into().ok()?),
             data_crc: u32::from_le_bytes(bytes[32..36].try_into().ok()?),
+            attempt_tag: if identified {
+                Some(bytes[36..52].try_into().ok()?)
+            } else {
+                None
+            },
         };
         let shaped = bytes[6..8] == [0, 0]
+            && (!identified || header.kind == KIND_APPEND)
             && match header.kind {
                 KIND_APPEND => header.flags == 0 && header.length as usize <= MAX_RECORD_DATA,
                 KIND_SEAL => {
@@ -239,6 +278,7 @@ struct Extent {
     len: u32,
     record_len: u32,
     data_crc: u32,
+    header_len: u8,
 }
 
 /// The records of sealed chunks that were read lately, shared by every chunk of one node and
@@ -315,6 +355,15 @@ pub struct Sealed {
     pub sha256: Option<[u8; 32]>,
 }
 
+/// Identity metadata of one complete durable append record, without its payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppendRecordIdentity {
+    pub offset: u64,
+    pub length: u32,
+    /// Opaque context-bound tag; absent on legacy records.
+    pub attempt_tag: Option<[u8; 16]>,
+}
+
 pub struct LogChunk {
     file: File,
     failed: bool,
@@ -387,24 +436,50 @@ impl LogChunk {
         let mut piece = vec![0u8; REPLAY_PIECE];
         while offset < file_len {
             let remaining = file_len - offset;
-            let mut header_bytes = [0u8; LOG_HEADER_LEN];
+            let mut header_bytes = [0u8; IDENTIFIED_LOG_HEADER_LEN];
             if remaining < LOG_HEADER_LEN as u64 {
                 // A header cut short: only the beginning of one may be left.
                 let mut tail = vec![0u8; remaining as usize];
                 read_exact_at(&file, &mut tail, offset)?;
                 let prefix = tail.len().min(MAGIC.len());
-                if tail[..prefix] != MAGIC[..prefix] && tail.iter().any(|byte| *byte != 0) {
+                if tail[..prefix] != MAGIC[..prefix]
+                    && tail[..prefix] != IDENTIFIED_MAGIC[..prefix]
+                    && tail.iter().any(|byte| *byte != 0)
+                {
                     return Err(corrupt("a log chunk ends in bytes that are not a record"));
                 }
                 break;
             }
-            read_exact_at(&file, &mut header_bytes, offset)?;
-            let Some(header) = Header::decode(&header_bytes) else {
+            read_exact_at(&file, &mut header_bytes[..LOG_HEADER_LEN], offset)?;
+            let header_len = if &header_bytes[..4] == IDENTIFIED_MAGIC {
+                IDENTIFIED_LOG_HEADER_LEN
+            } else {
+                LOG_HEADER_LEN
+            };
+            if remaining < header_len as u64 {
+                // A damaged legacy version marker must not erase a complete old record.
+                let mut legacy = header_bytes;
+                legacy[..4].copy_from_slice(MAGIC);
+                if Header::decode(&legacy[..LOG_HEADER_LEN]).is_some() {
+                    return Err(corrupt(
+                        "short identified header retains a legacy record checksum",
+                    ));
+                }
+                break;
+            }
+            if header_len > LOG_HEADER_LEN {
+                read_exact_at(
+                    &file,
+                    &mut header_bytes[LOG_HEADER_LEN..header_len],
+                    offset + LOG_HEADER_LEN as u64,
+                )?;
+            }
+            let Some(header) = Header::decode(&header_bytes[..header_len]) else {
                 return Err(corrupt(format!(
                     "log chunk record at {offset} has a damaged header"
                 )));
             };
-            let end = offset + LOG_HEADER_LEN as u64 + u64::from(header.length);
+            let end = offset + header_len as u64 + u64::from(header.length);
             if header.generation != generation {
                 return Err(corrupt("log chunk record names another generation"));
             }
@@ -414,7 +489,7 @@ impl LogChunk {
             if end > file_len {
                 break; // the data was not fully written
             }
-            let data_pos = offset + LOG_HEADER_LEN as u64;
+            let data_pos = offset + header_len as u64;
             match header.kind {
                 KIND_APPEND => {
                     // checked a piece at a time: a record is never held whole
@@ -535,6 +610,7 @@ impl LogChunk {
             len: header.length,
             record_len: header.length,
             data_crc: header.data_crc,
+            header_len: header.encoded_len() as u8,
         });
         self.length += u64::from(header.length);
         self.crc = total_crc;
@@ -669,7 +745,7 @@ impl LogChunk {
                     if crc32c_stored_record(&bytes) != extent.data_crc {
                         return Err(corrupt(format!(
                             "log chunk record at {} has damaged data",
-                            extent.file_pos - LOG_HEADER_LEN as u64
+                            extent.file_pos - u64::from(extent.header_len)
                         )));
                     }
                     let record: Arc<Vec<u8>> = Arc::new(bytes);
@@ -728,8 +804,9 @@ impl LogChunk {
         Ok(())
     }
     fn write_record(&mut self, header: Header, data: &[u8]) -> Result<(), LogError> {
-        let mut frame = Vec::with_capacity(LOG_HEADER_LEN + data.len());
-        frame.extend_from_slice(&header.encode());
+        let header_len = header.encoded_len();
+        let mut frame = Vec::with_capacity(header_len + data.len());
+        frame.extend_from_slice(&header.encode()[..header_len]);
         frame.extend_from_slice(data);
         // one write call per record: a crash leaves a prefix of it, never a hole inside it
         self.check_available()?;
@@ -743,6 +820,59 @@ impl LogChunk {
         }
         self.file_len += frame.len() as u64;
         Ok(())
+    }
+
+    /// Inspect a complete durable record starting exactly at `offset`.
+    /// A truncated record or a position inside a record has no complete identity.
+    /// This observation does not fence pending writes or establish replica quorum.
+    pub fn append_record_identity(
+        &self,
+        offset: u64,
+    ) -> Result<Option<AppendRecordIdentity>, LogError> {
+        self.check_available()?;
+        let index = self
+            .extents
+            .partition_point(|extent| extent.logical < offset);
+        let Some(extent) = self
+            .extents
+            .get(index)
+            .filter(|extent| extent.logical == offset)
+        else {
+            return Ok(None);
+        };
+        if extent.len != extent.record_len
+            || extent.logical + u64::from(extent.len) > self.durable_length
+        {
+            return Ok(None);
+        }
+        let length = usize::from(extent.header_len);
+        if !matches!(length, LOG_HEADER_LEN | IDENTIFIED_LOG_HEADER_LEN) {
+            return Err(corrupt("invalid indexed record header length"));
+        }
+        let mut bytes = [0u8; IDENTIFIED_LOG_HEADER_LEN];
+        read_exact_at(
+            &self.file,
+            &mut bytes[..length],
+            extent.file_pos - length as u64,
+        )?;
+        let header = Header::decode(&bytes[..length])
+            .ok_or_else(|| corrupt("append identity header is damaged"))?;
+        if header.kind != KIND_APPEND
+            || header.generation != self.generation
+            || header.offset != offset
+            || header.length != extent.record_len
+            || header.data_crc != extent.data_crc
+            || header.encoded_len() != length
+        {
+            return Err(corrupt(
+                "append identity header does not match the indexed record",
+            ));
+        }
+        Ok(Some(AppendRecordIdentity {
+            offset,
+            length: header.length,
+            attempt_tag: header.attempt_tag,
+        }))
     }
 
     /// Accept `data` for `[offset, offset+data.len())` at `epoch`. Records that arrive ahead of
@@ -849,8 +979,9 @@ impl LogChunk {
             offset,
             length: data.len() as u32,
             data_crc: crc32c(data),
+            attempt_tag: None,
         };
-        let data_pos = self.file_len + LOG_HEADER_LEN as u64;
+        let data_pos = self.file_len + header.encoded_len() as u64;
         self.write_record(header, data)?;
         self.extents.push(Extent {
             logical: offset,
@@ -858,6 +989,7 @@ impl LogChunk {
             len: data.len() as u32,
             record_len: data.len() as u32,
             data_crc: header.data_crc,
+            header_len: header.encoded_len() as u8,
         });
         self.data.extend_from_slice(data);
         self.length += data.len() as u64;
@@ -892,6 +1024,7 @@ impl LogChunk {
             offset: length,
             length: 0,
             data_crc: 0,
+            attempt_tag: None,
         };
         self.write_record(header, &[])?;
         self.data.truncate(length as usize);
@@ -924,6 +1057,7 @@ impl LogChunk {
             offset: self.length(),
             length: if with_sha256 { 32 } else { 0 },
             data_crc: self.crc,
+            attempt_tag: None,
         };
         self.write_record(header, digest.as_ref().map(|d| d.as_slice()).unwrap_or(&[]))?;
         self.sync()?;
@@ -944,3 +1078,7 @@ impl LogChunk {
 #[cfg(test)]
 #[path = "log_chunk_crc32c_tests.rs"]
 mod crc32c_tests;
+
+#[cfg(test)]
+#[path = "log_chunk_identity_tests.rs"]
+mod identity_tests;

@@ -753,6 +753,8 @@ fn every_durable_format_constant_is_accounted_for() {
     // This file is excluded from the scan on purpose: finding the constants in
     // the guard itself would make the assertion unfalsifiable.
     const EXPECTED: &[&str] = &[
+        "MOL1",
+        "MOL2",
         "MOSRS-BLOCK-ROUTE-BOOTSTRAP1",
         "MOSRS-BLOCKSERVER-BOOTSTRAP1",
         "MOSRS-BUCKET-CORS-REQUEST1",
@@ -904,7 +906,11 @@ fn every_durable_format_constant_is_accounted_for() {
                     end += 1;
                 }
                 let value = &text[start..end.min(text.len())];
-                if (value.starts_with("MXOS") || value.starts_with("MOSRS"))
+                if (value.starts_with("MXOS")
+                    || value.starts_with("MOSRS")
+                    || value
+                        .strip_prefix("MOL")
+                        .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())))
                     && value
                         .bytes()
                         .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
@@ -930,7 +936,7 @@ fn every_durable_format_constant_is_accounted_for() {
     );
     assert_eq!(
         found.len(),
-        112,
+        114,
         "the count is pinned as well, so a rename that happens to swap two names cannot pass"
     );
 }
