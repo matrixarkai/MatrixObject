@@ -38,21 +38,41 @@ impl ClusterGateway {
         stored
     }
 
+    fn create_bucket_record(&self, bucket: &str, config: &BucketConfig) -> Result<bool, ObjectError> {
+        let expected = self.with_plane(|plane| {
+            match plane.read_manifest(SYSTEM_BUCKET, &bc::config_key(bucket)) {
+                Ok(manifest) => Ok(Some(manifest)),
+                Err(ObjectError::NotFound(_)) => Ok(None),
+                Err(error) => Err(error),
+            }
+        })?;
+        if expected.as_ref().is_some_and(|manifest| !manifest.deleted) {
+            return self.load_bucket(bucket)?.map(|_| false).ok_or_else(|| {
+                ObjectError::PreconditionFailed("the bucket changed during creation; retry".into())
+            });
+        }
+        match self.store_bucket(bucket, expected, config) {
+            Ok(()) => Ok(true),
+            Err(error @ ObjectError::PreconditionFailed(_)) => {
+                if self.load_bucket(bucket)?.is_some() {
+                    Ok(false)
+                } else {
+                    Err(error)
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Create `bucket` if it has no record. Returns whether it was created.
     pub fn ensure_bucket(&self, bucket: &str) -> Result<bool, ObjectError> {
         crate::validate_bucket(bucket)?;
         if self.load_bucket(bucket)?.is_some() {
             return Ok(false);
         }
-        match self.store_bucket(bucket, None, &BucketConfig::new(now_ms())) {
-            Ok(()) => {
-                self.note_bucket(bucket, true);
-                Ok(true)
-            }
-            // another writer created it first: it exists
-            Err(ObjectError::PreconditionFailed(_)) => Ok(false),
-            Err(error) => Err(error),
-        }
+        let created = self.create_bucket_record(bucket, &BucketConfig::new(now_ms()))?;
+        self.note_bucket(bucket, true);
+        Ok(created)
     }
 
     /// Change the record of `bucket` with `change`, retried when the record moved under it.
@@ -150,8 +170,8 @@ impl ClusterGateway {
             config.versioning = bc::VERSIONING_ENABLED;
             config.object_lock_enabled = true;
         }
-        match self.store_bucket(bucket, None, &config) {
-            Ok(()) | Err(ObjectError::PreconditionFailed(_)) => {
+        match self.create_bucket_record(bucket, &config) {
+            Ok(_) => {
                 self.note_bucket(bucket, true);
                 Response::status(200).with_header("location", resource)
             }
