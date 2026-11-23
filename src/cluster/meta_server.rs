@@ -1103,6 +1103,7 @@ pub(super) fn decide_allocation(
             features: None,
             log_chunk: None,
             lease_batch: None,
+            chunk_writer: None,
             forget: false,
     };
     outcome.to_payload()?;

@@ -2307,6 +2307,14 @@ jobs:
           cargo test --locked --lib log_chunk::identified_write_tests -- --test-threads=1 | tee /tmp/identified-log-writes.log
           grep -q '^running 12 tests$' /tmp/identified-log-writes.log
           grep -q '^test result: ok. 12 passed' /tmp/identified-log-writes.log
+      - name: unified LOG writer outcomes preserve atomic state and reader floors
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::placement_journal::tests::unified_writer_journal_recovers_both_tables_and_refuses_unactivated_replay -- --exact --nocapture | tee /tmp/unified-writer-journal.log
+          grep -q 'test result: ok. 1 passed;' /tmp/unified-writer-journal.log
+          cargo test --locked --lib chunk_writer_outcome_tests -- --test-threads=1 | tee /tmp/unified-writer-outcomes.log
+          grep -q '^running 18 tests$' /tmp/unified-writer-outcomes.log
+          grep -q '^test result: ok. 18 passed' /tmp/unified-writer-outcomes.log
       - name: identified log record readers preserve durable identity and reject corruption
         run: |
           set -euo pipefail

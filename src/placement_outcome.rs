@@ -221,6 +221,9 @@ pub struct PlacementOutcome {
     /// refuses the entry (the canonical re-encoding differs), which is why the bit gates every emission.
     #[prost(bool, tag = "20")]
     pub forget: bool,
+    /// Version 17: one atomic unified LOG catalog and writer-lease transition.
+    #[prost(message, optional, tag = "21")]
+    pub chunk_writer: Option<crate::chunk_writer_outcome::ChunkWriterChange>,
 }
 fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
@@ -378,6 +381,38 @@ impl PlacementOutcome {
     /// `manifest_validated` says the publication's manifests were validated by the caller
     /// (the expansion of a compact append), so they are not walked again.
     fn validate_manifest_binding_with(&self, manifest_validated: bool) -> Result<(), ObjectError> {
+        if self.chunk_writer.is_some() || self.version == 17 {
+            let change = self
+                .chunk_writer
+                .as_ref()
+                .filter(|_| self.version == 17)
+                .ok_or_else(|| {
+                    invalid("a unified chunk writer outcome is version 17 and carries its change")
+                })?;
+            change.validate(self.before_index, self.after_index)?;
+            if self.manifest.is_some()
+                || self.retention.is_some()
+                || self.staging.is_some()
+                || self.publication_fence.is_some()
+                || self.copy_source.is_some()
+                || self.retention_deadline.is_some()
+                || self.read_session_open.is_some()
+                || self.read_session_removal.is_some()
+                || self.manifest_append.is_some()
+                || self.reserved.is_some()
+                || self.features.is_some()
+                || self.log_chunk.is_some()
+                || self.lease_batch.is_some()
+                || self.forget
+                || !self.nodes.is_empty()
+                || !self.placements.is_empty()
+            {
+                return Err(invalid(
+                    "a unified chunk writer outcome changes unrelated state",
+                ));
+            }
+            return Ok(());
+        }
         if self.forget {
             let sound = self.version == 2
                 && self.staging.is_none()
@@ -693,6 +728,7 @@ impl PlacementOutcome {
             features: None,
             log_chunk: None,
             lease_batch: None,
+            chunk_writer: None,
             forget: false,
         };
         outcome.validate_manifest_binding()?;
@@ -794,6 +830,7 @@ impl PlacementOutcome {
             features: None,
             log_chunk: None,
             lease_batch: None,
+            chunk_writer: None,
             forget: false,
         };
         outcome.forget = forget_decided(service, &outcome);
@@ -988,6 +1025,7 @@ impl PlacementOutcome {
             features: None,
             log_chunk: None,
             lease_batch: None,
+            chunk_writer: None,
             forget: false,
         })
     }
@@ -1115,6 +1153,9 @@ impl PlacementOutcome {
     /// append against the stored manifest, which validated them.
     fn apply_with(&self, service: &mut MatrixMetaService, manifest_validated: bool) -> Result<(), ObjectError> {
         self.validate_manifest_binding_with(manifest_validated)?;
+        if let Some(change) = &self.chunk_writer {
+            return change.apply(service, self.before_index, self.after_index);
+        }
         if let Some(change) = &self.features {
             // checked against exactly the state it was decided from; never skipped
             let before = change.before.as_ref().unwrap().to_features()?;

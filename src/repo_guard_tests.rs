@@ -793,6 +793,7 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRSMETA21",
         "MOSRSMETA22",
         "MOSRSMETA23",
+        "MOSRSMETA24",
         "MOSRSCHUNKS1",
         "MOSRSFEATURES1",
         "MOSRSLEASES1",
@@ -936,7 +937,7 @@ fn every_durable_format_constant_is_accounted_for() {
     );
     assert_eq!(
         found.len(),
-        114,
+        115,
         "the count is pinned as well, so a rename that happens to swap two names cannot pass"
     );
 }
