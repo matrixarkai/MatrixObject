@@ -21,6 +21,8 @@ pub const OP_IDENTITY: u32 = 6;
 pub const OP_INITIALIZE: u32 = 7;
 /// Fence while retaining this member's complete prefix. No client-selected length.
 pub const OP_FENCE: u32 = 8;
+/// Physical storage incarnation probe for native creation and membership qualification.
+pub const OP_STORAGE: u32 = 9;
 /// Seal: also record the SHA-256 of the sealed bytes.
 pub const FLAG_SEAL_SHA256: u32 = 1;
 /// One record, and one read, carry at most this many bytes.
@@ -65,6 +67,10 @@ pub struct LogOpRequest {
     pub initialization_hi: u64,
     #[prost(fixed64, tag = "15")]
     pub initialization_lo: u64,
+    #[prost(fixed64, tag = "16")]
+    pub storage_hi: u64,
+    #[prost(fixed64, tag = "17")]
+    pub storage_lo: u64,
 }
 
 /// The chunk as it stands after the operation.
@@ -128,9 +134,30 @@ pub struct LogOpReply {
     pub publication_writes_enabled: bool,
     #[prost(uint64, tag = "25")]
     pub publication_payload_limit: u64,
+    #[prost(fixed64, tag = "26")]
+    pub storage_hi: u64,
+    #[prost(fixed64, tag = "27")]
+    pub storage_lo: u64,
 }
 
 impl LogOpRequest {
+    pub fn storage_probe() -> Self {
+        Self { version: 5, op: OP_STORAGE, ..Default::default() }
+    }
+    /// Bind a publication operation to its authoritative physical member. No fallback.
+    pub fn for_storage(mut self, incarnation: [u8;16], initialization: [u8;16]) -> Self {
+        self.version=5;
+        self.storage_hi=u64::from_le_bytes(incarnation[..8].try_into().unwrap());
+        self.storage_lo=u64::from_le_bytes(incarnation[8..].try_into().unwrap());
+        if self.op != OP_INITIALIZE {
+            self.initialization_hi=u64::from_le_bytes(initialization[..8].try_into().unwrap());
+            self.initialization_lo=u64::from_le_bytes(initialization[8..].try_into().unwrap());
+        }
+        self
+    }
+    pub fn storage_incarnation(&self) -> Option<[u8;16]> {
+        (self.version==5 && self.op!=OP_STORAGE).then(|| tag_bytes(self.storage_hi,self.storage_lo))
+    }
     pub fn is_mutation(&self) -> bool {
         matches!(
             self.op,
@@ -138,6 +165,23 @@ impl LogOpRequest {
         )
     }
     pub fn validate(&self) -> Result<(), ObjectError> {
+        if self.version == 5 {
+            if self.op == OP_STORAGE {
+                if self.volume != 0 || self.chunk != 0 || self.generation != 0 || self.epoch != 0
+                    || self.offset != 0 || self.length != 0 || self.flags != 0 || !self.data.is_empty()
+                    || self.attempt_hi != 0 || self.attempt_lo != 0 || self.published_length != 0
+                    || self.initialization_hi != 0 || self.initialization_lo != 0
+                    || self.storage_hi != 0 || self.storage_lo != 0 {
+                    return Err(ObjectError::InvalidArgument("invalid physical storage probe".into()));
+                }
+                return Ok(());
+            }
+            if self.storage_hi == 0 && self.storage_lo == 0 {
+                return Err(ObjectError::InvalidArgument("native request lacks physical storage identity".into()));
+            }
+        } else if self.storage_hi != 0 || self.storage_lo != 0 {
+            return Err(ObjectError::InvalidArgument("physical identity requires protocol 5".into()));
+        }
         ChunkId::new(self.volume, self.chunk)?;
         let old_fields = self.published_length == 0
             && self.initialization_hi == 0
@@ -156,13 +200,13 @@ impl LogOpRequest {
                     && self.attempt_lo == 0
                     && matches!(self.op, OP_TAIL | OP_READ | OP_IDENTITY)
             }
-            4 => {
+            4 | 5 => {
                 matches!(self.op, OP_APPEND | OP_INITIALIZE | OP_FENCE | OP_SEAL)
                     || (self.published_length == 0
                         && self.attempt_hi == 0
                         && self.attempt_lo == 0
                         && (matches!(self.op, OP_READ | OP_IDENTITY)
-                            || (old_fields && self.op == OP_TAIL)))
+                            || ((old_fields || self.version == 5) && self.op == OP_TAIL)))
             }
             _ => false,
         };
@@ -174,7 +218,7 @@ impl LogOpRequest {
                         && self.data.len() <= MAX_OP_DATA
                         && self.length == 0
                         && self.flags == 0
-                        && (self.version != 4
+                        && (self.version < 4
                             || self
                                 .offset
                                 .checked_add(self.data.len() as u64)
@@ -184,7 +228,7 @@ impl LogOpRequest {
                                 }))
                 }
                 OP_INITIALIZE => {
-                    self.version == 4
+                    self.version >= 4
                         && self.epoch != 0
                         && self.offset == 0
                         && self.length == 0
@@ -195,7 +239,7 @@ impl LogOpRequest {
                         && self.initialization_lo == 0
                 }
                 OP_FENCE => {
-                    self.version == 4
+                    self.version >= 4
                         && self.epoch != 0
                         && self.offset == 0
                         && self.length == 0
@@ -211,7 +255,7 @@ impl LogOpRequest {
                         && self.length == 0
                         && self.flags & !FLAG_SEAL_SHA256 == 0
                         && self.data.is_empty()
-                        && (self.version != 4
+                        && (self.version < 4
                             || (self.published_length == 0
                                 && self.attempt_hi == 0
                                 && self.attempt_lo == 0))
@@ -469,7 +513,7 @@ impl LogOpRequest {
         }
     }
     pub fn initialization_tag(&self) -> Option<[u8; 16]> {
-        (self.version == 4 && (self.is_mutation() || matches!(self.op, OP_READ | OP_IDENTITY)))
+        (self.version >= 4 && (self.is_mutation() || matches!(self.op, OP_READ | OP_IDENTITY) || (self.version == 5 && self.op == OP_TAIL)))
             .then(|| {
                 if self.op == OP_INITIALIZE {
                     tag_bytes(self.attempt_hi, self.attempt_lo)
@@ -479,7 +523,7 @@ impl LogOpRequest {
             })
     }
     pub fn attempt_tag(&self) -> Option<[u8; 16]> {
-        (matches!(self.version, 2 | 4) && self.op == OP_APPEND)
+        (matches!(self.version, 2 | 4 | 5) && self.op == OP_APPEND)
             .then(|| tag_bytes(self.attempt_hi, self.attempt_lo))
     }
     pub fn seal(volume: u64, chunk: u64, generation: u32, epoch: u64, with_sha256: bool) -> Self {
@@ -545,7 +589,13 @@ pub struct PublishedPrefixObservation {
 }
 
 impl LogOpReply {
+    pub fn storage_incarnation(&self) -> Option<[u8;16]> {
+        (self.publication_protocol==5 && (self.storage_hi!=0 || self.storage_lo!=0))
+            .then(|| tag_bytes(self.storage_hi,self.storage_lo))
+    }
+
     fn protocol_shape_valid(&self) -> bool {
+        if (self.publication_protocol==5) != (self.storage_hi!=0 || self.storage_lo!=0) { return false; }
         match self.publication_protocol {
             0 => {
                 self.initialization_hi == 0
@@ -554,7 +604,7 @@ impl LogOpReply {
                     && !self.publication_writes_enabled
                     && self.publication_payload_limit == 0
             }
-            4 => {
+            4 | 5 => {
                 self.publication_payload_limit != 0
                     && (!self.publication_writes_enabled
                         || self.publication_payload_limit >= MIN_PUBLICATION_PAYLOAD_BYTES as u64)
@@ -574,6 +624,10 @@ impl LogOpReply {
             && self.publication_writes_enabled
             && self.has_publication_observation()
     }
+    pub fn has_storage_write_protocol(&self, incarnation:[u8;16]) -> bool {
+        self.storage_incarnation()==Some(incarnation) && self.publication_writes_enabled
+            && self.has_publication_observation()
+    }
     /// Conservative per-record capacity. A writer selects the minimum across its members
     /// before fragmenting an attempt; descriptors must remain stable across retries.
     pub fn publication_record_capacity(&self) -> Option<usize> {
@@ -586,7 +640,7 @@ impl LogOpReply {
         Some(capacity.min(MAX_OP_DATA))
     }
     pub fn publication_initialization(&self) -> Option<[u8; 16]> {
-        (self.publication_protocol == 4
+        (matches!(self.publication_protocol,4|5)
             && self.initialization_present
             && self.has_publication_observation())
         .then(|| tag_bytes(self.initialization_hi, self.initialization_lo))

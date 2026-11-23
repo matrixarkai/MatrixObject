@@ -2355,6 +2355,13 @@ jobs:
           grep -q '^test result: ok. 11 passed' /tmp/native-outcomes.log
           cargo test --locked --lib cluster::meta_snapshot_file::tests::native_journal:: -- --test-threads=1 2>&1 | tee /tmp/native-journal.log
           grep -q '^test result: ok. 1 passed' /tmp/native-journal.log
+      - name: physical storage authority and recovery
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::native_storage_authority::tests:: -- --test-threads=1 2>&1 | tee /tmp/storage-authority.log
+          grep -q '^test result: ok. 12 passed' /tmp/storage-authority.log
+          cargo test --locked --lib cluster::chunk_log_tests::storage_incarnation_tests:: -- --test-threads=1 2>&1 | tee /tmp/storage-incarnation.log
+          grep -q '^test result: ok. 1 passed' /tmp/storage-incarnation.log
       - name: per-member initialization survives read repair and restart
         run: |
           set -euo pipefail
