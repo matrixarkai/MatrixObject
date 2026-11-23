@@ -6,7 +6,7 @@
 //! records, so the node keeps no length table and a restart needs no recovery pass beyond opening
 //! a chunk when something asks for it.
 use super::log_op::{
-    LogOpReply, LogOpRequest, FLAG_SEAL_SHA256, OP_APPEND, OP_IDENTITY, OP_READ, OP_SEAL, OP_TAIL, OP_TRUNCATE,
+    LogOpReply, LogOpRequest, FLAG_SEAL_SHA256, OP_APPEND, OP_IDENTITY, OP_READ, OP_SEAL, OP_TAIL, OP_TRUNCATE, OP_INITIALIZE, OP_FENCE,
 };
 use crate::log_chunk::{LogChunk, LogError, RecordCache};
 use crate::ObjectError;
@@ -44,6 +44,8 @@ pub struct LogChunkStore {
     /// Syncs completed, one per chunk per group.
     commits: u64,
     syncer: fn(&File) -> std::io::Result<()>,
+    publication_writes: bool,
+    publication_payload_limit: usize,
     // Release ownership after all cached chunk handles.
     directory_lock: Option<Arc<File>>,
 }
@@ -183,8 +185,15 @@ impl LogChunkStore {
             dirty: BTreeSet::new(),
             commits: 0,
             syncer: sync_data,
+            publication_writes: false,
+            publication_payload_limit: super::log_op::MAX_OP_DATA + 256,
         })
     }
+
+    /// Explicit integration/deployment guard, disabled by default. This is not fresh-allocation,
+    /// membership or metadata lease authorization; the upper protocol must provide those.
+    pub(crate) fn set_publication_writes(&mut self, enabled: bool) { self.publication_writes = enabled; }
+    pub(crate) fn set_publication_payload_limit(&mut self, limit: usize) { self.publication_payload_limit = limit; }
 
     /// Chunks open now.
     #[cfg(test)]
@@ -398,6 +407,9 @@ impl LogChunkStore {
         commit: bool,
     ) -> Result<LogOpReply, ObjectError> {
         request.validate()?;
+        if request.version == 4 && request.is_mutation() && !self.publication_writes {
+            return Err(ObjectError::PreconditionFailed("publication wire writes are disabled".into()));
+        }
         let key = (request.volume, request.chunk);
         let mut dirtied = false;
         let reply = self.apply_inner(request, commit, &mut dirtied)?;
@@ -406,7 +418,7 @@ impl LogChunkStore {
         }
         if dirtied {
             self.dirty.insert(key);
-        } else if commit && request.is_mutation() {
+        } else if matches!(request.op, OP_INITIALIZE | OP_SEAL) || (commit && request.is_mutation()) {
             self.commits += 1;
         }
         Ok(reply)
@@ -419,21 +431,46 @@ impl LogChunkStore {
         dirtied: &mut bool,
     ) -> Result<LogOpReply, ObjectError> {
         let key = (request.volume, request.chunk);
-        let Some(chunk) = self.chunk(request, request.is_mutation())?
+        let writes_enabled = self.publication_writes;
+        let payload_limit = self.publication_payload_limit;
+        let create = request.is_mutation() && (request.version != 4 || request.op == OP_INITIALIZE);
+        let Some(chunk) = self.chunk(request, create)?
         else {
             // a chunk this replica has never held: it is empty, and asking creates nothing
-            return Ok(LogOpReply { publication_supported: request.version == 3, ..LogOpReply::default() });
+            if request.version == 4 && (request.is_mutation() || matches!(request.op,OP_READ|OP_IDENTITY)) {
+                return Err(ObjectError::PreconditionFailed("publication member is absent; verified history transfer is required".into()));
+            }
+            return Ok(LogOpReply { publication_supported: request.version >= 3,
+                publication_protocol: if request.version==4 {4} else {0},
+                publication_writes_enabled: request.version==4 && writes_enabled,
+                publication_payload_limit: if request.version==4 {payload_limit as u64} else {0},
+                ..LogOpReply::default() });
         };
         // Wire versions 1 and 2 cannot express object publication boundaries. Their reads
         // must refuse these files rather than exposing an unpublished physical prefix.
-        if chunk.has_publication_records() && request.version != 3 {
+        if chunk.has_publication_records() && request.version < 3 {
             return Err(ObjectError::PreconditionFailed(
                 "publication-aware log protocol is required".into(),
             ));
         }
+        if request.version == 4 && request.op != OP_INITIALIZE && (request.is_mutation() || matches!(request.op,OP_READ|OP_IDENTITY)) {
+            if chunk.publication_initialization() != request.initialization_tag() {
+                return Err(ObjectError::PreconditionFailed("publication initialization identity differs".into()));
+            }
+            if request.is_mutation() && request.op != OP_FENCE && request.epoch != chunk.epoch() {
+                return Err(ObjectError::PreconditionFailed("publication mutation requires the current fenced epoch".into()));
+            }
+        }
         match request.op {
+            OP_INITIALIZE => chunk.initialize_publication(request.epoch, request.initialization_tag().expect("validated initialization request")).map_err(to_object_error)?,
+            OP_FENCE => {
+                chunk.fence_publication(request.epoch).map_err(to_object_error)?;
+                if commit { chunk.commit().map_err(to_object_error)?; } else { *dirtied=true; }
+            }
             OP_APPEND => {
-                if let Some(tag) = request.attempt_tag() {
+                if request.version == 4 {
+                    chunk.append_published(request.epoch,request.offset,&request.data,request.attempt_tag().expect("validated identified append"),request.published_length)
+                } else if let Some(tag) = request.attempt_tag() {
                     chunk.append_identified(request.epoch, request.offset, &request.data, tag)
                 } else {
                     chunk.append(request.epoch, request.offset, &request.data)
@@ -445,9 +482,9 @@ impl LogChunkStore {
                 }
             }
             OP_SEAL => {
-                chunk
-                    .seal(request.epoch, request.flags & FLAG_SEAL_SHA256 != 0)
-                    .map_err(to_object_error)?;
+                if request.version == 4 {
+                    chunk.seal_publication(request.epoch, request.flags & FLAG_SEAL_SHA256 != 0)
+                } else { chunk.seal(request.epoch, request.flags & FLAG_SEAL_SHA256 != 0) }.map_err(to_object_error)?;
             }
             OP_TRUNCATE => {
                 chunk
@@ -484,13 +521,23 @@ impl LogChunkStore {
                 .map(|d| d.to_vec())
                 .unwrap_or_default(),
             data: Vec::new(),
-            published_length: if request.version == 3 { chunk.durable_published_length().map_err(to_object_error)? } else { 0 },
-            publication_mode: request.version == 3 && chunk.has_publication_records(),
-            publication_supported: request.version == 3,
-            chunk_present: request.version == 3,
+            published_length: if request.version >= 3 { if *dirtied {chunk.published_length()} else {chunk.durable_published_length().map_err(to_object_error)?} } else { 0 },
+            publication_mode: request.version >= 3 && chunk.has_publication_records(),
+            publication_supported: request.version >= 3,
+            chunk_present: request.version >= 3,
+            publication_protocol: if request.version==4 {4} else {0},
+            publication_writes_enabled: request.version==4 && writes_enabled,
+                publication_payload_limit: if request.version==4 {payload_limit as u64} else {0},
             ..Default::default()
         };
-        let record = if request.version == 3 && request.op == OP_TAIL {
+        if request.version == 4 {
+            if let Some(tag) = chunk.publication_initialization() {
+                reply.initialization_present=true;
+                reply.initialization_hi=u64::from_le_bytes(tag[..8].try_into().unwrap());
+                reply.initialization_lo=u64::from_le_bytes(tag[8..].try_into().unwrap());
+            }
+        }
+        let record = if request.version >= 3 && request.op == OP_TAIL {
             chunk.durable_publication_record().map_err(to_object_error)?
         } else if request.op == OP_IDENTITY {
             chunk.durable_record_observation(request.offset).map_err(to_object_error)?
@@ -504,7 +551,7 @@ impl LogChunkStore {
                 reply.attempt_hi = u64::from_le_bytes(tag[..8].try_into().unwrap());
                 reply.attempt_lo = u64::from_le_bytes(tag[8..].try_into().unwrap());
             }
-            if request.version == 3 {
+            if request.version >= 3 {
                 reply.record_publication = record.published_length.is_some();
                 reply.record_published_length = record.published_length.unwrap_or(0);
             }
@@ -512,10 +559,10 @@ impl LogChunkStore {
         if request.op == OP_READ {
             // never above the durable length: an applied byte that no sync has covered is invisible
             let wanted =
-                (request.length as u64).min((if request.version == 3 { reply.published_length } else { durable }).saturating_sub(request.offset)) as usize;
+                (request.length as u64).min((if request.version >= 3 { reply.published_length } else { durable }).saturating_sub(request.offset)) as usize;
             let mut data = Vec::new();
             let chunk = self.chunks.get(&key).expect("the chunk was opened above");
-            if wanted != 0 || request.version != 3 {
+            if wanted != 0 || request.version < 3 {
                 chunk.read_into(request.offset, wanted, &mut self.cache, &mut data).map_err(to_object_error)?;
             }
             reply.data = data;
@@ -543,3 +590,7 @@ mod publication_protocol_tests;
 #[cfg(test)]
 #[path = "log_publication_query_tests.rs"]
 mod publication_query_tests;
+
+#[cfg(test)]
+#[path = "guarded_publication_wire_tests.rs"]
+mod guarded_wire_tests;

@@ -2333,6 +2333,20 @@ jobs:
           cargo test --locked --lib chunk_writer_outcome_tests -- --test-threads=1 | tee /tmp/unified-writer-outcomes.log
           grep -q '^running 18 tests$' /tmp/unified-writer-outcomes.log
           grep -q '^test result: ok. 18 passed' /tmp/unified-writer-outcomes.log
+      - name: guarded publication wire writes preserve durable prefixes
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::log_chunk_store::guarded_wire_tests -- --test-threads=1 2>&1 | tee /tmp/log-publication-wire.log
+          grep -q '^running 21 tests$' /tmp/log-publication-wire.log
+          grep -q '^test result: ok. 21 passed' /tmp/log-publication-wire.log
+      - name: guarded publication survives separate replica process restarts
+        run: |
+          set -euo pipefail
+          cargo build --locked --example guarded_publication_process_probe
+          probe_dir=$(mktemp -d)
+          trap 'rm -rf "$probe_dir"' EXIT
+          timeout --kill-after=5s 120s target/debug/examples/guarded_publication_process_probe "$probe_dir/run" | tee /tmp/publication-process.log
+          grep -q '^storage protocol probe passed:' /tmp/publication-process.log
       - name: publication storage writes retain complete prefixes across fencing
         run: |
           set -euo pipefail
