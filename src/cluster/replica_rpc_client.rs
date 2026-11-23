@@ -1723,6 +1723,12 @@ impl RemoteReplicaClient {
         self.log_call(super::log_op::LogOpRequest::tail(volume, chunk, generation))
     }
 
+    /// Observe one durable record. A missing record does not fence a concurrent append.
+    pub fn log_identity(&mut self, volume: u64, chunk: u64, generation: u32, offset: u64)
+        -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
+        self.log_call(super::log_op::LogOpRequest::identity(volume, chunk, generation, offset))
+    }
+
     pub fn log_read(
         &mut self,
         volume: u64,

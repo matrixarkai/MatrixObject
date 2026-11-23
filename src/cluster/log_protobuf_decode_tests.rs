@@ -23,7 +23,7 @@ fn prost_reply(bytes: &[u8]) -> Result<LogOpReply, ObjectError> {
             return Err(ObjectError::Corruption("log chunk reply exceeds its bound".into()));
         }
         let value = LogOpReply::decode(bytes).map_err(|_| ObjectError::Corruption("invalid log chunk reply".into()))?;
-        if value.encode_to_vec() != bytes || !(value.sha256.is_empty() || value.sha256.len() == 32) {
+        if value.encode_to_vec() != bytes || !(value.sha256.is_empty() || value.sha256.len() == 32) || !value.identity_shape_valid() {
             return Err(ObjectError::Corruption("noncanonical log chunk reply".into()));
         }
         Ok(value)
@@ -54,7 +54,7 @@ fn public_valid_operations_and_maximum_payloads_decode_identically() {
     for size in [1,32,127,128,16383,16384,MAX_OP_DATA] {
         let value=LogOpRequest::append(1,1,u32::MAX,u64::MAX,u64::MAX,vec![7;size]);
         let bytes=ReplicaRequest::LogOp(value.clone()).encode_payload();compare(&bytes);assert_eq!(LogOpRequest::from_payload(&bytes).unwrap(),value);
-        let value=LogOpReply{length:u64::MAX,durable_length:u64::MAX,epoch:u64::MAX,sealed:true,crc:u32::MAX,sha256:vec![11;32],data:vec![7;size]};
+        let value=LogOpReply{length:u64::MAX,durable_length:u64::MAX,epoch:u64::MAX,sealed:true,crc:u32::MAX,sha256:vec![11;32],data:vec![7;size],..Default::default()};
         let bytes=ReplicaReply::LogOp(value.clone()).encode_payload();compare(&bytes);assert_eq!(LogOpReply::from_payload(&bytes).unwrap(),value);
     }
     compare(&ReplicaRequest::LogOp(LogOpRequest::append(1,1,1,1,0,vec![7;MAX_OP_DATA+1])).encode_payload());
@@ -72,8 +72,8 @@ fn malformed_varints_defaults_reordering_unknowns_and_shapes_match() {
         vec![8,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,2],
         vec![82,5,1,2],vec![0,1],vec![82,0x80],vec![9,1,0,0,0,0,0,0,0]] {compare(&bytes);}
     for n in [0,1,127,128,16383,16384,u32::MAX as u64,u32::MAX as u64+1,1<<63,u64::MAX] {
-        compare(&ReplicaRequest::LogOp(LogOpRequest{version:n as u32,op:n as u32,volume:n,chunk:n,generation:n as u32,epoch:n,offset:n,length:n as u32,flags:n as u32,data:vec![n as u8;129]}).encode_payload());
-        compare(&ReplicaReply::LogOp(LogOpReply{length:n,durable_length:n,epoch:n,sealed:n!=0,crc:n as u32,sha256:vec![n as u8;32],data:vec![7;129]}).encode_payload());
+        compare(&ReplicaRequest::LogOp(LogOpRequest{version:n as u32,op:n as u32,volume:n,chunk:n,generation:n as u32,epoch:n,offset:n,length:n as u32,flags:n as u32,data:vec![n as u8;129],..Default::default()}).encode_payload());
+        compare(&ReplicaReply::LogOp(LogOpReply{length:n,durable_length:n,epoch:n,sealed:n!=0,crc:n as u32,sha256:vec![n as u8;32],data:vec![7;129],..Default::default()}).encode_payload());
     }
 }
 #[test]
@@ -81,7 +81,7 @@ fn mutations_and_arbitrary_bytes_match_the_public_decoder() {
     let mut seed=0x3bf2_9ad7_4121_8e05u64;
     let mut next=||{seed^=seed<<13;seed^=seed>>7;seed^=seed<<17;seed};
     let fixtures=[ReplicaRequest::LogOp(LogOpRequest::append(127,128,16384,1<<63,4096,vec![9;32])).encode_payload(),
-        ReplicaReply::LogOp(LogOpReply{length:u64::MAX,durable_length:128,epoch:1,sealed:true,crc:u32::MAX,sha256:vec![7;32],data:vec![9;32]}).encode_payload()];
+        ReplicaReply::LogOp(LogOpReply{length:u64::MAX,durable_length:128,epoch:1,sealed:true,crc:u32::MAX,sha256:vec![7;32],data:vec![9;32],..Default::default()}).encode_payload()];
     for fixture in fixtures {
         compare(&fixture);
         for index in 0..fixture.len() {

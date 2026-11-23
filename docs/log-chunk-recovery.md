@@ -76,6 +76,28 @@ Existing `append` callers keep emitting legacy records. Replica RPC dispatch and
 gateway append routing do not yet call the identified API, so this storage-level
 change alone does not settle gateway outcomes after restart.
 
+## Replica protobuf operations
+
+Version one log requests retain their byte encoding and legacy append behavior.
+Version two adds identified appends and an exact-offset identity query. The tag is
+represented by two fixed64 protobuf fields containing its first and second eight
+bytes in little-endian order. Zero-valued words are omitted canonically; an all-zero
+tag remains distinguishable from a legacy record by the operation version and
+reply presence flags. Parsing the tag needs no heap buffer, and owned decoding
+continues reusing the payload allocation for append data.
+
+A query never creates a missing chunk or claims its directory. It reports only a
+complete durable record, including its offset, length, and optional tag. Deferred
+records are invisible to identity queries until their sync is completed and noted.
+An interior position, removed record or missing chunk supplies no complete record.
+Replies validate identity presence and the applied and durable range bounds.
+
+The replica dispatcher uses the identified append API for version two requests,
+including grouped writes. A replica restart reconstructs tags from log records.
+This does not grant a writer lease, establish quorum, fence pending remote writes,
+or prove absence globally. Gateway routing remains unchanged while the leased LOG
+writer and outcome settlement are integrated.
+
 ## Native log directory ownership
 
 One store owns a native log directory at a time. An operation that opens or creates a chunk,

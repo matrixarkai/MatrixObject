@@ -822,3 +822,22 @@ fn native_log_append_pipeline_refuses_oversized_payloads_before_sending_anything
     assert_eq!(exact.log_append_pipelined(&[operation])[0].as_ref().unwrap().durable_length, 4096);
     assert_eq!(*proxy.operations.lock().unwrap(), vec![super::log_op::OP_APPEND]);
 }
+
+#[test]
+fn identified_rpc_records_survive_three_replica_restarts_without_byte_based_ownership() {
+    let (_dir, mut nodes) = cluster();
+    for n in &nodes {
+        let mut client = RemoteReplicaClient::connect(&n.addr, &options()).unwrap();
+        let op = LogOpRequest::append_identified(V,C,1,7,0,b"hello".to_vec(),[13;16]);
+        assert_eq!(client.log_call(op).unwrap().durable_length,5);
+    }
+    for n in &mut nodes { n.restart(); }
+    for n in &nodes {
+        let mut client = RemoteReplicaClient::connect(&n.addr, &options()).unwrap();
+        let identity = client.log_identity(V,C,1,0).unwrap().record_identity().unwrap();
+        assert_eq!((identity.offset,identity.length,identity.attempt_tag),(0,5,Some([13;16])));
+        assert!(client.log_call(LogOpRequest::append_identified(V,C,1,7,0,b"hello".to_vec(),[14;16])).is_err());
+        assert_eq!(client.log_read(V,C,1,0,5).unwrap().data,b"hello");
+        assert!(!client.log_identity(V,C,1,1).unwrap().record_present);
+    }
+}
