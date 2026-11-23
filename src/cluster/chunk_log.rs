@@ -506,8 +506,81 @@ impl ChunkLogWriter {
         Ok(())
     }
 
+    /// The common one-record append shares one encoded frame across the three sockets.
+    /// Reuse the existing nonblocking replica fan-out instead of creating three threads
+    /// and cloning the record into three independently encoded requests.
+    fn drive_single_identified(&mut self) -> Option<Result<u64, ChunkLogError>> {
+        if !self.identified || self.pending_records.len()!=1 || self.members.len()!=LOG_REPLICAS
+            || self.members.iter().any(|m|m.busy||!m.known||m.given_up||m.client.is_none()
+                ||m.applied!=self.window_start||m.durable<self.window_start||m.confirmed<self.window_start) {
+            return None;
+        }
+        let record=self.pending_records.front().unwrap();
+        if record.offset!=self.window_start || record.offset.checked_add(u64::from(record.length))!=Some(self.next) || record.length as usize!=self.window.len() {return None;}
+        let mut op=LogOpRequest::append_identified(self.volume,self.chunk,self.generation,self.epoch,record.offset,Vec::new(),record.tag);
+        op.data=std::mem::take(&mut self.window);
+        if prost::Message::encoded_len(&op)>self.options.max_payload_bytes {
+            self.window=op.data;return None;
+        }
+        let request=super::message::ReplicaRequest::LogOp(op);
+        let frame=std::sync::Arc::new(super::message::encode_request(&request));
+        let super::message::ReplicaRequest::LogOp(op)=request else {unreachable!()};
+        // Retain the original attempt and payload before any request can reach storage.
+        self.window=op.data;
+        let mut results:[Option<Result<super::message::ReplicaReply,ObjectError>>;LOG_REPLICAS]=std::array::from_fn(|_|None);
+        {
+            let mut pending:[Option<super::client::PendingReplicaReply<'_>>;LOG_REPLICAS]=std::array::from_fn(|_|None);
+            for (i,member) in self.members.iter_mut().enumerate() {
+                member.busy=true;
+                match member.client.as_mut().unwrap().begin_encoded_before(crate::cluster::wire::RequestCode::LogOp,frame.clone(),self.options.deadline) {
+                    Ok(reply)=>pending[i]=Some(reply),Err(error)=>results[i]=Some(Err(error)),
+                }
+            }
+            while pending.iter().any(Option::is_some) {
+                let mut progress=false;let mut fatal=false;
+                for (i,slot) in pending.iter_mut().enumerate() {
+                    let result=slot.as_mut().and_then(|reply| {let before=reply.transferred_bytes();let result=reply.poll();progress|=result.is_some()||reply.transferred_bytes()!=before;result});
+                    if let Some(result)=result {
+                        if let Err(error)=&result {
+                            fatal|=matches!(LogCallError::from_object(error.clone(),false),LogCallError::StaleEpoch{..}|LogCallError::Sealed|LogCallError::NotSpoken);
+                        }
+                        results[i]=Some(result);*slot=None;
+                    }
+                }
+                if fatal {break;}
+                if !progress {super::replica_set::wait_for_pending(&pending);}
+            }
+        }
+        let mut first_error=None;
+        for (i,result) in results.into_iter().enumerate() {
+            let member=&mut self.members[i];
+            let usable=!member.client.as_ref().unwrap().needs_standalone_reconnect();
+            let mut done=Done{index:i,client:if usable {member.client.take()} else {None},applied:0,durable:0,confirmed:member.confirmed,fatal:None,refused:false};
+            if !usable {member.client=None;}
+            match result {
+                Some(Ok(super::message::ReplicaReply::LogOp(reply)))=>{
+                    done.applied=reply.length;done.durable=reply.durable_length;
+                    if reply.epoch>self.epoch {done.fatal=Some(LogCallError::StaleEpoch{current:reply.epoch});}
+                    else if reply.epoch!=self.epoch {done.refused=true;}
+                    else if done.durable>=self.next {done.confirmed=self.next;}
+                }
+                Some(Ok(_))=>done.refused=true,
+                Some(Err(error))=>match LogCallError::from_object(error,!usable) {
+                    LogCallError::Transport(_)=>{},LogCallError::Refused(_)=>done.refused=true,other=>done.fatal=Some(other),
+                },
+                None=>{},
+            }
+            if let Err(error)=self.apply(done) {if first_error.is_none(){first_error=Some(error);}}
+        }
+        if let Some(error)=first_error {self.fatal=Some(error.clone());return Some(Err(error));}
+        let durable=self.durable_length();
+        if durable>=self.next {self.trim();Some(Ok(durable))}
+        else {Some(Err(ChunkLogError::NoQuorum{wanted:self.next,durable}))}
+    }
+
     fn drive(&mut self) -> Result<u64, ChunkLogError> {
         self.collect_finished()?;
+        if let Some(result)=self.drive_single_identified() {return result;}
         let end = self.next;
         self.start_lacking(end)?;
         loop {
