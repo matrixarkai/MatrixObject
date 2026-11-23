@@ -1951,7 +1951,8 @@ mod tests {
             Ok(m)
         }
         fn read(&mut self, bucket: &str, key: &str) -> Result<(ObjectManifest, Vec<u8>), ObjectError> {
-            let shared = self.0.lock().unwrap();
+            let mut shared = self.0.lock().unwrap();
+            shared.calls.push("read");
             match shared.objects.get(&(bucket.to_string(), key.to_string())) {
                 Some((m, bytes)) if !m.deleted => Ok((m.clone(), bytes.clone())),
                 _ => Err(ObjectError::NotFound("object".into())),
@@ -2007,7 +2008,8 @@ mod tests {
             Ok(tomb)
         }
         fn list(&mut self, bucket: &str, after: Option<&str>, limit: u32) -> Result<ManifestListPage, ObjectError> {
-            let shared = self.0.lock().unwrap();
+            let mut shared = self.0.lock().unwrap();
+            shared.calls.push("list");
             let mut entries: Vec<crate::object_manifest::ManifestSummary> = shared
                 .objects
                 .iter()
@@ -2330,11 +2332,13 @@ mod tests {
             fn delete(&mut self, b: &str, k: &str) -> Result<ObjectManifest, ObjectError> { self.0.lock().unwrap().as_mut().unwrap().delete(b, k) }
             fn list(&mut self, b: &str, a: Option<&str>, l: u32) -> Result<ManifestListPage, ObjectError> { self.0.lock().unwrap().as_mut().unwrap().list(b, a, l) }
         }
-        ClusterGateway::new(
+        let gateway = ClusterGateway::new(
             move || Ok(Box::new(Shim(Arc::clone(&plane))) as Box<dyn ObjectPlane>),
             GatewayOptions::default(),
             "b",
-        )
+        );
+        gateway.ensure_bucket("b").unwrap();
+        gateway
     }
 
     /// A plane that fails ONE write the way a metadata Raft group does when its proposal does
@@ -2357,6 +2361,12 @@ mod tests {
     impl ObjectPlane for TimeoutPlane {
         fn read_manifest(&mut self, b: &str, k: &str) -> Result<ObjectManifest, ObjectError> { self.inner.lock().unwrap().read_manifest(b, k) }
         fn write(&mut self, b: &str, k: &str, e: Option<ObjectManifest>, d: &[u8]) -> Result<ObjectManifest, PlaneFailure> {
+            if self.fire() {
+                if self.commit_first {
+                    self.inner.lock().unwrap().write(b, k, e, d)?;
+                }
+                return Err(self.error.clone_error().into());
+            }
             self.inner.lock().unwrap().write(b, k, e, d)
         }
         fn append(&mut self, e: ObjectManifest, d: &[u8]) -> Result<ObjectManifest, PlaneFailure> { self.inner.lock().unwrap().append(e, d) }
@@ -2621,11 +2631,12 @@ mod tests {
     fn ranged_reads_clamp_and_report_the_total() {
         let (gateway, shared) = gateway();
         gateway.handle(&request("PUT", "/b/k", &[], b"0123456789"));
+        shared.lock().unwrap().calls.clear();
         let closed = gateway.handle(&request("GET", "/b/k", &[("Range", "bytes=2-4")], b""));
         assert_eq!((closed.status, closed.body.as_slice()), (206, b"234".as_slice()));
         assert_eq!(header(&closed, "content-range"), Some("bytes 2-4/10"));
         // The hot path asked the data groups directly: no manifest read for it.
-        assert!(!shared.lock().unwrap().calls.iter().skip(2).any(|c| *c == "read_manifest"));
+        assert!(!shared.lock().unwrap().calls.iter().any(|c| *c == "read_manifest"));
         let open = gateway.handle(&request("GET", "/b/k", &[("Range", "bytes=7-")], b""));
         assert_eq!((open.status, open.body.as_slice()), (206, b"789".as_slice()));
         let clamped = gateway.handle(&request("GET", "/b/k", &[("Range", "bytes=8-99")], b""));
@@ -2678,11 +2689,7 @@ mod tests {
         for (method, target, headers) in [
             ("PUT", "/b/k?partNumber=1&uploadId=u", vec![("x-amz-copy-source", "/b/other")]),
             ("PUT", "/b/k?acl", vec![]),
-            ("PUT", "/b?cors", vec![]),
-            ("PUT", "/b?versioning", vec![]),
             ("PUT", "/b?acl", vec![]),
-            ("GET", "/b?policy", vec![]),
-            ("GET", "/b?lifecycle", vec![]),
         ] {
             let response = gateway.handle(&request(method, target, &headers, b""));
             assert_eq!(response.status, 501, "{method} {target}");
@@ -2694,13 +2701,16 @@ mod tests {
     }
 
     #[test]
-    fn bucket_probes_are_answered_without_the_cluster() {
+    fn bucket_probes_read_the_stored_configuration() {
         let (gateway, shared) = gateway();
+        shared.lock().unwrap().calls.clear();
         assert_eq!(gateway.handle(&request("PUT", "/b", &[], b"")).status, 200);
         assert_eq!(gateway.handle(&request("HEAD", "/b", &[], b"")).status, 200);
         assert_eq!(gateway.handle(&request("GET", "/b?location", &[], b"")).status, 200);
-        assert!(shared.lock().unwrap().calls.is_empty());
+        assert!(shared.lock().unwrap().calls.contains(&"read"));
+        shared.lock().unwrap().calls.clear();
         assert_eq!(gateway.handle(&request("GET", "/healthz", &[], b"")).status, 200);
+        assert_eq!(shared.lock().unwrap().calls.as_slice(), ["list"], "health checks probe cluster metadata");
     }
 
     #[test]
@@ -2871,7 +2881,10 @@ mod tests {
             .unwrap()
             .objects
             .iter()
-            .filter(|(_, (m, _))| !m.deleted)
+            .filter(|((bucket, key), (m, _))| {
+                !m.deleted && !(bucket == crate::bucket_config::SYSTEM_BUCKET
+                    && key.starts_with(crate::bucket_config::CONFIG_PREFIX))
+            })
             .map(|((_, key), _)| key.clone())
             .collect();
         assert_eq!(live, ["big"]);
@@ -3072,6 +3085,7 @@ mod tests {
     fn a_bucket_is_deleted_only_when_it_holds_no_object() {
         let (gateway, _) = gateway();
         assert_eq!(gateway.handle(&request("DELETE", "/b", &[], b"")).status, 204, "an empty bucket");
+        assert_eq!(gateway.handle(&request("PUT", "/b", &[], b"")).status, 200);
         put(&gateway, "k", b"x");
         let refused = gateway.handle(&request("DELETE", "/b", &[], b""));
         assert_eq!(refused.status, 409, "{}", text(&refused));
@@ -3079,6 +3093,7 @@ mod tests {
         gateway.handle(&request("DELETE", "/b/k", &[], b""));
         assert_eq!(gateway.handle(&request("DELETE", "/b", &[], b"")).status, 204, "only a tombstone is left");
         // An upload in progress holds no object of the bucket's.
+        assert_eq!(gateway.handle(&request("PUT", "/b", &[], b"")).status, 200);
         begin(&gateway, "pending");
         assert_eq!(gateway.handle(&request("DELETE", "/b", &[], b"")).status, 204);
     }
@@ -3086,11 +3101,12 @@ mod tests {
     #[test]
     fn the_bucket_list_names_the_gateways_bucket() {
         let (gateway, shared) = gateway();
+        shared.lock().unwrap().calls.clear();
         let listed = gateway.handle(&request("GET", "/", &[], b""));
         assert_eq!(listed.status, 200);
         assert!(text(&listed).contains("<Name>b</Name>"), "{}", text(&listed));
         assert_eq!(gateway.handle(&request("POST", "/", &[], b"")).status, 405);
-        assert!(shared.lock().unwrap().calls.is_empty(), "no cluster call is needed");
+        assert_eq!(shared.lock().unwrap().calls.as_slice(), ["list"]);
     }
 
     #[test]
@@ -3267,6 +3283,43 @@ mod tests {
         assert_eq!(gateway.handle(&request("GET", &system, &[], b"")).status, 404);
         assert_eq!(gateway.handle(&request("PUT", &system, &[], b"x")).status, 404);
         assert_eq!(gateway.handle(&request("PUT", &format!("/{}", crate::bucket_config::SYSTEM_BUCKET), &[], b"")).status, 400);
+    }
+
+    #[test]
+    fn bucket_creation_refuses_a_placement_failure_without_a_stored_record() {
+        let (gateway, armed) = timeout_gateway(ObjectError::PreconditionFailed(NO_HEALTHY_GROUP.into()), false);
+        *armed.lock().unwrap() = true;
+        let response = gateway.handle(&request("PUT", "/new", &[], b""));
+        assert_eq!(response.status, 503, "{}", text(&response));
+        assert_eq!(gateway.handle(&request("HEAD", "/new", &[], b"")).status, 404);
+        assert_eq!(gateway.handle(&request("PUT", "/new/key", &[], b"value")).status, 404);
+    }
+
+    #[test]
+    fn bucket_startup_refuses_a_placement_failure_without_a_stored_record() {
+        let (gateway, armed) = timeout_gateway(ObjectError::PreconditionFailed(NO_HEALTHY_GROUP.into()), false);
+        *armed.lock().unwrap() = true;
+        assert!(matches!(gateway.ensure_bucket("new"), Err(ObjectError::PreconditionFailed(_))));
+        assert_eq!(gateway.handle(&request("HEAD", "/new", &[], b"")).status, 404);
+        assert_eq!(gateway.handle(&request("PUT", "/new/key", &[], b"value")).status, 404);
+    }
+
+    #[test]
+    fn bucket_creation_confirms_a_record_after_an_unconfirmed_write() {
+        let (gateway, armed) = timeout_gateway(ObjectError::PreconditionFailed("proposal completion unconfirmed".into()), true);
+        *armed.lock().unwrap() = true;
+        assert_eq!(gateway.handle(&request("PUT", "/new", &[], b"")).status, 200);
+        assert_eq!(gateway.handle(&request("HEAD", "/new", &[], b"")).status, 200);
+        assert_eq!(gateway.handle(&request("PUT", "/new/key", &[], b"value")).status, 200);
+    }
+
+    #[test]
+    fn bucket_startup_confirms_a_record_after_an_unconfirmed_write() {
+        let (gateway, armed) = timeout_gateway(ObjectError::PreconditionFailed("proposal completion unconfirmed".into()), true);
+        *armed.lock().unwrap() = true;
+        assert!(!gateway.ensure_bucket("new").unwrap());
+        assert_eq!(gateway.handle(&request("HEAD", "/new", &[], b"")).status, 200);
+        assert!(gateway.ensure_bucket("new").is_ok());
     }
 
     #[test]

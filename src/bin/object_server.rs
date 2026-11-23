@@ -232,7 +232,7 @@ fn run_cluster_gateway(
         ObjectWriteOptions, RemoteMetaClient, ReplicaClientOptions,
     };
     use matrixobjectstore_rs::net::cluster_gateway::{ClusterGateway, GatewayOptions};
-    use matrixobjectstore_rs::net::{ObjectHttpServer, ServerOptions};
+    use matrixobjectstore_rs::net::{ObjectHttpServer, RequestHandler, ServerOptions};
 
     let endpoints: Vec<String> = meta
         .split(',')
@@ -300,7 +300,8 @@ fn run_cluster_gateway(
     // Startup reads share the operation deadline so a listening voter may elect
     // a leader before the door serves. Runtime connections get fresh deadlines.
     let mut startup_options = meta_options.clone();
-    startup_options.deadline = Some(std::time::Instant::now() + timeout);
+    let startup_deadline = std::time::Instant::now() + timeout;
+    startup_options.deadline = Some(startup_deadline);
     // THE SWEEP THAT FREES THE PAGES NO MANIFEST NAMES always runs in this process: objects are chunk manifests.
     let reclaim = match matrixobjectstore_rs::cluster::reclaim_loop::resolve_reclaim(
         std::env::var("MATRIXOBJECT_RECLAIM_GRACE_MS").ok().as_deref(),
@@ -326,14 +327,41 @@ fn run_cluster_gateway(
             std::process::exit(1);
         }
     }
+    // Bucket creation is idempotent and must finish before the listener binds.
+    // Keep its metadata and replica calls inside the same startup budget.
+    let startup_connect = connect.clone();
+    let mut startup_gateway_options = options.clone();
+    startup_gateway_options.replica.deadline = Some(startup_deadline);
+    let startup_gateway = ClusterGateway::over_chunk_objects(
+        move || startup_connect(&startup_options), startup_gateway_options, bucket.to_string(),
+    );
+    let create_bucket = matrixobjectstore_rs::net::Request {
+        method: "PUT".into(), path: format!("/{bucket}"), query: String::new(),
+        headers: Vec::new(), body: Vec::new(), keep_alive: false,
+    };
+    let mut reported_wait = false;
+    loop {
+        let response = startup_gateway.handle(&create_bucket);
+        if response.status == 200 {
+            break;
+        }
+        let remaining = startup_deadline.saturating_duration_since(std::time::Instant::now());
+        if matches!(response.status, 412 | 503) && remaining > std::time::Duration::from_millis(25) {
+            if !reported_wait {
+                eprintln!("waiting for bucket {bucket} readiness before listening");
+                reported_wait = true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            continue;
+        }
+        eprintln!("the bucket {bucket} could not be created before the startup deadline: status={} {}",
+            response.status, String::from_utf8_lossy(&response.body));
+        std::process::exit(1);
+    }
+    drop(startup_gateway);
     let open = Arc::new(move || connect(&meta_options));
     let for_gateway = Arc::clone(&open);
     let gateway = Arc::new(ClusterGateway::over_chunk_objects(move || (*for_gateway)(), options, bucket.to_string()));
-    // the bucket this door serves exists from the start
-    if let Err(err) = gateway.ensure_bucket(&bucket) {
-        eprintln!("the bucket {bucket} could not be created: {err}");
-        std::process::exit(1);
-    }
     // `/livez` and `/readyz` in front of the gateway, and the drain switch behind them.
     let for_lifecycle = Arc::clone(&gateway);
     let door = matrixobjectstore_rs::net::gateway_door::GatewayDoor::new(gateway);

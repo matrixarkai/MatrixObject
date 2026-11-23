@@ -63,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --features metadata-consensus --test gateway_startup_metadata -- --test-threads=1 | tee /tmp/gateway-startup.log
-          grep -q '^test result: ok. 2 passed; 0 failed;' /tmp/gateway-startup.log
+          grep -q '^test result: ok. 3 passed; 0 failed;' /tmp/gateway-startup.log
         env:
           RUSTFLAGS: "-D warnings"
 
@@ -950,6 +950,16 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
           cargo test --locked --all-features --lib net::cluster_gateway::tests::concurrent_changes_to_one_buckets_configuration_all_land -- --exact | tee /tmp/gateway-features.log
           grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests -- --test-threads=1 | tee /tmp/gateway-module.log
+          grep -q 'test result: ok. 82 passed; 0 failed' /tmp/gateway-module.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::bucket_creation_refuses_a_placement_failure_without_a_stored_record -- --exact | tee /tmp/gateway-bucket-write.log
+          grep -q 'test result: ok. 1 passed; 0 failed' /tmp/gateway-bucket-write.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::bucket_startup_refuses_a_placement_failure_without_a_stored_record -- --exact | tee /tmp/gateway-bucket-write.log
+          grep -q 'test result: ok. 1 passed; 0 failed' /tmp/gateway-bucket-write.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::bucket_creation_confirms_a_record_after_an_unconfirmed_write -- --exact | tee /tmp/gateway-bucket-write.log
+          grep -q 'test result: ok. 1 passed; 0 failed' /tmp/gateway-bucket-write.log
+          cargo test --locked --all-features --lib net::cluster_gateway::tests::bucket_startup_confirms_a_record_after_an_unconfirmed_write -- --exact | tee /tmp/gateway-bucket-write.log
+          grep -q 'test result: ok. 1 passed; 0 failed' /tmp/gateway-bucket-write.log
           cargo test --locked --all-features --lib net::cluster_gateway::tests::a_gateway_refuses_requests_to_a_bucket_that_does_not_exist -- --exact | tee /tmp/gateway-features.log
           grep -q '^test result: ok. 1 passed' /tmp/gateway-features.log
           cargo test --locked --all-features --lib net::cluster_gateway::tests::an_object_carries_its_content_type_metadata_and_tags_until_it_is_overwritten -- --exact | tee /tmp/gateway-features.log

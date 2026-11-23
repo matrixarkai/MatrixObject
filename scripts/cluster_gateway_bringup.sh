@@ -173,6 +173,19 @@ up() {
     sleep 0.2
   done
   [ "$ok" = 1 ] || fail "gateway /healthz never answered 200; see $RUN/gateway.log"
+  # Verify the stored bucket before probing object writes. Placement may still
+  # be waiting for the first chunk heartbeats after the HTTP listener is ready.
+  local bucket_ready=0 bucket_code=000
+  for _ in $(seq 1 100); do
+    code=$(curl -s -m 10 -o "$RUN/bucket-create-response.txt" -w '%{http_code}' -X PUT -H 'Content-Length: 0' \
+      "http://127.0.0.1:$((BASE + 10))/$BUCKET")
+    bucket_code=$(curl -s -I -m 3 -o /dev/null -w '%{http_code}' \
+      "http://127.0.0.1:$((BASE + 10))/$BUCKET")
+    [ "$code" = 200 ] && [ "$bucket_code" = 200 ] && { bucket_ready=1; break; }
+    sleep 0.3
+  done
+  [ "$bucket_ready" = 1 ] || fail "bucket did not become ready (create $code, head $bucket_code); see $RUN/bucket-create-response.txt"
+
   # the first write proves placement is online (chunk heartbeats reached the metadata plane)
   for _ in $(seq 1 100); do
     code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X PUT --data-binary ready \
