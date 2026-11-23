@@ -1,6 +1,6 @@
 # Log chunk recovery and acknowledgement
 
-Log chunks derive their contents, epoch and seal from ordered MOL1 records. Appending
+Log chunks derive their contents, epoch and seal from ordered records. Appending
 records does not acknowledge durability: callers must wait for a successful commit
 or seal before acknowledging the corresponding changes.
 
@@ -32,6 +32,27 @@ through a final append, zero-data and control-record headers, reorder/retry/seal
 behavior, and Linux write/sync failures using local devices. Run the log_chunk_tests
 library group in WSL; the log_tail_tests group exercises replica tail selection.
 
+
+## Identified append records
+
+Readers accept legacy 40-byte MOL1 headers and 56-byte MOL2 append headers in the
+same file. MOL2 keeps fields through byte 36 unchanged, stores an opaque 16-byte
+attempt tag in bytes 36..52, and stores the CRC-32C of bytes 0..52 in bytes 52..56.
+Only append records use MOL2. The payload has its own checksum. Production writers
+continue emitting MOL1 while compatible readers are deployed.
+
+`append_record_identity` examines a complete durable record starting at an exact
+logical offset. It rereads and checks the header against the replay index. An
+interior offset, an incomplete durable range or a truncated record supplies no
+complete identity. Legacy records return their range with no attempt tag.
+The extent index retains its existing 32-byte size; tags are read from storage.
+
+A tag is opaque storage metadata, not an acknowledgement by itself. The caller
+must bind it to the object and range, fence pending writers, and establish replica
+commitment before resolving an attempt. Matching payload bytes cannot establish
+ownership. This reader deployment does not change gateway append routing, provide
+a durable end-to-end receipt, or remove the need to return OutcomeUnknown when
+ownership cannot be established.
 
 ## Native log directory ownership
 

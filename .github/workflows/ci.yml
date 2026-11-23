@@ -2292,6 +2292,12 @@ jobs:
           cargo test --locked --all-features --lib repo_guard_tests::every_guard_the_workflow_pins_by_name_exists -- --exact --ignored | tee /tmp/library-guard.log
           grep -q '^running 1 test$' /tmp/library-guard.log
           grep -q '^test result: ok. 1 passed' /tmp/library-guard.log
+      - name: identified log record readers preserve durable identity and reject corruption
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib log_chunk::identity_tests -- --test-threads=1 | tee /tmp/log-record-identity.log
+          grep -q '^running 9 tests$' /tmp/log-record-identity.log
+          grep -q '^test result: ok. 9 passed' /tmp/log-record-identity.log
       - name: a sealed log chunk is read from its file and only an open tail holds its bytes
         run: |
           set -euo pipefail
