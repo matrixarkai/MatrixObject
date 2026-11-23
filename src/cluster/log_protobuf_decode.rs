@@ -30,6 +30,8 @@ const REQUEST_FIELDS: &[Field] = &[
     Field::U64,
     Field::Fixed64,
     Field::Fixed64,
+    Field::Fixed64,
+    Field::Fixed64,
 ];
 const REPLY_FIELDS: &[Field] = &[
     Field::U64,
@@ -57,10 +59,12 @@ const REPLY_FIELDS: &[Field] = &[
     Field::U32,
     Field::Bool,
     Field::U64,
+    Field::Fixed64,
+    Field::Fixed64,
 ];
 struct Fields {
-    scalars: [u64; 26],
-    bytes: [(usize, usize); 26],
+    scalars: [u64; 28],
+    bytes: [(usize, usize); 28],
 }
 fn varint(bytes: &[u8], position: &mut usize) -> Option<u64> {
     let mut value = 0;
@@ -79,8 +83,8 @@ fn varint(bytes: &[u8], position: &mut usize) -> Option<u64> {
 }
 fn parse(bytes: &[u8], schema: &[Field]) -> Option<Fields> {
     let mut fields = Fields {
-        scalars: [0; 26],
-        bytes: [(0, 0); 26],
+        scalars: [0; 28],
+        bytes: [(0, 0); 28],
     };
     let mut position = 0;
     let mut previous = 0;
@@ -129,7 +133,7 @@ fn field_bytes<'a>(bytes: &'a [u8], range: (usize, usize)) -> &'a [u8] {
     &bytes[range.0..range.1]
 }
 
-fn request_value(scalars: [u64; 26], data: Vec<u8>) -> LogOpRequest {
+fn request_value(scalars: [u64; 28], data: Vec<u8>) -> LogOpRequest {
     LogOpRequest {
         version: scalars[1] as u32,
         op: scalars[2] as u32,
@@ -146,10 +150,12 @@ fn request_value(scalars: [u64; 26], data: Vec<u8>) -> LogOpRequest {
         published_length: scalars[13],
         initialization_hi: scalars[14],
         initialization_lo: scalars[15],
+        storage_hi: scalars[16],
+        storage_lo: scalars[17],
     }
 }
 
-fn reply_value(scalars: [u64; 26], sha256: Vec<u8>, data: Vec<u8>) -> LogOpReply {
+fn reply_value(scalars: [u64; 28], sha256: Vec<u8>, data: Vec<u8>) -> LogOpReply {
     LogOpReply {
         length: scalars[1],
         durable_length: scalars[2],
@@ -176,6 +182,8 @@ fn reply_value(scalars: [u64; 26], sha256: Vec<u8>, data: Vec<u8>) -> LogOpReply
         publication_protocol: scalars[23] as u32,
         publication_writes_enabled: scalars[24] == 1,
         publication_payload_limit: scalars[25],
+        storage_hi: scalars[26],
+        storage_lo: scalars[27],
     }
 }
 

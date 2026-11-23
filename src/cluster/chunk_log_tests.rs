@@ -851,3 +851,6 @@ mod published_reader_tests;
 
 #[path = "initialized_member_binding_tests.rs"]
 mod initialized_member_binding_tests;
+
+#[path = "storage_incarnation_tests.rs"]
+mod storage_incarnation_tests;

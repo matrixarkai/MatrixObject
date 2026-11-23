@@ -6,7 +6,7 @@
 //! records, so the node keeps no length table and a restart needs no recovery pass beyond opening
 //! a chunk when something asks for it.
 use super::log_op::{
-    LogOpReply, LogOpRequest, FLAG_SEAL_SHA256, OP_APPEND, OP_IDENTITY, OP_READ, OP_SEAL, OP_TAIL, OP_TRUNCATE, OP_INITIALIZE, OP_FENCE,
+    LogOpReply, LogOpRequest, FLAG_SEAL_SHA256, OP_APPEND, OP_IDENTITY, OP_READ, OP_SEAL, OP_TAIL, OP_TRUNCATE, OP_INITIALIZE, OP_FENCE, OP_STORAGE,
 };
 use crate::log_chunk::{LogChunk, LogError, RecordCache};
 use crate::ObjectError;
@@ -45,6 +45,8 @@ pub struct LogChunkStore {
     commits: u64,
     syncer: fn(&File) -> std::io::Result<()>,
     publication_writes: bool,
+    native_authority_present: bool,
+    native_authority: Option<super::native_storage_authority::NativeStorageAuthority>,
     publication_payload_limit: usize,
     // Release ownership after all cached chunk handles.
     directory_lock: Option<Arc<File>>,
@@ -186,6 +188,8 @@ impl LogChunkStore {
             commits: 0,
             syncer: sync_data,
             publication_writes: false,
+            native_authority_present: super::native_storage_authority::NativeStorageAuthority::path(dir).try_exists()?,
+            native_authority: None,
             publication_payload_limit: super::log_op::MAX_OP_DATA + 256,
         })
     }
@@ -195,6 +199,15 @@ impl LogChunkStore {
     pub(crate) fn set_publication_writes(&mut self, enabled: bool) { self.publication_writes = enabled; }
     pub(crate) fn set_publication_payload_limit(&mut self, limit: usize) { self.publication_payload_limit = limit; }
 
+    fn native_authority(&mut self) -> Result<&mut super::native_storage_authority::NativeStorageAuthority,ObjectError> {
+        self.claim_directory()?;
+        if self.native_authority.is_none() {
+            self.native_authority=Some(super::native_storage_authority::NativeStorageAuthority::open(&self.dir)
+                .map_err(|e| ObjectError::Corruption(format!("native storage authority recovery failed: {e}")))?);
+            self.native_authority_present=true;
+        }
+        Ok(self.native_authority.as_mut().unwrap())
+    }
     /// Chunks open now.
     #[cfg(test)]
     pub fn open_chunks(&self) -> usize {
@@ -314,6 +327,10 @@ impl LogChunkStore {
             {
                 return Ok(None);
             }
+            if request.version==5 && self.native_authority.as_ref().is_some_and(|a| a.is_ready(request.volume,request.chunk))
+                && path.metadata().map_err(|e| ObjectError::Corruption(e.to_string()))?.len()==0 {
+                return Err(ObjectError::Corruption("initialized native storage file is empty".into()));
+            }
             let opened = LogChunk::open(&path, request.generation, LOG_CHUNK_LIMIT)
                 .map_err(to_object_error)?;
             let sealed = opened.sealed().is_some();
@@ -407,12 +424,41 @@ impl LogChunkStore {
         commit: bool,
     ) -> Result<LogOpReply, ObjectError> {
         request.validate()?;
-        if request.version == 4 && request.is_mutation() && !self.publication_writes {
+        if request.version >= 4 && request.is_mutation() && !self.publication_writes {
             return Err(ObjectError::PreconditionFailed("publication wire writes are disabled".into()));
+        }
+        if self.native_authority_present { self.native_authority()?; }
+        if request.version==5 && request.op==OP_STORAGE {
+            let root=self.native_authority()?.incarnation().map_err(|e| ObjectError::Corruption(e.to_string()))?;
+            return Ok(LogOpReply { publication_supported:true,publication_protocol:5,
+                publication_writes_enabled:self.publication_writes,publication_payload_limit:self.publication_payload_limit as u64,
+                storage_hi:u64::from_le_bytes(root[..8].try_into().unwrap()),storage_lo:u64::from_le_bytes(root[8..].try_into().unwrap()),..Default::default() });
+        }
+        if request.version!=5 && self.native_authority.as_ref().is_some_and(|a| a.contains(request.volume,request.chunk)) {
+            return Err(ObjectError::PreconditionFailed("native storage requires a physical incarnation".into()));
+        }
+        if request.version==5 {
+            let path=self.path(request.volume,request.chunk);
+            let exists=if request.op==OP_INITIALIZE { path.try_exists().map_err(|e| ObjectError::Corruption(e.to_string()))? } else { false };
+            let authority=self.native_authority()?;
+            authority.verify_incarnation(request.storage_incarnation().unwrap()).map_err(|e| ObjectError::PreconditionFailed(e.to_string()))?;
+            let initialization=request.initialization_tag().ok_or_else(|| ObjectError::InvalidArgument("native request lacks initialization".into()))?;
+            if request.op==OP_INITIALIZE {
+                authority.begin(super::native_storage_authority::StorageOwner { volume:request.volume,chunk:request.chunk,generation:request.generation,epoch:request.epoch,initialization:initialization.to_vec(),state:1 },exists)
+                    .map_err(|e| ObjectError::PreconditionFailed(e.to_string()))?;
+            } else {
+                authority.authorize(request.volume,request.chunk,request.generation,initialization).map_err(|e| ObjectError::PreconditionFailed(e.to_string()))?;
+            }
         }
         let key = (request.volume, request.chunk);
         let mut dirtied = false;
-        let reply = self.apply_inner(request, commit, &mut dirtied)?;
+        let mut reply = self.apply_inner(request, commit, &mut dirtied)?;
+        if request.version==5 {
+            let authority=self.native_authority()?;
+            if request.op==OP_INITIALIZE { authority.complete(request.volume,request.chunk).map_err(|e| ObjectError::Corruption(e.to_string()))?; }
+            let root=authority.incarnation().map_err(|e| ObjectError::Corruption(e.to_string()))?;
+            reply.storage_hi=u64::from_le_bytes(root[..8].try_into().unwrap());reply.storage_lo=u64::from_le_bytes(root[8..].try_into().unwrap());
+        }
         if request.op == OP_SEAL {
             self.trim_sealed(None);
         }
@@ -433,19 +479,24 @@ impl LogChunkStore {
         let key = (request.volume, request.chunk);
         let writes_enabled = self.publication_writes;
         let payload_limit = self.publication_payload_limit;
-        let create = request.is_mutation() && (request.version != 4 || request.op == OP_INITIALIZE);
+        let completed_creation = request.version==5 && request.op==OP_INITIALIZE
+            && self.native_authority.as_ref().is_some_and(|a| a.is_ready(request.volume,request.chunk));
+        let create = request.is_mutation() && (request.version < 4 || request.op == OP_INITIALIZE);
         let Some(chunk) = self.chunk(request, create)?
         else {
             // a chunk this replica has never held: it is empty, and asking creates nothing
-            if request.version == 4 && (request.is_mutation() || matches!(request.op,OP_READ|OP_IDENTITY)) {
+            if request.version == 5 || (request.version >= 4 && (request.is_mutation() || matches!(request.op,OP_READ|OP_IDENTITY))) {
                 return Err(ObjectError::PreconditionFailed("publication member is absent; verified history transfer is required".into()));
             }
             return Ok(LogOpReply { publication_supported: request.version >= 3,
-                publication_protocol: if request.version==4 {4} else {0},
-                publication_writes_enabled: request.version==4 && writes_enabled,
-                publication_payload_limit: if request.version==4 {payload_limit as u64} else {0},
+                publication_protocol: if request.version>=4 {request.version} else {0},
+                publication_writes_enabled: request.version>=4 && writes_enabled,
+                publication_payload_limit: if request.version>=4 {payload_limit as u64} else {0},
                 ..LogOpReply::default() });
         };
+        if completed_creation && chunk.publication_initialization()!=request.initialization_tag() {
+            return Err(ObjectError::Corruption("completed native initialization is missing from storage".into()));
+        }
         // Wire versions 1 and 2 cannot express object publication boundaries. Their reads
         // must refuse these files rather than exposing an unpublished physical prefix.
         if chunk.has_publication_records() && request.version < 3 {
@@ -453,7 +504,7 @@ impl LogChunkStore {
                 "publication-aware log protocol is required".into(),
             ));
         }
-        if request.version == 4 && request.op != OP_INITIALIZE && (request.is_mutation() || matches!(request.op,OP_READ|OP_IDENTITY)) {
+        if request.version >= 4 && request.op != OP_INITIALIZE && (request.is_mutation() || matches!(request.op,OP_READ|OP_IDENTITY) || (request.version==5 && request.op==OP_TAIL)) {
             if chunk.publication_initialization() != request.initialization_tag() {
                 return Err(ObjectError::PreconditionFailed("publication initialization identity differs".into()));
             }
@@ -468,7 +519,7 @@ impl LogChunkStore {
                 if commit { chunk.commit().map_err(to_object_error)?; } else { *dirtied=true; }
             }
             OP_APPEND => {
-                if request.version == 4 {
+                if request.version >= 4 {
                     chunk.append_published(request.epoch,request.offset,&request.data,request.attempt_tag().expect("validated identified append"),request.published_length)
                 } else if let Some(tag) = request.attempt_tag() {
                     chunk.append_identified(request.epoch, request.offset, &request.data, tag)
@@ -482,7 +533,7 @@ impl LogChunkStore {
                 }
             }
             OP_SEAL => {
-                if request.version == 4 {
+                if request.version >= 4 {
                     chunk.seal_publication(request.epoch, request.flags & FLAG_SEAL_SHA256 != 0)
                 } else { chunk.seal(request.epoch, request.flags & FLAG_SEAL_SHA256 != 0) }.map_err(to_object_error)?;
             }
@@ -525,12 +576,12 @@ impl LogChunkStore {
             publication_mode: request.version >= 3 && chunk.has_publication_records(),
             publication_supported: request.version >= 3,
             chunk_present: request.version >= 3,
-            publication_protocol: if request.version==4 {4} else {0},
-            publication_writes_enabled: request.version==4 && writes_enabled,
-                publication_payload_limit: if request.version==4 {payload_limit as u64} else {0},
+            publication_protocol: if request.version>=4 {request.version} else {0},
+            publication_writes_enabled: request.version>=4 && writes_enabled,
+                publication_payload_limit: if request.version>=4 {payload_limit as u64} else {0},
             ..Default::default()
         };
-        if request.version == 4 {
+        if request.version >= 4 {
             if let Some(tag) = chunk.publication_initialization() {
                 reply.initialization_present=true;
                 reply.initialization_hi=u64::from_le_bytes(tag[..8].try_into().unwrap());
