@@ -6,7 +6,7 @@
 //! records, so the node keeps no length table and a restart needs no recovery pass beyond opening
 //! a chunk when something asks for it.
 use super::log_op::{
-    LogOpReply, LogOpRequest, FLAG_SEAL_SHA256, OP_APPEND, OP_READ, OP_SEAL, OP_TAIL, OP_TRUNCATE,
+    LogOpReply, LogOpRequest, FLAG_SEAL_SHA256, OP_APPEND, OP_IDENTITY, OP_READ, OP_SEAL, OP_TAIL, OP_TRUNCATE,
 };
 use crate::log_chunk::{LogChunk, LogError, RecordCache};
 use crate::ObjectError;
@@ -375,16 +375,18 @@ impl LogChunkStore {
         dirtied: &mut bool,
     ) -> Result<LogOpReply, ObjectError> {
         let key = (request.volume, request.chunk);
-        let Some(chunk) = self.chunk(request, request.op != OP_TAIL && request.op != OP_READ)?
+        let Some(chunk) = self.chunk(request, request.is_mutation())?
         else {
             // a chunk this replica has never held: it is empty, and asking creates nothing
             return Ok(LogOpReply::default());
         };
         match request.op {
             OP_APPEND => {
-                chunk
-                    .append(request.epoch, request.offset, &request.data)
-                    .map_err(to_object_error)?;
+                if let Some(tag) = request.attempt_tag() {
+                    chunk.append_identified(request.epoch, request.offset, &request.data, tag)
+                } else {
+                    chunk.append(request.epoch, request.offset, &request.data)
+                }.map_err(to_object_error)?;
                 if commit {
                     chunk.commit().map_err(to_object_error)?;
                 } else {
@@ -406,7 +408,7 @@ impl LogChunkStore {
                     *dirtied = true;
                 }
             }
-            OP_TAIL | OP_READ => {}
+            OP_TAIL | OP_READ | OP_IDENTITY => {}
             _ => {
                 return Err(ObjectError::InvalidArgument(
                     "unknown log chunk operation".into(),
@@ -431,7 +433,20 @@ impl LogChunkStore {
                 .map(|d| d.to_vec())
                 .unwrap_or_default(),
             data: Vec::new(),
+            ..Default::default()
         };
+        if request.op == OP_IDENTITY {
+            if let Some(record) = chunk.append_record_identity(request.offset).map_err(to_object_error)? {
+                reply.record_present = true;
+                reply.record_offset = record.offset;
+                reply.record_length = record.length;
+                if let Some(tag) = record.attempt_tag {
+                    reply.record_identified = true;
+                    reply.attempt_hi = u64::from_le_bytes(tag[..8].try_into().unwrap());
+                    reply.attempt_lo = u64::from_le_bytes(tag[8..].try_into().unwrap());
+                }
+            }
+        }
         if request.op == OP_READ {
             // never above the durable length: an applied byte that no sync has covered is invisible
             let wanted =

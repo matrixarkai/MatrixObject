@@ -36,7 +36,7 @@ fn owned_request_keeps_the_rpc_allocation_for_data() {
 fn owned_reply_keeps_data_and_preserves_a_preceding_seal_digest() {
     for size in [1,32,127,128,4096,MAX_OP_DATA] {
         let expected=LogOpReply{length:u64::MAX,durable_length:u64::MAX,epoch:u64::MAX,sealed:true,
-            crc:u32::MAX,sha256:vec![11;32],data:vec![7;size]};
+            crc:u32::MAX,sha256:vec![11;32],data:vec![7;size],..Default::default()};
         let bytes=ReplicaReply::LogOp(expected.clone()).encode_payload();
         let pointer=bytes.as_ptr();let capacity=bytes.capacity();
         let actual=LogOpReply::from_payload_owned(bytes).unwrap();
@@ -76,7 +76,7 @@ fn rejected_owned_wire_is_unchanged_before_error_classification() {
 #[test]
 fn owned_decode_matches_borrowed_decode_across_mutations() {
     let fixtures=[ReplicaRequest::LogOp(LogOpRequest::append(127,128,16384,1<<63,4096,vec![9;32])).encode_payload(),
-        ReplicaReply::LogOp(LogOpReply{length:u64::MAX,durable_length:128,epoch:1,sealed:true,crc:u32::MAX,sha256:vec![7;32],data:vec![9;32]}).encode_payload()];
+        ReplicaReply::LogOp(LogOpReply{length:u64::MAX,durable_length:128,epoch:1,sealed:true,crc:u32::MAX,sha256:vec![7;32],data:vec![9;32],..Default::default()}).encode_payload()];
     for fixture in fixtures {
         compare(&fixture);
         for index in 0..fixture.len() {

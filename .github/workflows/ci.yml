@@ -1785,6 +1785,15 @@ jobs:
           cargo test --locked --lib cluster::server::log_op_tests::the_verb_round_trips_on_the_wire_and_an_older_replica_would_not_know_it -- --exact --test-threads=1 2>&1 | tee /tmp/log-node.log
           grep -q '^running 1 test$' /tmp/log-node.log
           grep -q '^test result: ok. 1 passed' /tmp/log-node.log
+      - name: identified replica operations preserve durable attempt identity
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::server::log_op_tests::identified_tests:: -- --test-threads=1 | tee /tmp/identified-log-operations.log
+          grep -q '^running 10 tests$' /tmp/identified-log-operations.log
+          grep -q '^test result: ok. 10 passed' /tmp/identified-log-operations.log
+          cargo test --locked --lib cluster::chunk_log_tests::identified_rpc_records_survive_three_replica_restarts_without_byte_based_ownership -- --exact --test-threads=1 | tee /tmp/identified-log-restart.log
+          grep -q '^running 1 test$' /tmp/identified-log-restart.log
+          grep -q '^test result: ok. 1 passed' /tmp/identified-log-restart.log
       - name: malformed log chunk operations are refused before they reach a chunk
         run: |
           set -euo pipefail
