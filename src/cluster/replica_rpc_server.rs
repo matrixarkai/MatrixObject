@@ -109,6 +109,9 @@ pub struct ReplicaNodeOptions {
     /// Opt-in bounded deferred completion for standalone journal group commits.
     /// Frees request executors while durability is pending; defaults to false.
     pub journal_deferred_completion: bool,
+    /// Explicit opt-in for publication wire v4 integration. Does not authorize metadata
+    /// allocation or membership. Production activation requires the cluster protocol.
+    pub publication_writes: bool,
     /// Largest payload this node will read from a frame.
     ///
     /// A length field arrives before the bytes it describes, so this is the bound on what
@@ -144,6 +147,7 @@ impl Default for ReplicaNodeOptions {
             maintenance: false,
             local_recovery_sidecar: true,
             journal_deferred_completion: false,
+            publication_writes: false,
             max_payload_bytes: MAX_PAYLOAD_BYTES,
             capacity_bytes: 256 * 1024 * 1024,
             resident_payload_bytes: 0,
@@ -294,6 +298,12 @@ impl ReplicaNodeServer {
         segmented: Option<ReplicaSegmentedJournalOptions>,
     ) -> std::io::Result<Self> {
         crate::cluster::message::validate_payload_limit(options.max_payload_bytes)?;
+        if options.publication_writes && options.max_payload_bytes < super::log_op::MIN_PUBLICATION_PAYLOAD_BYTES {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,"publication wire writes need at least 512 payload bytes"));
+        }
+        if options.publication_writes && path.is_none() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,"publication wire writes require durable standalone storage"));
+        }
         if options.capacity_bytes == 0 || options.max_pages == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -400,12 +410,12 @@ impl ReplicaNodeServer {
                 max_pages: options.max_pages,
                 health: Arc::clone(&health),
                 log_chunks: match path {
-                    Some(path) => Some(super::log_chunk_store::LogChunkStore::open(
-                        &path
-                            .parent()
-                            .unwrap_or(std::path::Path::new("."))
-                            .join("logchunks"),
-                    )?),
+                    Some(path) => {
+                        let mut store=super::log_chunk_store::LogChunkStore::open(&path.parent().unwrap_or(std::path::Path::new(".")).join("logchunks"))?;
+                        store.set_publication_writes(options.publication_writes && !options.maintenance);
+                        store.set_publication_payload_limit(options.max_payload_bytes);
+                        Some(store)
+                    },
                     None => None,
                 },
             })),

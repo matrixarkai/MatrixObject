@@ -81,3 +81,8 @@ libc = { version = "0.2", optional = true }
 name = "star_catalog"
 path = "examples/star_catalog.rs"
 required-features = ["meta-server"]
+
+[[example]]
+name = "guarded_publication_process_probe"
+path = "examples/guarded_publication_process_probe.rs"
+required-features = ["replica-server"]

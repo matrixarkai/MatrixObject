@@ -17,10 +17,16 @@ pub const OP_TAIL: u32 = 4;
 pub const OP_READ: u32 = 5;
 /// Inspect one complete durable record at an exact offset; absence is not a writer fence.
 pub const OP_IDENTITY: u32 = 6;
+/// Explicit fresh-allocation initialization; never a missing-member recovery operation.
+pub const OP_INITIALIZE: u32 = 7;
+/// Fence while retaining this member's complete prefix. No client-selected length.
+pub const OP_FENCE: u32 = 8;
 /// Seal: also record the SHA-256 of the sealed bytes.
 pub const FLAG_SEAL_SHA256: u32 = 1;
 /// One record, and one read, carry at most this many bytes.
 pub const MAX_OP_DATA: usize = crate::log_chunk::MAX_RECORD_DATA;
+/// Room for the bounded mutation reply and at least one conservatively sized data record.
+pub(super) const MIN_PUBLICATION_PAYLOAD_BYTES: usize = 512;
 
 #[derive(Clone, PartialEq, Eq, Message)]
 pub struct LogOpRequest {
@@ -53,6 +59,12 @@ pub struct LogOpRequest {
     pub attempt_hi: u64,
     #[prost(fixed64, tag = "12")]
     pub attempt_lo: u64,
+    #[prost(uint64, tag = "13")]
+    pub published_length: u64,
+    #[prost(fixed64, tag = "14")]
+    pub initialization_hi: u64,
+    #[prost(fixed64, tag = "15")]
+    pub initialization_lo: u64,
 }
 
 /// The chunk as it stands after the operation.
@@ -104,21 +116,53 @@ pub struct LogOpReply {
     /// An absent replica member cannot supply an empty-prefix vote.
     #[prost(bool, tag = "19")]
     pub chunk_present: bool,
+    #[prost(fixed64, tag = "20")]
+    pub initialization_hi: u64,
+    #[prost(fixed64, tag = "21")]
+    pub initialization_lo: u64,
+    #[prost(bool, tag = "22")]
+    pub initialization_present: bool,
+    #[prost(uint32, tag = "23")]
+    pub publication_protocol: u32,
+    #[prost(bool, tag = "24")]
+    pub publication_writes_enabled: bool,
+    #[prost(uint64, tag = "25")]
+    pub publication_payload_limit: u64,
 }
 
 impl LogOpRequest {
     pub fn is_mutation(&self) -> bool {
-        matches!(self.op, OP_APPEND | OP_SEAL | OP_TRUNCATE)
+        matches!(
+            self.op,
+            OP_APPEND | OP_SEAL | OP_TRUNCATE | OP_INITIALIZE | OP_FENCE
+        )
     }
     pub fn validate(&self) -> Result<(), ObjectError> {
         ChunkId::new(self.volume, self.chunk)?;
+        let old_fields = self.published_length == 0
+            && self.initialization_hi == 0
+            && self.initialization_lo == 0;
         let versioned = match self.version {
-            1 => self.attempt_hi == 0 && self.attempt_lo == 0 && self.op != OP_IDENTITY,
-            2 => matches!(self.op, OP_APPEND | OP_IDENTITY),
+            1 => {
+                old_fields
+                    && self.attempt_hi == 0
+                    && self.attempt_lo == 0
+                    && !matches!(self.op, OP_IDENTITY | OP_INITIALIZE | OP_FENCE)
+            }
+            2 => old_fields && matches!(self.op, OP_APPEND | OP_IDENTITY),
             3 => {
-                self.attempt_hi == 0
+                old_fields
+                    && self.attempt_hi == 0
                     && self.attempt_lo == 0
                     && matches!(self.op, OP_TAIL | OP_READ | OP_IDENTITY)
+            }
+            4 => {
+                matches!(self.op, OP_APPEND | OP_INITIALIZE | OP_FENCE | OP_SEAL)
+                    || (self.published_length == 0
+                        && self.attempt_hi == 0
+                        && self.attempt_lo == 0
+                        && (matches!(self.op, OP_READ | OP_IDENTITY)
+                            || (old_fields && self.op == OP_TAIL)))
             }
             _ => false,
         };
@@ -130,6 +174,36 @@ impl LogOpRequest {
                         && self.data.len() <= MAX_OP_DATA
                         && self.length == 0
                         && self.flags == 0
+                        && (self.version != 4
+                            || self
+                                .offset
+                                .checked_add(self.data.len() as u64)
+                                .is_some_and(|end| {
+                                    self.published_length <= self.offset
+                                        || self.published_length == end
+                                }))
+                }
+                OP_INITIALIZE => {
+                    self.version == 4
+                        && self.epoch != 0
+                        && self.offset == 0
+                        && self.length == 0
+                        && self.flags == 0
+                        && self.data.is_empty()
+                        && self.published_length == 0
+                        && self.initialization_hi == 0
+                        && self.initialization_lo == 0
+                }
+                OP_FENCE => {
+                    self.version == 4
+                        && self.epoch != 0
+                        && self.offset == 0
+                        && self.length == 0
+                        && self.flags == 0
+                        && self.data.is_empty()
+                        && self.published_length == 0
+                        && self.attempt_hi == 0
+                        && self.attempt_lo == 0
                 }
                 OP_SEAL => {
                     self.epoch != 0
@@ -137,6 +211,10 @@ impl LogOpRequest {
                         && self.length == 0
                         && self.flags & !FLAG_SEAL_SHA256 == 0
                         && self.data.is_empty()
+                        && (self.version != 4
+                            || (self.published_length == 0
+                                && self.attempt_hi == 0
+                                && self.attempt_lo == 0))
                 }
                 OP_TRUNCATE => {
                     self.epoch != 0 && self.length == 0 && self.flags == 0 && self.data.is_empty()
@@ -282,8 +360,126 @@ impl LogOpRequest {
             ..Self::identity(volume, chunk, generation, offset)
         }
     }
+    pub fn publication_probe(volume: u64, chunk: u64, generation: u32) -> Self {
+        Self {
+            version: 4,
+            ..Self::tail(volume, chunk, generation)
+        }
+    }
+    /// Explicit fresh allocation only. The caller must hold authoritative creation permission.
+    pub fn initialize_publication(
+        volume: u64,
+        chunk: u64,
+        generation: u32,
+        epoch: u64,
+        tag: [u8; 16],
+    ) -> Self {
+        Self {
+            version: 4,
+            op: OP_INITIALIZE,
+            volume,
+            chunk,
+            generation,
+            epoch,
+            attempt_hi: u64::from_le_bytes(tag[..8].try_into().unwrap()),
+            attempt_lo: u64::from_le_bytes(tag[8..].try_into().unwrap()),
+            ..Default::default()
+        }
+    }
+    pub fn append_published(
+        volume: u64,
+        chunk: u64,
+        generation: u32,
+        epoch: u64,
+        offset: u64,
+        data: Vec<u8>,
+        tag: [u8; 16],
+        published_length: u64,
+        initialization: [u8; 16],
+    ) -> Self {
+        Self {
+            version: 4,
+            published_length,
+            initialization_hi: u64::from_le_bytes(initialization[..8].try_into().unwrap()),
+            initialization_lo: u64::from_le_bytes(initialization[8..].try_into().unwrap()),
+            ..Self::append_identified(volume, chunk, generation, epoch, offset, data, tag)
+        }
+    }
+    pub fn fence_publication(
+        volume: u64,
+        chunk: u64,
+        generation: u32,
+        epoch: u64,
+        initialization: [u8; 16],
+    ) -> Self {
+        Self {
+            version: 4,
+            op: OP_FENCE,
+            volume,
+            chunk,
+            generation,
+            epoch,
+            initialization_hi: u64::from_le_bytes(initialization[..8].try_into().unwrap()),
+            initialization_lo: u64::from_le_bytes(initialization[8..].try_into().unwrap()),
+            ..Default::default()
+        }
+    }
+    pub fn seal_publication(
+        volume: u64,
+        chunk: u64,
+        generation: u32,
+        epoch: u64,
+        initialization: [u8; 16],
+        with_sha256: bool,
+    ) -> Self {
+        Self {
+            version: 4,
+            initialization_hi: u64::from_le_bytes(initialization[..8].try_into().unwrap()),
+            initialization_lo: u64::from_le_bytes(initialization[8..].try_into().unwrap()),
+            ..Self::seal(volume, chunk, generation, epoch, with_sha256)
+        }
+    }
+    pub fn read_initialized_publication(
+        volume: u64,
+        chunk: u64,
+        generation: u32,
+        offset: u64,
+        length: u32,
+        initialization: [u8; 16],
+    ) -> Self {
+        Self {
+            version: 4,
+            initialization_hi: u64::from_le_bytes(initialization[..8].try_into().unwrap()),
+            initialization_lo: u64::from_le_bytes(initialization[8..].try_into().unwrap()),
+            ..Self::read(volume, chunk, generation, offset, length)
+        }
+    }
+    pub fn identity_initialized_publication(
+        volume: u64,
+        chunk: u64,
+        generation: u32,
+        offset: u64,
+        initialization: [u8; 16],
+    ) -> Self {
+        Self {
+            version: 4,
+            initialization_hi: u64::from_le_bytes(initialization[..8].try_into().unwrap()),
+            initialization_lo: u64::from_le_bytes(initialization[8..].try_into().unwrap()),
+            ..Self::identity(volume, chunk, generation, offset)
+        }
+    }
+    pub fn initialization_tag(&self) -> Option<[u8; 16]> {
+        (self.version == 4 && (self.is_mutation() || matches!(self.op, OP_READ | OP_IDENTITY)))
+            .then(|| {
+                if self.op == OP_INITIALIZE {
+                    tag_bytes(self.attempt_hi, self.attempt_lo)
+                } else {
+                    tag_bytes(self.initialization_hi, self.initialization_lo)
+                }
+            })
+    }
     pub fn attempt_tag(&self) -> Option<[u8; 16]> {
-        (self.version == 2 && self.op == OP_APPEND)
+        (matches!(self.version, 2 | 4) && self.op == OP_APPEND)
             .then(|| tag_bytes(self.attempt_hi, self.attempt_lo))
     }
     pub fn seal(volume: u64, chunk: u64, generation: u32, epoch: u64, with_sha256: bool) -> Self {
@@ -349,6 +545,63 @@ pub struct PublishedPrefixObservation {
 }
 
 impl LogOpReply {
+    fn protocol_shape_valid(&self) -> bool {
+        match self.publication_protocol {
+            0 => {
+                self.initialization_hi == 0
+                    && self.initialization_lo == 0
+                    && !self.initialization_present
+                    && !self.publication_writes_enabled
+                    && self.publication_payload_limit == 0
+            }
+            4 => {
+                self.publication_payload_limit != 0
+                    && (!self.publication_writes_enabled
+                        || self.publication_payload_limit >= MIN_PUBLICATION_PAYLOAD_BYTES as u64)
+                    && self.publication_supported
+                    && if self.initialization_present {
+                        self.chunk_present && self.publication_mode
+                    } else {
+                        self.initialization_hi == 0 && self.initialization_lo == 0
+                    }
+            }
+            _ => false,
+        }
+    }
+    /// Explicit writable protocol support, not allocation, membership or lease authorization.
+    pub fn has_publication_write_protocol(&self) -> bool {
+        self.publication_protocol == 4
+            && self.publication_writes_enabled
+            && self.has_publication_observation()
+    }
+    /// Conservative per-record capacity. A writer selects the minimum across its members
+    /// before fragmenting an attempt; descriptors must remain stable across retries.
+    pub fn publication_record_capacity(&self) -> Option<usize> {
+        if !self.has_publication_write_protocol() {
+            return None;
+        }
+        let capacity = usize::try_from(self.publication_payload_limit)
+            .ok()?
+            .checked_sub(256)?;
+        Some(capacity.min(MAX_OP_DATA))
+    }
+    pub fn publication_initialization(&self) -> Option<[u8; 16]> {
+        (self.publication_protocol == 4
+            && self.initialization_present
+            && self.has_publication_observation())
+        .then(|| tag_bytes(self.initialization_hi, self.initialization_lo))
+    }
+    /// Bind a complete prefix to the caller's expected initialization identity. Metadata
+    /// route and replica readiness qualification remain separate requirements.
+    pub fn initialized_publication_prefix(
+        &self,
+        expected: [u8; 16],
+    ) -> Option<PublishedPrefixObservation> {
+        if self.publication_initialization() != Some(expected) {
+            return None;
+        }
+        self.published_prefix()
+    }
     fn publication_shape_valid(&self) -> bool {
         if !self.publication_supported {
             return self.published_length == 0
@@ -395,7 +648,10 @@ impl LogOpReply {
     /// Version 3 callers must require this before using a reply. A legacy empty reply does
     /// not establish protocol support or authorize a fallback.
     pub fn has_publication_observation(&self) -> bool {
-        self.publication_supported && self.publication_shape_valid() && self.identity_shape_valid()
+        self.publication_supported
+            && self.publication_shape_valid()
+            && self.identity_shape_valid()
+            && self.protocol_shape_valid()
     }
     /// Interpret a version 3 tail reply as a complete-prefix observation. A nonempty
     /// legacy prefix or a reply without the final publication record is not upgraded.
@@ -471,6 +727,7 @@ impl LogOpReply {
         if !(value.sha256.is_empty() || value.sha256.len() == 32)
             || !value.identity_shape_valid()
             || !value.publication_shape_valid()
+            || !value.protocol_shape_valid()
         {
             return Err(ObjectError::Corruption(
                 "noncanonical log chunk reply".into(),
@@ -490,6 +747,7 @@ impl LogOpReply {
         if !(value.sha256.is_empty() || value.sha256.len() == 32)
             || !value.identity_shape_valid()
             || !value.publication_shape_valid()
+            || !value.protocol_shape_valid()
         {
             return Err(ObjectError::Corruption(
                 "noncanonical log chunk reply".into(),
