@@ -310,7 +310,7 @@ mod log_chunk_commands_tests {
         }
         let good = LogChunkRequest::grant("bucket", "log", "gateway-a", TTL, "group-0");
         let bad = [
-            LogChunkRequest { version: 2, ..good.clone() },
+            LogChunkRequest { version: 3, ..good.clone() },
             LogChunkRequest { action: 9, ..good.clone() },
             LogChunkRequest { ttl_ms: MIN_TTL_FOR_TESTS - 1, ..good.clone() },
             LogChunkRequest { ttl_ms: MAX_LEASE_TTL_MS + 1, ..good.clone() },
@@ -335,7 +335,7 @@ mod log_chunk_commands_tests {
         }
         let reply = LogChunkReply { version: 1, renewed: 2, lost: vec![lref("a", 3)], ..Default::default() };
         assert_eq!(lcc::reply_from_payload(&reply.encode_to_vec()).unwrap(), reply);
-        assert!(lcc::reply_from_payload(&LogChunkReply { version: 2, ..reply }.encode_to_vec()).is_err());
+        assert!(lcc::reply_from_payload(&LogChunkReply { version: 3, ..reply }.encode_to_vec()).is_err());
     }
 
     const MIN_TTL_FOR_TESTS: u64 = lcc::MIN_TTL_MS;

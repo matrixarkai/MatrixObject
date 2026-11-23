@@ -2307,6 +2307,12 @@ jobs:
           cargo test --locked --lib log_chunk::identified_write_tests -- --test-threads=1 | tee /tmp/identified-log-writes.log
           grep -q '^running 12 tests$' /tmp/identified-log-writes.log
           grep -q '^test result: ok. 12 passed' /tmp/identified-log-writes.log
+      - name: unified LOG writer commands preserve catalog ownership and draft rollback
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --lib unified_log_writer_command_tests -- --test-threads=1 | tee /tmp/unified-writer-commands.log
+          grep -q '^running 14 tests$' /tmp/unified-writer-commands.log
+          grep -q '^test result: ok. 14 passed' /tmp/unified-writer-commands.log
       - name: unified LOG writer outcomes preserve atomic state and reader floors
         run: |
           set -euo pipefail

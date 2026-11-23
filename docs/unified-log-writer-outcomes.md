@@ -26,8 +26,8 @@ activation. Older snapshot formats cannot carry the active bit. Readers accept
 prior snapshot formats when the new semantics are inactive; unraised declarations
 retain their prior snapshot encoding.
 
-This change adds readers and atomic application through the common placement
-outcome path used by metadata journal replay and consensus. Public lease commands
-still use the earlier manifest catalog, and no command emits version 17 yet. The
-unified command preparation, draft rollback, default activation and gateway LOG
-routing must be integrated before this becomes the ordinary write path.
+Binary readers and atomic application use the common placement outcome path for
+metadata journal replay and consensus. Version 2 writer commands prepare this
+outcome against the unified catalog; version 1 commands retain the earlier
+catalog. See [writer commands](unified-log-writer-commands.md). Activation remains
+explicit. Gateway LOG routing and default activation are separate integration work.
