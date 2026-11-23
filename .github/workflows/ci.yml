@@ -59,6 +59,14 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
 
+      - name: gateway startup waits for metadata and respects its deadline
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --test gateway_startup_metadata -- --test-threads=1 | tee /tmp/gateway-startup.log
+          grep -q '^test result: ok. 2 passed; 0 failed;' /tmp/gateway-startup.log
+        env:
+          RUSTFLAGS: "-D warnings"
+
   # The client SDK is a crate of its own with its own lock file and no dependencies, so the root
   # build above never compiles it alone: it is reached there only as a dependency of the gateway.
   # This job builds and tests it exactly as someone who downloads it would, and packages it.

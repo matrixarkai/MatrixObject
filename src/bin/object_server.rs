@@ -290,21 +290,17 @@ fn run_cluster_gateway(
     let mut meta_options = ClusterGateway::meta_options(timeout);
     meta_options.tls = tls;
     let open_endpoints = endpoints.clone();
-    let open = move || {
+    let connect = move |options: &matrixobjectstore_rs::cluster::MetaClientOptions| {
         if let Some(group) = group.or(if open_endpoints.len() > 1 { Some(1) } else { None }) {
-            RemoteMetaClient::connect_raft_catalog(&open_endpoints, group, &meta_options)
+            RemoteMetaClient::connect_raft_catalog(&open_endpoints, group, options)
         } else {
-            RemoteMetaClient::connect(&open_endpoints[0], &meta_options)
+            RemoteMetaClient::connect(&open_endpoints[0], options)
         }
     };
-    // THE CLUSTER MUST ANSWER BEFORE THIS BINDS: a door that listens while its metadata quorum
-    // is unreachable reports ready and then fails every request.
-    if let Err(err) = open() {
-        eprintln!("no metadata endpoint in {meta} answered: {err}");
-        std::process::exit(1);
-    }
-    let open = Arc::new(open);
-    let for_gateway = Arc::clone(&open);
+    // Startup reads share the operation deadline so a listening voter may elect
+    // a leader before the door serves. Runtime connections get fresh deadlines.
+    let mut startup_options = meta_options.clone();
+    startup_options.deadline = Some(std::time::Instant::now() + timeout);
     // THE SWEEP THAT FREES THE PAGES NO MANIFEST NAMES always runs in this process: objects are chunk manifests.
     let reclaim = match matrixobjectstore_rs::cluster::reclaim_loop::resolve_reclaim(
         std::env::var("MATRIXOBJECT_RECLAIM_GRACE_MS").ok().as_deref(),
@@ -318,7 +314,7 @@ fn run_cluster_gateway(
     };
     // OBJECTS ARE CHUNK MANIFESTS AND NOTHING ELSE. A data directory written by an earlier build holds page-granular
     // objects this build cannot read or reclaim, and there is no migration: refuse to start over one.
-    match (*open)() {
+    match connect(&startup_options) {
         Ok(mut client) => {
             if let Err(message) = matrixobjectstore_rs::cluster::reclaim_loop::refuse_older_data_directory(&mut client) {
                 eprintln!("{message}");
@@ -330,6 +326,8 @@ fn run_cluster_gateway(
             std::process::exit(1);
         }
     }
+    let open = Arc::new(move || connect(&meta_options));
+    let for_gateway = Arc::clone(&open);
     let gateway = Arc::new(ClusterGateway::over_chunk_objects(move || (*for_gateway)(), options, bucket.to_string()));
     // the bucket this door serves exists from the start
     if let Err(err) = gateway.ensure_bucket(&bucket) {
