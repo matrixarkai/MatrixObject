@@ -143,7 +143,7 @@ pub fn crc32c_update(crc: u32, data: &[u8]) -> u32 {
     }
     !state
 }
-// Dispatch only while validating persistent bytes; append-time checksums stay portable.
+// Runtime acceleration preserves the CRC-32C byte contract, with a portable fallback.
 fn crc32c_update_stored(crc: u32, data: &[u8]) -> u32 {
     #[cfg(target_arch = "x86_64")]
     if data.len() >= 8 && std::arch::is_x86_feature_detected!("sse4.2") {
@@ -1402,7 +1402,7 @@ impl LogChunk {
             epoch,
             offset,
             length: data.len() as u32,
-            data_crc: crc32c(data),
+            data_crc: crc32c_stored_record(data),
             attempt_tag,
             published_length,
         };
@@ -1421,7 +1421,7 @@ impl LogChunk {
         self.length += data.len() as u64;
         self.published_length = published;
         self.publication_mode |= published_length.is_some();
-        self.crc = crc32c_update(self.crc, data);
+        self.crc = crc32c_update_stored(self.crc, data);
         self.epoch = epoch;
         Ok(())
     }

@@ -2333,6 +2333,11 @@ jobs:
           cargo test --locked --lib chunk_writer_outcome_tests -- --test-threads=1 | tee /tmp/unified-writer-outcomes.log
           grep -q '^running 18 tests$' /tmp/unified-writer-outcomes.log
           grep -q '^test result: ok. 18 passed' /tmp/unified-writer-outcomes.log
+      - name: append checksum byte compatibility
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib log_chunk::crc32c_tests -- --test-threads=1 2>&1 | tee /tmp/append-crc.log
+          grep -q '^test result: ok. 3 passed' /tmp/append-crc.log
       - name: borrowed LOG record writes handle short and interrupted IO
         run: |
           set -euo pipefail

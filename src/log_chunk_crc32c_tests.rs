@@ -88,3 +88,110 @@ fn measure_crc32c_update_backends() {
         }
     }
 }
+
+#[test]
+fn append_checksums_preserve_existing_journal_bytes_and_sealed_recovery() {
+    use super::{Header, LogChunk, KIND_APPEND, KIND_INITIALIZE, KIND_SEAL};
+    let root = std::env::temp_dir().join(format!("append-crc-bytes-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+    let data = input(65536 + 16);
+    for mode in 0..3 {
+        let path = root.join(format!("mode-{mode}.log"));
+        let mut chunk = LogChunk::open(&path, 7, 1 << 20).unwrap();
+        let mut expected = Vec::new();
+        let mut all = Vec::new();
+        let add_header = |out: &mut Vec<u8>, header: Header| {
+            out.extend_from_slice(&header.encode()[..header.encoded_len()]);
+        };
+        if mode == 2 {
+            chunk.initialize_publication(11, [9; 16]).unwrap();
+            add_header(
+                &mut expected,
+                Header {
+                    kind: KIND_INITIALIZE,
+                    flags: 0,
+                    generation: 7,
+                    epoch: 11,
+                    offset: 0,
+                    length: 0,
+                    data_crc: 0,
+                    attempt_tag: Some([9; 16]),
+                    published_length: Some(0),
+                },
+            );
+        }
+        for (i, length) in [1usize, 7, 8, 9, 4095, 4096, 4097, 65535, 65536]
+            .into_iter()
+            .enumerate()
+        {
+            let bytes = &data[i..i + length];
+            let offset = all.len() as u64;
+            let end = offset + length as u64;
+            let tag = [i as u8 + 1; 16];
+            match mode {
+                0 => {
+                    chunk.append(11, offset, bytes).unwrap();
+                }
+                1 => {
+                    chunk.append_identified(11, offset, bytes, tag).unwrap();
+                }
+                _ => {
+                    chunk.append_published(11, offset, bytes, tag, end).unwrap();
+                }
+            }
+            add_header(
+                &mut expected,
+                Header {
+                    kind: KIND_APPEND,
+                    flags: 0,
+                    generation: 7,
+                    epoch: 11,
+                    offset,
+                    length: length as u32,
+                    data_crc: crc32c_update_portable(0, bytes),
+                    attempt_tag: (mode != 0).then_some(tag),
+                    published_length: (mode == 2).then_some(end),
+                },
+            );
+            expected.extend_from_slice(bytes);
+            all.extend_from_slice(bytes);
+            assert_eq!(chunk.footer_crc(), crc32c_update_portable(0, &all));
+        }
+        if mode == 2 {
+            chunk.seal_publication(11, false).unwrap();
+        } else {
+            chunk.seal(11, false).unwrap();
+        }
+        add_header(
+            &mut expected,
+            Header {
+                kind: KIND_SEAL,
+                flags: 0,
+                generation: 7,
+                epoch: 11,
+                offset: all.len() as u64,
+                length: 0,
+                data_crc: crc32c_update_portable(0, &all),
+                attempt_tag: None,
+                published_length: None,
+            },
+        );
+        drop(chunk);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            expected,
+            "mode{mode} changed persisted bytes"
+        );
+        let recovered = LogChunk::open(&path, 7, 1 << 20).unwrap();
+        assert_eq!(recovered.durable_length(), all.len() as u64);
+        assert_eq!(recovered.footer_crc(), crc32c_update_portable(0, &all));
+        assert!(recovered.sealed().is_some());
+    }
+}
