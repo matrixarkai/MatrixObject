@@ -434,9 +434,9 @@ impl PlacementOutcome {
     /// `manifest_validated` says the publication's manifests were validated by the caller
     /// (the expansion of a compact append), so they are not walked again.
     fn validate_manifest_binding_with(&self, manifest_validated: bool) -> Result<(), ObjectError> {
-        if self.native.is_some() || self.version == 18 {
-            let change = self.native.as_ref().filter(|_| self.version == 18)
-                .ok_or_else(|| invalid("a native outcome is version 18 and carries its change"))?;
+        if self.native.is_some() || matches!(self.version,18|19) {
+            let change = self.native.as_ref().filter(|c| (self.version==18 && c.version==1)||(self.version==19 && c.version==2))
+                .ok_or_else(|| invalid("native outcome version and change version must agree"))?;
             change.validate(self.before_index, self.after_index)?;
             if self.manifest.is_some() || self.retention.is_some() || self.staging.is_some()
                 || self.publication_fence.is_some() || self.copy_source.is_some() || self.retention_deadline.is_some()

@@ -794,6 +794,7 @@ fn read_only(request: &MetaRequest) -> bool {
         MetaRequest::Membership(command) => command.is_read(),
         MetaRequest::Features(command) => command.is_read(),
         MetaRequest::LogChunk(command) => command.is_read(),
+        MetaRequest::NativeObject(command) => command.is_read(),
         MetaRequest::ReadManifest { .. }
         | MetaRequest::ReadManifestRoutes { .. }
         | MetaRequest::ReadManifestRoutesWide { .. }
@@ -1523,7 +1524,11 @@ fn prepare_batch(
         .into_iter()
         .filter(|id| service.nodes.contains_key(id))
         .collect();
+    let native = queued.iter().any(|r| matches!(&r.request, MetaRequest::NativeObject(c) if !c.is_read())).then(|| (
+        service.native_objects.clone(), service.chunk_catalog.clone(), service.writer_leases.clone(),
+    ));
     let mut draft = PlacementDraft::with_records(service, nodes, objects.into_iter().collect());
+    draft.native = native;
     draft.chunks = chunk_keys.into_iter().map(|id| {
         let entry = draft.service.chunk_catalog.entry(&id);
         (id, entry)
@@ -1728,6 +1733,12 @@ fn prepare_with_inner(
             });
         }
     }
+    if let MetaRequest::NativeObject(command) = request {
+        if !command.is_read() {
+            let (outcome, reply) = super::native_object_commands::prepare(service, groups, command, limit, super::staged_lease_sweeper::now_ms()?)?;
+            return Ok((outcome.to_payload()?, Some(reply)));
+        }
+    }
     if let MetaRequest::LogChunk(command) = request {
         if !command.is_read() {
             return Ok(
@@ -1865,6 +1876,7 @@ fn log_chunk_records(
 /// Undo state for the closed set of placement mutations admitted by `prepare`.
 /// Never use this for membership, health reports, or other metadata operations.
 struct PlacementDraft<'a> {
+    native: Option<(crate::native_object_state::NativeObjectState, crate::chunk_catalog::ChunkCatalog, crate::log_chunk_outcome::WriterLeaseTable)>,
     chunks: Vec<(crate::ObjectId, Option<std::sync::Arc<crate::chunk_manifest::ChunkManifest>>)>,
     chunk_revision: u64,
     service: &'a mut MatrixMetaService,
@@ -1918,6 +1930,7 @@ impl<'a> PlacementDraft<'a> {
         let features = service.cluster_features.clone();
         let chunk_revision = service.chunk_catalog.revision();
         Self {
+            native: None,
             chunks: Vec::new(),
             chunk_revision,
             service,
@@ -1972,6 +1985,11 @@ impl Drop for PlacementDraft<'_> {
         }
         for (id, entry) in self.chunks.drain(..) {
             self.service.chunk_catalog.restore_entry(&id, entry, self.chunk_revision);
+        }
+        if let Some((state, catalog, leases)) = self.native.take() {
+            self.service.native_objects = state;
+            self.service.chunk_catalog = catalog;
+            self.service.writer_leases = leases;
         }
         self.service.placement_commit_index = self.index;
         self.service.invalidate_snapshot_export_cache();
@@ -4374,5 +4392,18 @@ mod read_failure_tests {
                 Err(ObjectError::InvalidArgument(_))
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod native_object_batch_tests {
+    use super::*;
+    #[test]
+    fn native_stage_batches_restore_every_live_table_before_committed_replay() {
+        let mut leader=crate::native_object_outcome_tests::service();let before=leader.export_snapshot().to_bytes().unwrap();let mut followers=[leader.clone(),leader.clone(),leader.clone()];
+        let mut queued:VecDeque<_>=["a","b"].into_iter().map(|key|{let (reply,_receiver)=mpsc::sync_channel(1);Request{request:MetaRequest::NativeObject(super::super::native_object_commands::tests::begin_request(key)),reply,deadline:Instant::now()+Duration::from_secs(30),progress:RequestProgress::new(false)}}).collect();
+        let membership=matrixraft::peer_runtime::MembershipState{voters:vec![1],outgoing_voters:vec![],learners:vec![],next_learners:vec![],auto_leave:false};let (payloads,prepared)=prepare_batch(&mut leader,&super::super::ChunkGroupCatalog::default(),1<<20,&mut queued,None,&membership).unwrap();assert_eq!(payloads.len(),2);assert!(prepared.iter().all(|(_,reply)|matches!(reply,Some(Ok(MetaReply::NativeObject(_))))));assert_eq!(leader.export_snapshot().to_bytes().unwrap(),before);
+        for follower in &mut followers {for payload in &payloads {let entry=Entry::decode(payload.as_slice()).unwrap();PlacementOutcome::from_payload(&entry.outcome).unwrap().apply(follower).unwrap();}assert_eq!(follower.native_objects.stage_count(),2);assert_eq!(follower.placement_commit_index,3);}
+        assert_eq!(followers[0].export_snapshot().to_bytes().unwrap(),followers[1].export_snapshot().to_bytes().unwrap());assert_eq!(followers[1].export_snapshot().to_bytes().unwrap(),followers[2].export_snapshot().to_bytes().unwrap());
     }
 }

@@ -18,8 +18,8 @@
 //! * `CHUNK_KIND_LOG`: an append-only chunk of up to 512 MiB written under a writer lease, which
 //!   starts at chunk byte zero. Only the last extent may still be open.
 //!
-//! This module holds the types, the validation rules and the framed encoding. Nothing publishes or
-//! reads this manifest yet.
+//! This module holds the types, validation rules and framed encoding. Catalog commands and
+//! data clients publish and read manifests through their respective storage-kind paths.
 use crate::object_manifest::{frame, unframe};
 use crate::{ChunkId, ObjectError, ObjectId};
 use prost::Message;
@@ -311,7 +311,7 @@ impl ChunkManifest {
     pub fn validate(&self) -> Result<(), ObjectError> {
         crate::validate_bucket(&self.bucket)?;
         crate::validate_key(&self.key)?;
-        if !matches!(self.format_version, CHUNK_MANIFEST_FORMAT | crate::initialized_log_manifest::CHUNK_MANIFEST_INITIALIZED_FORMAT)
+        if !matches!(self.format_version, CHUNK_MANIFEST_FORMAT | crate::initialized_log_manifest::CHUNK_MANIFEST_INITIALIZED_FORMAT | crate::initialized_log_manifest::CHUNK_MANIFEST_PHYSICAL_FORMAT)
             || self.generation == 0
             || self.extents.len() > MAX_CHUNK_EXTENTS
             || self.encoded_len() > MAX_CHUNK_MANIFEST
@@ -320,7 +320,7 @@ impl ChunkManifest {
         }
         match (&self.initialized_log, self.format_version) {
             (None, CHUNK_MANIFEST_FORMAT) => {}
-            (Some(initialized), crate::initialized_log_manifest::CHUNK_MANIFEST_INITIALIZED_FORMAT) => initialized.validate_for(self)?,
+            (Some(initialized), crate::initialized_log_manifest::CHUNK_MANIFEST_INITIALIZED_FORMAT | crate::initialized_log_manifest::CHUNK_MANIFEST_PHYSICAL_FORMAT) => initialized.validate_for(self)?,
             _ => return Err(invalid("chunk manifest initialization fields do not match its version")),
         }
         if self.deleted {

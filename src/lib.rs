@@ -317,3 +317,6 @@ mod repo_guard_tests;
 
 #[cfg(test)]
 mod native_object_outcome_tests;
+
+#[cfg(test)]
+mod physical_member_binding_tests;

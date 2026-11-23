@@ -26,7 +26,7 @@ impl ChunkLogReader {
         mut check_route: impl FnMut() -> Result<(), ChunkLogError>,
     ) -> Result<u64, ChunkLogError> {
         let (_, length, _) =
-            self.stabilize_publication_inner(epoch, initializations, &mut check_route)?;
+            self.stabilize_publication_inner(epoch, initializations, None, None, &mut check_route)?;
         check_route()?;
         Ok(length)
     }
@@ -40,10 +40,108 @@ impl ChunkLogReader {
         initializations: &[[u8; 16]; LOG_REPLICAS],
         offset: u64,
         length: usize,
+        check_route: impl FnMut() -> Result<(), ChunkLogError>,
+    ) -> Result<Vec<u8>, ChunkLogError> {
+        self.read_publication_bound(
+            epoch,
+            initializations,
+            None,
+            None,
+            offset,
+            length,
+            check_route,
+        )
+    }
+    /// Read through an actual metadata read pin's physical binding. The caller maps the
+    /// binding's configured member order to endpoints and checks pin validity throughout.
+    /// Probes, identity checks, repair appends and payload reads use protocol5 exclusively.
+    pub fn read_physical_pinned(
+        &mut self,
+        binding: &crate::initialized_log_manifest::PhysicalMemberBinding,
+        offset: u64,
+        length: usize,
+        check_route: impl FnMut() -> Result<(), ChunkLogError>,
+    ) -> Result<Vec<u8>, ChunkLogError> {
+        if self.volume != binding.volume_id
+            || self.chunk != binding.chunk_id
+            || self.generation != binding.generation
+        {
+            return Err(refused("physical pin does not bind this chunk"));
+        }
+        self.read_publication_bound(
+            binding.writer_epoch,
+            &binding.initializations,
+            Some(&binding.storage_incarnations),
+            None,
+            offset,
+            length,
+            check_route,
+        )
+    }
+    pub fn physical_published_length(
+        &mut self,
+        binding: &crate::initialized_log_manifest::PhysicalMemberBinding,
+        mut check_route: impl FnMut() -> Result<(), ChunkLogError>,
+    ) -> Result<u64, ChunkLogError> {
+        self.check_physical_coordinates(binding)?;
+        let (_, length, _) = self.stabilize_publication_inner(
+            binding.writer_epoch,
+            &binding.initializations,
+            Some(&binding.storage_incarnations),
+            None,
+            &mut check_route,
+        )?;
+        check_route()?;
+        Ok(length)
+    }
+    pub fn read_physical_sealed(
+        &mut self,
+        binding: &crate::initialized_log_manifest::PhysicalMemberBinding,
+        footer: &SealedFooter,
+        offset: u64,
+        length: usize,
+        check_route: impl FnMut() -> Result<(), ChunkLogError>,
+    ) -> Result<Vec<u8>, ChunkLogError> {
+        self.check_physical_coordinates(binding)?;
+        self.read_publication_bound(
+            binding.writer_epoch,
+            &binding.initializations,
+            Some(&binding.storage_incarnations),
+            Some(footer),
+            offset,
+            length,
+            check_route,
+        )
+    }
+    fn check_physical_coordinates(
+        &self,
+        binding: &crate::initialized_log_manifest::PhysicalMemberBinding,
+    ) -> Result<(), ChunkLogError> {
+        if self.volume != binding.volume_id
+            || self.chunk != binding.chunk_id
+            || self.generation != binding.generation
+        {
+            return Err(refused("physical pin does not bind this chunk"));
+        }
+        Ok(())
+    }
+    fn read_publication_bound(
+        &mut self,
+        epoch: u64,
+        initializations: &[[u8; 16]; LOG_REPLICAS],
+        storage: Option<&[[u8; 16]; LOG_REPLICAS]>,
+        footer: Option<&SealedFooter>,
+        offset: u64,
+        length: usize,
         mut check_route: impl FnMut() -> Result<(), ChunkLogError>,
     ) -> Result<Vec<u8>, ChunkLogError> {
-        let (source, published, capacity) =
-            self.stabilize_publication_inner(epoch, initializations, &mut check_route)?;
+        let (source, published, capacity) = self.stabilize_publication_inner(
+            epoch,
+            initializations,
+            storage,
+            footer,
+            &mut check_route,
+        )?;
         let end = offset
             .checked_add(length as u64)
             .ok_or_else(|| refused("read range overflow"))?;
@@ -61,8 +159,17 @@ impl ChunkLogReader {
                 count,
                 initializations[source],
             );
+            let request = bind_storage(request, source, initializations, storage);
             let reply = self.read_call(source, |c| c.log_call(request.clone()))?;
-            self.check_publication_reply(&reply, epoch, initializations[source])?;
+            self.check_publication_reply(
+                &reply,
+                epoch,
+                initializations[source],
+                storage.map(|r| r[source]),
+            )?;
+            if footer.is_some_and(|footer| !matches_footer(&reply, footer)) {
+                return Err(refused("sealed physical read footer changed"));
+            }
             if reply.data.len() != count as usize {
                 return Err(refused("short complete-prefix read"));
             }
@@ -77,13 +184,18 @@ impl ChunkLogReader {
         reply: &LogOpReply,
         epoch: u64,
         initialization: [u8; 16],
+        storage: Option<[u8; 16]>,
     ) -> Result<(), ChunkLogError> {
         if reply.epoch != epoch {
             return Err(ChunkLogError::StaleEpoch {
                 current: reply.epoch,
             });
         }
-        if reply.publication_initialization() != Some(initialization) || !reply.publication_mode {
+        if (storage.is_some() && reply.storage_incarnation() != storage)
+            || (storage.is_none() && reply.publication_protocol != 4)
+            || reply.publication_initialization() != Some(initialization)
+            || !reply.publication_mode
+        {
             return Err(refused("unqualified publication member"));
         }
         Ok(())
@@ -95,6 +207,7 @@ impl ChunkLogReader {
         offset: u64,
         epoch: u64,
         initialization: [u8; 16],
+        storage: Option<[u8; 16]>,
     ) -> Result<LogOpReply, ChunkLogError> {
         let request = LogOpRequest::identity_initialized_publication(
             self.volume,
@@ -103,18 +216,39 @@ impl ChunkLogReader {
             offset,
             initialization,
         );
+        let request = storage.map_or_else(
+            || request.clone(),
+            |root| request.clone().for_storage(root, initialization),
+        );
         let reply = self.read_call(member, |c| c.log_call(request.clone()))?;
-        self.check_publication_reply(&reply, epoch, initialization)?;
+        self.check_publication_reply(&reply, epoch, initialization, storage)?;
         Ok(reply)
     }
 
     // Start every qualified member's read-only probe before waiting for any reply.
     // Still collect all replies: a later member may report a newer writer epoch.
-    fn publication_probes(&mut self) -> [Result<LogOpReply, LogCallError>; LOG_REPLICAS] {
+    fn publication_probes(
+        &mut self,
+        initializations: &[[u8; 16]; LOG_REPLICAS],
+        storage: Option<&[[u8; 16]; LOG_REPLICAS]>,
+    ) -> [Result<LogOpReply, LogCallError>; LOG_REPLICAS] {
         let request = LogOpRequest::publication_probe(self.volume, self.chunk, self.generation);
-        let frame = std::sync::Arc::new(crate::cluster::message::encode_request(
-            &crate::cluster::message::ReplicaRequest::LogOp(request.clone()),
-        ));
+        let requests: [LogOpRequest; LOG_REPLICAS] = std::array::from_fn(|member| {
+            bind_storage(request.clone(), member, initializations, storage)
+        });
+        let encode = |request: &LogOpRequest| {
+            std::sync::Arc::new(crate::cluster::message::encode_request(
+                &crate::cluster::message::ReplicaRequest::LogOp(request.clone()),
+            ))
+        };
+        let first = encode(&requests[0]);
+        let frames: [std::sync::Arc<Vec<u8>>; LOG_REPLICAS] = std::array::from_fn(|member| {
+            if storage.is_none() || member == 0 {
+                first.clone()
+            } else {
+                encode(&requests[member])
+            }
+        });
         let reused: [bool; LOG_REPLICAS] = std::array::from_fn(|i| self.clients[i].is_some());
         let mut failures: [Option<LogCallError>; LOG_REPLICAS] = std::array::from_fn(|_| None);
         for (member, failure) in failures.iter_mut().enumerate() {
@@ -133,7 +267,7 @@ impl ChunkLogReader {
                 }
                 match client.as_mut().unwrap().begin_encoded_before(
                     crate::cluster::wire::RequestCode::LogOp,
-                    frame.clone(),
+                    frames[member].clone(),
                     self.options.deadline,
                 ) {
                     Ok(reply) => pending[member] = Some(reply),
@@ -182,7 +316,7 @@ impl ChunkLogReader {
                     // Match read_call: retry an idle connection once, only for this read.
                     return self
                         .client(member)
-                        .and_then(|client| client.log_call(request.clone()));
+                        .and_then(|client| client.log_call(requests[member].clone()));
                 }
             }
             result
@@ -193,6 +327,8 @@ impl ChunkLogReader {
         &mut self,
         epoch: u64,
         initializations: &[[u8; 16]; LOG_REPLICAS],
+        storage: Option<&[[u8; 16]; LOG_REPLICAS]>,
+        footer: Option<&SealedFooter>,
         check_route: &mut impl FnMut() -> Result<(), ChunkLogError>,
     ) -> Result<(usize, u64, usize), ChunkLogError> {
         check_route()?;
@@ -200,6 +336,19 @@ impl ChunkLogReader {
             return Err(refused(
                 "publication read requires three members and a writer epoch",
             ));
+        }
+        if let Some(roots) = storage {
+            let mut ids = std::collections::HashSet::new();
+            let mut tags = std::collections::HashSet::new();
+            if roots.iter().any(|r| *r == [0; 16] || !ids.insert(*r))
+                || initializations
+                    .iter()
+                    .any(|r| *r == [0; 16] || !tags.insert(*r))
+            {
+                return Err(refused(
+                    "physical read needs distinct nonzero member identities",
+                ));
+            }
         }
         let mut addresses = std::collections::HashSet::new();
         for endpoint in &self.endpoints {
@@ -218,7 +367,11 @@ impl ChunkLogReader {
             }
         }
         let mut answers = Vec::with_capacity(LOG_REPLICAS);
-        for (member, result) in self.publication_probes().into_iter().enumerate() {
+        for (member, result) in self
+            .publication_probes(initializations, storage)
+            .into_iter()
+            .enumerate()
+        {
             let initialization = initializations[member];
             let answer = match result {
                 Ok(reply) => {
@@ -228,6 +381,11 @@ impl ChunkLogReader {
                         });
                     }
                     (reply.epoch == epoch
+                        && footer.is_none_or(|footer| matches_footer(&reply, footer))
+                        && match storage {
+                            Some(roots) => reply.storage_incarnation() == Some(roots[member]),
+                            None => reply.publication_protocol == 4,
+                        }
                         && reply
                             .initialized_publication_prefix(initialization)
                             .is_some())
@@ -277,6 +435,7 @@ impl ChunkLogReader {
                     short_tip.offset,
                     epoch,
                     initializations[source],
+                    storage.map(|r| r[source]),
                 )?;
                 if observed.record_identity() != Some(short_tip)
                     || !observed.record_publication
@@ -295,7 +454,11 @@ impl ChunkLogReader {
             let Some(answer) = answers[target].as_ref() else {
                 continue;
             };
-            if target == source || !answer.has_publication_write_protocol() {
+            let writable = match storage {
+                Some(roots) => answer.has_storage_write_protocol(roots[target]),
+                None => answer.has_publication_write_protocol(),
+            };
+            if target == source || !writable {
                 continue;
             }
             let mut route_error = None;
@@ -304,6 +467,7 @@ impl ChunkLogReader {
                 target,
                 epoch,
                 initializations,
+                storage,
                 published,
                 &mut || {
                     let result = check_route();
@@ -341,6 +505,7 @@ impl ChunkLogReader {
         target: usize,
         epoch: u64,
         initializations: &[[u8; 16]; LOG_REPLICAS],
+        storage: Option<&[[u8; 16]; LOG_REPLICAS]>,
         published: u64,
         check_route: &mut impl FnMut() -> Result<(), ChunkLogError>,
     ) -> Result<(), ChunkLogError> {
@@ -348,8 +513,13 @@ impl ChunkLogReader {
         // compares both identity and bytes on retries; no payload equality creates ownership.
         let mut offset = 0;
         while offset < published {
-            let record =
-                self.publication_identity_at(source, offset, epoch, initializations[source])?;
+            let record = self.publication_identity_at(
+                source,
+                offset,
+                epoch,
+                initializations[source],
+                storage.map(|r| r[source]),
+            )?;
             let identity = record
                 .record_identity()
                 .ok_or(ChunkLogError::AttemptMismatch { offset })?;
@@ -375,8 +545,14 @@ impl ChunkLogReader {
                 identity.length,
                 initializations[source],
             );
+            let request = bind_storage(request, source, initializations, storage);
             let data = self.read_call(source, |c| c.log_call(request.clone()))?;
-            self.check_publication_reply(&data, epoch, initializations[source])?;
+            self.check_publication_reply(
+                &data,
+                epoch,
+                initializations[source],
+                storage.map(|r| r[source]),
+            )?;
             if data.data.len() != identity.length as usize {
                 return Err(refused("short repair record"));
             }
@@ -392,18 +568,50 @@ impl ChunkLogReader {
                 record.record_published_length,
                 initializations[target],
             );
+            let request = bind_storage(request, target, initializations, storage);
             // A transport error is unknown. Only a later fresh probe may certify durability.
             let reply = self.client(target)?.log_call(request)?;
-            self.check_publication_reply(&reply, epoch, initializations[target])?;
+            self.check_publication_reply(
+                &reply,
+                epoch,
+                initializations[target],
+                storage.map(|r| r[target]),
+            )?;
             offset = end;
         }
         let request = LogOpRequest::publication_probe(self.volume, self.chunk, self.generation);
+        let request = bind_storage(request, target, initializations, storage);
         let reply = self.read_call(target, |c| c.log_call(request.clone()))?;
-        self.check_publication_reply(&reply, epoch, initializations[target])?;
+        self.check_publication_reply(
+            &reply,
+            epoch,
+            initializations[target],
+            storage.map(|r| r[target]),
+        )?;
         if reply.published_length < published {
             return Err(refused("repair is not durable"));
         }
         check_route()?;
         Ok(())
     }
+}
+
+fn bind_storage(
+    request: LogOpRequest,
+    member: usize,
+    initializations: &[[u8; 16]; LOG_REPLICAS],
+    storage: Option<&[[u8; 16]; LOG_REPLICAS]>,
+) -> LogOpRequest {
+    match storage {
+        Some(roots) => request.for_storage(roots[member], initializations[member]),
+        None => request,
+    }
+}
+
+fn matches_footer(reply: &LogOpReply, footer: &SealedFooter) -> bool {
+    reply.sealed
+        && reply.length == footer.length
+        && reply.published_length == footer.length
+        && reply.crc == footer.crc
+        && reply.sha256 == footer.sha256
 }

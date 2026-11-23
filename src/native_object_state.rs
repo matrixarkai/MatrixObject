@@ -104,7 +104,11 @@ impl NativeStageStart {
             || self.request_nonce.len() != 32
             || self.request_nonce.iter().all(|b| *b == 0)
             || header.deleted
-            || header.format_version != CHUNK_MANIFEST_INITIALIZED_FORMAT
+            || !matches!(
+                header.format_version,
+                CHUNK_MANIFEST_INITIALIZED_FORMAT
+                    | crate::initialized_log_manifest::CHUNK_MANIFEST_PHYSICAL_FORMAT
+            )
             || header.kind != CHUNK_KIND_LOG
             || header.length != 0
             || !header.extents.is_empty()
@@ -205,7 +209,8 @@ impl Stage {
             (STAGE_REPLACE, None) => {}
             (STAGE_ADD_TAIL, Some(base)) => {
                 base.validate()?;
-                if base.deleted
+                if base.format_version != start.header()?.format_version
+                    || base.deleted
                     || base.initialized_log.is_none()
                     || base.object_id() != start.header()?.object_id()
                     || base.generation != start.expected_generation
@@ -492,6 +497,19 @@ struct StateImage {
     retired_stages: Vec<RetiredStageImage>,
 }
 impl NativeObjectState {
+    pub fn has_physical_bindings(&self) -> bool {
+        let physical = |m: &ChunkManifest| {
+            m.format_version == crate::initialized_log_manifest::CHUNK_MANIFEST_PHYSICAL_FORMAT
+        };
+        self.stages
+            .values()
+            .any(|s| physical(s.start.header.as_ref().unwrap()))
+            || self
+                .retired_stages
+                .values()
+                .any(|s| physical(s.stage.start.header.as_ref().unwrap()))
+            || self.retained.values().any(|r| physical(&r.manifest))
+    }
     pub fn image_size_bound(&self) -> usize {
         self.body_bytes + IMAGE_HEADER_ALLOWANCE
     }
@@ -607,6 +625,9 @@ impl NativeObjectState {
     }
     pub fn last_position(&self) -> u64 {
         self.last_position
+    }
+    pub(crate) fn stage_for_object(&self, id: &ObjectId) -> Option<&NativeStageStart> {
+        self.owners.get(id).and_then(|id| self.stage_start(*id))
     }
     pub fn stage_start(&self, id: u64) -> Option<&NativeStageStart> {
         self.stages.get(&id).map(|s| &s.start)
@@ -945,6 +966,19 @@ impl NativeObjectState {
             .manifest
             .clone())
     }
+    pub fn physical_read_binding(
+        &self,
+        pin_id: u64,
+        extent_index: usize,
+        now: u64,
+    ) -> Result<crate::initialized_log_manifest::PhysicalMemberBinding, ObjectError> {
+        let manifest = self.pinned_manifest(pin_id, now)?;
+        manifest
+            .initialized_log
+            .as_ref()
+            .ok_or_else(|| corrupt("pin lacks initialized members"))?
+            .physical_binding(&manifest, extent_index)
+    }
     pub fn renew_pin(
         &mut self,
         id: u64,
@@ -1031,7 +1065,7 @@ impl NativeObjectState {
     }
     pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
         let image = StateImage {
-            version: 1,
+            version: if self.has_physical_bindings() { 2 } else { 1 },
             revision: self.revision,
             last_position: self.last_position,
             stages: self.stages.values().map(|s| s.image()).collect(),
@@ -1055,7 +1089,8 @@ impl NativeObjectState {
     }
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ObjectError> {
         let image: StateImage = unframe(b"MONS", bytes, MAX_IMAGE)?;
-        if image.version != 1
+        let image_version = image.version;
+        if !matches!(image.version, 1 | 2)
             || image
                 .stages
                 .len()
@@ -1192,6 +1227,11 @@ impl NativeObjectState {
         }
         if state.retained.values().any(|r| r.readers == 0) {
             return Err(corrupt("native state retains an unpinned generation"));
+        }
+        if (image_version == 2) != state.has_physical_bindings() {
+            return Err(corrupt(
+                "native state version does not bind physical identities",
+            ));
         }
         Ok(state)
     }

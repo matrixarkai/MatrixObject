@@ -326,6 +326,16 @@ impl RemoteMetaClient {
             other => Err(unexpected_reply("a cluster feature set", &other)),
         }
     }
+    /// One recoverable stage or read-pin operation. Mutations are never replayed after
+    /// an uncertain exchange; query the original stage or pinned view to resolve it.
+    pub fn native_object(&mut self, request: super::native_object_commands::NativeObjectRequest) -> Result<super::native_object_commands::NativeObjectReply, ObjectError> {
+        request.validate()?;
+        match self.call(MetaRequest::NativeObject(request))? {
+            MetaReply::NativeObject(reply) => Ok(reply),
+            other => Err(unexpected_reply("a native object reply", &other)),
+        }
+    }
+
     /// Lease `bucket/key` for log writing to `holder` and, if no chunk is open, open one in `group`.
     pub fn grant_log_chunk(&mut self, bucket: &str, key: &str, holder: &str, ttl_ms: u64, group: &str) -> Result<super::LogChunkReply, ObjectError> {
         self.log_chunk_call(super::LogChunkRequest::grant(bucket, key, holder, ttl_ms, group))

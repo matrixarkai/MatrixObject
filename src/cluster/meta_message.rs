@@ -209,6 +209,7 @@ pub fn object_id(bucket: &str, key: &str) -> ObjectId {
 pub enum MetaRequest {
     Features(super::features_commands::FeaturesRequest),
     LogChunk(super::log_chunk_commands::LogChunkRequest),
+    NativeObject(super::native_object_commands::NativeObjectRequest),
     PublishChunkManifest(crate::chunk_catalog::ChunkOutcome),
     ReadChunkManifest {
         bucket: String,
@@ -347,6 +348,7 @@ impl MetaRequest {
             MetaRequest::StagedAllocation(_) => MetaRequestCode::StagedAllocation,
             MetaRequest::Features(_) => MetaRequestCode::Features,
             MetaRequest::LogChunk(_) => MetaRequestCode::LogChunk,
+            MetaRequest::NativeObject(_) => MetaRequestCode::NativeObject,
             MetaRequest::PublishChunkManifest(_) => MetaRequestCode::PublishChunkManifest,
             MetaRequest::ReadChunkManifest { .. } => MetaRequestCode::ReadChunkManifest,
             MetaRequest::ListChunkManifests(_) => MetaRequestCode::ListChunkManifests,
@@ -432,6 +434,7 @@ impl MetaRequest {
             MetaRequest::StagedAllocation(request) => return request.encode_to_vec(),
             MetaRequest::Features(request) => return request.encode_to_vec(),
             MetaRequest::LogChunk(request) => return request.encode_to_vec(),
+            MetaRequest::NativeObject(request) => return request.encode_to_vec(),
             // An outcome that cannot be framed encodes to nothing, which the server refuses by name.
             MetaRequest::PublishChunkManifest(outcome) => return outcome.to_bytes().unwrap_or_default(),
             MetaRequest::PlanAppendRoutes(request) => return request.encode_to_vec(),
@@ -601,6 +604,9 @@ impl MetaRequest {
         if code == MetaRequestCode::Features {
             return super::features_commands::FeaturesRequest::from_payload(payload).map(Self::Features);
         }
+        if code == MetaRequestCode::NativeObject {
+            return super::native_object_commands::NativeObjectRequest::from_payload(payload).map(Self::NativeObject);
+        }
         if code == MetaRequestCode::LogChunk {
             return super::log_chunk_commands::LogChunkRequest::from_payload(payload).map(Self::LogChunk);
         }
@@ -752,6 +758,7 @@ impl MetaRequest {
             | MetaRequestCode::StagedAllocation
             | MetaRequestCode::Features
             | MetaRequestCode::LogChunk
+            | MetaRequestCode::NativeObject
             | MetaRequestCode::PlanAppendRoutes
             | MetaRequestCode::ReportChunkNode
             | MetaRequestCode::AllocateObjectPages
@@ -929,6 +936,7 @@ pub enum MetaReply {
     StagedAllocation(crate::staged_allocation::StagedAllocationReply),
     Features(crate::placement_outcome::FeatureTable),
     LogChunk(super::log_chunk_commands::LogChunkReply),
+    NativeObject(super::native_object_commands::NativeObjectReply),
     /// The manifest a chunk publication left in the catalog.
     ChunkManifest(crate::chunk_manifest::ChunkManifest),
     AppendPlan(super::append_plan::AppendPlanReply),
@@ -999,6 +1007,7 @@ impl MetaReply {
             Self::StagedAllocation(reply) => reply.encoded_len(),
             Self::Features(reply) => reply.encoded_len(),
             Self::LogChunk(reply) => reply.encoded_len(),
+            Self::NativeObject(reply) => reply.encoded_len(),
             Self::ChunkManifest(manifest) => manifest.to_bytes().map_or(0, |bytes| bytes.len()),
             Self::AppendPlan(reply) => reply.encoded_len(),
             Self::PlacementNode(node) => node_payload_len(
@@ -1068,6 +1077,7 @@ impl MetaReply {
             MetaReply::StagedAllocation(reply) => return reply.encode_to_vec(),
             MetaReply::Features(reply) => return reply.encode_to_vec(),
             MetaReply::LogChunk(reply) => return reply.encode_to_vec(),
+            MetaReply::NativeObject(reply) => return reply.encode_to_vec(),
             MetaReply::ChunkManifest(manifest) => return manifest.to_bytes().unwrap_or_default(),
             MetaReply::AppendPlan(reply) => return reply.encode_to_vec(),
             MetaReply::PlacementNode(node) => put_node(&mut out, node),
@@ -1280,6 +1290,9 @@ impl MetaReply {
         if code == MetaRequestCode::Features {
             return super::features_commands::reply_from_payload(payload).map(Self::Features);
         }
+        if code == MetaRequestCode::NativeObject {
+            return super::native_object_commands::NativeObjectReply::from_payload(payload).map(Self::NativeObject);
+        }
         if code == MetaRequestCode::LogChunk {
             return super::log_chunk_commands::reply_from_payload(payload).map(Self::LogChunk);
         }
@@ -1327,6 +1340,7 @@ impl MetaReply {
             | MetaRequestCode::StagedAllocation
             | MetaRequestCode::Features
             | MetaRequestCode::LogChunk
+            | MetaRequestCode::NativeObject
             | MetaRequestCode::PublishChunkManifest
             | MetaRequestCode::ReadChunkManifest
             | MetaRequestCode::ListChunkManifests
