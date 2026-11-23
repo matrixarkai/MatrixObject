@@ -63,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --features metadata-consensus --test gateway_startup_metadata -- --test-threads=1 | tee /tmp/gateway-startup.log
-          grep -q '^test result: ok. 2 passed; 0 failed;' /tmp/gateway-startup.log
+          grep -q '^test result: ok. 3 passed; 0 failed;' /tmp/gateway-startup.log
         env:
           RUSTFLAGS: "-D warnings"
 

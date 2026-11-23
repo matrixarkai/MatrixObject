@@ -71,7 +71,8 @@ impl ChunkPlane {
 
     fn replica_options(&self) -> ReplicaClientOptions {
         let mut replica = self.options.replica.clone();
-        replica.deadline = Some(Instant::now() + self.options.operation_timeout);
+        let operation_deadline = Instant::now() + self.options.operation_timeout;
+        replica.deadline = Some(replica.deadline.map_or(operation_deadline, |limit| limit.min(operation_deadline)));
         replica
     }
 
