@@ -390,6 +390,14 @@ pub struct AppendRecordIdentity {
     pub attempt_tag: Option<[u8; 16]>,
 }
 
+/// Complete record identity and its optional local publication boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppendRecordObservation {
+    pub identity: AppendRecordIdentity,
+    /// Absent for legacy records; present even when a new record publishes zero bytes.
+    pub published_length: Option<u64>,
+}
+
 struct PendingRecord {
     data: Vec<u8>,
     attempt_tag: Option<[u8; 16]>,
@@ -965,6 +973,38 @@ impl LogChunk {
         offset: u64,
         require_durable: bool,
     ) -> Result<Option<AppendRecordIdentity>, LogError> {
+        Ok(self
+            .record_observation(offset, require_durable)?
+            .map(|record| record.identity))
+    }
+    /// Inspect an exact, complete durable record without reading its payload.
+    pub fn durable_record_observation(
+        &self,
+        offset: u64,
+    ) -> Result<Option<AppendRecordObservation>, LogError> {
+        self.record_observation(offset, true)
+    }
+    /// The complete record ending at the durable published prefix. A legacy truncate can
+    /// leave a partial old record; such a prefix has no complete record observation.
+    pub fn durable_publication_record(&self) -> Result<Option<AppendRecordObservation>, LogError> {
+        let published = self.durable_published_length()?;
+        if published == 0 {
+            return Ok(None);
+        }
+        let next = self.extents.partition_point(|e| e.logical < published);
+        let Some(extent) = next.checked_sub(1).and_then(|i| self.extents.get(i)) else {
+            return Ok(None);
+        };
+        if extent.logical + u64::from(extent.len) != published {
+            return Ok(None);
+        }
+        self.record_observation(extent.logical, true)
+    }
+    fn record_observation(
+        &self,
+        offset: u64,
+        require_durable: bool,
+    ) -> Result<Option<AppendRecordObservation>, LogError> {
         self.check_available()?;
         let index = self
             .extents
@@ -982,10 +1022,13 @@ impl LogChunk {
             return Ok(None);
         }
         let header = self.indexed_header(extent)?;
-        Ok(Some(AppendRecordIdentity {
-            offset,
-            length: header.length,
-            attempt_tag: header.attempt_tag,
+        Ok(Some(AppendRecordObservation {
+            identity: AppendRecordIdentity {
+                offset,
+                length: header.length,
+                attempt_tag: header.attempt_tag,
+            },
+            published_length: header.published_length,
         }))
     }
 

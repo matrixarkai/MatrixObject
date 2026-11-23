@@ -42,10 +42,16 @@ const REPLY_FIELDS: &[Field] = &[
     Field::Fixed64,
     Field::Bool,
     Field::Bool,
+    Field::U64,
+    Field::Bool,
+    Field::U64,
+    Field::Bool,
+    Field::Bool,
+    Field::Bool,
 ];
 struct Fields {
-    scalars: [u64; 14],
-    bytes: [(usize, usize); 14],
+    scalars: [u64; 20],
+    bytes: [(usize, usize); 20],
 }
 fn varint(bytes: &[u8], position: &mut usize) -> Option<u64> {
     let mut value = 0;
@@ -64,8 +70,8 @@ fn varint(bytes: &[u8], position: &mut usize) -> Option<u64> {
 }
 fn parse(bytes: &[u8], schema: &[Field]) -> Option<Fields> {
     let mut fields = Fields {
-        scalars: [0; 14],
-        bytes: [(0, 0); 14],
+        scalars: [0; 20],
+        bytes: [(0, 0); 20],
     };
     let mut position = 0;
     let mut previous = 0;
@@ -114,7 +120,7 @@ fn field_bytes<'a>(bytes: &'a [u8], range: (usize, usize)) -> &'a [u8] {
     &bytes[range.0..range.1]
 }
 
-fn request_value(scalars: [u64; 14], data: Vec<u8>) -> LogOpRequest {
+fn request_value(scalars: [u64; 20], data: Vec<u8>) -> LogOpRequest {
     LogOpRequest {
         version: scalars[1] as u32,
         op: scalars[2] as u32,
@@ -131,7 +137,7 @@ fn request_value(scalars: [u64; 14], data: Vec<u8>) -> LogOpRequest {
     }
 }
 
-fn reply_value(scalars: [u64; 14], sha256: Vec<u8>, data: Vec<u8>) -> LogOpReply {
+fn reply_value(scalars: [u64; 20], sha256: Vec<u8>, data: Vec<u8>) -> LogOpReply {
     LogOpReply {
         length: scalars[1],
         durable_length: scalars[2],
@@ -146,6 +152,12 @@ fn reply_value(scalars: [u64; 14], sha256: Vec<u8>, data: Vec<u8>) -> LogOpReply
         attempt_lo: scalars[11],
         record_present: scalars[12] == 1,
         record_identified: scalars[13] == 1,
+        published_length: scalars[14],
+        publication_mode: scalars[15] == 1,
+        record_published_length: scalars[16],
+        publication_supported: scalars[17] == 1,
+        record_publication: scalars[18] == 1,
+        chunk_present: scalars[19] == 1,
     }
 }
 

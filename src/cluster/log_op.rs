@@ -89,6 +89,21 @@ pub struct LogOpReply {
     pub record_present: bool,
     #[prost(bool, tag = "13")]
     pub record_identified: bool,
+    /// Version 3: complete local prefix covered by durable storage, not a quorum decision.
+    #[prost(uint64, tag = "14")]
+    pub published_length: u64,
+    #[prost(bool, tag = "15")]
+    pub publication_mode: bool,
+    #[prost(uint64, tag = "16")]
+    pub record_published_length: u64,
+    /// Explicit response to a version 3 read-only probe, including an absent chunk.
+    #[prost(bool, tag = "17")]
+    pub publication_supported: bool,
+    #[prost(bool, tag = "18")]
+    pub record_publication: bool,
+    /// An absent replica member cannot supply an empty-prefix vote.
+    #[prost(bool, tag = "19")]
+    pub chunk_present: bool,
 }
 
 impl LogOpRequest {
@@ -100,6 +115,11 @@ impl LogOpRequest {
         let versioned = match self.version {
             1 => self.attempt_hi == 0 && self.attempt_lo == 0 && self.op != OP_IDENTITY,
             2 => matches!(self.op, OP_APPEND | OP_IDENTITY),
+            3 => {
+                self.attempt_hi == 0
+                    && self.attempt_lo == 0
+                    && matches!(self.op, OP_TAIL | OP_READ | OP_IDENTITY)
+            }
             _ => false,
         };
         let shaped = versioned
@@ -235,6 +255,33 @@ impl LogOpRequest {
             ..Default::default()
         }
     }
+    /// Read-only capability and complete-prefix query. Old versions are never a fallback.
+    pub fn publication_tail(volume: u64, chunk: u64, generation: u32) -> Self {
+        Self {
+            version: 3,
+            ..Self::tail(volume, chunk, generation)
+        }
+    }
+    /// Read only bytes below the durable complete local prefix.
+    pub fn publication_read(
+        volume: u64,
+        chunk: u64,
+        generation: u32,
+        offset: u64,
+        length: u32,
+    ) -> Self {
+        Self {
+            version: 3,
+            ..Self::read(volume, chunk, generation, offset, length)
+        }
+    }
+    /// Inspect a complete physical durable record, including an unpublished fragment.
+    pub fn publication_identity(volume: u64, chunk: u64, generation: u32, offset: u64) -> Self {
+        Self {
+            version: 3,
+            ..Self::identity(volume, chunk, generation, offset)
+        }
+    }
     pub fn attempt_tag(&self) -> Option<[u8; 16]> {
         (self.version == 2 && self.op == OP_APPEND)
             .then(|| tag_bytes(self.attempt_hi, self.attempt_lo))
@@ -294,7 +341,89 @@ fn tag_bytes(hi: u64, lo: u64) -> [u8; 16] {
     tag
 }
 
+/// Complete local prefix with its final identified publication record, not a quorum decision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PublishedPrefixObservation {
+    pub length: u64,
+    pub tip: Option<crate::log_chunk::AppendRecordIdentity>,
+}
+
 impl LogOpReply {
+    fn publication_shape_valid(&self) -> bool {
+        if !self.publication_supported {
+            return self.published_length == 0
+                && !self.publication_mode
+                && self.record_published_length == 0
+                && !self.record_publication
+                && !self.chunk_present;
+        }
+        if !self.chunk_present {
+            return self.length == 0
+                && self.durable_length == 0
+                && self.epoch == 0
+                && !self.sealed
+                && self.crc == 0
+                && self.sha256.is_empty()
+                && self.data.is_empty()
+                && self.published_length == 0
+                && !self.publication_mode
+                && !self.record_present
+                && !self.record_publication
+                && self.record_published_length == 0;
+        }
+        self.published_length <= self.durable_length
+            && self.durable_length <= self.length
+            && (self.publication_mode || self.published_length == self.durable_length)
+            && (!self.sealed || self.published_length == self.length)
+            && if self.record_publication {
+                self.publication_mode
+                    && self.record_present
+                    && self.record_identified
+                    && self.record_length != 0
+                    && self.record_published_length <= self.published_length
+                    && self
+                        .record_offset
+                        .checked_add(u64::from(self.record_length))
+                        .is_some_and(|end| {
+                            self.record_published_length <= self.record_offset
+                                || self.record_published_length == end
+                        })
+            } else {
+                self.record_published_length == 0
+            }
+    }
+    /// Version 3 callers must require this before using a reply. A legacy empty reply does
+    /// not establish protocol support or authorize a fallback.
+    pub fn has_publication_observation(&self) -> bool {
+        self.publication_supported && self.publication_shape_valid() && self.identity_shape_valid()
+    }
+    /// Interpret a version 3 tail reply as a complete-prefix observation. A nonempty
+    /// legacy prefix or a reply without the final publication record is not upgraded.
+    pub fn published_prefix(&self) -> Option<PublishedPrefixObservation> {
+        if !self.has_publication_observation() || !self.chunk_present || !self.publication_mode {
+            return None;
+        }
+        if self.published_length == 0 {
+            return Some(PublishedPrefixObservation {
+                length: 0,
+                tip: None,
+            });
+        }
+        if !self.publication_mode
+            || !self.record_publication
+            || self.record_published_length != self.published_length
+        {
+            return None;
+        }
+        let tip = self.record_identity()?;
+        if tip.offset.checked_add(u64::from(tip.length)) != Some(self.published_length) {
+            return None;
+        }
+        Some(PublishedPrefixObservation {
+            length: self.published_length,
+            tip: Some(tip),
+        })
+    }
     pub(super) fn identity_shape_valid(&self) -> bool {
         if !self.record_present {
             self.record_offset == 0
@@ -339,7 +468,10 @@ impl LogOpReply {
                 ));
             }
         };
-        if !(value.sha256.is_empty() || value.sha256.len() == 32) || !value.identity_shape_valid() {
+        if !(value.sha256.is_empty() || value.sha256.len() == 32)
+            || !value.identity_shape_valid()
+            || !value.publication_shape_valid()
+        {
             return Err(ObjectError::Corruption(
                 "noncanonical log chunk reply".into(),
             ));
@@ -355,7 +487,10 @@ impl LogOpReply {
             Ok(value) => value,
             Err(bytes) => return Self::from_payload(&bytes),
         };
-        if !(value.sha256.is_empty() || value.sha256.len() == 32) || !value.identity_shape_valid() {
+        if !(value.sha256.is_empty() || value.sha256.len() == 32)
+            || !value.identity_shape_valid()
+            || !value.publication_shape_valid()
+        {
             return Err(ObjectError::Corruption(
                 "noncanonical log chunk reply".into(),
             ));

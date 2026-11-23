@@ -2333,6 +2333,12 @@ jobs:
           cargo test --locked --lib chunk_writer_outcome_tests -- --test-threads=1 | tee /tmp/unified-writer-outcomes.log
           grep -q '^running 18 tests$' /tmp/unified-writer-outcomes.log
           grep -q '^test result: ok. 18 passed' /tmp/unified-writer-outcomes.log
+      - name: publication queries preserve complete durable prefix observations
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::log_chunk_store::publication_query_tests -- --test-threads=1 2>&1 | tee /tmp/log-publication-query.log
+          grep -q '^running 16 tests$' /tmp/log-publication-query.log
+          grep -q '^test result: ok. 16 passed' /tmp/log-publication-query.log
       - name: old log protocols refuse publication-aware files
         run: |
           set -euo pipefail
