@@ -4,8 +4,8 @@
 //! This does not exercise gateway settlement, client reply loss or object-plane defaults.
 use matrixobjectstore_rs::chunk_manifest::{ChunkExtent, CHUNK_FLAG_SEALED, CHUNK_KIND_LOG};
 use matrixobjectstore_rs::cluster::{
-    LogCallError, LogOpRequest, MetaClientOptions, RemoteMetaClient, RemoteReplicaClient,
-    ReplicaClientOptions,
+    AppendIdentity, ChunkLogWriter, LogCallError, LogOpRequest, MetaClientOptions,
+    RemoteMetaClient, RemoteReplicaClient, ReplicaClientOptions,
 };
 use matrixobjectstore_rs::cluster_features::{FEATURE_UNIFIED_LOG_WRITERS, SUPPORTED_FEATURES};
 use std::io::Write;
@@ -15,20 +15,40 @@ const KEY: &str = "writer-probe";
 const GROUP: &str = "group-a";
 const BODY: &[u8] = b"same-body";
 const GENERATION: u32 = 1;
-fn tag(chunk: &ChunkExtent, offset: u64, attempt: u64) -> [u8; 16] {
-    let mut context = b"mol-writer-probe01:bucket:writer-probe".to_vec();
-    for n in [
+// This fixture uses one isolated object incarnation, not a gateway incarnation policy.
+fn request_identity(logical: u64, attempt: u64) -> AppendIdentity {
+    let mut id = [0; 16];
+    id[..8].copy_from_slice(&attempt.to_le_bytes());
+    AppendIdentity {
+        object_incarnation: [7; 16],
+        attempt_id: id,
+        request_offset: logical,
+        request_length: BODY.len() as u64,
+    }
+}
+fn tag(chunk: &ChunkExtent, physical: u64, logical: u64, attempt: u64) -> [u8; 16] {
+    request_identity(logical, attempt)
+        .record_tag(
+            chunk.volume_id,
+            chunk.chunk_id,
+            GENERATION,
+            physical,
+            logical,
+            BODY.len() as u32,
+        )
+        .unwrap()
+}
+fn native_writer(data: &[&str], chunk: &ChunkExtent, epoch: u64) -> ChunkLogWriter {
+    let endpoints: Vec<String> = data.iter().map(|s| (*s).to_string()).collect();
+    ChunkLogWriter::open_identified(
+        &endpoints,
         chunk.volume_id,
         chunk.chunk_id,
-        offset,
-        BODY.len() as u64,
-        attempt,
-    ] {
-        context.extend_from_slice(&n.to_le_bytes());
-    }
-    ring::digest::digest(&ring::digest::SHA256, &context).as_ref()[..16]
-        .try_into()
-        .unwrap()
+        GENERATION,
+        epoch,
+        ReplicaClientOptions::default(),
+    )
+    .unwrap()
 }
 fn connect(endpoint: &str) -> RemoteReplicaClient {
     RemoteReplicaClient::connect(
@@ -55,7 +75,7 @@ fn append(
         epoch,
         offset,
         BODY.to_vec(),
-        tag(chunk, logical, attempt),
+        tag(chunk, offset, logical, attempt),
     )
 }
 fn identity(
@@ -75,7 +95,7 @@ fn identity(
         (
             offset,
             BODY.len() as u32,
-            Some(tag(chunk, logical, attempt))
+            Some(tag(chunk, offset, logical, attempt))
         )
     );
 }
@@ -96,7 +116,7 @@ fn barrier(path: &str, phase: &str, epoch: u64, logical_length: u64) -> ! {
 }
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    assert!(args.len()>=4,"usage: unified_log_writer_process_probe seed|recover|verify META,META,META DATA,DATA,DATA [READY_FILE] [OLD_EPOCH]");
+    assert!(args.len()>=4,"usage: unified_log_writer_process_probe seed|recover|verify|old-probe|legacy-smoke META,META,META DATA,DATA,DATA [READY_FILE] [OLD_EPOCH]");
     let metas: Vec<String> = args[2].split(',').map(str::to_string).collect();
     let data: Vec<&str> = args[3].split(',').collect();
     assert_eq!(metas.len(), 3);
@@ -104,6 +124,49 @@ fn main() {
     let mut client =
         RemoteMetaClient::connect_catalog(&metas, &MetaClientOptions::default()).unwrap();
     match args[1].as_str() {
+        "old-probe" => {
+            for endpoint in &data {
+                assert!(matches!(
+                    connect(endpoint).log_identity(37, 97, GENERATION, 0),
+                    Err(LogCallError::Refused(_) | LogCallError::NotSpoken)
+                ));
+            }
+            let endpoints: Vec<String> = data.iter().map(|s| (*s).to_string()).collect();
+            assert!(ChunkLogWriter::open_identified(
+                &endpoints,
+                37,
+                97,
+                GENERATION,
+                7,
+                ReplicaClientOptions::default()
+            )
+            .is_err());
+            println!(r#"{{"phase":"older-protocol-refused","new_payload_writes":0,"replicas":3}}"#);
+        }
+        "legacy-smoke" => {
+            for endpoint in &data {
+                let mut replica = connect(endpoint);
+                assert_eq!(
+                    replica
+                        .log_call(LogOpRequest::append(
+                            37,
+                            97,
+                            GENERATION,
+                            7,
+                            0,
+                            b"old".to_vec()
+                        ))
+                        .unwrap()
+                        .durable_length,
+                    3
+                );
+                assert_eq!(
+                    replica.log_read(37, 97, GENERATION, 0, 3).unwrap().data,
+                    b"old"
+                );
+            }
+            println!(r#"{{"phase":"older-legacy-verified","legacy_writes":3}}"#);
+        }
         "seed" => {
             assert_eq!(args.len(), 5);
             assert!(!client
@@ -128,11 +191,15 @@ fn main() {
             let chunk = first.chunk_open.unwrap();
             assert!(first.open.is_none());
             assert_eq!(chunk.kind, CHUNK_KIND_LOG);
+            let mut writer = native_writer(&data, &chunk, epoch);
+            assert_eq!(
+                writer
+                    .append_identified(0, 0, BODY, request_identity(0, 1))
+                    .unwrap(),
+                BODY.len() as u64
+            );
             for endpoint in &data {
-                let mut replica = connect(endpoint);
-                let r = replica.log_call(append(&chunk, epoch, 0, 0, 1)).unwrap();
-                assert_eq!(r.durable_length, BODY.len() as u64);
-                identity(&mut replica, &chunk, 0, 0, 1);
+                identity(&mut connect(endpoint), &chunk, 0, 0, 1);
             }
             barrier(&args[4], "first-record-durable", epoch, BODY.len() as u64);
         }
@@ -153,23 +220,11 @@ fn main() {
             assert!(epoch > old_epoch);
             let chunk = resumed.chunk_open.unwrap();
             assert_eq!(chunk, before.extents[0]);
-            let mut footer = None;
+            let mut writer = native_writer(&data, &chunk, epoch);
+            assert_eq!(writer.length(), BODY.len() as u64);
             for endpoint in &data {
                 let mut replica = connect(endpoint);
                 identity(&mut replica, &chunk, 0, 0, 1);
-                assert_eq!(
-                    replica
-                        .log_truncate(
-                            chunk.volume_id,
-                            chunk.chunk_id,
-                            GENERATION,
-                            epoch,
-                            BODY.len() as u64
-                        )
-                        .unwrap()
-                        .epoch,
-                    epoch
-                );
                 let stale = replica.log_call(append(
                     &chunk,
                     old_epoch,
@@ -177,38 +232,25 @@ fn main() {
                     BODY.len() as u64,
                     99,
                 ));
-                assert!(matches!(&stale, Err(LogCallError::StaleEpoch { current }) if *current == epoch), "stale writer result after fence: {stale:?}; old epoch {old_epoch}, current {epoch}");
-                let r = replica
-                    .log_call(append(
-                        &chunk,
-                        epoch,
-                        BODY.len() as u64,
-                        BODY.len() as u64,
-                        2,
-                    ))
-                    .unwrap();
-                assert_eq!(r.durable_length, 2 * BODY.len() as u64);
-                identity(
-                    &mut replica,
-                    &chunk,
-                    BODY.len() as u64,
-                    BODY.len() as u64,
-                    2,
+                assert!(
+                    matches!(&stale,Err(LogCallError::StaleEpoch { current }) if *current == epoch),
+                    "stale writer result: {stale:?}"
                 );
-                let seal = replica
-                    .log_seal(chunk.volume_id, chunk.chunk_id, GENERATION, epoch, true)
-                    .unwrap();
-                assert!(seal.sealed);
-                assert_eq!(seal.length, 2 * BODY.len() as u64);
-                assert_eq!(seal.sha256.len(), 32);
-                let found = (seal.crc, seal.sha256);
-                if let Some(expected) = &footer {
-                    assert_eq!(&found, expected);
-                } else {
-                    footer = Some(found);
-                }
             }
-            let (crc, sha) = footer.unwrap();
+            assert_eq!(
+                writer
+                    .append_identified(
+                        BODY.len() as u64,
+                        BODY.len() as u64,
+                        BODY,
+                        request_identity(BODY.len() as u64, 2)
+                    )
+                    .unwrap(),
+                2 * BODY.len() as u64
+            );
+            let footer = writer.seal_footer(true).unwrap();
+            assert_eq!(footer.length, 2 * BODY.len() as u64);
+            let (crc, sha) = (footer.crc, footer.sha256);
             let switched = client
                 .switch_chunk_writer(
                     BUCKET,
@@ -229,16 +271,18 @@ fn main() {
                 (chunk.volume_id, chunk.chunk_id)
             );
             assert_eq!(next.object_offset, 2 * BODY.len() as u64);
-            for endpoint in &data {
-                let mut replica = connect(endpoint);
-                assert_eq!(
-                    replica
-                        .log_call(append(&next, epoch, 0, 2 * BODY.len() as u64, 3))
-                        .unwrap()
-                        .durable_length,
-                    BODY.len() as u64
-                );
-            }
+            let mut next_writer = native_writer(&data, &next, epoch);
+            assert_eq!(
+                next_writer
+                    .append_identified(
+                        0,
+                        2 * BODY.len() as u64,
+                        BODY,
+                        request_identity(2 * BODY.len() as u64, 3)
+                    )
+                    .unwrap(),
+                BODY.len() as u64
+            );
             barrier(
                 &args[4],
                 "switch-and-next-record-durable",

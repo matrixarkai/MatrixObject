@@ -16,7 +16,12 @@ use super::client::{RemoteReplicaClient, ReplicaClientOptions};
 use super::log_chunk_store::{LOG_CHUNK_LIMIT, SEALED_MESSAGE, STALE_EPOCH_PREFIX};
 use super::log_op::{LogOpReply, LogOpRequest, MAX_OP_DATA};
 use crate::ObjectError;
+use std::collections::VecDeque;
 use std::sync::mpsc;
+#[path = "identified_log_writer.rs"]
+mod identified_writer;
+pub use identified_writer::AppendIdentity;
+use identified_writer::{PendingAttempt, PendingRecord};
 use std::time::{Duration, Instant};
 
 /// Nodes that hold one log chunk.
@@ -81,6 +86,9 @@ pub enum ChunkLogError {
     /// The required durable replicas did not reach the target. The bytes are held by the writer and
     /// `settle` retries them.
     NoQuorum { wanted: u64, durable: u64 },
+    /// A returning replica holds a record belonging to another attempt or another boundary.
+    /// This writer cannot establish its pending outcome and must stop.
+    AttemptMismatch { offset: u64 },
     Refused(ObjectError),
 }
 
@@ -104,6 +112,7 @@ impl std::fmt::Display for ChunkLogError {
             Self::NoQuorum { wanted, durable } => {
                 write!(f, "the durability target was not reached: wanted {wanted}, reached {durable}")
             }
+            Self::AttemptMismatch { offset } => write!(f, "the durable record at {offset} does not match the pending append attempt"),
             Self::Refused(error) => write!(f, "{error}"),
         }
     }
@@ -129,6 +138,8 @@ struct Member {
     /// Bytes the node reported applied, and durable. Both only grow while the epoch holds.
     applied: u64,
     durable: u64,
+    /// Pending identified records confirmed by correlated replies or durable identity queries.
+    confirmed: u64,
     /// Whether the node has answered a tail since it last failed.
     known: bool,
     /// Further behind than the writer's window, or refused: no longer sent anything.
@@ -142,6 +153,7 @@ struct Done {
     applied: u64,
     durable: u64,
     fatal: Option<LogCallError>,
+    confirmed: u64,
     refused: bool,
 }
 
@@ -162,6 +174,9 @@ pub struct ChunkLogWriter {
     done_tx: mpsc::Sender<Done>,
     done_rx: mpsc::Receiver<Done>,
     fatal: Option<ChunkLogError>,
+    identified: bool,
+    pending_attempt: Option<PendingAttempt>,
+    pending_records: VecDeque<PendingRecord>,
 }
 
 fn connect_and_tail(
@@ -206,6 +221,7 @@ impl ChunkLogWriter {
                 durable: 0,
                 known: false,
                 given_up: false,
+                confirmed: 0,
             };
             match connect_and_tail(endpoint, &options, volume, chunk, generation) {
                 Ok((client, reply)) => {
@@ -285,6 +301,9 @@ impl ChunkLogWriter {
             done_tx,
             done_rx,
             fatal: None,
+            identified: false,
+            pending_attempt: None,
+            pending_records: VecDeque::new(),
         })
     }
 
@@ -296,12 +315,15 @@ impl ChunkLogWriter {
     /// The prefix all three nodes have made durable. This can be below the recovered
     /// length while a replica containing older data still needs repair.
     pub fn durable_length(&self) -> u64 {
-        self.members.iter().map(|m| m.durable).min().unwrap_or(0)
+        self.members.iter().map(|m| if self.identified { m.durable.min(m.confirmed) } else { m.durable }).min().unwrap_or(0)
     }
 
     /// Append `data` and return once all three nodes hold it durably. On `NoQuorum` the bytes are
     /// kept and still count toward the chunk's length: call `settle` to wait for them again.
     pub fn append(&mut self, data: &[u8]) -> Result<u64, ChunkLogError> {
+        if self.identified {
+            return Err(ChunkLogError::Refused(ObjectError::InvalidArgument("an identified writer requires an append identity".into())));
+        }
         if let Some(error) = &self.fatal {
             return Err(error.clone());
         }
@@ -330,6 +352,7 @@ impl ChunkLogWriter {
         let member = &mut self.members[done.index];
         member.busy = false;
         member.client = done.client;
+        member.confirmed = member.confirmed.max(done.confirmed);
         if member.client.is_none() {
             // The connection died mid-batch: the next call reconnects and asks for the tail.
             member.known = false;
@@ -395,6 +418,7 @@ impl ChunkLogWriter {
         member.applied = reply.length;
         member.durable = reply.durable_length;
         member.known = true;
+        if self.identified { member.confirmed = reply.durable_length.min(self.window_start); }
         member.given_up = reply.length < self.window_start;
         Ok(())
     }
@@ -407,25 +431,38 @@ impl ChunkLogWriter {
             member.given_up = true;
             return;
         }
-        let bytes = &self.window[(from - self.window_start) as usize..];
         let mut ops = Vec::new();
-        let mut offset = from;
-        for piece in bytes.chunks(LOG_RECORD_BYTES.min(MAX_OP_DATA)) {
-            ops.push(LogOpRequest::append(volume, chunk, generation, epoch, offset, piece.to_vec()));
-            offset += piece.len() as u64;
+        if self.identified {
+            for record in self.pending_records.iter().filter(|r| r.offset >= from) {
+                let begin = (record.offset - self.window_start) as usize;
+                let bytes = &self.window[begin..begin + record.length as usize];
+                ops.push(LogOpRequest::append_identified(volume, chunk, generation, epoch, record.offset, bytes.to_vec(), record.tag));
+            }
+        } else {
+            let bytes = &self.window[(from - self.window_start) as usize..];
+            let mut offset = from;
+            for piece in bytes.chunks(LOG_RECORD_BYTES.min(MAX_OP_DATA)) {
+                ops.push(LogOpRequest::append(volume, chunk, generation, epoch, offset, piece.to_vec()));
+                offset += piece.len() as u64;
+            }
         }
+        let confirmed = member.confirmed;
         let Some(mut client) = member.client.take() else { return };
         member.busy = true;
         let tx = self.done_tx.clone();
         std::thread::spawn(move || {
-            let mut done = Done { index, client: None, applied: 0, durable: 0, fatal: None, refused: false };
+            let mut done = Done { index, client: None, applied: 0, durable: 0, confirmed, fatal: None, refused: false };
             let mut alive = true;
             for batch in ops.chunks(super::client::LOG_PIPELINE_DEPTH) {
-                for result in client.log_append_pipelined(batch) {
+                for (op, result) in batch.iter().zip(client.log_append_pipelined(batch)) {
                     match result {
                         Ok(reply) => {
                             done.applied = done.applied.max(reply.length);
                             done.durable = done.durable.max(reply.durable_length);
+                            if op.version == 2 && op.offset == done.confirmed {
+                                let end = op.offset + op.data.len() as u64;
+                                if reply.durable_length >= end { done.confirmed = end; }
+                            }
                         }
                         Err(LogCallError::Transport(_)) => alive = false,
                         Err(LogCallError::Refused(_)) => done.refused = true,
@@ -457,6 +494,7 @@ impl ChunkLogWriter {
             if member.given_up || member.client.is_none() || !member.known {
                 self.reconnect(index)?;
             }
+            if self.identified { self.confirm_pending(index)?; }
             let member = &self.members[index];
             if member.given_up || member.client.is_none() || member.applied >= end {
                 continue;
@@ -492,8 +530,14 @@ impl ChunkLogWriter {
     /// Retain pending bytes until every required replica reports them durable.
     /// The chunk limit bounds one writer's retained data, including retries.
     fn trim(&mut self) {
-        let floor = self.members.iter().map(|member| member.durable).min()
-            .unwrap_or(self.window_start).max(self.window_start);
+        let floor = self.durable_length().max(self.window_start);
+        // Keep the complete unsettled attempt for exact retry comparison, even when a common
+        // fragment prefix is already durable. The chunk limit bounds its retained bytes.
+        if self.identified && floor < self.next { return; }
+        if self.identified {
+            self.pending_records.clear();
+            self.pending_attempt = None;
+        }
         if floor > self.window_start {
             self.window.drain(..(floor - self.window_start) as usize);
             self.window_start = floor;

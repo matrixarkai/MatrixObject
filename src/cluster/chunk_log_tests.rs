@@ -841,3 +841,6 @@ fn identified_rpc_records_survive_three_replica_restarts_without_byte_based_owne
         assert!(!client.log_identity(V,C,1,1).unwrap().record_present);
     }
 }
+
+#[path = "identified_log_writer_tests.rs"]
+mod identified_writer_tests;

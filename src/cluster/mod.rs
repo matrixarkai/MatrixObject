@@ -258,7 +258,7 @@ pub use log_op::{LogOpReply, LogOpRequest};
 #[cfg(feature = "replica-server")]
 mod chunk_log;
 #[cfg(feature = "replica-server")]
-pub use chunk_log::{ChunkLogError, ChunkLogReader, ChunkLogWriter, LogCallError, SealedFooter, LOG_QUORUM, LOG_REPLICAS};
+pub use chunk_log::{AppendIdentity, ChunkLogError, ChunkLogReader, ChunkLogWriter, LogCallError, SealedFooter, LOG_QUORUM, LOG_REPLICAS};
 #[cfg(all(test, feature = "replica-server"))]
 mod chunk_log_tests;
 #[cfg(feature = "replica-server")]
