@@ -2333,6 +2333,18 @@ jobs:
           cargo test --locked --lib chunk_writer_outcome_tests -- --test-threads=1 | tee /tmp/unified-writer-outcomes.log
           grep -q '^running 18 tests$' /tmp/unified-writer-outcomes.log
           grep -q '^test result: ok. 18 passed' /tmp/unified-writer-outcomes.log
+      - name: old log protocols refuse publication-aware files
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::log_chunk_store::publication_protocol_tests -- --test-threads=1 2>&1 | tee /tmp/log-publication-protocol.log
+          grep -q '^running 3 tests$' /tmp/log-publication-protocol.log
+          grep -q '^test result: ok. 3 passed' /tmp/log-publication-protocol.log
+      - name: publication-aware log readers preserve whole object boundaries
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib log_chunk::publication_tests -- --test-threads=1 2>&1 | tee /tmp/log-publication-readers.log
+          grep -q '^running 21 tests$' /tmp/log-publication-readers.log
+          grep -q '^test result: ok. 21 passed' /tmp/log-publication-readers.log
       - name: identified log record readers preserve durable identity and reject corruption
         run: |
           set -euo pipefail

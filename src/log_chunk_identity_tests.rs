@@ -33,6 +33,7 @@ fn frame(offset: u64, data: &[u8], tag: Option<[u8; 16]>) -> Vec<u8> {
         length: data.len() as u32,
         data_crc: crc32c(data),
         attempt_tag: tag,
+        published_length: None,
     };
     let mut bytes = h.encode()[..h.encoded_len()].to_vec();
     bytes.extend_from_slice(data);

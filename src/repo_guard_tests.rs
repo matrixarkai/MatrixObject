@@ -755,6 +755,7 @@ fn every_durable_format_constant_is_accounted_for() {
     const EXPECTED: &[&str] = &[
         "MOL1",
         "MOL2",
+        "MOL3",
         "MOSRS-BLOCK-ROUTE-BOOTSTRAP1",
         "MOSRS-BLOCKSERVER-BOOTSTRAP1",
         "MOSRS-BUCKET-CORS-REQUEST1",
@@ -938,7 +939,7 @@ fn every_durable_format_constant_is_accounted_for() {
     );
     assert_eq!(
         found.len(),
-        116,
+        117,
         "the count is pinned as well, so a rename that happens to swap two names cannot pass"
     );
 }
