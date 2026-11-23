@@ -3170,7 +3170,10 @@ mod tests {
                 let headers: Vec<(&str, &str)> = headers.iter().map(|(n, v)| (*n, v.as_str())).collect();
                 let response = self.gateway.handle(&request(method, target, &headers, body));
                 let is_append = method == "PUT" && headers.iter().any(|(n, _)| n.eq_ignore_ascii_case(WRITE_OFFSET_HEADER));
-                if is_append {
+                let is_conditional = method == "PUT" && headers.iter().any(|(n, _)| {
+                    n.eq_ignore_ascii_case("if-match") || n.eq_ignore_ascii_case("if-none-match")
+                });
+                if is_append || is_conditional {
                     let mut lose = self.lose_replies.lock().unwrap();
                     if *lose > 0 {
                         *lose -= 1;
@@ -3184,6 +3187,30 @@ mod tests {
         fn door() -> Arc<Door> {
             let (gateway, shared) = gateway();
             Arc::new(Door { gateway, _shared: shared, lose_replies: Mutex::new(0) })
+        }
+
+        #[test]
+        fn conditional_client_writes_enforce_values_through_the_gateway() {
+            let client = S3Client::new(door(), "b");
+            client.compare_and_swap("cas", None, b"old").unwrap();
+            assert!(matches!(client.compare_and_swap("cas", None, b"bad"), Err(ClientError::ConditionFailed { .. })));
+            assert!(matches!(client.compare_and_swap("cas", Some(b"different"), b"bad"), Err(ClientError::ConditionFailed { .. })));
+            client.compare_and_swap("cas", Some(b"old"), b"new").unwrap();
+            assert_eq!(client.get("cas").unwrap(), b"new");
+            client.append("cas", b" tail").unwrap();
+            assert_eq!(client.get("cas").unwrap(), b"new tail");
+        }
+
+        #[test]
+        fn conditional_client_lost_reply_stays_unknown_after_gateway_commit() {
+            let door = door();
+            let client = S3Client::new(door.clone(), "b");
+            client.put("cas", b"old").unwrap();
+            *door.lose_replies.lock().unwrap() = 1;
+            let before = client.requests_issued();
+            assert!(matches!(client.compare_and_swap("cas", Some(b"old"), b"new"), Err(ClientError::ConditionalWriteUnknown { .. })));
+            assert_eq!(client.requests_issued()-before, 2, "one GET and one PUT, without retry");
+            assert_eq!(client.get("cas").unwrap(), b"new");
         }
 
         #[test]

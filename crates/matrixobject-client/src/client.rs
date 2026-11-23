@@ -44,6 +44,10 @@ pub enum ClientError {
     /// An append whose outcome is not decided: it may or may not be in the object, and the client
     /// has not written it again. The caller decides from its own record of what it acknowledged.
     OutcomeUnknown { key: String, detail: String },
+    /// The expected value did not match the object at a conditional check.
+    ConditionFailed { key: String, detail: String },
+    /// A conditional write may have committed. It has not been sent again.
+    ConditionalWriteUnknown { key: String, detail: String },
     /// The door answered with a status the operation does not accept.
     Http(String),
     /// The door could not be reached or did not finish answering.
@@ -59,6 +63,12 @@ impl fmt::Display for ClientError {
             }
             ClientError::OutcomeUnknown { key, detail } => {
                 write!(f, "{key}: the outcome of the append is unknown: {detail}")
+            }
+            ClientError::ConditionFailed { key, detail } => {
+                write!(f, "{key}: condition failed: {detail}")
+            }
+            ClientError::ConditionalWriteUnknown { key, detail } => {
+                write!(f, "{key}: the outcome of the conditional write is unknown: {detail}")
             }
             ClientError::Http(detail) | ClientError::Transport(detail) => f.write_str(detail),
         }
@@ -247,6 +257,50 @@ impl<T: Transport> S3Client<T> {
         } else {
             ClientError::Http(format!("{what}: the store answered {} -- {detail}", reply.status))
         }
+    }
+
+    /// Replace only if the current bytes equal `expected`, or create if it is `None`.
+    ///
+    /// Existing values are read with their strong ETag and replaced with `If-Match`.
+    /// A generation conflict rechecks the value, with at most eight conditional writes.
+    /// A lost or uncertain write reply is never retried: equal bytes cannot prove which
+    /// writer committed. Such a failure returns [`ClientError::ConditionalWriteUnknown`].
+    pub fn compare_and_swap(&self, key: &str, expected: Option<&[u8]>, bytes: &[u8]) -> Result<(), ClientError> {
+        let target = self.object_target(key)?;
+        let lock = self.append_lock(key);
+        let _held = lock.lock().expect("append lock poisoned");
+        let mismatch = || ClientError::ConditionFailed {
+            key: key.to_string(), detail: "the current object does not match the expected value".into(),
+        };
+        for _ in 0..8 {
+            let condition = if let Some(expected) = expected {
+                let current = self.send("GET", &target, &[], &[])?;
+                match current.status {
+                    404 => return Err(mismatch()),
+                    200 => {},
+                    _ => return Err(Self::failure(&current, key)),
+                }
+                if current.body != expected { return Err(mismatch()); }
+                let tag = current.header("etag").filter(|tag| {
+                    let raw = tag.as_bytes();
+                    raw.len() >= 2 && raw[0] == b'"' && raw[raw.len()-1] == b'"'
+                        && raw[1..raw.len()-1].iter().all(|b| *b == 0x21 || (0x23..=0x7e).contains(b) || *b >= 0x80)
+                        && current.headers.iter().filter(|(name, _)| name.eq_ignore_ascii_case("etag")).count() == 1
+                }).ok_or_else(|| ClientError::Http(format!("{key}: conditional replacement requires one strong ETag")))?;
+                ("if-match", tag.to_string())
+            } else { ("if-none-match", "*".to_string()) };
+            self.forget_length(key);
+            let unknown = |detail| ClientError::ConditionalWriteUnknown { key: key.to_string(), detail };
+            let reply = self.send("PUT", &target, &[condition], bytes).map_err(|error| unknown(error.to_string()))?;
+            match reply.status {
+                200 | 201 | 204 => { self.remember_length(key, bytes.len() as u64); return Ok(()); },
+                412 if expected.is_some() => continue,
+                412 => return Err(mismatch()),
+                408 | 500..=599 => return Err(unknown(format!("the store answered {}", reply.status))),
+                _ => return Err(Self::failure(&reply, key)),
+            }
+        }
+        Err(ClientError::Http(format!("{key}: conditional write contention exhausted eight attempts")))
     }
 
     /// Replace the object.
