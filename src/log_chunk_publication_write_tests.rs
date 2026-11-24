@@ -66,11 +66,24 @@ fn initialization_has_an_exact_control_record_and_cold_empty_prefix() {
         crc32c(&b[..60])
     );
     drop(c);
-    let c = open(&d.path());
+    let mut c = open(&d.path());
     assert!(c.has_publication_records());
     assert_eq!(c.publication_initialization(), Some([7; 16]));
     assert_eq!(c.durable_published_length().unwrap(), 0);
     assert!(c.durable_publication_record().unwrap().is_none());
+    let (mut sync, _) = c.sync_handle().unwrap();
+    std::io::Seek::seek(&mut sync, std::io::SeekFrom::Start(0)).unwrap();
+    c.append_published(1, 0, b"abc", [1; 16], 3).unwrap();
+    c.commit().unwrap();
+    drop(c);
+    let c = open(&d.path());
+    assert_eq!(c.publication_initialization(), Some([7; 16]));
+    assert_eq!(c.durable_published_length().unwrap(), 3);
+    assert_eq!(c.read_vec(0, 3).unwrap(), b"abc");
+    assert_eq!(
+        c.append_record_identity(0).unwrap().unwrap().attempt_tag,
+        Some([1; 16])
+    );
 }
 #[test]
 fn exact_initialization_retry_preserves_existing_data_and_refuses_changed_context() {
