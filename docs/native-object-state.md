@@ -1,6 +1,6 @@
 # Native object metadata readers
 
-Initialized LOG objects use chunk manifest format 2. Each object carries a stable
+Initialized LOG objects use chunk manifest format 3. Each object carries a stable
 16-byte incarnation. Every extent carries its storage generation, qualified writer
 epoch and three configured member identities with distinct durable initialization
 values. Older manifest readers reject the version. Legacy publication and writer
@@ -55,8 +55,12 @@ or absolute deadlines. The metadata journal and replicated command path use the
 same binary protobuf outcomes. Raft batch preparation restores all native draft
 tables before proposals commit.
 
-`NativeTailWriter` contacts data members for steady appends, requiring all three
-durable replies. It retains the original attempt and at most one record fragment
+`NativeTailWriter` starts all three member sends before waiting for acknowledgments,
+using the existing readiness poller and requiring all three durable replies.
+Each personalized protobuf frame shares one immutable record payload. Partial
+and interrupted vectored writes resume across the header, payload and suffix;
+TLS consumes bounded plaintext slices without assembling a second payload.
+Wire bytes, physical member identities and the complete-prefix rules are unchanged. It retains the original attempt and at most one record fragment
 on an unsettled request. Intermediate fragments keep the earlier complete-prefix
 marker; only the final fragment publishes the complete append. A correlated
 successful APPEND reply acknowledges its original tagged request. Probe lengths,

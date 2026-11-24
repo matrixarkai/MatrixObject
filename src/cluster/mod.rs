@@ -368,3 +368,5 @@ pub use wal_zero_fill::{
 pub mod native_object_commands;
 
 pub mod native_object_client;
+
+mod shared_log_append_request;

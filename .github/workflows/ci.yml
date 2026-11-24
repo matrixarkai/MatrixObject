@@ -2367,6 +2367,15 @@ jobs:
           grep -q '^test result: ok. 6 passed' /tmp/physical-bindings.log
           cargo test --locked --lib cluster::chunk_log_tests::physical_pinned_reader_tests:: -- --test-threads=1 2>&1 | tee /tmp/physical-reader.log
           grep -q '^test result: ok. 3 passed' /tmp/physical-reader.log
+      - name: native append fanout shares canonical request payloads
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib shared_log_append_request::tests:: -- --test-threads=1 2>&1 | tee /tmp/shared-log-frame.log
+          grep -q '^test result: ok. 3 passed' /tmp/shared-log-frame.log
+          cargo test --locked --lib native_object_client::shared_write_tests:: -- --test-threads=1 2>&1 | tee /tmp/native-write-fanout.log
+          grep -q '^test result: ok. 1 passed' /tmp/native-write-fanout.log
+          cargo test --locked --all-features --lib cluster::api_tls::tests::shared_log_payload_crosses_tls_buffer_boundaries_and_keeps_the_socket_usable -- --exact --test-threads=1 2>&1 | tee /tmp/shared-log-tls.log
+          grep -q '^test result: ok. 1 passed' /tmp/shared-log-tls.log
       - name: native object RPC admission and binary receipts
         run: |
           set -euo pipefail
