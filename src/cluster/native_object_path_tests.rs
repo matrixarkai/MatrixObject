@@ -201,9 +201,15 @@ struct Cluster {
     root: PathBuf,
     data: Vec<ServerProcess>,
     meta: Vec<ServerProcess>,
+    proxies: Vec<crate::cluster::chunk_log_tests::FaultProxy>,
 }
 impl Cluster {
     fn new() -> Self {
+        Self::with_append_gate(None)
+    }
+    fn with_append_gate(
+        gate: Option<std::sync::Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>>,
+    ) -> Self {
         let root = std::env::temp_dir().join(format!(
             "native-object-processes-{}-{}",
             std::process::id(),
@@ -214,6 +220,7 @@ impl Cluster {
             root,
             data: Vec::new(),
             meta: Vec::new(),
+            proxies: Vec::new(),
         };
         for i in 1..=3 {
             result.data.push(ServerProcess::start(
@@ -225,12 +232,34 @@ impl Cluster {
                 "",
             ));
         }
-        let data = result
-            .data
-            .iter()
-            .map(|p| p.address.as_str())
-            .collect::<Vec<_>>()
-            .join(",");
+        let data = if let Some(gate) = gate {
+            result.proxies = result
+                .data
+                .iter()
+                .map(|node| {
+                    crate::cluster::chunk_log_tests::FaultProxy::with_operation_gate(
+                        node.address.clone(),
+                        0,
+                        false,
+                        Some(std::sync::Arc::clone(&gate)),
+                        crate::cluster::log_op::OP_APPEND,
+                    )
+                })
+                .collect();
+            result
+                .proxies
+                .iter()
+                .map(|proxy| proxy.addr.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        } else {
+            result
+                .data
+                .iter()
+                .map(|node| node.address.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
         let reservations: Vec<_> = (0..3)
             .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
             .collect();
@@ -296,6 +325,7 @@ impl Cluster {
 impl Drop for Cluster {
     fn drop(&mut self) {
         self.meta.clear();
+        self.proxies.clear();
         self.data.clear();
         let _ = std::fs::remove_dir_all(&self.root);
     }
@@ -601,4 +631,71 @@ fn native_stage_prefixes_are_sealed_before_more_chunks_are_written() {
     );
     client.close_pin(&pin).unwrap();
     println!("NATIVE_BOUNDED_STAGE_EVIDENCE metadata=3 data=3 prefix_chunks={count} data_restarts=3 original_sealed_retry=passed foreign_attempt=refused altered_payload=refused open_tail=appendable exact_bytes={} steady_metadata_commits=0", expected.len());
+}
+
+#[test]
+fn native_staged_write_reaches_every_member_before_waiting_for_any_acknowledgment() {
+    let gate = std::sync::Arc::new((std::sync::Mutex::new(0usize), std::sync::Condvar::new()));
+    let cluster = Cluster::with_append_gate(Some(std::sync::Arc::clone(&gate)));
+    let mut client = cluster.client();
+    let body = vec![53; 8192];
+    let mut stage = client
+        .begin(
+            "bucket",
+            "parallel-stage",
+            "writer",
+            [12; 32],
+            8196,
+            None,
+            120_000,
+        )
+        .unwrap();
+    let owned = client.allocate(&mut stage, "native-group", 8192).unwrap();
+    let before = client.metadata_position().unwrap();
+    let result = client.write_chunk(&stage, &owned, &body, [91; 16]);
+    assert!(
+        result.is_ok(),
+        "staged write failed: {result:?}; members reached={}",
+        *gate.0.lock().unwrap()
+    );
+    assert_eq!(*gate.0.lock().unwrap(), 3);
+    assert_eq!(client.metadata_position().unwrap(), before);
+    client.write_chunk(&stage, &owned, &body, [91; 16]).unwrap();
+    assert!(matches!(
+        client.write_chunk(&stage, &owned, &body, [92; 16]),
+        Err(NativeObjectError::Data(
+            crate::cluster::ChunkLogError::AttemptMismatch { .. }
+        ))
+    ));
+    assert_eq!(
+        *gate.0.lock().unwrap(),
+        3,
+        "sealed retries sent another append"
+    );
+    for proxy in &cluster.proxies {
+        assert_eq!(
+            proxy
+                .operations
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|op| **op == crate::cluster::log_op::OP_APPEND)
+                .count(),
+            1
+        );
+    }
+    let tail = client.allocate(&mut stage, "native-group", 4).unwrap();
+    client
+        .write_chunk(&stage, &tail, b"init", [93; 16])
+        .unwrap();
+    client.publish(&stage, true).unwrap();
+    let pin = client.pin("bucket", "parallel-stage", 30_000).unwrap();
+    let mut expected = body;
+    expected.extend_from_slice(b"init");
+    assert_eq!(
+        client.read_range(&pin, 0, expected.len()).unwrap(),
+        expected
+    );
+    client.close_pin(&pin).unwrap();
+    println!("NATIVE_STAGE_FANOUT_EVIDENCE metadata=3 data=3 required_acks=3 prefix_metadata_commits=0 sealed_retry=passed foreign_attempt=refused exact_bytes=8196");
 }
