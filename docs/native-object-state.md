@@ -95,3 +95,10 @@ initializes, fences or truncates a member. Old pins do not accept a higher obser
 epoch as newly authorized. The native client acquires and revalidates actual
 metadata pins. Sealed reads also check the metadata footer. Effective epoch updates
 through writer handoff and the full object API remain unfinished.
+
+A staged multi-chunk write seals each completed nonfinal chunk before returning to
+its caller, releasing its open-tail payload memory. The final chunk stays open
+until publication chooses whether it is appendable. Publication reuses the same
+all-member complete-length and sealed-footer checks. A retry of an already sealed
+stage chunk must match its complete footer and every original fragment tag;
+equal bytes from a different attempt do not acknowledge ownership.

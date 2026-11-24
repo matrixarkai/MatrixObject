@@ -322,6 +322,8 @@ impl NativeObjectClient {
         let binding = owned.initialization.as_ref().unwrap();
         let mut clients = Vec::with_capacity(3);
         let mut capacity = super::log_op::MAX_OP_DATA;
+        let mut sealed = Vec::with_capacity(3);
+        let mut expected_footer: Option<SealedFooter> = None;
         for (i, endpoint) in group.api_endpoints.iter().enumerate() {
             let root: [u8; 16] = binding.replicas[i]
                 .storage_incarnation
@@ -345,7 +347,23 @@ impl NativeObjectClient {
                 .for_storage(root, init),
             )?;
             check_member(&reply, root, init, binding.writer_epoch)?;
+            if reply.sealed {
+                let expected = expected_footer.get_or_insert_with(|| SealedFooter {
+                    length: data.len() as u64,
+                    crc: crate::log_chunk::crc32c(data),
+                    sha256: crate::chunk_integrity::sha256(data).to_vec(),
+                });
+                if reply.length != expected.length
+                    || reply.durable_length != expected.length
+                    || reply.published_length != expected.length
+                    || reply.crc != expected.crc
+                    || (!reply.sha256.is_empty() && reply.sha256 != expected.sha256)
+                {
+                    return Err(ChunkLogError::AttemptMismatch { offset: 0 }.into());
+                }
+            }
             capacity = capacity.min(capacity_of(&reply, &self.replica)?);
+            sealed.push(reply.sealed);
             clients.push(client);
         }
         let identity = AppendIdentity {
@@ -385,7 +403,15 @@ impl NativeObjectClient {
                     .as_slice()
                     .try_into()
                     .unwrap();
-                let reply = client.log_call(
+                let op = if sealed[i] {
+                    LogOpRequest::identity_initialized_publication(
+                        extent.volume_id,
+                        extent.chunk_id,
+                        binding.chunk_generation,
+                        offset,
+                        init,
+                    )
+                } else {
                     LogOpRequest::append_published(
                         extent.volume_id,
                         extent.chunk_id,
@@ -397,8 +423,41 @@ impl NativeObjectClient {
                         end,
                         init,
                     )
-                    .for_storage(root, init),
-                )?;
+                };
+                let reply = client.log_call(op.for_storage(root, init))?;
+                if sealed[i] {
+                    check_member(&reply, root, init, binding.writer_epoch)?;
+                    // A sealed footer binds the bytes, while each stored tag binds this
+                    // original request. Equal payloads alone never acknowledge ownership.
+                    if !reply.sealed
+                        || reply.durable_length < end
+                        || reply.published_length < end
+                        || reply.record_identity()
+                            != Some(crate::log_chunk::AppendRecordIdentity {
+                                offset,
+                                length: body.len() as u32,
+                                attempt_tag: Some(tag),
+                            })
+                    {
+                        return Err(ChunkLogError::AttemptMismatch { offset }.into());
+                    }
+                    let read = client.log_call(
+                        LogOpRequest::read_initialized_publication(
+                            extent.volume_id,
+                            extent.chunk_id,
+                            binding.chunk_generation,
+                            offset,
+                            body.len() as u32,
+                            init,
+                        )
+                        .for_storage(root, init),
+                    )?;
+                    check_member(&read, root, init, binding.writer_epoch)?;
+                    if !read.sealed || read.data.as_slice() != body {
+                        return Err(ChunkLogError::AttemptMismatch { offset }.into());
+                    }
+                    continue;
+                }
                 check_append(
                     &reply,
                     root,
@@ -411,7 +470,91 @@ impl NativeObjectClient {
                 )?;
             }
         }
+        if extent
+            .object_offset
+            .checked_add(extent.length)
+            .ok_or_else(|| invalid("stage range overflow"))?
+            < stage.start.target_length
+        {
+            self.complete_chunk(owned, false)?;
+        }
         Ok(())
+    }
+    fn complete_chunk(
+        &mut self,
+        owned: &NativeOwnedChunk,
+        tail: bool,
+    ) -> Result<ChunkExtent, NativeObjectError> {
+        let mut extent = owned.extent.as_ref().unwrap().clone();
+        let binding = owned.initialization.as_ref().unwrap();
+        let group = self.group(&extent.group)?;
+        let mut footer = None;
+        for (i, endpoint) in group.api_endpoints.iter().enumerate() {
+            let root = binding.replicas[i]
+                .storage_incarnation
+                .as_slice()
+                .try_into()
+                .unwrap();
+            let init = binding.replicas[i]
+                .initialization
+                .as_slice()
+                .try_into()
+                .unwrap();
+            let mut client = RemoteReplicaClient::connect(endpoint, &self.replica)?;
+            let probe = client.log_call(
+                LogOpRequest::publication_probe(
+                    extent.volume_id,
+                    extent.chunk_id,
+                    binding.chunk_generation,
+                )
+                .for_storage(root, init),
+            )?;
+            check_member(&probe, root, init, binding.writer_epoch)?;
+            let reply = if !tail && !probe.sealed {
+                client.log_call(
+                    LogOpRequest::seal_publication(
+                        extent.volume_id,
+                        extent.chunk_id,
+                        binding.chunk_generation,
+                        binding.writer_epoch,
+                        init,
+                        false,
+                    )
+                    .for_storage(root, init),
+                )?
+            } else {
+                probe
+            };
+            check_member(&reply, root, init, binding.writer_epoch)?;
+            if reply.published_length != extent.length
+                || reply.durable_length != extent.length
+                || (!tail && !reply.sealed)
+                || (tail && reply.sealed)
+            {
+                return Err(invalid("stage publication lacks every durable complete chunk").into());
+            }
+            if !tail {
+                let current = SealedFooter {
+                    length: reply.length,
+                    crc: reply.crc,
+                    sha256: reply.sha256,
+                };
+                if footer.as_ref().is_some_and(|f| f != &current) {
+                    return Err(invalid("sealed stage footers differ").into());
+                }
+                footer = Some(current);
+            }
+        }
+        extent.flags = if tail {
+            CHUNK_FLAG_TAIL
+        } else {
+            CHUNK_FLAG_SEALED
+        };
+        if let Some(footer) = footer {
+            extent.footer_crc = footer.crc;
+            extent.footer_sha256 = footer.sha256;
+        }
+        Ok(extent)
     }
     pub fn publish(
         &mut self,
@@ -421,77 +564,14 @@ impl NativeObjectClient {
         let mut manifest = stage.start.header()?.clone();
         manifest.length = stage.start.target_length;
         for (index, owned) in stage.chunks.iter().enumerate() {
-            let mut extent = owned.extent.as_ref().unwrap().clone();
-            let binding = owned.initialization.as_ref().unwrap();
-            let group = self.group(&extent.group)?;
             let tail = open_tail && index + 1 == stage.chunks.len();
-            let mut footer = None;
-            for (i, endpoint) in group.api_endpoints.iter().enumerate() {
-                let root = binding.replicas[i]
-                    .storage_incarnation
-                    .as_slice()
-                    .try_into()
-                    .unwrap();
-                let init = binding.replicas[i]
-                    .initialization
-                    .as_slice()
-                    .try_into()
-                    .unwrap();
-                let mut client = RemoteReplicaClient::connect(endpoint, &self.replica)?;
-                let op = if tail {
-                    LogOpRequest::publication_probe(
-                        extent.volume_id,
-                        extent.chunk_id,
-                        binding.chunk_generation,
-                    )
-                } else {
-                    LogOpRequest::seal_publication(
-                        extent.volume_id,
-                        extent.chunk_id,
-                        binding.chunk_generation,
-                        binding.writer_epoch,
-                        init,
-                        false,
-                    )
-                };
-                let reply = client.log_call(op.for_storage(root, init))?;
-                check_member(&reply, root, init, binding.writer_epoch)?;
-                if reply.published_length != extent.length
-                    || reply.durable_length != extent.length
-                    || (!tail && !reply.sealed)
-                {
-                    return Err(
-                        invalid("stage publication lacks every durable complete chunk").into(),
-                    );
-                }
-                if !tail {
-                    let current = SealedFooter {
-                        length: reply.length,
-                        crc: reply.crc,
-                        sha256: reply.sha256,
-                    };
-                    if footer.as_ref().is_some_and(|f| f != &current) {
-                        return Err(invalid("sealed stage footers differ").into());
-                    }
-                    footer = Some(current);
-                }
-            }
-            extent.flags = if tail {
-                CHUNK_FLAG_TAIL
-            } else {
-                CHUNK_FLAG_SEALED
-            };
-            if let Some(footer) = footer {
-                extent.footer_crc = footer.crc;
-                extent.footer_sha256 = footer.sha256;
-            }
-            manifest.extents.push(extent);
+            manifest.extents.push(self.complete_chunk(owned, tail)?);
             manifest
                 .initialized_log
                 .as_mut()
                 .unwrap()
                 .chunks
-                .push(binding.clone());
+                .push(owned.initialization.as_ref().unwrap().clone());
         }
         manifest.validate()?;
         let (reply, sent) = self.call(NativeObjectRequest::mutation(

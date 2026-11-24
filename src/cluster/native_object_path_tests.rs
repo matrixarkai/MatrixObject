@@ -474,3 +474,131 @@ fn native_object_stages_pins_and_data_only_appends_survive_six_process_restarts(
     client.close_pin(&pin).unwrap();
     println!("NATIVE_OBJECT_PROCESS_EVIDENCE metadata=3 data=3 restarts=6 steady_appends=64 steady_metadata_commits=0 exact_bytes={} original_pending_retry=passed released_pin=refused",expected.len());
 }
+
+#[test]
+fn native_stage_prefixes_are_sealed_before_more_chunks_are_written() {
+    let mut cluster = Cluster::new();
+    let mut client = cluster.client();
+    let chunk_bytes = 96 * 1024;
+    let count = 65;
+    let mut stage = client
+        .begin(
+            "bucket",
+            "bounded-stage",
+            "writer",
+            [11; 32],
+            (count * chunk_bytes + 4) as u64,
+            None,
+            900_000,
+        )
+        .unwrap();
+    let mut expected = Vec::new();
+    for index in 0..count {
+        let body = vec![(index + 1) as u8; chunk_bytes];
+        let owned = client
+            .allocate(&mut stage, "native-group", body.len() as u64)
+            .unwrap();
+        let attempt = (index as u128 + 1).to_be_bytes();
+        client.write_chunk(&stage, &owned, &body, attempt).unwrap();
+        if index == 0 {
+            for process in &mut cluster.data {
+                process.restart();
+            }
+            client.write_chunk(&stage, &owned, &body, attempt).unwrap();
+            assert!(
+                matches!(
+                    client.write_chunk(&stage, &owned, &body, [200; 16]),
+                    Err(NativeObjectError::Data(
+                        crate::cluster::ChunkLogError::AttemptMismatch { .. }
+                    ))
+                ),
+                "equal bytes acknowledged a different original stage write"
+            );
+            let mut altered = body.clone();
+            altered[0] ^= 1;
+            assert!(
+                matches!(
+                    client.write_chunk(&stage, &owned, &altered, attempt),
+                    Err(NativeObjectError::Data(
+                        crate::cluster::ChunkLogError::AttemptMismatch { .. }
+                    ))
+                ),
+                "the original attempt accepted a changed sealed payload"
+            );
+        }
+        expected.extend_from_slice(&body);
+    }
+    let owned = client.allocate(&mut stage, "native-group", 4).unwrap();
+    client
+        .write_chunk(&stage, &owned, b"init", [100; 16])
+        .unwrap();
+    let extent = owned.extent.as_ref().unwrap();
+    let binding = owned.initialization.as_ref().unwrap();
+    for (member, node) in cluster.data.iter().enumerate() {
+        let mut direct = crate::cluster::RemoteReplicaClient::connect(
+            &node.address,
+            &ReplicaClientOptions::default(),
+        )
+        .unwrap();
+        let reply = direct
+            .log_call(
+                crate::cluster::LogOpRequest::publication_probe(
+                    extent.volume_id,
+                    extent.chunk_id,
+                    binding.chunk_generation,
+                )
+                .for_storage(
+                    binding.replicas[member]
+                        .storage_incarnation
+                        .as_slice()
+                        .try_into()
+                        .unwrap(),
+                    binding.replicas[member]
+                        .initialization
+                        .as_slice()
+                        .try_into()
+                        .unwrap(),
+                ),
+            )
+            .unwrap();
+        assert!(!reply.sealed, "the final appendable tail was sealed early");
+        assert_eq!(reply.published_length, 4);
+    }
+    expected.extend_from_slice(b"init");
+    let published = client.publish(&stage, true).unwrap();
+    assert!(published.manifest.extents[..count]
+        .iter()
+        .all(|e| e.flags & crate::chunk_manifest::CHUNK_FLAG_SEALED != 0));
+    let incarnation = published
+        .manifest
+        .initialized_log
+        .as_ref()
+        .unwrap()
+        .object_incarnation
+        .as_slice()
+        .try_into()
+        .unwrap();
+    let mut writer = client.writer(&published).unwrap();
+    let before = client.metadata_position().unwrap();
+    let append = vec![77; 4096];
+    let identity = AppendIdentity {
+        object_incarnation: incarnation,
+        attempt_id: [201; 16],
+        request_offset: writer.length(),
+        request_length: append.len() as u64,
+    };
+    assert_eq!(
+        writer.append(&append, identity).unwrap(),
+        expected.len() as u64 + append.len() as u64
+    );
+    expected.extend_from_slice(&append);
+    assert_eq!(client.metadata_position().unwrap(), before);
+    let pin = client.pin("bucket", "bounded-stage", 120_000).unwrap();
+    assert_eq!(client.length(&pin).unwrap(), expected.len() as u64);
+    assert_eq!(
+        client.read_range(&pin, 0, expected.len()).unwrap(),
+        expected
+    );
+    client.close_pin(&pin).unwrap();
+    println!("NATIVE_BOUNDED_STAGE_EVIDENCE metadata=3 data=3 prefix_chunks={count} data_restarts=3 original_sealed_retry=passed foreign_attempt=refused altered_payload=refused open_tail=appendable exact_bytes={} steady_metadata_commits=0", expected.len());
+}
