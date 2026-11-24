@@ -8,9 +8,14 @@ use std::io::{self, IoSlice, Write};
 use std::sync::Arc;
 
 pub(super) struct SharedLogAppendRequest {
-    prefix: Vec<u8>,
+    // Nine scalar fields, then the bytes tag and its length. A protobuf scalar
+    // uses at most two tag bytes plus ten value bytes for this schema.
+    prefix: [u8; super::wire::HEADER_BYTES + 9 * 12 + 6],
+    prefix_len: usize,
     data: Arc<Vec<u8>>,
-    suffix: Vec<u8>,
+    // Seven scalar fields follow the shared payload.
+    suffix: [u8; 7 * 12],
+    suffix_len: usize,
 }
 impl SharedLogAppendRequest {
     pub(super) fn new(request: LogOpRequest, data: Arc<Vec<u8>>) -> Result<Self, ObjectError> {
@@ -59,7 +64,7 @@ impl SharedLogAppendRequest {
             storage_hi: 0,
             storage_lo: 0,
         };
-        let suffix = LogOpRequest {
+        let suffix_message = LogOpRequest {
             version: 0,
             op: 0,
             volume: 0,
@@ -77,24 +82,41 @@ impl SharedLogAppendRequest {
             initialization_lo,
             storage_hi,
             storage_lo,
+        };
+        let mut prefix = [0; super::wire::HEADER_BYTES + 9 * 12 + 6];
+        let mut suffix = [0; 7 * 12];
+        let header_len = header.encoded_len();
+        let suffix_len = suffix_message.encoded_len();
+        let mut prefix_len = super::wire::HEADER_BYTES + header_len;
+        if prefix_len + 6 > prefix.len() || suffix_len > suffix.len() {
+            return Err(ObjectError::InvalidArgument(
+                "shared append metadata exceeds inline capacity".into(),
+            ));
         }
-        .encode_to_vec();
-        let mut prefix =
-            super::message::encode_request(&super::message::ReplicaRequest::LogOp(header));
+        prefix[0] = super::wire::PROTOCOL_STAMP;
+        prefix[1] = super::wire::RequestCode::LogOp as u8;
+        header
+            .encode(&mut &mut prefix[super::wire::HEADER_BYTES..prefix_len])
+            .map_err(|error| ObjectError::InvalidArgument(error.to_string()))?;
+        suffix_message
+            .encode(&mut &mut suffix[..suffix_len])
+            .map_err(|error| ObjectError::InvalidArgument(error.to_string()))?;
         if !data.is_empty() {
-            prefix.push(0x52);
+            prefix[prefix_len] = 0x52;
+            prefix_len += 1;
             let mut size = data.len() as u64;
             while size >= 128 {
-                prefix.push((size as u8 & 127) | 128);
+                prefix[prefix_len] = (size as u8 & 127) | 128;
+                prefix_len += 1;
                 size >>= 7;
             }
-            prefix.push(size as u8);
+            prefix[prefix_len] = size as u8;
+            prefix_len += 1;
         }
-        let body = prefix
-            .len()
+        let body = prefix_len
             .checked_sub(super::wire::HEADER_BYTES)
             .and_then(|n| n.checked_add(data.len()))
-            .and_then(|n| n.checked_add(suffix.len()))
+            .and_then(|n| n.checked_add(suffix_len))
             .and_then(|n| u32::try_from(n).ok())
             .ok_or_else(|| {
                 ObjectError::InvalidArgument("shared append frame exceeds wire length".into())
@@ -102,12 +124,14 @@ impl SharedLogAppendRequest {
         prefix[2..6].copy_from_slice(&body.to_be_bytes());
         Ok(Self {
             prefix,
+            prefix_len,
             data,
             suffix,
+            suffix_len,
         })
     }
     pub(super) fn len(&self) -> usize {
-        self.prefix.len() + self.data.len() + self.suffix.len()
+        self.prefix_len + self.data.len() + self.suffix_len
     }
     pub(super) fn write_from(
         &self,
@@ -120,9 +144,9 @@ impl SharedLogAppendRequest {
         let mut count = 0;
         let mut slices = [IoSlice::new(&[]); 3];
         for bytes in [
-            self.prefix.as_slice(),
+            &self.prefix[..self.prefix_len],
             self.data.as_slice(),
-            self.suffix.as_slice(),
+            &self.suffix[..self.suffix_len],
         ] {
             if skip >= bytes.len() {
                 skip -= bytes.len();
@@ -171,9 +195,9 @@ mod tests {
     use super::*;
     fn flatten(frame: &SharedLogAppendRequest) -> Vec<u8> {
         [
-            frame.prefix.as_slice(),
+            &frame.prefix[..frame.prefix_len],
             frame.data.as_slice(),
-            frame.suffix.as_slice(),
+            &frame.suffix[..frame.suffix_len],
         ]
         .concat()
     }
@@ -302,7 +326,7 @@ mod tests {
             .collect();
         for frame in &frames {
             assert!(Arc::ptr_eq(&frame.data, &data));
-            assert!(frame.prefix.len() + frame.suffix.len() < 256);
+            assert!(frame.prefix_len + frame.suffix_len < 256);
         }
         assert_ne!(flatten(&frames[0]), flatten(&frames[1]));
         let request = LogOpRequest::append(3, 11, 1, 2, 0, vec![1]);
