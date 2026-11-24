@@ -364,7 +364,7 @@ impl NativeObjectClient {
             }
             capacity = capacity.min(capacity_of(&reply, &self.replica)?);
             sealed.push(reply.sealed);
-            clients.push(client);
+            clients.push(Some(client));
         }
         let identity = AppendIdentity {
             object_incarnation: stage
@@ -381,6 +381,28 @@ impl NativeObjectClient {
             request_offset: 0,
             request_length: stage.start.target_length,
         };
+        let physical_binding = PhysicalMemberBinding {
+            volume_id: extent.volume_id,
+            chunk_id: extent.chunk_id,
+            generation: binding.chunk_generation,
+            writer_epoch: binding.writer_epoch,
+            storage_incarnations: std::array::from_fn(|i| {
+                binding.replicas[i]
+                    .storage_incarnation
+                    .as_slice()
+                    .try_into()
+                    .unwrap()
+            }),
+            initializations: std::array::from_fn(|i| {
+                binding.replicas[i]
+                    .initialization
+                    .as_slice()
+                    .try_into()
+                    .unwrap()
+            }),
+            member_ids: std::array::from_fn(|i| binding.replicas[i].member_id.clone()),
+        };
+        let shared_writes = sealed.iter().all(|member| !member);
         for (part, body) in data.chunks(capacity).enumerate() {
             let offset = (part * capacity) as u64;
             let end = offset + body.len() as u64;
@@ -392,7 +414,23 @@ impl NativeObjectClient {
                 extent.object_offset + offset,
                 body.len() as u32,
             )?;
-            for (i, client) in clients.iter_mut().enumerate() {
+            if shared_writes {
+                let fragment = std::sync::Arc::new(body.to_vec());
+                append_to_members(
+                    &physical_binding,
+                    &group,
+                    &self.replica,
+                    &mut clients,
+                    &fragment,
+                    offset,
+                    tag,
+                    end,
+                    None,
+                )?;
+                continue;
+            }
+            for (i, slot) in clients.iter_mut().enumerate() {
+                let client = slot.as_mut().unwrap();
                 let root = binding.replicas[i]
                     .storage_incarnation
                     .as_slice()
@@ -1020,7 +1058,7 @@ impl NativeTailWriter {
                 offset,
                 tag,
                 published,
-                self.deadline,
+                Some(self.deadline),
             )?;
             pending.progress += count;
             pending.fragment = None;
@@ -1047,7 +1085,7 @@ fn append_to_members(
     offset: u64,
     tag: [u8; 16],
     published: u64,
-    deadline: Instant,
+    deadline: Option<Instant>,
 ) -> Result<(), NativeObjectError> {
     let mut errors: [Option<NativeObjectError>; 3] = std::array::from_fn(|_| None);
     for (member, client) in clients.iter_mut().enumerate() {
@@ -1089,7 +1127,7 @@ fn append_to_members(
             match client
                 .as_mut()
                 .unwrap()
-                .begin_shared_log_before(frame, Some(deadline))
+                .begin_shared_log_before(frame, deadline)
             {
                 Ok(reply) => pending[member] = Some(reply),
                 Err(error) => results[member] = Some(Err(error)),
