@@ -14,8 +14,10 @@ use crate::initialized_log_manifest::{
     InitializedChunk, InitializedLogManifest, InitializedReplica, PhysicalMemberBinding,
     CHUNK_MANIFEST_PHYSICAL_FORMAT,
 };
+use crate::log_chunk_outcome::{WriterLease, MAX_LEASE_TTL_MS};
 use crate::native_object_outcome::{
     native_operation::Operation, NativeBegin, NativeExtend, NativePublish, NativeStageRef,
+    NativeWriterRenewal,
 };
 use crate::native_object_state::{
     NativeOwnedChunk, NativeReadPin, NativeStageStart, STAGE_REPLACE,
@@ -64,6 +66,33 @@ fn invalid(message: &str) -> ObjectError {
     ObjectError::InvalidArgument(message.into())
 }
 
+fn unproven_grant(message: &str) -> NativeObjectError {
+    NativeObjectError::Unknown(ObjectError::Corruption(message.into()))
+}
+fn writer_deadline(
+    lease: &WriterLease,
+    now_ms: u64,
+    sent: Instant,
+) -> Result<Instant, NativeObjectError> {
+    lease
+        .validate()
+        .map_err(|_| unproven_grant("native reply contains an invalid writer grant"))?;
+    let remaining = lease
+        .expires_at_ms
+        .checked_sub(now_ms)
+        .filter(|remaining| now_ms != 0 && *remaining != 0 && *remaining <= MAX_LEASE_TTL_MS)
+        .ok_or_else(|| unproven_grant("native writer grant has an invalid remaining deadline"))?;
+    let deadline = sent
+        .checked_add(Duration::from_millis(remaining))
+        .ok_or_else(|| unproven_grant("native writer deadline overflow"))?;
+    if deadline <= Instant::now() {
+        return Err(unproven_grant(
+            "native writer grant expired before confirmation",
+        ));
+    }
+    Ok(deadline)
+}
+
 #[derive(Clone, Debug)]
 pub struct NativeStageHandle {
     pub start: NativeStageStart,
@@ -75,6 +104,7 @@ pub struct NativePublishedObject {
     pub manifest: ChunkManifest,
     start: NativeStageStart,
     deadline: Instant,
+    lease: Option<WriterLease>,
 }
 #[derive(Clone, Debug)]
 pub struct NativePinnedObject {
@@ -87,6 +117,7 @@ pub struct NativeObjectClient {
     meta: RemoteMetaClient,
     replica: ReplicaClientOptions,
     chunk_bytes: u64,
+    origin: std::sync::Arc<()>,
 }
 impl NativeObjectClient {
     pub fn new(meta: RemoteMetaClient, replica: ReplicaClientOptions) -> Self {
@@ -94,6 +125,7 @@ impl NativeObjectClient {
             meta,
             replica,
             chunk_bytes: 64 * 1024 * 1024,
+            origin: std::sync::Arc::new(()),
         }
     }
     pub fn with_chunk_bytes(mut self, bytes: u64) -> Result<Self, ObjectError> {
@@ -620,16 +652,81 @@ impl NativeObjectClient {
             }),
             0,
         ))?;
-        let remaining = stage.start.expires_at_ms.saturating_sub(reply.now_ms);
-        let deadline = sent
-            .checked_add(Duration::from_millis(remaining))
-            .ok_or_else(|| invalid("lease deadline overflow"))?;
+        if reply.version != 1 || reply.commit_index == 0 {
+            return Err(unproven_grant(
+                "native publication omitted its committed reply identity",
+            ));
+        }
+        let manifest = reply
+            .manifest
+            .ok_or_else(|| unproven_grant("native publication omitted its object"))?;
+        manifest
+            .validate()
+            .map_err(|_| unproven_grant("native publication returned an invalid object"))?;
+        let expected = stage.start.header()?;
+        if manifest.bucket != expected.bucket
+            || manifest.key != expected.key
+            || manifest.generation != expected.generation
+            || manifest.length != stage.start.target_length
+            || manifest.extents.len() != stage.chunks.len()
+            || manifest
+                .initialized_log
+                .as_ref()
+                .map(|log| &log.object_incarnation)
+                != expected
+                    .initialized_log
+                    .as_ref()
+                    .map(|log| &log.object_incarnation)
+        {
+            return Err(unproven_grant("native publication returned another object"));
+        }
+        let tail = manifest
+            .extents
+            .last()
+            .is_some_and(|extent| extent.flags == CHUNK_FLAG_TAIL);
+        if tail != (open_tail && !stage.chunks.is_empty()) {
+            return Err(unproven_grant(
+                "native publication changed its tail boundary",
+            ));
+        }
+        let mut start = stage.start.clone();
+        let deadline = if tail {
+            let lease = reply
+                .lease
+                .as_ref()
+                .ok_or_else(|| unproven_grant("native publication omitted its writer grant"))?;
+            let binding = manifest
+                .initialized_log
+                .as_ref()
+                .unwrap()
+                .physical_binding(&manifest, manifest.extents.len() - 1)
+                .map_err(|_| {
+                    unproven_grant("native publication returned invalid tail authority")
+                })?;
+            if !open_tail
+                || lease.holder != stage.start.holder
+                || lease.epoch != binding.writer_epoch
+            {
+                return Err(unproven_grant(
+                    "native publication writer grant does not own its tail",
+                ));
+            }
+            start.writer_epoch = lease.epoch;
+            start.expires_at_ms = lease.expires_at_ms;
+            writer_deadline(lease, reply.now_ms, sent)?
+        } else {
+            if reply.lease.is_some() {
+                return Err(unproven_grant(
+                    "sealed native publication returned a writer grant",
+                ));
+            }
+            sent
+        };
         Ok(NativePublishedObject {
-            manifest: reply
-                .manifest
-                .ok_or_else(|| invalid("native publication omitted its object"))?,
-            start: stage.start.clone(),
+            manifest,
+            start,
             deadline,
+            lease: reply.lease,
         })
     }
     pub fn writer(
@@ -637,6 +734,28 @@ impl NativeObjectClient {
         published: &NativePublishedObject,
     ) -> Result<NativeTailWriter, NativeObjectError> {
         let manifest = &published.manifest;
+        let original = published.start.header()?;
+        if manifest.bucket != original.bucket
+            || manifest.key != original.key
+            || manifest.generation != original.generation
+            || manifest
+                .initialized_log
+                .as_ref()
+                .map(|log| &log.object_incarnation)
+                != original
+                    .initialized_log
+                    .as_ref()
+                    .map(|log| &log.object_incarnation)
+        {
+            return Err(invalid("published writer object identity changed").into());
+        }
+        let lease = published
+            .lease
+            .as_ref()
+            .ok_or_else(|| invalid("object has no writer grant"))?;
+        if Instant::now() >= published.deadline {
+            return Err(invalid("published writer grant has expired").into());
+        }
         let index = manifest
             .extents
             .len()
@@ -651,6 +770,9 @@ impl NativeObjectClient {
             .as_ref()
             .unwrap()
             .physical_binding(manifest, index)?;
+        if lease.epoch != binding.writer_epoch || lease.holder != published.start.holder {
+            return Err(invalid("published writer grant does not match its tail").into());
+        }
         let group = self.group(&extent.group)?;
         if binding.member_ids.as_slice() != group.member_ids {
             return Err(invalid("tail route members changed").into());
@@ -698,8 +820,55 @@ impl NativeObjectClient {
                 .try_into()
                 .unwrap(),
             pending: None,
-            holder: published.start.holder.clone(),
+            bucket: original.bucket.clone(),
+            key: original.key.clone(),
+            lease: lease.clone(),
+            origin: std::sync::Arc::clone(&self.origin),
         })
+    }
+    /// Renew through the client that opened this writer, at a metadata boundary. An uncertain reply never extends
+    /// the prior local grant or replaces an unresolved data append attempt.
+    pub fn renew_writer(
+        &mut self,
+        writer: &mut NativeTailWriter,
+        ttl_ms: u64,
+    ) -> Result<(), NativeObjectError> {
+        if !std::sync::Arc::ptr_eq(&self.origin, &writer.origin) {
+            return Err(invalid("renewal requires the client that opened this writer").into());
+        }
+        if Instant::now() >= writer.deadline {
+            return Err(invalid("native writer is expired or fenced").into());
+        }
+        let (reply, sent) = self.call(NativeObjectRequest::mutation(
+            Operation::RenewWriter(NativeWriterRenewal {
+                bucket: writer.bucket.clone(),
+                key: writer.key.clone(),
+                before: Some(writer.lease.clone()),
+                after: None,
+            }),
+            ttl_ms,
+        ))?;
+        let lease = reply
+            .lease
+            .as_ref()
+            .ok_or_else(|| unproven_grant("native renewal omitted its writer grant"))?;
+        if reply.version != 1
+            || reply.commit_index == 0
+            || lease.holder != writer.lease.holder
+            || lease.epoch != writer.lease.epoch
+            || lease.epoch != writer.binding.writer_epoch
+            || lease.expires_at_ms <= writer.lease.expires_at_ms
+            || reply.now_ms >= writer.lease.expires_at_ms
+            || lease.expires_at_ms.checked_sub(reply.now_ms) != Some(ttl_ms)
+        {
+            return Err(unproven_grant(
+                "native renewal does not extend the same live writer",
+            ));
+        }
+        let deadline = writer_deadline(lease, reply.now_ms, sent)?;
+        writer.lease = lease.clone();
+        writer.deadline = deadline;
+        Ok(())
     }
     pub fn pin(
         &mut self,
@@ -953,14 +1122,20 @@ pub struct NativeTailWriter {
     object_offset: u64,
     incarnation: [u8; 16],
     pending: Option<PendingAppend>,
-    holder: String,
+    bucket: String,
+    key: String,
+    lease: WriterLease,
+    origin: std::sync::Arc<()>,
 }
 impl NativeTailWriter {
     pub fn length(&self) -> u64 {
         self.object_offset + self.length
     }
     pub fn holder(&self) -> &str {
-        &self.holder
+        &self.lease.holder
+    }
+    pub fn lease_remaining(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
     }
     pub fn pending_identity(&self) -> Option<AppendIdentity> {
         self.pending.as_ref().map(|p| p.identity)
@@ -1304,7 +1479,14 @@ mod shared_write_tests {
             object_offset: 0,
             incarnation: [4; 16],
             pending: None,
-            holder: "writer".into(),
+            bucket: "bucket".into(),
+            key: "key".into(),
+            lease: WriterLease {
+                holder: "writer".into(),
+                epoch: 7,
+                expires_at_ms: 10_000,
+            },
+            origin: std::sync::Arc::new(()),
         };
         let body = vec![77; 4096];
         let identity = AppendIdentity {
@@ -1340,3 +1522,7 @@ mod shared_write_tests {
             .all(|p| p.operations.lock().unwrap().as_slice() == [super::super::log_op::OP_APPEND]));
     }
 }
+
+#[cfg(all(test, feature = "metadata-consensus"))]
+#[path = "native_writer_lease_tests.rs"]
+mod lease_tests;

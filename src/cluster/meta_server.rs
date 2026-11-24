@@ -2301,4 +2301,4 @@ mod snapshot_bound_tests {
 
 #[cfg(all(test, feature = "metadata-consensus"))]
 #[path = "native_object_path_tests.rs"]
-mod native_object_path_tests;
+pub(crate) mod native_object_path_tests;

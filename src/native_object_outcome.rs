@@ -569,15 +569,13 @@ impl NativeObjectChange {
                     {
                         return Err(refused("native writer lease table is full"));
                     }
-                    draft.leases.set(
-                        &id.bucket,
-                        &id.key,
-                        &WriterLease {
-                            holder: start.holder,
-                            epoch: start.writer_epoch,
-                            expires_at_ms: start.expires_at_ms,
-                        },
-                    );
+                    let lease = WriterLease {
+                        holder: start.holder,
+                        epoch: start.writer_epoch,
+                        expires_at_ms: start.expires_at_ms,
+                    };
+                    lease.validate()?;
+                    draft.leases.set(&id.bucket, &id.key, &lease);
                 } else {
                     draft.leases.remove(&id.bucket, &id.key);
                 }
