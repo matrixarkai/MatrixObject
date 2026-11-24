@@ -74,6 +74,7 @@ before interpreting storage amplification. The guides below describe these paths
 | Serve object requests | [Network access](#reaching-the-store-over-a-network) and [API TLS](docs/api-tls.md) |
 | Run metadata independently | [Metadata consensus and recovery](docs/metadata-consensus.md) |
 | Place data on independent replicas | [Chunk consensus](docs/chunk-consensus.md) and [group catalog](docs/chunk-group-catalog.md) |
+| Understand legacy tombstone cleanup limits | [Never-reused key tombstones](docs/forget-prefix.md) |
 | Append to a very large log without a metadata write per append | [Chunk-granular manifests and log objects](docs/chunk-granular-manifest.md) |
 | Plan distributed deployment work | [Distributed delivery](docs/distributed-delivery.md) |
 
