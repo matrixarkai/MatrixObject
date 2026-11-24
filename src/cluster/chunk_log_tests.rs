@@ -643,6 +643,13 @@ impl FaultProxy {
         drop_reply: bool,
         probe_gate: Option<Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>>,
     ) -> Self {
+        Self::with_operation_gate(target,operation,drop_reply,probe_gate,super::log_op::OP_TAIL)
+    }
+    pub(super) fn with_operation_gate(
+        target:String,operation:u32,drop_reply:bool,
+        probe_gate:Option<Arc<(std::sync::Mutex<usize>,std::sync::Condvar)>>,
+        gate_operation:u32,
+    )->Self {
         use prost::Message as _;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -687,7 +694,7 @@ impl FaultProxy {
                             let seen = (header[1] == crate::cluster::wire::RequestCode::LogOp as u8)
                                 .then(|| LogOpRequest::decode(body.as_slice()).ok().map(|request| request.op)).flatten();
                             if let Some(op) = seen { recorded.lock().unwrap().push(op); }
-                            if seen == Some(super::log_op::OP_TAIL) {
+                            if seen == Some(gate_operation) {
                                 if let Some(gate) = &probe_gate {
                                     let mut count = gate.0.lock().unwrap();
                                     *count += 1;

@@ -339,6 +339,38 @@ impl Write for ApiSocket {
         }
         self.socket.write(bytes)
     }
+    fn write_vectored(&mut self, slices: &[io::IoSlice<'_>]) -> io::Result<usize> {
+        self.flush()?;
+        #[cfg(feature = "peer-tls")]
+        if let Some(tls) = &self.tls {
+            let mut connection = tls.lock().map_err(|_| invalid("API TLS state poisoned"))?;
+            if connection.is_handshaking() || connection.alpn_protocol() != Some(PROTOCOL) {
+                return Err(invalid("API TLS is not authenticated"));
+            }
+            let mut total = 0;
+            for slice in slices {
+                let count = slice.len().min(64 * 1024 - total);
+                if count == 0 {
+                    if total == 64 * 1024 {
+                        break;
+                    }
+                    continue;
+                }
+                match connection.writer().write(&slice[..count]) {
+                    Ok(written) => {
+                        total += written;
+                        if written < count {
+                            break;
+                        }
+                    }
+                    Err(_) if total > 0 => break,
+                    Err(error) => return Err(error),
+                }
+            }
+            return Ok(total);
+        }
+        self.socket.write_vectored(slices)
+    }
     fn flush(&mut self) -> io::Result<()> {
         #[cfg(feature = "peer-tls")]
         if let Some(tls) = &self.tls {
@@ -437,6 +469,75 @@ mod tests {
             write_timeout: Duration::from_secs(2),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn shared_log_payload_crosses_tls_buffer_boundaries_and_keeps_the_socket_usable() {
+        let files = TlsFiles::new();
+        let tls = config(&files);
+        let server = ReplicaNodeServer::bind_with_journal(
+            "127.0.0.1:0",
+            ReplicaNodeOptions {
+                tls: Some(tls.clone()),
+                publication_writes: true,
+                ..Default::default()
+            },
+            &files.path("shared-native.journal"),
+        )
+        .unwrap();
+        let endpoint = server.local_addr().unwrap().to_string();
+        let stop = server.shutdown_handle();
+        let _running = Running {
+            stop: Box::new(move || stop.stop()),
+            worker: Some(std::thread::spawn(move || server.serve())),
+        };
+        let mut client = RemoteReplicaClient::connect(&endpoint, &options(&tls)).unwrap();
+        let root = client
+            .log_call(LogOpRequest::storage_probe())
+            .unwrap()
+            .storage_incarnation()
+            .unwrap();
+        let init = [5; 16];
+        client
+            .log_call(
+                LogOpRequest::initialize_publication(3, 11, 1, 7, init).for_storage(root, init),
+            )
+            .unwrap();
+        let data = Arc::new((0..192 * 1024).map(|i| (i % 251) as u8).collect::<Vec<_>>());
+        let request = LogOpRequest::append_published(
+            3,
+            11,
+            1,
+            7,
+            0,
+            Vec::new(),
+            [8; 16],
+            data.len() as u64,
+            init,
+        )
+        .for_storage(root, init);
+        let frame = super::super::shared_log_append_request::SharedLogAppendRequest::new(
+            request,
+            Arc::clone(&data),
+        )
+        .unwrap();
+        let reply = client
+            .begin_shared_log_before(frame, Some(Instant::now() + Duration::from_secs(2)))
+            .unwrap()
+            .finish()
+            .unwrap();
+        let ReplicaReply::LogOp(reply) = reply else {
+            panic!("append response missing")
+        };
+        assert_eq!(reply.published_length, data.len() as u64);
+        assert_eq!(reply.durable_length, data.len() as u64);
+        let reply = client
+            .log_call(
+                LogOpRequest::read_initialized_publication(3, 11, 1, 0, data.len() as u32, init)
+                    .for_storage(root, init),
+            )
+            .unwrap();
+        assert_eq!(reply.data.as_slice(), data.as_slice());
     }
 
     #[test]

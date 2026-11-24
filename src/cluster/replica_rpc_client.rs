@@ -115,7 +115,7 @@ pub(super) struct PendingReplicaReply<'a> {
     code: crate::cluster::wire::RequestCode,
     deadline: Instant,
     absolute_deadline: Option<Instant>,
-    request: Option<std::sync::Arc<Vec<u8>>>,
+    request: Option<super::shared_log_append_request::PendingRequestFrame>,
     request_written: usize,
     header: [u8; HEADER_BYTES],
     header_read: usize,
@@ -155,8 +155,7 @@ impl PendingReplicaReply<'_> {
             )
         })?;
         if self.request_written < frame.len() {
-            let end = frame.len().min(self.request_written + 64 * 1024);
-            match self.client.writer.write(&frame[self.request_written..end]) {
+            match frame.write_from(&mut self.client.writer, self.request_written, 64 * 1024) {
                 Ok(0) => {
                     return Err(transport_error(
                         &self.client.endpoint,
@@ -2064,6 +2063,29 @@ impl RemoteReplicaClient {
         &mut self,
         code: crate::cluster::wire::RequestCode,
         frame: std::sync::Arc<Vec<u8>>,
+        operation_deadline: Option<Instant>,
+    ) -> Result<PendingReplicaReply<'_>, ObjectError> {
+        self.begin_request_frame(
+            code,
+            super::shared_log_append_request::PendingRequestFrame::Contiguous(frame),
+            operation_deadline,
+        )
+    }
+    pub(super) fn begin_shared_log_before(
+        &mut self,
+        frame: super::shared_log_append_request::SharedLogAppendRequest,
+        operation_deadline: Option<Instant>,
+    ) -> Result<PendingReplicaReply<'_>, ObjectError> {
+        self.begin_request_frame(
+            crate::cluster::wire::RequestCode::LogOp,
+            super::shared_log_append_request::PendingRequestFrame::Shared(frame),
+            operation_deadline,
+        )
+    }
+    fn begin_request_frame(
+        &mut self,
+        code: crate::cluster::wire::RequestCode,
+        frame: super::shared_log_append_request::PendingRequestFrame,
         operation_deadline: Option<Instant>,
     ) -> Result<PendingReplicaReply<'_>, ObjectError> {
         if self.catalog.is_some() || !self.connection_usable {

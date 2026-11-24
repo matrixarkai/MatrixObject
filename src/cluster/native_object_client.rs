@@ -819,7 +819,7 @@ fn capacity_of(reply: &LogOpReply, options: &ReplicaClientOptions) -> Result<usi
 struct PendingAppend {
     identity: AppendIdentity,
     progress: usize,
-    fragment: Vec<u8>,
+    fragment: Option<std::sync::Arc<Vec<u8>>>,
 }
 /// One existing initialized tail. A pending whole append owns at most one record buffer;
 /// only its final record advances the complete-prefix marker.
@@ -900,7 +900,7 @@ impl NativeTailWriter {
         let pending = self.pending.get_or_insert_with(|| PendingAppend {
             identity,
             progress: 0,
-            fragment: Vec::new(),
+            fragment: None,
         });
         while pending.progress < data.len() {
             if Instant::now() >= self.deadline {
@@ -910,10 +910,12 @@ impl NativeTailWriter {
             }
             let count = (data.len() - pending.progress).min(self.capacity);
             let bytes = &data[pending.progress..pending.progress + count];
-            if pending.fragment.is_empty() {
-                pending.fragment.extend_from_slice(bytes);
-            } else if pending.fragment != bytes {
-                return Err(invalid("pending append bytes changed").into());
+            if let Some(fragment) = &pending.fragment {
+                if fragment.as_slice() != bytes {
+                    return Err(invalid("pending append bytes changed").into());
+                }
+            } else {
+                pending.fragment = Some(std::sync::Arc::new(bytes.to_vec()));
             }
             let offset = self.length + pending.progress as u64;
             let published = if pending.progress + count == data.len() {
@@ -929,56 +931,19 @@ impl NativeTailWriter {
                 self.object_offset + offset,
                 count as u32,
             )?;
-            for member in 0..3 {
-                if Instant::now() >= self.deadline {
-                    return Err(NativeObjectError::Unknown(invalid(
-                        "native writer lease deadline reached",
-                    )));
-                }
-                if self.clients[member].is_none() {
-                    self.clients[member] = Some(
-                        RemoteReplicaClient::connect(
-                            &self.group.api_endpoints[member],
-                            &self.options,
-                        )
-                        .map_err(NativeObjectError::Unknown)?,
-                    );
-                }
-                let root = self.binding.storage_incarnations[member];
-                let init = self.binding.initializations[member];
-                let request = LogOpRequest::append_published(
-                    self.binding.volume_id,
-                    self.binding.chunk_id,
-                    self.binding.generation,
-                    self.binding.writer_epoch,
-                    offset,
-                    pending.fragment.clone(),
-                    tag,
-                    published,
-                    init,
-                )
-                .for_storage(root, init);
-                match self.clients[member].as_mut().unwrap().log_call(request) {
-                    Ok(reply) => check_append(
-                        &reply,
-                        root,
-                        init,
-                        self.binding.writer_epoch,
-                        offset,
-                        count as u32,
-                        tag,
-                        published,
-                    )?,
-                    Err(error) => {
-                        if matches!(error, LogCallError::Transport(_)) {
-                            self.clients[member] = None;
-                        }
-                        return Err(error.into());
-                    }
-                }
-            }
+            append_to_members(
+                &self.binding,
+                &self.group,
+                &self.options,
+                &mut self.clients,
+                pending.fragment.as_ref().unwrap(),
+                offset,
+                tag,
+                published,
+                self.deadline,
+            )?;
             pending.progress += count;
-            pending.fragment.clear();
+            pending.fragment = None;
         }
         if Instant::now() >= self.deadline {
             return Err(NativeObjectError::Unknown(invalid(
@@ -988,5 +953,272 @@ impl NativeTailWriter {
         self.length = end;
         self.pending = None;
         Ok(self.length())
+    }
+}
+
+// All requests are started before waiting for replies. The payload remains owned by
+// the original pending attempt; each member has only its own small frame metadata.
+fn append_to_members(
+    binding: &PhysicalMemberBinding,
+    group: &ChunkGroupConfig,
+    options: &ReplicaClientOptions,
+    clients: &mut [Option<RemoteReplicaClient>],
+    data: &std::sync::Arc<Vec<u8>>,
+    offset: u64,
+    tag: [u8; 16],
+    published: u64,
+    deadline: Instant,
+) -> Result<(), NativeObjectError> {
+    let mut errors: [Option<NativeObjectError>; 3] = std::array::from_fn(|_| None);
+    for (member, client) in clients.iter_mut().enumerate() {
+        if client.is_none() {
+            match RemoteReplicaClient::connect(&group.api_endpoints[member], options) {
+                Ok(connected) => *client = Some(connected),
+                Err(error) => errors[member] = Some(NativeObjectError::Unknown(error)),
+            }
+        }
+    }
+    let mut results: [Option<Result<super::message::ReplicaReply, ObjectError>>; 3] =
+        std::array::from_fn(|_| None);
+    {
+        let mut pending: [Option<super::client::PendingReplicaReply<'_>>; 3] =
+            std::array::from_fn(|_| None);
+        for (member, client) in clients.iter_mut().enumerate() {
+            if errors[member].is_some() {
+                continue;
+            }
+            let request = LogOpRequest::append_published(
+                binding.volume_id,
+                binding.chunk_id,
+                binding.generation,
+                binding.writer_epoch,
+                offset,
+                Vec::new(),
+                tag,
+                published,
+                binding.initializations[member],
+            )
+            .for_storage(
+                binding.storage_incarnations[member],
+                binding.initializations[member],
+            );
+            let frame = super::shared_log_append_request::SharedLogAppendRequest::new(
+                request,
+                std::sync::Arc::clone(data),
+            )?;
+            match client
+                .as_mut()
+                .unwrap()
+                .begin_shared_log_before(frame, Some(deadline))
+            {
+                Ok(reply) => pending[member] = Some(reply),
+                Err(error) => results[member] = Some(Err(error)),
+            }
+        }
+        while pending.iter().any(Option::is_some) {
+            let mut progress = false;
+            for (member, slot) in pending.iter_mut().enumerate() {
+                let result = slot.as_mut().and_then(|reply| {
+                    let before = reply.transferred_bytes();
+                    let result = reply.poll();
+                    progress |= result.is_some() || reply.transferred_bytes() != before;
+                    result
+                });
+                if let Some(result) = result {
+                    results[member] = Some(result);
+                    *slot = None;
+                }
+            }
+            if !progress {
+                super::replica_set::wait_for_pending(&pending);
+            }
+        }
+    }
+    let mut first = None;
+    for member in 0..3 {
+        if errors[member].is_none() {
+            let unusable = clients[member]
+                .as_ref()
+                .unwrap()
+                .needs_standalone_reconnect();
+            errors[member] = match results[member].take().unwrap() {
+                Ok(super::message::ReplicaReply::LogOp(reply)) => check_append(
+                    &reply,
+                    binding.storage_incarnations[member],
+                    binding.initializations[member],
+                    binding.writer_epoch,
+                    offset,
+                    data.len() as u32,
+                    tag,
+                    published,
+                )
+                .err(),
+                Ok(_) => Some(NativeObjectError::Unknown(ObjectError::Corruption(
+                    "unexpected native append reply".into(),
+                ))),
+                Err(error) => Some(LogCallError::from_object(error, unusable).into()),
+            };
+            if unusable {
+                clients[member] = None;
+            }
+        }
+        if let Some(error) = errors[member].take() {
+            let fatal = matches!(
+                &error,
+                NativeObjectError::Data(ChunkLogError::StaleEpoch { .. } | ChunkLogError::Sealed)
+            );
+            if first.is_none() || fatal {
+                first = Some(error);
+            }
+        }
+    }
+    match first {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod shared_write_tests {
+    use super::*;
+    use std::sync::Arc;
+    struct Nodes {
+        root: std::path::PathBuf,
+        stops: Vec<super::super::ReplicaNodeShutdown>,
+        workers: Vec<std::thread::JoinHandle<std::io::Result<()>>>,
+        endpoints: Vec<String>,
+    }
+    impl Drop for Nodes {
+        fn drop(&mut self) {
+            for stop in &self.stops {
+                stop.stop();
+            }
+            for worker in self.workers.drain(..) {
+                worker.join().unwrap().unwrap();
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+    #[test]
+    fn native_append_reaches_every_member_before_waiting_for_any_acknowledgment() {
+        let root = std::env::temp_dir().join(format!("native-shared-write-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let mut nodes = Nodes {
+            root,
+            stops: Vec::new(),
+            workers: Vec::new(),
+            endpoints: Vec::new(),
+        };
+        let mut roots = [[0; 16]; 3];
+        let initializations = [[1; 16], [2; 16], [3; 16]];
+        for member in 0..3 {
+            let directory = nodes.root.join(format!("node-{member}"));
+            std::fs::create_dir(&directory).unwrap();
+            let server = super::super::ReplicaNodeServer::bind_with_journal(
+                "127.0.0.1:0",
+                super::super::ReplicaNodeOptions {
+                    publication_writes: true,
+                    ..Default::default()
+                },
+                &directory.join("journal"),
+            )
+            .unwrap();
+            let endpoint = server.local_addr().unwrap().to_string();
+            nodes.stops.push(server.shutdown_handle());
+            nodes
+                .workers
+                .push(std::thread::spawn(move || server.serve()));
+            let mut client =
+                RemoteReplicaClient::connect(&endpoint, &ReplicaClientOptions::default()).unwrap();
+            roots[member] = client
+                .log_call(LogOpRequest::storage_probe())
+                .unwrap()
+                .storage_incarnation()
+                .unwrap();
+            client
+                .log_call(
+                    LogOpRequest::initialize_publication(3, 11, 1, 7, initializations[member])
+                        .for_storage(roots[member], initializations[member]),
+                )
+                .unwrap();
+            nodes.endpoints.push(endpoint);
+        }
+        let gate = Arc::new((std::sync::Mutex::new(0usize), std::sync::Condvar::new()));
+        let proxies: Vec<_> = nodes
+            .endpoints
+            .iter()
+            .map(|endpoint| {
+                super::super::chunk_log_tests::FaultProxy::with_operation_gate(
+                    endpoint.clone(),
+                    0,
+                    false,
+                    Some(Arc::clone(&gate)),
+                    super::super::log_op::OP_APPEND,
+                )
+            })
+            .collect();
+        let endpoints: Vec<_> = proxies.iter().map(|p| p.addr.clone()).collect();
+        let group = ChunkGroupConfig {
+            api_endpoints: endpoints.clone(),
+            ..Default::default()
+        };
+        let binding = PhysicalMemberBinding {
+            volume_id: 3,
+            chunk_id: 11,
+            generation: 1,
+            writer_epoch: 7,
+            storage_incarnations: roots,
+            initializations,
+            member_ids: ["a".into(), "b".into(), "c".into()],
+        };
+        let mut writer = NativeTailWriter {
+            binding,
+            group,
+            options: ReplicaClientOptions {
+                read_timeout: Duration::from_secs(5),
+                ..Default::default()
+            },
+            clients: (0..3).map(|_| None).collect(),
+            capacity: 8192,
+            chunk_bytes: 64 << 20,
+            deadline: Instant::now() + Duration::from_secs(10),
+            length: 0,
+            object_offset: 0,
+            incarnation: [4; 16],
+            pending: None,
+            holder: "writer".into(),
+        };
+        let body = vec![77; 4096];
+        let identity = AppendIdentity {
+            object_incarnation: [4; 16],
+            attempt_id: [9; 16],
+            request_offset: 0,
+            request_length: 4096,
+        };
+        assert_eq!(writer.append(&body, identity).unwrap(), 4096);
+        assert_eq!(*gate.0.lock().unwrap(), 3);
+        assert!(writer.pending_identity().is_none());
+        for (member, endpoint) in nodes.endpoints.iter().enumerate() {
+            let mut client =
+                RemoteReplicaClient::connect(endpoint, &ReplicaClientOptions::default()).unwrap();
+            let reply = client
+                .log_call(
+                    LogOpRequest::read_initialized_publication(
+                        3,
+                        11,
+                        1,
+                        0,
+                        4096,
+                        initializations[member],
+                    )
+                    .for_storage(roots[member], initializations[member]),
+                )
+                .unwrap();
+            assert_eq!(reply.data, body);
+            assert_eq!(reply.durable_length, 4096);
+        }
+        assert!(proxies
+            .iter()
+            .all(|p| p.operations.lock().unwrap().as_slice() == [super::super::log_op::OP_APPEND]));
     }
 }
