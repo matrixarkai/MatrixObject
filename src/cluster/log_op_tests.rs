@@ -27,6 +27,7 @@ fn node_in(dir: Option<&Path>, maintenance: bool) -> NodeReplica {
     let health = super::replica_health::ReplicaHealth::new(maintenance, 0, 0);
     let used_bytes = super::replica_health::Used::new(0, std::sync::Arc::clone(&health));
     NodeReplica {
+        resident: None,
         used_bytes,
         service: MatrixReplicaService::new(),
         journal: None,
@@ -81,6 +82,7 @@ fn the_verb_round_trips_on_the_wire_and_an_older_replica_would_not_know_it() {
         crc: 77,
         sha256: vec![4; 32],
         data: bytes(2, 9),
+        ..Default::default()
     };
     let payload = ReplicaReply::LogOp(reply.clone()).encode_payload();
     match ReplicaReply::decode(RequestCode::LogOp, &payload).unwrap() {
@@ -207,3 +209,6 @@ fn many_chunks_are_independent_and_the_open_set_is_bounded() {
     assert_eq!(call(&mut a, LogOpRequest::tail(V, 1, 1)).unwrap().length, 10);
     assert!(!a.health.failed());
 }
+
+#[path = "identified_log_operation_tests.rs"]
+mod identified_tests;

@@ -1,61 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub(crate) fn append_metadata_snapshot_proof_material(
-    material: &mut Vec<u8>,
-    offset: u64,
-    payload_len: u64,
-    page_checksum: &str,
-    snapshot_last_applied_index: u64,
-    snapshot_term: u64,
-    proof: &ObjectReadProof,
-) {
-    append_u64(material, offset);
-    append_u64(material, payload_len);
-    append_string(material, page_checksum);
-    append_u64(material, snapshot_last_applied_index);
-    append_u64(material, snapshot_term);
-    append_u64(material, proof.requested_read_index);
-    append_u64(material, proof.consensus_read_index);
-    append_u64(material, proof.metadata_commit_index);
-    append_u64(material, proof.read_fence_read_index_lag);
-    append_u64(material, proof.read_fence_applied_lag);
-}
-
-pub(crate) fn metadata_snapshot_proof_material_capacity(
-    total_bytes: u64,
-    max_payload_bytes: usize,
-) -> usize {
-    snapshot_proof_material_capacity(total_bytes, max_payload_bytes, 128)
-}
-
-pub(crate) fn finish_metadata_snapshot_proof_stream_report(
-    material: Vec<u8>,
-    proof_count: u64,
-    requested_read_index: u64,
-    consensus_read_index: u64,
-    metadata_commit_index: u64,
-    total_payload_bytes: u64,
-    first_offset: u64,
-    last_end_offset: u64,
-    snapshot_last_applied_index: u64,
-    snapshot_term: u64,
-    full_snapshot_checksum: String,
-) -> MetadataSnapshotProofStreamReport {
-    MetadataSnapshotProofStreamReport {
-        format: "MXOS-RUST-METADATA-SNAPSHOT-READ-PROOFS1".to_string(),
-        proof_count,
-        aggregate_checksum: etag(&material),
-        requested_read_index,
-        consensus_read_index,
-        metadata_commit_index,
-        total_payload_bytes,
-        first_offset,
-        last_end_offset,
-        snapshot_last_applied_index,
-        snapshot_term,
-        full_snapshot_checksum,
-    }
-}
 
 pub(crate) fn verify_metadata_snapshot_proof_stream_report(
     expected: &MetadataSnapshotProofStreamReport,
@@ -85,39 +29,6 @@ pub(crate) fn verify_metadata_snapshot_proof_stream_report(
         return Err(ObjectError::PreconditionFailed(format!(
             "metadata snapshot proof report mismatch: expected aggregate {} got {}",
             expected.aggregate_checksum, actual.aggregate_checksum
-        )));
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_metadata_snapshot_install_read_proof(
-    proof: &ObjectReadProof,
-    snapshot_kind: &str,
-    min_read_index: u64,
-    min_commit_index: u64,
-) -> Result<(), ObjectError> {
-    if proof.read_fence_read_index_lag != 0 {
-        return Err(ObjectError::PreconditionFailed(format!(
-            "{snapshot_kind} proof has read-index lag {}",
-            proof.read_fence_read_index_lag
-        )));
-    }
-    if proof.read_fence_applied_lag != 0 {
-        return Err(ObjectError::PreconditionFailed(format!(
-            "{snapshot_kind} proof has applied lag {}",
-            proof.read_fence_applied_lag
-        )));
-    }
-    if proof.consensus_read_index < min_read_index {
-        return Err(ObjectError::PreconditionFailed(format!(
-            "{snapshot_kind} proof read fence {} is below required {}",
-            proof.consensus_read_index, min_read_index
-        )));
-    }
-    if proof.metadata_commit_index < min_commit_index {
-        return Err(ObjectError::PreconditionFailed(format!(
-            "{snapshot_kind} proof commit fence {} is below required {}",
-            proof.metadata_commit_index, min_commit_index
         )));
     }
     Ok(())

@@ -198,7 +198,7 @@ impl ObjectPageAllocation {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Message)]
+#[derive(Clone, PartialEq, Eq, Hash, Message)]
 pub struct ObjectExtent {
     #[prost(string, tag = "1")]
     pub group: String,
@@ -309,7 +309,7 @@ fn extent_order_ok(extent: &ObjectExtent, after_chunk: bool, is_last: bool) -> b
         _ => is_last || extent.flags & EXTENT_FLAG_SEALED != 0,
     }
 }
-#[derive(Clone, PartialEq, Eq, Message)]
+#[derive(Clone, PartialEq, Eq, Hash, Message)]
 pub struct ObjectManifest {
     #[prost(uint32, tag = "1")]
     pub format_version: u32,
@@ -345,15 +345,6 @@ pub(crate) fn reset_validate_calls() {
 #[cfg(all(test, feature = "metadata-consensus"))]
 thread_local! {
     static RANGE_EXTENTS_CHECKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-/// Extents `validate_range_slice` looked at on this thread since the last reset (tests only).
-#[cfg(all(test, feature = "metadata-consensus"))]
-pub(crate) fn range_extents_checked() -> usize {
-    RANGE_EXTENTS_CHECKED.with(|checked| checked.get())
-}
-#[cfg(all(test, feature = "metadata-consensus"))]
-pub(crate) fn reset_range_extents_checked() {
-    RANGE_EXTENTS_CHECKED.with(|checked| checked.set(0));
 }
 impl ObjectManifest {
     pub fn object_id(&self) -> ObjectId {
@@ -412,162 +403,6 @@ impl ObjectManifest {
         }
         if offset != self.length {
             return Err(invalid("object extents do not cover its length"));
-        }
-        Ok(())
-    }
-    /// Validate a reply that holds only the extents overlapping the object bytes
-    /// `offset..offset + length`, under a header that carries the object's own `length`.
-    ///
-    /// What can be checked from the slice is checked in full: the header, each extent's shape and
-    /// identity, that the extents are contiguous, that the first one holds `offset` and that the
-    /// last one reaches the end of the range (or of the object). What the other extents hold is
-    /// not seen, so this is NOT `validate`: the data each extent names still has to match its
-    /// published digest when it is read. A deleted object, an empty range and a range past the
-    /// end select nothing, and the reply must then carry no extents.
-    pub(crate) fn validate_range_slice(&self, offset: u64, length: u64) -> Result<(), ObjectError> {
-        crate::validate_bucket(&self.bucket)?;
-        crate::validate_key(&self.key)?;
-        if !known_format(self.format_version)
-            || self.generation == 0
-            || self.extents.len() > 4096
-            || self.encoded_len() > MAX_MANIFEST
-        {
-            return Err(invalid("invalid object manifest version, generation or size"));
-        }
-        if self.deleted && (self.length != 0 || !self.extents.is_empty()) {
-            return Err(invalid("deleted object manifest contains data"));
-        }
-        let end = offset.checked_add(length).filter(|end| *end <= self.length);
-        let Some(end) = end.filter(|_| !self.deleted && length != 0) else {
-            return if self.extents.is_empty() {
-                Ok(())
-            } else {
-                Err(invalid("a range reply carries extents for a range it cannot select"))
-            };
-        };
-        let Some(first) = self.extents.first() else {
-            return Err(invalid("a range reply carries no extent for a range inside the object"));
-        };
-        if first.object_offset > offset || first.object_offset.saturating_add(first.length) <= offset {
-            return Err(invalid("a range reply does not start at the range"));
-        }
-        let mut next = first.object_offset;
-        let mut pages = PageSet::with_capacity_and_hasher(self.extents.len(), Default::default());
-        let mut after_chunk = false;
-        for (position, extent) in self.extents.iter().enumerate() {
-            #[cfg(all(test, feature = "metadata-consensus"))]
-            RANGE_EXTENTS_CHECKED.with(|checked| checked.set(checked.get() + 1));
-            if !extent_order_ok(extent, after_chunk, position + 1 == self.extents.len()) {
-                return Err(invalid("invalid object extent ordering, identity or bounds"));
-            }
-            after_chunk |= extent.kind == EXTENT_KIND_LOG_CHUNK;
-            ChunkId::new(extent.volume_id, extent.chunk_id)?;
-            if extent.group.is_empty()
-                || extent.group.len() > 128
-                || !extent.group.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-                || (extent.length == 0 && !empty_tail_extent(extent))
-                || extent.write_sequence == 0
-                || !extent_shape_ok(self.format_version, extent)
-                || extent.object_offset != next
-                || !pages.insert((&extent.group, extent.volume_id, extent.chunk_id, extent.page_index))
-            {
-                return Err(invalid("invalid object extent ordering, identity or bounds"));
-            }
-            next = next
-                .checked_add(extent.length)
-                .ok_or_else(|| invalid("object length overflow"))?;
-        }
-        // The last extent is the one the range ends in: none past it, and no short of it.
-        let last_start = self.extents.last().map_or(0, |last| last.object_offset);
-        if next < end || next > self.length || last_start >= end {
-            return Err(invalid("a range reply does not end at the range"));
-        }
-        Ok(())
-    }
-    /// Validate `self` where the first `prefix.extents.len()` extents are exactly those of
-    /// `prefix`, which the caller has already validated. Only what the append added is checked
-    /// in full: the header, the new extents, their continuity with the prefix, and that none
-    /// of their pages is already named by the prefix. Equivalent to `validate` for such a pair.
-    pub(crate) fn validate_extension(&self, prefix: &ObjectManifest) -> Result<(), ObjectError> {
-        crate::validate_bucket(&self.bucket)?;
-        crate::validate_key(&self.key)?;
-        let kept = prefix.extents.len();
-        if !known_format(self.format_version)
-            || self.format_version != prefix.format_version
-            || self.generation == 0
-            || self.extents.len() > 4096
-            || self.extents.len() < kept
-            || self.encoded_len() > MAX_MANIFEST
-        {
-            return Err(invalid(
-                "invalid object manifest version, generation or size",
-            ));
-        }
-        if self.deleted && (self.length != 0 || !self.extents.is_empty()) {
-            return Err(invalid("deleted object manifest contains data"));
-        }
-        let suffix = &self.extents[kept..];
-        let mut offset = prefix.length;
-        // The prefix's last log chunk becomes a middle entry when anything follows it, so it
-        // must already be sealed; and a page extent may not follow a log chunk.
-        let mut after_chunk = prefix.extents.last().is_some_and(|last| last.kind == EXTENT_KIND_LOG_CHUNK);
-        if after_chunk && !suffix.is_empty() && prefix.extents.last().is_some_and(|last| last.flags & EXTENT_FLAG_SEALED == 0) {
-            return Err(invalid("invalid object extent ordering, identity or bounds"));
-        }
-        for (position, extent) in suffix.iter().enumerate() {
-            if !extent_order_ok(extent, after_chunk, position + 1 == suffix.len()) {
-                return Err(invalid("invalid object extent ordering, identity or bounds"));
-            }
-            after_chunk |= extent.kind == EXTENT_KIND_LOG_CHUNK;
-            ChunkId::new(extent.volume_id, extent.chunk_id)?;
-            if extent.group.is_empty()
-                || extent.group.len() > 128
-                || !extent
-                    .group
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-                || (extent.length == 0 && !empty_tail_extent(extent))
-                || extent.write_sequence == 0
-                || !extent_shape_ok(self.format_version, extent)
-                || extent.object_offset != offset
-            {
-                return Err(invalid(
-                    "invalid object extent ordering, identity or bounds",
-                ));
-            }
-            offset = offset
-                .checked_add(extent.length)
-                .ok_or_else(|| invalid("object length overflow"))?;
-        }
-        if offset != self.length {
-            return Err(invalid("object extents do not cover its length"));
-        }
-        // A page may be named once: among the new extents, and against the prefix.
-        let same_page = |a: &ObjectExtent, b: &ObjectExtent| {
-            a.chunk_id == b.chunk_id
-                && a.page_index == b.page_index
-                && a.volume_id == b.volume_id
-                && a.group == b.group
-        };
-        if suffix.len() <= 16 {
-            for (index, extent) in suffix.iter().enumerate() {
-                if suffix[..index].iter().any(|other| same_page(extent, other))
-                    || prefix.extents.iter().any(|other| same_page(extent, other))
-                {
-                    return Err(invalid(
-                        "invalid object extent ordering, identity or bounds",
-                    ));
-                }
-            }
-        } else {
-            let mut pages = PageSet::with_capacity_and_hasher(self.extents.len(), Default::default());
-            for extent in &self.extents {
-                if !pages.insert((&extent.group, extent.volume_id, extent.chunk_id, extent.page_index)) {
-                    return Err(invalid(
-                        "invalid object extent ordering, identity or bounds",
-                    ));
-                }
-            }
         }
         Ok(())
     }
@@ -653,37 +488,6 @@ impl ManifestOutcome {
         value.validate()?;
         Ok(value)
     }
-    /// The decision of an append for a compact publication. Only what the append adds is
-    /// validated in full (`validate_extension`); the prior manifest is bound by its digest, which
-    /// the metaserver checks against the manifest it holds before it applies the append, so a
-    /// prior that was not valid is refused there. Cost: the new extents, plus the cheap
-    /// comparisons of the prefix, instead of a pass of hashing over every extent.
-    pub(crate) fn decide_append(before: ObjectManifest, after: ObjectManifest) -> Result<Self, ObjectError> {
-        refuse_unemitted_format(&after)?;
-        let value = Self {
-            format_version: 1,
-            before: Some(before),
-            after: Some(after),
-        };
-        let (before, after) = (value.before.as_ref().unwrap(), value.after.as_ref().unwrap());
-        if before.format_version != after.format_version || !after.extents.starts_with(&before.extents) {
-            return Err(invalid("append changes immutable prefix"));
-        }
-        // `validate_extension` bounds the encoded size of `after`, which holds every extent of `before`
-        after.validate_extension(before)?;
-        before.validate_as_prefix_of_sized(after, false)?;
-        if before.object_id() != after.object_id() {
-            return Err(invalid("manifest outcome changes object identity"));
-        }
-        let generation = before
-            .generation
-            .checked_add(1)
-            .ok_or_else(|| invalid("manifest generation exhausted"))?;
-        if after.generation != generation {
-            return Err(invalid("manifest outcome generation is not consecutive"));
-        }
-        Ok(value)
-    }
     pub(crate) fn validate(&self) -> Result<(), ObjectError> {
         if self.format_version != 1 {
             return Err(invalid("manifest outcome version mismatch"));
@@ -726,7 +530,8 @@ impl ManifestOutcome {
 }
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct ManifestCatalog {
-    objects: BTreeMap<ObjectId, Arc<ManifestEntry>>,
+    // Captures share the ordered tree; mutations copy only the changed path.
+    objects: imbl::OrdMap<ObjectId, Arc<ManifestEntry>>,
     body_bytes: usize,
     retained: BTreeMap<u64, Arc<crate::manifest_retention::RetainedManifest>>,
     retention_bytes: usize,
@@ -755,11 +560,6 @@ pub(crate) struct StoredDigest {
     pub(crate) digest: Vec<u8>,
 }
 impl StoredDigest {
-    pub(crate) fn of(manifest: &ObjectManifest) -> Self {
-        let chain = crate::manifest_chain::ChainState::of(&manifest.extents);
-        let digest = chain.digest(manifest);
-        Self { chain, digest }
-    }
     pub(crate) fn of_stored(manifest: &crate::extent_list::StoredManifest) -> Self {
         let chain = crate::manifest_chain::ChainState::of_stored(&manifest.extents);
         let digest = chain.digest_stored(manifest);
@@ -1449,6 +1249,32 @@ impl ManifestCatalog {
         }
         Ok(body_bytes)
     }
+    pub(crate) fn commit_checked_manifest(&mut self, outcome: &ManifestOutcome, body_bytes: usize) {
+        let after = outcome.after.as_ref().unwrap();
+        let id = after.object_id();
+        let old_bytes = self.objects.get(&id).map_or(0, |entry| entry.encoded_bytes);
+        let encoded_bytes = body_bytes - (self.body_bytes - old_bytes);
+        // An append keeps every extent of the entry it replaces: its chain and digest are
+        // the old chain extended by the new extents, not a pass over all of them.
+        let digest = std::sync::OnceLock::new();
+        if let Some(previous) = self.objects.get(&id) {
+            let kept = previous.manifest.extents.len();
+            if let Some(stored) = previous.digest.get() {
+                if after.extents.len() >= kept && previous.manifest.extents.iter().eq(after.extents[..kept].iter()) {
+                    let chain = stored.chain.extended(&after.extents[kept..]);
+                    let seeded = StoredDigest { digest: chain.digest(after), chain };
+                    let _ = digest.set(seeded);
+                }
+            }
+        }
+        self.objects.insert(id, Arc::new(ManifestEntry {
+            manifest: crate::extent_list::StoredManifest::from_ref(after),
+            encoded_bytes,
+            digest,
+        }));
+        self.revision += 1;
+        self.body_bytes = body_bytes;
+    }
     /// Store `after`, which extends the stored manifest (`check_append_publication` approved it).
     /// The stored chunks are shared with the entry it replaces, and its digest is that entry's
     /// chain extended by the new extents.
@@ -1473,45 +1299,68 @@ impl ManifestCatalog {
         self.revision += 1;
         self.body_bytes = body_bytes;
     }
-    pub(crate) fn commit_checked_manifest(&mut self, outcome: &ManifestOutcome, body_bytes: usize) {
-        let after = outcome.after.as_ref().unwrap();
-        let id = after.object_id();
-        let old_bytes = self.objects.get(&id).map_or(0, |entry| entry.encoded_bytes);
-        let encoded_bytes = body_bytes - (self.body_bytes - old_bytes);
-        // An append keeps every extent of the entry it replaces: its chain and digest are
-        // the old chain extended by the new extents, not a pass over all of them.
-        let digest = std::sync::OnceLock::new();
-        if let Some(previous) = self.objects.get(&id) {
-            let kept = previous.manifest.extents.len();
-            if let Some(stored) = previous.digest.get() {
-                if after.extents.len() >= kept && previous.manifest.extents.iter().eq(after.extents[..kept].iter()) {
-                    let chain = stored.chain.extended(&after.extents[kept..]);
-                    let seeded = StoredDigest { digest: chain.digest(after), chain };
-                    #[cfg(test)]
-                    crate::manifest_chain::uncounted(|| {
-                        assert_eq!(seeded, StoredDigest::of(after), "a carried-forward digest differs from a fresh one")
-                    });
-                    let _ = digest.set(seeded);
-                }
-            }
-        }
-        self.objects.insert(id, Arc::new(ManifestEntry {
-            manifest: crate::extent_list::StoredManifest::from_ref(after),
-            encoded_bytes,
-            digest,
-        }));
-        self.revision += 1;
-        self.body_bytes = body_bytes;
-    }
-    pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
-        let image = CatalogImage {
-            format_version: if self.publication_fence != 0 { 4 } else if !self.staged.is_empty() { 3 } else if self.retained.is_empty() { 1 } else { 2 },
-            objects: self.objects.values().map(|entry| entry.manifest.to_manifest()).collect(),
-            retained: self.retained.values().map(|record| record.as_ref().clone()).collect(),
-            staged: self.staged.values().cloned().collect(),
-            publication_fence: self.publication_fence,
+    /// Visit the unchanged catalog frame with scratch bounded by its largest record.
+    /// Callback errors stop output immediately, including before the checksum trailer.
+    pub(crate) fn visit_encoded<E>(
+        &self,
+        emit: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut checksum = 0xcbf29ce484222325u64;
+        let mut body = |bytes: &[u8]| {
+            checksum = bytes.iter().fold(checksum, |h, byte| {
+                (h ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+            });
+            emit(bytes)
         };
-        frame(b"MOMC", &image, MAX_SNAPSHOT)
+        body(b"MOMC")?;
+        let version = if self.publication_fence != 0 { 4 } else if !self.staged.is_empty() {
+            3
+        } else if self.retained.is_empty() { 1 } else { 2 };
+        body(&[8, version])?;
+        let mut scratch = Vec::new();
+        for entry in self.objects.values() {
+            scratch.clear();
+            scratch.push(18);
+            prost::encoding::encode_varint(entry.manifest.encoded_len() as u64, &mut scratch);
+            entry.manifest.encode_into(&mut scratch);
+            body(&scratch)?;
+        }
+        for record in self.retained.values() {
+            scratch.clear();
+            scratch.push(26);
+            prost::encoding::encode_varint(record.encoded_len() as u64, &mut scratch);
+            record.encode_raw(&mut scratch);
+            body(&scratch)?;
+        }
+        for record in self.staged.values() {
+            scratch.clear();
+            scratch.push(34);
+            prost::encoding::encode_varint(record.encoded_len() as u64, &mut scratch);
+            record.encode_raw(&mut scratch);
+            body(&scratch)?;
+        }
+        if self.publication_fence != 0 {
+            scratch.clear();
+            scratch.push(40);
+            prost::encoding::encode_varint(self.publication_fence, &mut scratch);
+            body(&scratch)?;
+        }
+        drop(body);
+        emit(&checksum.to_le_bytes())
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
+        let size = self.encoded_size();
+        if size > MAX_SNAPSHOT + 12 {
+            return Err(invalid("manifest encoding exceeds size bound"));
+        }
+        let mut bytes = Vec::with_capacity(size);
+        self.visit_encoded(&mut |part| {
+            bytes.extend_from_slice(part);
+            Ok::<(), std::convert::Infallible>(())
+        }).unwrap();
+        debug_assert_eq!(bytes.len(), size);
+        Ok(bytes)
     }
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ObjectError> {
         let image: CatalogImage = unframe(b"MOMC", bytes, MAX_SNAPSHOT)?;
@@ -1579,7 +1428,7 @@ fn digest(bytes: &[u8]) -> u64 {
         (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
     })
 }
-fn frame<T: Message>(magic: &[u8; 4], value: &T, limit: usize) -> Result<Vec<u8>, ObjectError> {
+pub(crate) fn frame<T: Message>(magic: &[u8; 4], value: &T, limit: usize) -> Result<Vec<u8>, ObjectError> {
     if value.encoded_len() > limit {
         return Err(invalid("manifest encoding exceeds size bound"));
     }
@@ -1590,7 +1439,7 @@ fn frame<T: Message>(magic: &[u8; 4], value: &T, limit: usize) -> Result<Vec<u8>
     bytes.extend_from_slice(&digest(&bytes).to_le_bytes());
     Ok(bytes)
 }
-fn unframe<T: Message + Default>(
+pub(crate) fn unframe<T: Message + Default>(
     magic: &[u8; 4],
     bytes: &[u8],
     limit: usize,
@@ -1657,195 +1506,6 @@ mod tests {
             1
         };
         after.generation == generation
-    }
-    #[test]
-    fn a_stored_manifest_digest_always_describes_the_stored_manifest() {
-        let digest = |m: &ObjectManifest| crate::read_session_outcome::manifest_sha256(m).unwrap();
-        let mut catalog = ManifestCatalog::default();
-        let first = sized_manifest(3);
-        catalog.apply(&ManifestOutcome::decide(None, first.clone()).unwrap()).unwrap();
-        let id = first.object_id();
-        let check = |catalog: &ManifestCatalog, expected: &ObjectManifest| {
-            for _ in 0..2 {
-                let (stored, cached) = catalog.get_with_digest(&id).unwrap().unwrap();
-                assert!(stored.matches(expected));
-                assert_eq!(cached.digest, digest(expected));
-                assert_eq!(cached.chain, crate::manifest_chain::ChainState::of(&expected.extents));
-            }
-        };
-        check(&catalog, &first);
-        // an append, a replacement with the same extent count, a tombstone, a recreation
-        let mut appended = sized_manifest(4);
-        appended.generation = 2;
-        catalog.apply(&ManifestOutcome::decide(Some(first.clone()), appended.clone()).unwrap()).unwrap();
-        check(&catalog, &appended);
-        assert_ne!(digest(&first), digest(&appended));
-        let mut replaced = sized_manifest(4);
-        replaced.generation = 3;
-        replaced.extents[3].data_sha256 = vec![77; 32];
-        catalog.apply(&ManifestOutcome::decide(Some(appended.clone()), replaced.clone()).unwrap()).unwrap();
-        check(&catalog, &replaced);
-        assert_ne!(digest(&appended), digest(&replaced));
-        let tombstone = ObjectManifest { generation: 4, deleted: true, ..sized_manifest(0) };
-        catalog.apply(&ManifestOutcome::decide(Some(replaced), tombstone.clone()).unwrap()).unwrap();
-        check(&catalog, &tombstone);
-        let mut recreated = sized_manifest(2);
-        recreated.generation = 5;
-        catalog.apply(&ManifestOutcome::decide(Some(tombstone), recreated.clone()).unwrap()).unwrap();
-        check(&catalog, &recreated);
-        // a restored catalog computes its own
-        let restored = ManifestCatalog::from_bytes(&catalog.to_bytes().unwrap()).unwrap();
-        let (_, cached) = restored.get_with_digest(&id).unwrap().unwrap();
-        assert_eq!(cached.digest, digest(&recreated));
-        assert_eq!(*cached, StoredDigest::of(&recreated));
-        // a missing object has none
-        assert!(catalog.get_with_digest(&ObjectManifest { key: "absent".into(), ..sized_manifest(0) }.object_id()).unwrap().is_none());
-    }
-    /// The session open trusts the digest the catalog caches for the stored manifest, so the
-    /// cache must follow every change of the stored value: after an append (the cache is
-    /// carried forward), after a rewrite or a truncation (it must not be), and on a restored
-    /// catalog (no cache: it is computed from the extents, to the same value). At each step
-    /// the open succeeds with the current digest and is refused with the previous one, and the
-    /// cached digest equals one recomputed from the extents.
-    #[test]
-    fn a_session_opens_only_against_the_current_digest_at_every_size() {
-        let digest = |m: &ObjectManifest| crate::read_session_outcome::manifest_sha256(m).unwrap();
-        for count in [0usize, 1, 63, 64, 65, 1000] {
-            let first = sized_manifest(count);
-            let id = first.object_id();
-            let mut catalog = ManifestCatalog::default();
-            catalog.apply(&ManifestOutcome::decide(None, first.clone()).unwrap()).unwrap();
-            let open_with = |catalog: &ManifestCatalog, manifest: &ObjectManifest, sha: Vec<u8>| {
-                catalog.check_read_session_open(&crate::read_session_outcome::ReadSessionOpen {
-                    retention_id: 9,
-                    bucket: manifest.bucket.clone(),
-                    key: manifest.key.clone(),
-                    generation: manifest.generation,
-                    expires_at_ms: 1000,
-                    manifest_sha256: sha,
-                })
-            };
-            let check = |catalog: &ManifestCatalog, current: &ObjectManifest, previous: &ObjectManifest, step: &str| {
-                let (_, cached) = catalog.get_with_digest(&id).unwrap().unwrap();
-                assert_eq!(cached.digest, digest(current), "{step} at {count}: cache differs from the extents");
-                assert_eq!(open_with(catalog, current, digest(current)).unwrap().0, *current, "{step} at {count}");
-                assert_ne!(digest(previous), digest(current), "{step} at {count}: the step changed nothing");
-                assert!(open_with(catalog, current, digest(previous)).is_err(), "{step} at {count}: the previous digest opened");
-                assert!(open_with(catalog, previous, digest(current)).is_err(), "{step} at {count}: the previous generation opened");
-            };
-            // the cache is populated by the first open, then an append must replace it
-            let _ = open_with(&catalog, &first, digest(&first)).unwrap();
-            let mut appended = sized_manifest(count + 1);
-            appended.generation = 2;
-            appended.extents[count].chunk_id += 10_000;
-            catalog.apply(&ManifestOutcome::decide(Some(first.clone()), appended.clone()).unwrap()).unwrap();
-            check(&catalog, &appended, &first, "append");
-            // a rewrite that keeps the count, then one that truncates and changes the head
-            let mut rewritten = appended.clone();
-            rewritten.generation = 3;
-            rewritten.extents[count].data_sha256 = vec![42; 32];
-            catalog.apply(&ManifestOutcome::decide(Some(appended.clone()), rewritten.clone()).unwrap()).unwrap();
-            check(&catalog, &rewritten, &appended, "rewrite");
-            let mut truncated = sized_manifest(count / 2);
-            truncated.generation = 4;
-            if let Some(extent) = truncated.extents.first_mut() {
-                extent.data_sha256 = vec![43; 32];
-            }
-            catalog.apply(&ManifestOutcome::decide(Some(rewritten.clone()), truncated.clone()).unwrap()).unwrap();
-            check(&catalog, &truncated, &rewritten, "truncate");
-            // a restored catalog has no cache and computes the same digest
-            let restored = ManifestCatalog::from_bytes(&catalog.to_bytes().unwrap()).unwrap();
-            let (_, cached) = restored.get_with_digest(&id).unwrap().unwrap();
-            assert_eq!(*cached, StoredDigest::of(&truncated), "restore at {count}");
-            check(&restored, &truncated, &rewritten, "restore");
-        }
-    }
-    /// A range reply is a slice of the manifest. What a slice can prove is checked, in work that
-    /// follows the slice and not the object, and each planted defect is refused.
-    #[cfg(feature = "metadata-consensus")]
-    #[test]
-    fn a_range_slice_is_checked_for_what_it_can_prove() {
-        let whole = ObjectManifest {
-            format_version: 2,
-            bucket: "bucket".into(),
-            key: "object".into(),
-            generation: 1,
-            length: 40_000,
-            extents: (0..4000)
-                .map(|index| ObjectExtent {
-                    group: "group-0".into(),
-                    chunk_id: index + 1,
-                    object_offset: index * 10,
-                    length: 10,
-                    write_sequence: 1,
-                    data_sha256: vec![1; 32],
-                    ..Default::default()
-                })
-                .collect(),
-            ..Default::default()
-        };
-        let slice = |offset: u64, length: u64| ObjectManifest {
-            extents: whole
-                .extents
-                .iter()
-                .filter(|one| {
-                    // As the metaserver answers: nothing for an empty range or one past the end.
-                    length != 0
-                        && offset.saturating_add(length) <= whole.length
-                        && one.object_offset < offset.saturating_add(length)
-                        && one.object_offset + one.length > offset
-                })
-                .cloned()
-                .collect(),
-            ..whole.clone()
-        };
-        // Valid slices at the start, the middle, the end and for the whole object.
-        for (offset, length, extents) in [(0, 1, 1), (5, 10, 2), (2005, 10, 2), (39_990, 10, 1), (0, 40_000, 4000)] {
-            reset_validate_calls();
-            reset_range_extents_checked();
-            slice(offset, length).validate_range_slice(offset, length).unwrap();
-            assert_eq!(range_extents_checked(), extents, "{offset}+{length} looked at the slice only");
-            assert_eq!(validate_calls(), 0, "a slice is not validated as a whole manifest");
-        }
-        // Nothing is selected from an empty range or one past the end.
-        for (offset, length) in [(0, 0), (39_995, 10), (40_000, 1), (u64::MAX, 2)] {
-            slice(offset, length).validate_range_slice(offset, length).unwrap();
-        }
-        let (offset, length) = (2005, 10);
-        let good = slice(offset, length);
-        for defect in 0..17 {
-            let mut bad = good.clone();
-            match defect {
-                0 => bad.extents[1].object_offset += 1,
-                1 => {
-                    bad.extents.remove(0);
-                }
-                2 => bad.extents.insert(0, whole.extents[199].clone()),
-                3 => {
-                    bad.extents.pop();
-                }
-                4 => bad.extents.push(whole.extents[202].clone()),
-                5 => bad.extents[1].chunk_id = bad.extents[0].chunk_id,
-                6 => bad.extents[1].length = 0,
-                7 => bad.extents[1].group = "bad group".into(),
-                8 => bad.extents[1].write_sequence = 0,
-                9 => bad.generation = 0,
-                10 => bad.length = 2012,
-                11 => bad.deleted = true,
-                12 => bad.extents.clear(),
-                13 => bad.bucket = String::new(),
-                14 => bad.format_version = 99,
-                15 => bad.extents[0].data_sha256.clear(),
-                _ => bad.extents[1].kind = 7,
-            }
-            assert!(bad.validate_range_slice(offset, length).is_err(), "defect {defect} was accepted");
-        }
-        // Extents for a range that selects nothing are refused, and so are none for one that does.
-        assert!(slice(2005, 10).validate_range_slice(39_995, 10).is_err());
-        assert!(slice(2005, 10).validate_range_slice(2005, 0).is_err());
-        let deleted = ObjectManifest { deleted: true, length: 0, extents: Vec::new(), ..whole.clone() };
-        deleted.validate_range_slice(0, 1).unwrap();
-        assert!(ObjectManifest { extents: whole.extents[..1].to_vec(), ..deleted }.validate_range_slice(0, 1).is_err());
     }
     #[test]
     fn replaying_appends_reproduces_the_chain_the_running_catalog_carried_forward() {
@@ -1955,86 +1615,6 @@ mod tests {
             assert!(repeated.validate().is_err(), "repeat at {position}");
         }
     }
-    #[test]
-    fn extension_validation_agrees_with_full_validation() {
-        for count in [0usize, 1, 17, 300, 4000] {
-            let before = sized_manifest(count);
-            assert!(before.validate().is_ok());
-            for added in [1usize, 2, 16, 17, 60] {
-                if count + added > 4096 {
-                    continue;
-                }
-                let mut after = sized_manifest(count + added);
-                after.generation = 2;
-                for extent in &mut after.extents[count..] {
-                    extent.chunk_id += 10_000;
-                }
-                assert!(after.validate().is_ok());
-                assert!(after.validate_extension(&before).is_ok(), "{count}+{added}");
-                let damage: Vec<(&str, Box<dyn Fn(&mut ObjectManifest)>)> = vec![
-                    ("offset", Box::new(move |m| m.extents[count].object_offset += 1)),
-                    ("zero length", Box::new(move |m| m.extents[count].length = 0)),
-                    ("digest length", Box::new(move |m| { m.extents[count].data_sha256.pop(); })),
-                    ("sequence", Box::new(move |m| m.extents[count].write_sequence = 0)),
-                    ("total length", Box::new(|m| m.length += 1)),
-                    ("generation", Box::new(|m| m.generation = 0)),
-                    ("group name", Box::new(move |m| m.extents[count].group = "bad group".into())),
-                    ("duplicate inside the append", Box::new(move |m| {
-                        let first = m.extents[count].clone();
-                        let last = m.extents.len() - 1;
-                        m.extents[last].chunk_id = first.chunk_id;
-                        m.extents[last].page_index = first.page_index;
-                    })),
-                    ("duplicate of a prefix page", Box::new(move |m| {
-                        if count > 0 {
-                            m.extents[count].chunk_id = m.extents[0].chunk_id;
-                        } else {
-                            m.extents[count].length = 0;
-                        }
-                    })),
-                ];
-                for (name, change) in damage {
-                    let mut wrong = after.clone();
-                    change(&mut wrong);
-                    if added == 1 && name == "duplicate inside the append" {
-                        continue; // one new extent cannot repeat itself
-                    }
-                    let full = wrong.validate().is_err();
-                    let incremental = wrong.validate_extension(&before).is_err();
-                    assert!(full, "{name} must be refused by full validation ({count}+{added})");
-                    assert_eq!(full, incremental, "{name} ({count}+{added})");
-                }
-            }
-        }
-    }
-    /// An append trusted against its prefix is still refused when its new extents overlap the
-    /// bytes the prefix covers or leave a hole after them, whatever length the result claims.
-    #[test]
-    fn an_append_that_overlaps_or_leaves_a_hole_is_refused() {
-        for count in [1usize, 20, 300] {
-            let before = sized_manifest(count);
-            for (name, shift) in [("hole", 1i64), ("overlap", -1), ("far hole", 50), ("deep overlap", -(count as i64))] {
-                let mut after = sized_manifest(count + 1);
-                after.generation = 2;
-                after.extents[count].chunk_id += 10_000;
-                after.extents[count].object_offset = (count as i64 + shift) as u64;
-                // the result's length is made to agree with the shifted extent, so only the
-                // continuity with the prefix is wrong
-                after.length = after.extents[count].object_offset + after.extents[count].length;
-                assert!(
-                    ManifestOutcome::decide_append(before.clone(), after.clone()).is_err(),
-                    "{name} at {count} was accepted"
-                );
-                assert!(ManifestOutcome::decide(Some(before.clone()), after).is_err(), "{name} at {count}");
-            }
-            // and the honest append is accepted by both
-            let mut after = sized_manifest(count + 1);
-            after.generation = 2;
-            after.extents[count].chunk_id += 10_000;
-            assert!(ManifestOutcome::decide_append(before.clone(), after.clone()).is_ok());
-            assert!(ManifestOutcome::decide(Some(before), after).is_ok());
-        }
-    }
     /// A read session opens against the digest the catalog holds for the stored manifest, which
     /// is the digest of the stored manifest's encoding: the same one a client derives from
     /// the manifest it read, so the two agree at every size, after appends too.
@@ -2072,78 +1652,6 @@ mod tests {
             stale.generation = 1;
             assert!(catalog.check_read_session_open(&stale).is_err(), "{count}");
         }
-    }
-    /// `decide_append` decides what `decide` decides for an append onto a valid manifest, and
-    /// refuses what is not an append: only the validation of a prior that was never valid is
-    /// left to the metaserver's digest check.
-    #[test]
-    fn deciding_an_append_agrees_with_deciding_it_in_full() {
-        for count in [0usize, 1, 17, 300, 4000] {
-            let before = sized_manifest(count);
-            assert!(before.validate().is_ok());
-            for added in [1usize, 2, 17, 60] {
-                if count + added > 4096 {
-                    continue;
-                }
-                let mut after = sized_manifest(count + added);
-                after.generation = 2;
-                for extent in &mut after.extents[count..] {
-                    extent.chunk_id += 10_000;
-                }
-                let damage: Vec<(&str, Box<dyn Fn(&mut ObjectManifest)>)> = vec![
-                    ("none", Box::new(|_| {})),
-                    ("offset", Box::new(move |m| m.extents[count].object_offset += 1)),
-                    ("zero length", Box::new(move |m| m.extents[count].length = 0)),
-                    ("digest length", Box::new(move |m| { m.extents[count].data_sha256.pop(); })),
-                    ("sequence", Box::new(move |m| m.extents[count].write_sequence = 0)),
-                    ("total length", Box::new(|m| m.length += 1)),
-                    ("generation", Box::new(|m| m.generation = 5)),
-                    ("same generation", Box::new(|m| m.generation = 1)),
-                    ("group name", Box::new(move |m| m.extents[count].group = "bad group".into())),
-                    ("other bucket", Box::new(|m| m.bucket = "other".into())),
-                    ("other key", Box::new(|m| m.key = "other".into())),
-                    ("duplicate inside the append", Box::new(move |m| {
-                        let first = m.extents[count].clone();
-                        let last = m.extents.len() - 1;
-                        m.extents[last].chunk_id = first.chunk_id;
-                        m.extents[last].page_index = first.page_index;
-                    })),
-                    ("duplicate of a prefix page", Box::new(move |m| {
-                        if count > 0 {
-                            m.extents[count].chunk_id = m.extents[0].chunk_id;
-                        } else {
-                            m.extents[count].length = 0;
-                        }
-                    })),
-                ];
-                for (name, change) in damage {
-                    if added == 1 && name == "duplicate inside the append" {
-                        continue;
-                    }
-                    let mut wrong = after.clone();
-                    change(&mut wrong);
-                    let full = ManifestOutcome::decide(Some(before.clone()), wrong.clone());
-                    let append = ManifestOutcome::decide_append(before.clone(), wrong);
-                    assert_eq!(full.is_ok(), append.is_ok(), "{name} ({count}+{added})");
-                    if let (Ok(full), Ok(append)) = (full, append) {
-                        assert_eq!(full, append, "{name} ({count}+{added})");
-                    }
-                }
-            }
-        }
-        // what is not an append is refused: the prior's extents are not the first of the result
-        let before = sized_manifest(20);
-        let mut replaced = sized_manifest(21);
-        replaced.generation = 2;
-        replaced.extents[3].data_sha256[0] ^= 1;
-        assert!(ManifestOutcome::decide_append(before.clone(), replaced).is_err());
-        let mut other_format = sized_manifest(21);
-        other_format.generation = 2;
-        other_format.format_version = 1;
-        for extent in &mut other_format.extents {
-            extent.data_sha256.clear();
-        }
-        assert!(ManifestOutcome::decide_append(before, other_format).is_err());
     }
     #[test]
     fn manifest_listing_is_bounded_ordered_and_bucket_scoped() {
@@ -2661,3 +2169,11 @@ mod catalog_full_tests {
         assert!(catalog_full(8).to_string().contains("MATRIXOBJECT_METASERVER_MAX_OBJECTS"));
     }
 }
+
+#[cfg(test)]
+#[path = "manifest_catalog_snapshot_tests.rs"]
+mod catalog_snapshot_tests;
+
+#[cfg(test)]
+#[path = "manifest_catalog_streaming_tests.rs"]
+mod catalog_streaming_tests;

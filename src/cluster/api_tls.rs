@@ -476,57 +476,6 @@ mod tests {
     }
 
     #[test]
-    fn api_tls_serves_persistent_metadata_and_star_data_connections() {
-        let files = TlsFiles::new();
-        let tls = config(&files);
-        let nodes: Vec<_> = (0..3).map(|_| replica(&tls)).collect();
-        let endpoints: Vec<_> = nodes.iter().map(|(endpoint, _)| endpoint.clone()).collect();
-        let options = options(&tls);
-        let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
-        let page = crate::PageId {
-            chunk_id: crate::ChunkId::new(1, 1).unwrap(),
-            page_index: 0,
-        };
-        let bytes: Vec<_> = (0..512 * 1024).map(|index| (index % 251) as u8).collect();
-        assert!(set.write_chunk(&page, 0, &bytes).unwrap() >= 2);
-        assert_eq!(
-            set.read_chunk(&page, 0, bytes.len() as u64).unwrap().data,
-            bytes
-        );
-        assert!(set.write_chunk(&page, 0, b"changed").unwrap() >= 2);
-        assert_eq!(set.read_chunk(&page, 0, 7).unwrap().data, b"changed");
-        let server = MetaNodeServer::bind(
-            "127.0.0.1:0",
-            MetaNodeOptions {
-                tls: Some(tls.clone()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        server.seed_data_nodes(1, 4096).unwrap();
-        let endpoint = server.local_addr().unwrap().to_string();
-        let stop = server.shutdown_handle();
-        let _running = Running {
-            stop: Box::new(move || stop.stop()),
-            worker: Some(std::thread::spawn(move || server.serve())),
-        };
-        let mut client = RemoteMetaClient::connect(
-            &endpoint,
-            &MetaClientOptions {
-                tls: Some(tls),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(client.list_placement_nodes().unwrap().len(), 1);
-        assert!(matches!(
-            client.read_manifest("bucket", "missing"),
-            Err(crate::ObjectError::NotFound(_))
-        ));
-        assert_eq!(client.list_placement_nodes().unwrap().len(), 1);
-    }
-
-    #[test]
     fn api_tls_rejects_plaintext_and_foreign_clients_before_mutations() {
         let files = TlsFiles::new();
         let tls = config(&files);

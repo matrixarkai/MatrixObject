@@ -25,13 +25,15 @@ pub struct MatrixMetaService {
     // name differs from its metadata counterpart on purpose: they count and
     // cache different things, and sharing a name would fuse them.
     pub(crate) nodes: BTreeMap<String, PlacementNode>,
-    pub(crate) placements: BTreeMap<ObjectId, ObjectPlacement>,
+    pub(crate) placements: imbl::OrdMap<ObjectId, ObjectPlacement>,
     leader_lease: Option<PlacementLeaderLease>,
     leader_lease_receipts: BTreeMap<String, PlacementLeaderLeaseReceipt>,
     placement_coordinator_config: MetadataCoordinatorConfig,
     pub(crate) placement_commit_index: u64,
     pub(crate) cluster_features: crate::cluster_features::ClusterFeatures,
     pub(crate) writer_leases: crate::log_chunk_outcome::WriterLeaseTable,
+    pub(crate) chunk_catalog: crate::chunk_catalog::ChunkCatalog,
+    pub(crate) native_objects: crate::native_object_state::NativeObjectState,
     placement_snapshot_export_cache: RefCell<Option<PlacementSnapshotExportCache>>,
     root_state_fingerprint_cache: RefCell<Option<String>>,
     /// Ordered by each record's own key, which the record already holds -- see

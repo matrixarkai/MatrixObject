@@ -1,85 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub(crate) fn bucket_membership_metadata(
-    bucket: &str,
-    content_type: &str,
-    update_time_ms: u64,
-    deleted: bool,
-) -> ObjectMetadata {
-    ObjectMetadata {
-        object_id: ObjectId::new(bucket, ""),
-        version: 0,
-        length: 0,
-        etag_digest_bits: 0,
-        has_etag: false,
-        content_type: content_type.to_string().into(),
-        user_metadata: BTreeMap::new().into(),
-        storage_class: StorageClass::Standard,
-        lock: ObjectLock::default(),
-        tags: BTreeMap::new().into(),
-        update_time_ms,
-        extents: Vec::new().into(),
-        deleted,
-    }
-}
-
-pub(crate) fn bucket_lifecycle_request_checksum(
-    bucket: &str,
-    policy: &BucketLifecyclePolicy,
-) -> Result<String, ObjectError> {
-    validate_bucket(bucket)?;
-    validate_lifecycle_policy(policy)?;
-    let mut material = Vec::with_capacity(
-        encoded_string_len("MOSRS-BUCKET-LIFECYCLE-REQUEST1")
-            + encoded_string_len(bucket)
-            + lifecycle_policy_encoded_len(policy),
-    );
-    append_string(&mut material, "MOSRS-BUCKET-LIFECYCLE-REQUEST1");
-    append_string(&mut material, bucket);
-    append_lifecycle_policy(&mut material, policy);
-    Ok(etag(&material))
-}
-
-pub(crate) fn bucket_policy_document_request_checksum(
-    bucket: &str,
-    policy: &BucketPolicyDocument,
-) -> Result<String, ObjectError> {
-    validate_bucket(bucket)?;
-    validate_bucket_policy_document(policy)?;
-    let mut material = Vec::with_capacity(
-        encoded_string_len("MOSRS-BUCKET-POLICY-DOCUMENT-REQUEST1")
-            + encoded_string_len(bucket)
-            + bucket_policy_document_encoded_len(policy),
-    );
-    append_string(&mut material, "MOSRS-BUCKET-POLICY-DOCUMENT-REQUEST1");
-    append_string(&mut material, bucket);
-    append_bucket_policy_document(&mut material, policy);
-    Ok(etag(&material))
-}
-
-pub(crate) fn bucket_tagging_checksum_material(
-    bucket: &str,
-    tag_set: &BucketTagSet,
-) -> Result<Vec<u8>, ObjectError> {
-    validate_bucket(bucket)?;
-    validate_tags(&tag_set.tags)?;
-    let mut material = Vec::with_capacity(
-        encoded_string_len("ConfigureBucketTagging")
-            + encoded_string_len(bucket)
-            + bucket_tag_set_encoded_len(tag_set),
-    );
-    append_string(&mut material, "ConfigureBucketTagging");
-    append_string(&mut material, bucket);
-    append_bucket_tag_set(&mut material, tag_set);
-    Ok(material)
-}
-
-pub(crate) fn bucket_tagging_request_checksum(
-    bucket: &str,
-    tag_set: &BucketTagSet,
-) -> Result<String, ObjectError> {
-    Ok(etag(&bucket_tagging_checksum_material(bucket, tag_set)?))
-}
 
 pub(crate) fn validate_bucket_policy_receipt(
     receipt: &BucketPolicyMutationReceipt,
@@ -116,23 +36,6 @@ pub(crate) fn validate_bucket_policy_receipt(
     Ok(())
 }
 
-pub(crate) fn checked_bucket_policy_receipt_retry(
-    receipt: &BucketPolicyMutationReceipt,
-    method: &str,
-    bucket: &str,
-    request_checksum: &str,
-) -> Result<BucketPolicyMutationReceipt, ObjectError> {
-    if receipt.method != method
-        || receipt.bucket != bucket
-        || receipt.request_checksum != request_checksum
-    {
-        return Err(ObjectError::InvalidArgument(
-            "bucket policy idempotency key reused with different request".to_string(),
-        ));
-    }
-    Ok(receipt.clone())
-}
-
 pub(crate) fn bucket_cors_request_checksum(
     bucket: &str,
     policy: &BucketCorsPolicy,
@@ -150,27 +53,6 @@ pub(crate) fn bucket_cors_request_checksum(
     append_string(&mut material, bucket);
     append_cors_policy(&mut material, &policy);
     Ok(etag(&material))
-}
-
-fn lifecycle_policy_encoded_len(policy: &BucketLifecyclePolicy) -> usize {
-    std::mem::size_of::<u64>() * 6
-        + encoded_string_len(policy.transition_storage_class.as_deref().unwrap_or(""))
-        + encoded_string_len(policy.filter_tag_key.as_deref().unwrap_or(""))
-        + encoded_string_len(policy.filter_tag_value.as_deref().unwrap_or(""))
-        + encoded_string_len(policy.filter_prefix.as_deref().unwrap_or(""))
-}
-
-fn bucket_policy_document_encoded_len(policy: &BucketPolicyDocument) -> usize {
-    encoded_string_len(&policy.document)
-}
-
-fn bucket_tag_set_encoded_len(tag_set: &BucketTagSet) -> usize {
-    std::mem::size_of::<u64>()
-        + tag_set
-            .tags
-            .iter()
-            .map(|(key, value)| encoded_string_len(key) + encoded_string_len(value))
-            .sum::<usize>()
 }
 
 fn string_list_encoded_len(values: &[String]) -> usize {
@@ -204,19 +86,6 @@ pub(crate) fn validate_bucket_cors_receipt(
         ));
     }
     Ok(())
-}
-
-pub(crate) fn checked_bucket_cors_receipt_retry(
-    receipt: &BucketCorsMutationReceipt,
-    bucket: &str,
-    request_checksum: &str,
-) -> Result<BucketCorsMutationReceipt, ObjectError> {
-    if receipt.bucket != bucket || receipt.request_checksum != request_checksum {
-        return Err(ObjectError::InvalidArgument(
-            "bucket cors idempotency key reused with different request".to_string(),
-        ));
-    }
-    Ok(receipt.clone())
 }
 
 pub(crate) fn validate_cors_list(

@@ -192,3 +192,41 @@ fn a_torn_final_record_is_cut_off_by_the_streaming_replay_and_everything_before_
     assert_eq!(chunk.length(), all.len() as u64, "the unfinished record is not part of the chunk");
     assert_eq!(chunk.read_vec(0, all.len()).unwrap(), all);
 }
+
+#[test]
+fn sealed_large_record_checks_the_whole_checksum_for_small_uncached_reads() {
+    let dir = Dir::new("large-record-small-read");
+    let path = dir.0.join("c.log");
+    let first = bytes(19, MAX_RECORD_DATA);
+    let second = bytes(37, 65_537);
+    let mut chunk = LogChunk::open(&path, 1, MAX).unwrap();
+    chunk.append(1, 0, &first).unwrap();
+    chunk.append(1, first.len() as u64, &second).unwrap();
+    chunk.commit().unwrap();
+    chunk.seal(1, true).unwrap();
+    drop(chunk);
+
+    let chunk = LogChunk::open(&path, 1, MAX).unwrap();
+    assert_eq!(chunk.read_vec(3, 31).unwrap(), first[3..34]);
+    let mut crossing = first[first.len() - 13..].to_vec();
+    crossing.extend_from_slice(&second[..47]);
+    assert_eq!(
+        chunk.read_vec(first.len() as u64 - 13, 60).unwrap(),
+        crossing
+    );
+    assert_eq!(
+        chunk.read_vec(first.len() as u64 + 5, 23).unwrap(),
+        second[5..28]
+    );
+
+    // Damage a byte well beyond the requested range after the chunk was opened.
+    // An uncached one-byte read must still reject the record's checksum.
+    let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.seek(SeekFrom::Start(
+        LOG_HEADER_LEN as u64 + first.len() as u64 - 1,
+    ))
+    .unwrap();
+    file.write_all(&[first[first.len() - 1] ^ 0xff]).unwrap();
+    file.sync_data().unwrap();
+    assert!(matches!(chunk.read_vec(0, 1), Err(LogError::Corrupt(_))));
+}

@@ -1,5 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
+/// An application-thread capture whose public placement map is built by the worker.
+#[cfg(any(feature = "metadata-consensus", test))]
+pub(crate) struct MetaCheckpointCapture {
+    snapshot: MetaSnapshot,
+    placements: imbl::OrdMap<ObjectId, ObjectPlacement>,
+}
+
+#[cfg(any(feature = "metadata-consensus", test))]
+impl MetaCheckpointCapture {
+    pub(crate) fn into_snapshot(mut self) -> MetaSnapshot {
+        self.snapshot.placements = self.placements.into_iter().collect();
+        self.snapshot
+    }
+}
+
 fn metadata_fingerprint_reserve_hint(service: &MatrixMetaService) -> usize {
     let hint = 4096usize
         .saturating_add(service.records.len().saturating_mul(128))
@@ -28,6 +43,28 @@ impl MatrixMetaService {
     /// Copy the captured state without scanning its checksum material. The
     /// background checkpoint worker seals this private snapshot before encoding.
     pub(crate) fn export_snapshot_unsealed(&self) -> MetaSnapshot {
+        self.snapshot_with_placements(
+            self.placements
+                .iter()
+                .map(|(id, placement)| (id.clone(), placement.clone()))
+                .collect(),
+        )
+    }
+
+    /// Capture the roster root on the application thread. The checkpoint worker
+    /// materializes the public snapshot map from this immutable view.
+    #[cfg(any(feature = "metadata-consensus", test))]
+    pub(crate) fn capture_checkpoint_snapshot(&self) -> MetaCheckpointCapture {
+        MetaCheckpointCapture {
+            snapshot: self.snapshot_with_placements(BTreeMap::new()),
+            placements: self.placements.clone(),
+        }
+    }
+
+    fn snapshot_with_placements(
+        &self,
+        placements: BTreeMap<ObjectId, ObjectPlacement>,
+    ) -> MetaSnapshot {
         MetaSnapshot {
             object_manifests: self.object_manifests.clone(),
             // The collection is ordered by each record's own key; the snapshot states the
@@ -55,13 +92,15 @@ impl MatrixMetaService {
             // `StoreSnapshot::validate` a comparison of two independently produced copies
             // rather than a comparison of a value with itself.
             placement_nodes: self.nodes.clone(),
-            placements: self.placements.clone(),
+            placements,
             placement_leader_lease: self.leader_lease.clone(),
             placement_leader_lease_receipts: self.leader_lease_receipts.clone(),
             placement_coordinator_config: self.placement_coordinator_config.clone(),
             placement_commit_index: self.placement_commit_index,
             cluster_features: self.cluster_features.clone(),
             writer_leases: self.writer_leases.clone(),
+            chunk_catalog: self.chunk_catalog.clone(),
+            native_objects: self.native_objects.clone(),
             next_change_sequence: self.next_change_sequence,
             compacted_tombstone_count: self.compacted_tombstone_count,
             last_tombstone_compaction_commit_index: self.last_tombstone_compaction_commit_index,
@@ -220,11 +259,14 @@ impl MatrixMetaService {
         }
         if !self.object_manifests.is_empty() {
             append_string(&mut material, "MOSRSMANIFEST1");
-            let bytes = self.object_manifests.to_bytes().expect("valid manifest catalog");
-            append_u64(&mut material, bytes.len() as u64);
-            let digest = fnv1a64_resumed(FNV1A64_OFFSET_BASIS, &material);
+            append_u64(&mut material, self.object_manifests.encoded_size() as u64);
+            let mut digest = fnv1a64_resumed(FNV1A64_OFFSET_BASIS, &material);
+            self.object_manifests.visit_encoded(&mut |bytes| {
+                digest = fnv1a64_resumed(digest, bytes);
+                Ok::<(), std::convert::Infallible>(())
+            }).unwrap();
             let mut checksum = String::with_capacity(24);
-            append_etag_of_digest(&mut checksum, fnv1a64_resumed(digest, &bytes));
+            append_etag_of_digest(&mut checksum, digest);
             return checksum;
         }
         etag(&material)

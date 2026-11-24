@@ -33,6 +33,9 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+#[path = "metadata_feature_admission.rs"]
+mod feature_admission;
+
 const PACKET_LIMIT: usize = 8 * 1024 * 1024;
 const PROPOSALS_PER_BATCH: usize = 8;
 // Keep the metadata and chunk Raft clocks aligned across a distributed cluster.
@@ -66,6 +69,9 @@ struct Entry {
     outcome: Vec<u8>,
     #[prost(bytes = "vec", tag = "3")]
     catalog_outcome: Vec<u8>,
+    /// A chunk manifest publication (version 3): the client's decided outcome, framed.
+    #[prost(bytes = "vec", tag = "4")]
+    chunk_outcome: Vec<u8>,
 }
 struct Request {
     request: MetaRequest,
@@ -99,7 +105,10 @@ fn refused(s: impl ToString) -> ObjectError {
 // A failed read confirmation has not executed the application request. Only
 // typed leadership loss allows catalog routing to another voter; other failures
 // stay authoritative. Never use this conversion for accepted writes.
-fn confirmation_failure(request: &MetaRequest, error: &RaftError) -> Result<MetaReply, ObjectError> {
+fn confirmation_failure(
+    request: &MetaRequest,
+    error: &RaftError,
+) -> Result<MetaReply, ObjectError> {
     if read_only(request) {
         read_failure(error)
     } else {
@@ -181,8 +190,7 @@ impl MetaConsensus {
         }
         let base = directory.join("metadata.peer.base");
         let wal = directory.join("metadata.peer.wal");
-        let checkpoint =
-            Policy::new(1, options.checkpoint_after_bytes).map_err(invalid)?;
+        let checkpoint = Policy::new(1, options.checkpoint_after_bytes).map_err(invalid)?;
         if base.exists() != wal.exists() {
             return Err(invalid("incomplete metadata peer storage"));
         }
@@ -311,7 +319,8 @@ impl MetaConsensus {
             let transport = transport.clone();
             let stop = Arc::clone(&stop);
             handles.push(thread::spawn(move || {
-                let mut sender = crate::cluster::peer_delivery::PeerSender::configured(address, transport);
+                let mut sender =
+                    crate::cluster::peer_delivery::PeerSender::configured(address, transport);
                 while !stop.is_stopped() {
                     let delivery = match rx.recv_timeout(NETWORK_TIMEOUT) {
                         Ok(bytes) => bytes,
@@ -490,11 +499,12 @@ fn run(
             },
             |id, reader, length| {
                 progress.mark(WorkerPhase::RestoreCheckpoint);
-                let (snapshot, restored_groups) = super::meta_checkpoint::restore_live(
-                    reader, length, id.clone(), groups,
-                )?;
+                let (snapshot, restored_groups) =
+                    super::meta_checkpoint::restore_live(reader, length, id.clone(), groups)?;
                 let restored = restore_snapshot(snapshot, &restored_groups)?;
-                groups.install_membership_health(&restored_groups).map_err(storage)?;
+                groups
+                    .install_membership_health(&restored_groups)
+                    .map_err(storage)?;
                 **application.borrow_mut() = restored;
                 applied_term.set(id.term);
                 checkpoint.restored(id.index);
@@ -525,9 +535,11 @@ fn run(
                         Ok(token) => {
                             pending_read = Some((token, vec![request]));
                             admitted = true;
-                        },
+                        }
                         Err(error) => {
-                            let _ = request.reply.try_send(confirmation_failure(&request.request, &error));
+                            let _ = request
+                                .reply
+                                .try_send(confirmation_failure(&request.request, &error));
                         }
                     }
                 }
@@ -549,9 +561,10 @@ fn run(
             .is_some_and(|p| !peer.is_leader() || p.id.term != peer.term())
         {
             for p in pending.drain(..) {
-                let _ = p.request.reply.try_send(Err(refused(
-                    format!("metadata leadership changed; write outcome may be committed{}", progress.describe()),
-                )));
+                let _ = p.request.reply.try_send(Err(refused(format!(
+                    "metadata leadership changed; write outcome may be committed{}",
+                    progress.describe()
+                ))));
             }
         }
         if let Some((token, _)) = &pending_read {
@@ -560,12 +573,24 @@ fn run(
                 result => {
                     let (_, requests) = pending_read.take().unwrap();
                     for request in requests {
-                        if matches!(&request.request, MetaRequest::ExpireRootNodeHeartbeats { .. }) {
+                        if matches!(
+                            &request.request,
+                            MetaRequest::ExpireRootNodeHeartbeats { .. }
+                        ) {
                             // Recheck after quorum confirmation. A newly eligible node
                             // returns to the durable proposal path before any reply.
                             match &result {
-                                Ok(true) if empty_expiry(service, groups, Some(&liveness), &request.request) => {
-                                    let _ = request.reply.try_send(Ok(MetaReply::Expired { offline_count: 0 }));
+                                Ok(true)
+                                    if empty_expiry(
+                                        service,
+                                        groups,
+                                        Some(&liveness),
+                                        &request.request,
+                                    ) =>
+                                {
+                                    let _ = request
+                                        .reply
+                                        .try_send(Ok(MetaReply::Expired { offline_count: 0 }));
                                 }
                                 Ok(true) => queued.push_front(request),
                                 Err(error) => {
@@ -595,9 +620,10 @@ fn run(
         if pending.is_empty() && pending_read.is_none() && pending_membership.is_none() {
             progress.mark(WorkerPhase::PublishCheckpoint);
             checkpoint.maybe_checkpoint_stream(peer, applied_term.get(), |id| {
-                let mut snapshot = service.export_snapshot_unsealed();
+                let capture = service.capture_checkpoint_snapshot();
                 let catalog = groups.to_bytes().map_err(storage)?;
                 Ok(move || {
+                    let mut snapshot = capture.into_snapshot();
                     snapshot.checksum = snapshot.checksum_material_hash();
                     super::meta_checkpoint::capture(snapshot, catalog, id).map(|stream| {
                         stream.map(|s| {
@@ -609,16 +635,21 @@ fn run(
             })?;
             progress.mark(WorkerPhase::Requests);
             let mut expiry = Vec::new();
-            if peer.is_leader() && applied_term.get() == peer.term()
+            if peer.is_leader()
+                && applied_term.get() == peer.term()
                 && lease_sweep.elapsed() >= super::staged_lease_sweeper::INTERVAL
-                && queued.len() < PROPOSALS_PER_BATCH {
+                && queued.len() < PROPOSALS_PER_BATCH
+            {
                 lease_sweep = Instant::now();
                 if let Ok(now) = super::staged_lease_sweeper::now_ms() {
                     expiry = super::staged_lease_sweeper::all_commands(service, now);
                     // A selected deadline can already be queued behind foreground
                     // work. Do not accumulate repeated cleanup for the same owner.
-                    expiry.retain(|command| !queued.iter().any(|request: &Request|
-                        super::staged_lease_sweeper::same_cleanup(&request.request, command)));
+                    expiry.retain(|command| {
+                        !queued.iter().any(|request: &Request| {
+                            super::staged_lease_sweeper::same_cleanup(&request.request, command)
+                        })
+                    });
                     expiry.truncate(PROPOSALS_PER_BATCH - queued.len());
                 }
             }
@@ -633,7 +664,8 @@ fn run(
             for command in expiry {
                 let (reply, _) = mpsc::sync_channel(1);
                 queued.push_back(Request {
-                    request: command, reply,
+                    request: command,
+                    reply,
                     deadline: Instant::now() + Duration::from_secs(30),
                     progress: RequestProgress::new(false),
                 });
@@ -651,13 +683,17 @@ fn run(
                     } else {
                         let MetaRequest::Membership(command) = &request.request else { unreachable!() };
                         request.progress.mark(RequestPhase::ProposalCompletion);
-                        match command.change().and_then(|change| peer.propose_membership(change).map_err(refused)) {
+                        match feature_admission::check_membership_request(service, command)
+                            .and_then(|_| command.change())
+                            .and_then(|change| peer.propose_membership(change).map_err(refused)) {
                             Ok(id) => pending_membership = Some((id, request)),
                             Err(error) => { let _ = request.reply.try_send(Err(error)); }
                         }
                     }
                 } else if queued.front().is_some_and(|r| matches!(r.request, MetaRequest::ChunkCatalog(_))) {
                     propose_catalog_batch(peer, service, groups, limit, &mut queued, &mut pending)?;
+                } else if queued.front().is_some_and(|r| matches!(r.request, MetaRequest::PublishChunkManifest(_))) {
+                    propose_chunk_manifest_batch(peer, service, &mut queued, &mut pending)?;
                 } else if queued.front().is_some_and(|r| empty_expiry(service, groups, Some(&liveness), &r.request)) {
                     // A sweep with no candidate changes no state. Confirm the current
                     // quorum without appending an empty application entry.
@@ -703,7 +739,7 @@ fn run(
                 } else {
                     // A later write must not pass reads already admitted to this queue.
                     let mut writes = VecDeque::new();
-                    while queued.front().is_some_and(|r| !read_only(&r.request) && !matches!(r.request, MetaRequest::Membership(_) | MetaRequest::ChunkCatalog(_))) {
+                    while queued.front().is_some_and(|r| !read_only(&r.request) && !matches!(r.request, MetaRequest::Membership(_) | MetaRequest::ChunkCatalog(_) | MetaRequest::PublishChunkManifest(_))) {
                         writes.push_back(queued.pop_front().unwrap());
                     }
                     propose_batch_live(
@@ -758,6 +794,7 @@ fn read_only(request: &MetaRequest) -> bool {
         MetaRequest::Membership(command) => command.is_read(),
         MetaRequest::Features(command) => command.is_read(),
         MetaRequest::LogChunk(command) => command.is_read(),
+        MetaRequest::NativeObject(command) => command.is_read(),
         MetaRequest::ReadManifest { .. }
         | MetaRequest::ReadManifestRoutes { .. }
         | MetaRequest::ReadManifestRoutesWide { .. }
@@ -770,6 +807,8 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::ReadChunkRoutesWide { .. }
         | MetaRequest::ListChunkRoutes { .. }
         | MetaRequest::ListManifests(_)
+        | MetaRequest::ReadChunkManifest { .. }
+        | MetaRequest::ListChunkManifests(_)
         | MetaRequest::PlanObjectPlacement { .. }
         | MetaRequest::PlanObjectPlacementRoutes { .. }
         | MetaRequest::PlanObjectWriteRoutes { .. }
@@ -779,9 +818,9 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::GroupIdentity
         | MetaRequest::Ping => true,
         MetaRequest::ChunkCatalog(_)
-        | MetaRequest::CopyManifest(_)
         | MetaRequest::AllocateObjectPages { .. }
         | MetaRequest::PublishManifest { .. }
+        | MetaRequest::PublishChunkManifest(_)
         | MetaRequest::HeartbeatRootNode { .. }
         | MetaRequest::ReportChunkNode { .. }
         | MetaRequest::HeartbeatChunkNode { .. }
@@ -822,8 +861,9 @@ fn apply_committed(
     if !bytes.is_empty() {
         let entry = Entry::decode(bytes).map_err(|e| RaftError::Storage(e.to_string()))?;
         let valid_kind = match entry.version {
-            1 => entry.catalog_outcome.is_empty(),
-            2 => entry.outcome.is_empty() && !entry.catalog_outcome.is_empty(),
+            1 => entry.catalog_outcome.is_empty() && entry.chunk_outcome.is_empty(),
+            2 => entry.outcome.is_empty() && !entry.catalog_outcome.is_empty() && entry.chunk_outcome.is_empty(),
+            3 => entry.outcome.is_empty() && entry.catalog_outcome.is_empty() && !entry.chunk_outcome.is_empty(),
             _ => false,
         };
         if !valid_kind || entry.encode_to_vec() != bytes {
@@ -834,6 +874,12 @@ fn apply_committed(
         if !entry.catalog_outcome.is_empty() {
             super::chunk_catalog_outcome::ChunkCatalogOutcome::from_payload(&entry.catalog_outcome)
                 .and_then(|outcome| outcome.apply(service, groups))
+                .map_err(storage)?;
+        }
+        if !entry.chunk_outcome.is_empty() {
+            // The leader proved this applies when it prepared it, so a failure here is a defect.
+            crate::chunk_catalog::ChunkOutcome::from_bytes(&entry.chunk_outcome)
+                .and_then(|outcome| super::chunk_manifest_command::apply(service, &outcome))
                 .map_err(storage)?;
         }
         if !entry.outcome.is_empty() {
@@ -920,6 +966,7 @@ fn propose_catalog_batch(
             };
         // Refusals derived from this speculative prefix wait behind its commit too.
         let payload = Entry {
+            chunk_outcome: Vec::new(),
             version: if outcome.is_some() { 2 } else { 1 },
             outcome: Vec::new(),
             catalog_outcome: match &outcome {
@@ -962,6 +1009,121 @@ fn propose_catalog_batch(
                         request,
                         reply: Some(reply),
                     });
+                }
+            }
+            Err(error) => {
+                for (request, _) in prepared {
+                    let _ = request.reply.try_send(Err(refused(&error)));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Fail the draft apply of the chunk publication at this position of the batch (tests only).
+    static CHUNK_APPLY_FAULT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Propose a run of chunk manifest publications, each prepared against the ones before it.
+///
+/// A publication the catalog refuses (a generation that moved, a full catalog) is refused alone.
+/// One whose prepared outcome then fails to apply to the draft is refused alone too, with an error
+/// that says nothing was published, and the run stops there: the requests behind it are prepared
+/// again against a clean state in the next round. Neither case aborts the worker. Dropping the
+/// draft puts the live catalog back exactly, so nothing is visible until the entries commit.
+fn propose_chunk_manifest_batch(
+    peer: &mut DurablePeer,
+    service: &mut MatrixMetaService,
+    queued: &mut VecDeque<Request>,
+    pending: &mut VecDeque<Pending>,
+) -> Result<(), RaftError> {
+    let mut draft = super::chunk_manifest_command::ChunkDraft::new(service);
+    let mut payloads: Vec<Vec<u8>> = Vec::new();
+    let mut prepared: Vec<(Request, Result<MetaReply, ObjectError>)> = Vec::new();
+    let mut bytes = 0usize;
+    for _ in 0..PROPOSALS_PER_BATCH {
+        if !queued
+            .front()
+            .is_some_and(|r| matches!(r.request, MetaRequest::PublishChunkManifest(_)))
+        {
+            break;
+        }
+        let request = queued.pop_front().unwrap();
+        if request.deadline <= Instant::now() {
+            let _ = request
+                .reply
+                .try_send(Err(refused("chunk manifest request expired before proposal")));
+            continue;
+        }
+        request.progress.mark(RequestPhase::Preparing);
+        let MetaRequest::PublishChunkManifest(outcome) = &request.request else {
+            unreachable!()
+        };
+        let (outcome, reply) = match super::chunk_manifest_command::prepare(draft.service(), outcome) {
+            Ok(super::chunk_manifest_command::Decision::Change(outcome, manifest)) => {
+                (Some(outcome), Ok(MetaReply::ChunkManifest(manifest)))
+            }
+            Ok(super::chunk_manifest_command::Decision::Unchanged(manifest)) => {
+                (None, Ok(MetaReply::ChunkManifest(manifest)))
+            }
+            Err(error) => (None, Err(error)),
+        };
+        // A replay or a refusal proposes an entry with nothing in it, so its reply waits behind the
+        // commit of the prefix it was decided against, as a catalog report's does.
+        let payload = Entry {
+            chunk_outcome: match &outcome {
+                Some(outcome) => outcome.to_bytes().map_err(storage)?,
+                None => Vec::new(),
+            },
+            version: if outcome.is_some() { 3 } else { 1 },
+            outcome: Vec::new(),
+            catalog_outcome: Vec::new(),
+        }
+        .encode_to_vec();
+        if !prepared.is_empty() && bytes.saturating_add(payload.len()) > PACKET_LIMIT / 2 {
+            queued.push_front(request);
+            break;
+        }
+        if payload.len() > PACKET_LIMIT / 2 {
+            let _ = request
+                .reply
+                .try_send(Err(refused("chunk manifest proposal exceeds byte limit")));
+            continue;
+        }
+        if let Some(outcome) = &outcome {
+            #[cfg(test)]
+            let injected = CHUNK_APPLY_FAULT.with(|fault| fault.get()) == Some(payloads.len());
+            #[cfg(not(test))]
+            let injected = false;
+            let applied = if injected {
+                Err(ObjectError::Corruption("injected: chunk manifest apply failure".into()))
+            } else {
+                draft.apply(outcome)
+            };
+            if let Err(error) = applied {
+                // The same rule as for the placement outcomes: this request alone is refused, with
+                // an error that says nothing was published, and nothing more is prepared against
+                // the draft.
+                let _ = request.reply.try_send(Err(ObjectError::PreconditionFailed(format!(
+                    "the chunk manifest outcome could not be applied after preparation; nothing was published: {error}"
+                ))));
+                break;
+            }
+        }
+        request.progress.mark(RequestPhase::ProposalCompletion);
+        bytes += payload.len();
+        payloads.push(payload);
+        prepared.push((request, reply));
+    }
+    drop(draft);
+    if !payloads.is_empty() {
+        match peer.propose_batch(payloads) {
+            Ok(ids) => {
+                for (id, (request, reply)) in ids.into_iter().zip(prepared) {
+                    pending.push_back(Pending { id, request, reply: Some(reply) });
                 }
             }
             Err(error) => {
@@ -1043,7 +1205,11 @@ impl LeaderLiveness {
     }
 
     fn last_heard(&self, node_id: &str) -> u64 {
-        self.seen.borrow().get(node_id).copied().unwrap_or(self.started_ms.get())
+        self.seen
+            .borrow()
+            .get(node_id)
+            .copied()
+            .unwrap_or(self.started_ms.get())
     }
 
     /// Heard within `ttl_ms` of `now_ms`, or, if not heard at all, still inside the grace window
@@ -1083,7 +1249,13 @@ fn unchanged_report_reply_live(
     now_ms: u64,
     live_active: bool,
 ) -> Option<MetaReply> {
-    let MetaRequest::ReportChunkNode { node_id, expected_endpoint, used_bytes, capacity_bytes, online } = request
+    let MetaRequest::ReportChunkNode {
+        node_id,
+        expected_endpoint,
+        used_bytes,
+        capacity_bytes,
+        online,
+    } = request
     else {
         return None;
     };
@@ -1100,7 +1272,8 @@ fn unchanged_report_reply_live(
         && node.endpoint == *expected_endpoint
         && node.capacity_bytes == *capacity_bytes
         && used_bytes.abs_diff(node.used_bytes) <= capacity_bytes / 100;
-    unchanged.then(|| MetaReply::PlacementNode(super::PlacementNodeSummary::from_placement_node(node)))
+    unchanged
+        .then(|| MetaReply::PlacementNode(super::PlacementNodeSummary::from_placement_node(node)))
 }
 
 /// Reply to every unchanged health report in `queued` at once and take it out of the queue, so
@@ -1120,7 +1293,13 @@ fn drop_unchanged_reports_live(
     }
     let mut kept = VecDeque::with_capacity(queued.len());
     for request in queued.drain(..) {
-        match unchanged_report_reply_live(service, &request.request, suppress_ms, now_ms, live_active) {
+        match unchanged_report_reply_live(
+            service,
+            &request.request,
+            suppress_ms,
+            now_ms,
+            live_active,
+        ) {
             Some(reply) => {
                 let _ = request.reply.try_send(Ok(reply));
             }
@@ -1178,7 +1357,17 @@ fn propose_batch_suppressing(
     suppress_ms: u64,
     now_ms: u64,
 ) -> Result<(), RaftError> {
-    propose_batch_live(peer, service, groups, limit, queued, pending, suppress_ms, now_ms, None)
+    propose_batch_live(
+        peer,
+        service,
+        groups,
+        limit,
+        queued,
+        pending,
+        suppress_ms,
+        now_ms,
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -1205,7 +1394,8 @@ fn propose_batch_with(
     if queued.is_empty() {
         return Ok(());
     }
-    let (payloads, prepared) = prepare_batch(service, groups, limit, queued, live)?;
+    let (payloads, prepared) =
+        prepare_batch(service, groups, limit, queued, live, &peer.membership())?;
     if !payloads.is_empty() {
         match peer.propose_batch(payloads) {
             Ok(ids) => {
@@ -1223,8 +1413,32 @@ fn propose_batch_with(
     Ok(())
 }
 
+/// Apply the outcome just prepared to the draft, so that the next request is prepared against it.
+/// `index` is the position of the outcome in the batch (the hook below fails one by position in tests).
+fn apply_prepared(service: &mut MatrixMetaService, outcome: &[u8], index: usize) -> Result<(), ObjectError> {
+    #[cfg(test)]
+    {
+        if APPLY_FAULT.with(|fault| fault.get()) == Some(index) {
+            return Err(ObjectError::Corruption(
+                "injected: manifest publication placement binding mismatch".into(),
+            ));
+        }
+    }
+    let _ = index;
+    PlacementOutcome::from_payload(outcome).and_then(|decoded| decoded.apply(service))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Fail the draft apply of the outcome at this position of the batch (tests only).
+    static APPLY_FAULT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
 /// The payloads of a batch, and the requests they answer.
-type PreparedBatch = (Vec<Vec<u8>>, Vec<(Request, Option<Result<MetaReply, ObjectError>>)>);
+type PreparedBatch = (
+    Vec<Vec<u8>>,
+    Vec<(Request, Option<Result<MetaReply, ObjectError>>)>,
+);
 
 /// Decide the queued requests one after another against a draft of the live service, so each one
 /// sees the prefix before it, then restore the live service. This is the whole of what the leader
@@ -1235,6 +1449,7 @@ fn prepare_batch(
     limit: usize,
     queued: &mut VecDeque<Request>,
     live: Option<&LeaderLiveness>,
+    membership: &matrixraft::peer_runtime::MembershipState,
 ) -> Result<PreparedBatch, RaftError> {
     for request in queued.iter() {
         request.progress.mark(RequestPhase::Preparing);
@@ -1242,19 +1457,14 @@ fn prepare_batch(
     let mut nodes = BTreeSet::new();
     let mut objects = BTreeSet::new();
     let mut lease_keys: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut chunk_keys = BTreeSet::new();
     for request in queued.iter() {
         match &request.request {
-            MetaRequest::CopyManifest(command) => {
-                for id in [crate::ObjectId::new(command.source_bucket.clone(), command.source_key.clone()),
-                    crate::ObjectId::new(command.bucket.clone(), command.key.clone())] {
-                    if let Some(manifest) = service.object_manifests.get(&id) {
-                        nodes.extend(manifest.extents.iter().map(|extent| extent.group.clone()));
-                    }
-                }
-                objects.insert(crate::ObjectId::new(command.bucket.clone(), command.key.clone()));
-            }
             MetaRequest::LogChunk(command) if !command.is_read() => {
                 log_chunk_records(service, command, &mut nodes, &mut objects, &mut lease_keys);
+                if command.version == 2 {
+                    chunk_keys.insert(crate::ObjectId::new(&command.bucket, &command.key));
+                }
             }
             MetaRequest::StagedAllocation(command) if command.action == 4 => {
                 if let Some(outcome) = &command.outcome {
@@ -1314,7 +1524,15 @@ fn prepare_batch(
         .into_iter()
         .filter(|id| service.nodes.contains_key(id))
         .collect();
+    let native = queued.iter().any(|r| matches!(&r.request, MetaRequest::NativeObject(c) if !c.is_read())).then(|| (
+        service.native_objects.clone(), service.chunk_catalog.clone(), service.writer_leases.clone(),
+    ));
     let mut draft = PlacementDraft::with_records(service, nodes, objects.into_iter().collect());
+    draft.native = native;
+    draft.chunks = chunk_keys.into_iter().map(|id| {
+        let entry = draft.service.chunk_catalog.entry(&id);
+        (id, entry)
+    }).collect();
     draft.leases = lease_keys
         .into_iter()
         .map(|(bucket, key)| {
@@ -1326,36 +1544,64 @@ fn prepare_batch(
     let mut renewal_ids = BTreeSet::new();
     for request in queued.iter().take(PROPOSALS_PER_BATCH) {
         if let MetaRequest::ManifestRetention(command) = &request.request {
-            if matches!(command.action, 2 | 7) { retention_ids.insert(command.retention_id); }
-            if command.action == 6 { renewal_ids.insert(command.retention_id); }
+            if matches!(command.action, 2 | 7) {
+                retention_ids.insert(command.retention_id);
+            }
+            if command.action == 6 {
+                renewal_ids.insert(command.retention_id);
+            }
             if matches!(command.action, 1 | 5 | 8) {
                 // Any earlier request can advance the metadata index once.
                 for distance in 1..=PROPOSALS_PER_BATCH as u64 {
-                    if let Some(id) = draft.index.checked_add(distance) { retention_ids.insert(id); }
+                    if let Some(id) = draft.index.checked_add(distance) {
+                        retention_ids.insert(id);
+                    }
                 }
             }
         }
     }
-    draft.retention_deadlines = renewal_ids.difference(&retention_ids).filter_map(|id| {
-        draft.service.object_manifests.retained_manifest(*id).map(|record| (*id, record.expires_at_ms))
-    }).collect();
-    draft.retentions = retention_ids.into_iter().map(|id| {
-        (id, draft.service.object_manifests.retained_arc(id))
-    }).collect();
+    draft.retention_deadlines = renewal_ids
+        .difference(&retention_ids)
+        .filter_map(|id| {
+            draft
+                .service
+                .object_manifests
+                .retained_manifest(*id)
+                .map(|record| (*id, record.expires_at_ms))
+        })
+        .collect();
+    draft.retentions = retention_ids
+        .into_iter()
+        .map(|id| (id, draft.service.object_manifests.retained_arc(id)))
+        .collect();
     let mut staged_ids = BTreeSet::new();
     for request in queued.iter().take(PROPOSALS_PER_BATCH) {
         if let MetaRequest::StagedAllocation(command) = &request.request {
-            if matches!(command.action, 3 | 4 | 8 | 9 | 11 | 12) { staged_ids.insert(command.allocation_id); }
+            if matches!(command.action, 3 | 4 | 8 | 9 | 11 | 12) {
+                staged_ids.insert(command.allocation_id);
+            }
             if matches!(command.action, 1 | 12) {
                 for distance in 1..=PROPOSALS_PER_BATCH as u64 {
-                    if let Some(id) = draft.index.checked_add(distance) { staged_ids.insert(id); }
+                    if let Some(id) = draft.index.checked_add(distance) {
+                        staged_ids.insert(id);
+                    }
                 }
             }
         }
     }
-    draft.staging_allocations = staged_ids.into_iter().map(|id| {
-        (id, draft.service.object_manifests.staged_allocation(id).cloned())
-    }).collect();
+    draft.staging_allocations = staged_ids
+        .into_iter()
+        .map(|id| {
+            (
+                id,
+                draft
+                    .service
+                    .object_manifests
+                    .staged_allocation(id)
+                    .cloned(),
+            )
+        })
+        .collect();
     let mut bytes = 0usize;
     let mut payloads = Vec::new();
     let mut prepared = Vec::new();
@@ -1369,11 +1615,19 @@ fn prepare_batch(
                 .try_send(Err(refused("metadata request expired before proposal")));
             continue;
         }
-        let (outcome, reply) = match prepare_with(draft.service, &request.request, limit, groups, live) {
+        let admission = if let MetaRequest::Features(command) = &request.request {
+            feature_admission::check_feature_request(draft.service, command, membership)
+        } else {
+            Ok(())
+        };
+        let (outcome, reply) = match admission
+            .and_then(|_| prepare_with(draft.service, &request.request, limit, groups, live))
+        {
             Ok((outcome, reply)) => (outcome, reply.map(Ok)),
             Err(error) => (Vec::new(), Some(Err(error))),
         };
         let payload = Entry {
+            chunk_outcome: Vec::new(),
             version: 1,
             catalog_outcome: Vec::new(),
             outcome: outcome.clone(),
@@ -1394,9 +1648,19 @@ fn prepare_batch(
         // Prepare the next outcome against this prefix, but restore the live
         // service before admission, Ready processing, or any client reply.
         if !outcome.is_empty() {
-            PlacementOutcome::from_payload(&outcome)
-                .and_then(|o| o.apply(draft.service))
-                .map_err(|e| RaftError::Storage(e.to_string()))?;
+            if let Err(error) = apply_prepared(draft.service, &outcome, payloads.len()) {
+                // A prepared outcome that does not apply to the draft is THIS request's failure, never the
+                // worker's: it is refused alone, with an error that says nothing was published (so a client
+                // may retry), and the batch stops here. The failed apply may have left a partial change in the
+                // draft, so nothing more is prepared against it: dropping the draft below restores the live
+                // service exactly as it was before the batch, the outcomes already prepared are proposed, and
+                // the requests still queued are prepared against the clean state in the next round. Before this
+                // the error aborted the whole worker, and with it every request queued behind this one.
+                let _ = request.reply.try_send(Err(ObjectError::PreconditionFailed(format!(
+                    "the metadata outcome could not be applied after preparation; nothing was published: {error}"
+                ))));
+                break;
+            }
         }
         payloads.push(payload);
         prepared.push((request, reply));
@@ -1423,6 +1687,25 @@ fn prepare_with(
     groups: &super::ChunkGroupCatalog,
     live: Option<&LeaderLiveness>,
 ) -> Result<(Vec<u8>, Option<MetaReply>), ObjectError> {
+    let result = prepare_with_inner(service, request, limit, groups, live)?;
+    if service
+        .cluster_features
+        .has(crate::cluster_features::FEATURE_NATIVE_OBJECT_STATE)
+        && result
+            .0
+            .starts_with(crate::placement_outcome::PLACEMENT_OUTCOME_MAGIC)
+    {
+        PlacementOutcome::from_payload(&result.0)?.check_legacy_namespace(service)?;
+    }
+    Ok(result)
+}
+fn prepare_with_inner(
+    service: &mut MatrixMetaService,
+    request: &MetaRequest,
+    limit: usize,
+    groups: &super::ChunkGroupCatalog,
+    live: Option<&LeaderLiveness>,
+) -> Result<(Vec<u8>, Option<MetaReply>), ObjectError> {
     let stamped = if matches!(request, MetaRequest::ReportChunkNode { .. }) {
         Some(super::health_report::stamp(request.clone(), service)?)
     } else {
@@ -1430,33 +1713,55 @@ fn prepare_with(
     };
     let request = stamped.as_ref().unwrap_or(request);
     groups.check_request(request)?;
-    if let MetaRequest::CopyManifest(command) = request {
-        let (outcome, reply) = super::manifest_copy_commands::prepare(service, groups, command, limit)?;
-        return Ok((outcome.to_payload()?, Some(reply)));
-    }
     if let MetaRequest::Features(command) = request {
         if !command.is_read() {
             return Ok(match super::features_commands::prepare(service, command)? {
                 Some(outcome) => {
-                    let after = outcome.features.as_ref().and_then(|change| change.after.clone())
-                        .ok_or_else(|| ObjectError::Corruption("feature outcome lacks its result".into()))?;
+                    let after = outcome
+                        .features
+                        .as_ref()
+                        .and_then(|change| change.after.clone())
+                        .ok_or_else(|| {
+                            ObjectError::Corruption("feature outcome lacks its result".into())
+                        })?;
                     (outcome.to_payload()?, Some(MetaReply::Features(after)))
                 }
-                None => (Vec::new(), Some(super::features_commands::reply(&service.cluster_features))),
+                None => (
+                    Vec::new(),
+                    Some(super::features_commands::reply(&service.cluster_features)),
+                ),
             });
+        }
+    }
+    if let MetaRequest::NativeObject(command) = request {
+        if !command.is_read() {
+            let (outcome, reply) = super::native_object_commands::prepare(service, groups, command, limit, super::staged_lease_sweeper::now_ms()?)?;
+            return Ok((outcome.to_payload()?, Some(reply)));
         }
     }
     if let MetaRequest::LogChunk(command) = request {
         if !command.is_read() {
-            return Ok(match super::log_chunk_commands::prepare(service, groups, command, super::staged_lease_sweeper::now_ms()?)? {
-                super::log_chunk_commands::Decision::Change(outcome, reply) => (outcome.to_payload()?, Some(reply)),
-                super::log_chunk_commands::Decision::Unchanged(reply) => (Vec::new(), Some(reply)),
-            });
+            return Ok(
+                match super::log_chunk_commands::prepare(
+                    service,
+                    groups,
+                    command,
+                    super::staged_lease_sweeper::now_ms()?,
+                )? {
+                    super::log_chunk_commands::Decision::Change(outcome, reply) => {
+                        (outcome.to_payload()?, Some(reply))
+                    }
+                    super::log_chunk_commands::Decision::Unchanged(reply) => {
+                        (Vec::new(), Some(reply))
+                    }
+                },
+            );
         }
     }
     if let MetaRequest::StagedAllocation(command) = request {
         if !command.is_read() {
-            let (outcome, reply) = super::staged_allocation_commands::prepare(service, groups, command, limit)?;
+            let (outcome, reply) =
+                super::staged_allocation_commands::prepare(service, groups, command, limit)?;
             return Ok((outcome.to_payload()?, Some(reply)));
         }
     }
@@ -1539,10 +1844,20 @@ fn log_chunk_records(
 ) {
     match command.action {
         super::log_chunk_commands::ACTION_RENEW => {
-            lease_keys.extend(command.renewals.iter().map(|lease| (lease.bucket.clone(), lease.key.clone())));
+            lease_keys.extend(
+                command
+                    .renewals
+                    .iter()
+                    .map(|lease| (lease.bucket.clone(), lease.key.clone())),
+            );
         }
         super::log_chunk_commands::ACTION_SWEEP => {
-            lease_keys.extend(command.drops.iter().map(|lease| (lease.bucket.clone(), lease.key.clone())));
+            lease_keys.extend(
+                command
+                    .drops
+                    .iter()
+                    .map(|lease| (lease.bucket.clone(), lease.key.clone())),
+            );
         }
         _ => {
             let id = crate::ObjectId::new(command.bucket.clone(), command.key.clone());
@@ -1561,6 +1876,9 @@ fn log_chunk_records(
 /// Undo state for the closed set of placement mutations admitted by `prepare`.
 /// Never use this for membership, health reports, or other metadata operations.
 struct PlacementDraft<'a> {
+    native: Option<(crate::native_object_state::NativeObjectState, crate::chunk_catalog::ChunkCatalog, crate::log_chunk_outcome::WriterLeaseTable)>,
+    chunks: Vec<(crate::ObjectId, Option<std::sync::Arc<crate::chunk_manifest::ChunkManifest>>)>,
+    chunk_revision: u64,
     service: &'a mut MatrixMetaService,
     nodes: Vec<crate::PlacementNode>,
     objects: Vec<(
@@ -1569,7 +1887,10 @@ struct PlacementDraft<'a> {
         Option<std::sync::Arc<crate::object_manifest::ManifestEntry>>,
     )>,
     index: u64,
-    retentions: Vec<(u64, Option<std::sync::Arc<crate::manifest_retention::RetainedManifest>>)>,
+    retentions: Vec<(
+        u64,
+        Option<std::sync::Arc<crate::manifest_retention::RetainedManifest>>,
+    )>,
     retention_deadlines: Vec<(u64, u64)>,
     staging_allocations: Vec<(u64, Option<crate::staged_allocation::StagedAllocation>)>,
     publication_fence: u64,
@@ -1577,7 +1898,10 @@ struct PlacementDraft<'a> {
     /// changes it, and the live service must not keep that before the entry commits.
     features: crate::cluster_features::ClusterFeatures,
     /// The writer lease each named object held before the draft: `None` if it held none.
-    leases: Vec<((String, String), Option<crate::log_chunk_outcome::WriterLease>)>,
+    leases: Vec<(
+        (String, String),
+        Option<crate::log_chunk_outcome::WriterLease>,
+    )>,
 }
 impl<'a> PlacementDraft<'a> {
     fn new(
@@ -1604,7 +1928,11 @@ impl<'a> PlacementDraft<'a> {
         let index = service.placement_commit_index;
         let publication_fence = service.object_manifests.publication_fence();
         let features = service.cluster_features.clone();
+        let chunk_revision = service.chunk_catalog.revision();
         Self {
+            native: None,
+            chunks: Vec::new(),
+            chunk_revision,
             service,
             nodes,
             objects,
@@ -1621,15 +1949,21 @@ impl<'a> PlacementDraft<'a> {
 impl Drop for PlacementDraft<'_> {
     fn drop(&mut self) {
         self.service.cluster_features = std::mem::take(&mut self.features);
-        self.service.object_manifests.restore_publication_fence(self.publication_fence);
+        self.service
+            .object_manifests
+            .restore_publication_fence(self.publication_fence);
         for (id, previous) in self.staging_allocations.drain(..) {
             self.service.object_manifests.restore_staging(id, previous);
         }
         for (id, previous) in self.retentions.drain(..) {
-            self.service.object_manifests.restore_retention_arc(id, previous);
+            self.service
+                .object_manifests
+                .restore_retention_arc(id, previous);
         }
         for (id, deadline) in self.retention_deadlines.drain(..) {
-            self.service.object_manifests.restore_retention_deadline(id, deadline);
+            self.service
+                .object_manifests
+                .restore_retention_deadline(id, deadline);
         }
         for node in self.nodes.drain(..) {
             self.service.nodes.insert(node.node_id.clone(), node);
@@ -1645,7 +1979,17 @@ impl Drop for PlacementDraft<'_> {
             }
         }
         for ((bucket, key), lease) in self.leases.drain(..) {
-            self.service.writer_leases.restore(&bucket, &key, lease.as_ref());
+            self.service
+                .writer_leases
+                .restore(&bucket, &key, lease.as_ref());
+        }
+        for (id, entry) in self.chunks.drain(..) {
+            self.service.chunk_catalog.restore_entry(&id, entry, self.chunk_revision);
+        }
+        if let Some((state, catalog, leases)) = self.native.take() {
+            self.service.native_objects = state;
+            self.service.chunk_catalog = catalog;
+            self.service.writer_leases = leases;
         }
         self.service.placement_commit_index = self.index;
         self.service.invalidate_snapshot_export_cache();
@@ -1775,9 +2119,14 @@ mod tests {
         // bootstrap copy. The request is queued for the worker's read barrier.
         assert!(consensus.request(request.clone()).is_err());
         assert_eq!(receiver.try_recv().unwrap().request, request);
-        assert!(matches!(consensus.request(MetaRequest::GroupIdentity),
-            Ok(MetaReply::GroupIdentity(_))));
-        assert!(matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        assert!(matches!(
+            consensus.request(MetaRequest::GroupIdentity),
+            Ok(MetaReply::GroupIdentity(_))
+        ));
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
         consensus.reply_limit = 1;
         assert!(consensus.request(MetaRequest::GroupIdentity).is_err());
         consensus.reply_limit = 4096;
@@ -1981,10 +2330,11 @@ mod tests {
     fn deferred_metadata_sealing_preserves_captured_roster_and_placements() {
         let (mut service, groups) = fixture(1, 30);
         let expected = service.export_snapshot();
-        let mut captured = service.export_snapshot_unsealed();
-        assert!(captured.checksum.is_empty());
+        let captured = service.capture_checkpoint_snapshot();
         apply_with_groups(&mut service, heartbeat(), 16 * 1024 * 1024, &groups).unwrap();
         let sealed = std::thread::spawn(move || {
+            let mut captured = captured.into_snapshot();
+            assert!(captured.checksum.is_empty());
             captured.checksum = captured.checksum_material_hash();
             captured
         })
@@ -2059,6 +2409,61 @@ mod tests {
         assert_eq!(reply, Some(MetaReply::Expired { offline_count: 0 }));
         assert_eq!(state(&service), saved);
     }
+    /// Two writers publish the next generation of ONE object in one batch (or in two consecutive ones): the first
+    /// wins, and the second, which still expects the generation the first replaced, is a PRECONDITION failure
+    /// that the SDK reads as "not published, re-read and retry". It was reported as a Corruption, "manifest
+    /// publication placement binding mismatch", because the placement record already followed the first
+    /// writer's manifest and the binding was checked before the expected state: a lost race looked like a
+    /// publication that might have landed (an unconfirmed 503), the failure seen with concurrent writers to one key.
+    #[test]
+    fn a_writer_that_lost_the_race_for_its_object_gets_a_precondition_failure_not_a_binding_mismatch() {
+        use crate::object_manifest::{ManifestOutcome, ObjectManifest};
+        let (mut service, groups) = fixture(1, 0);
+        let (_files, peer) = batch_peer();
+        let manifest = |generation| ObjectManifest {
+            format_version: 2,
+            bucket: "bucket".into(),
+            key: "contended".into(),
+            generation,
+            ..Default::default()
+        };
+        let first = manifest(1);
+        PlacementOutcome::publish_manifest(&service, ManifestOutcome::decide(None, first.clone()).unwrap(), 0)
+            .unwrap()
+            .apply(&mut service)
+            .unwrap();
+        let writer = || MetaRequest::PublishManifest {
+            outcome: ManifestOutcome::decide(Some(first.clone()), manifest(2)).unwrap(),
+            update_time_ms: 0,
+        };
+        // the same batch
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut queue = VecDeque::new();
+        let (a, _reply_a) = queued(writer(), deadline);
+        let (b, _reply_b) = queued(writer(), deadline);
+        queue.push_back(a);
+        queue.push_back(b);
+        let (payloads, prepared) = prepare_batch(&mut service, &groups, 65536, &mut queue, None, &peer.membership()).unwrap();
+        assert_eq!((payloads.len(), prepared.len()), (2, 2));
+        assert!(matches!(prepared[0].1, Some(Ok(_))), "the first writer is admitted");
+        match &prepared[1].1 {
+            Some(Err(ObjectError::PreconditionFailed(message))) => {
+                assert!(message.contains("object manifest changed before publication"), "{message}")
+            }
+            other => panic!("the writer that lost the race must get a precondition failure: {other:?}"),
+        }
+        // consecutive batches: the first writer's outcome is committed, then the second writer arrives
+        let committed = PlacementOutcome::from_payload(&Entry::decode(payloads[0].as_slice()).unwrap().outcome).unwrap();
+        committed.apply(&mut service).unwrap();
+        let (late, _reply) = queued(writer(), deadline);
+        let mut queue = VecDeque::from([late]);
+        let (_, prepared) = prepare_batch(&mut service, &groups, 65536, &mut queue, None, &peer.membership()).unwrap();
+        assert!(
+            matches!(&prepared[0].1, Some(Err(ObjectError::PreconditionFailed(message))) if message.contains("object manifest changed before publication")),
+            "{:?}",
+            prepared[0].1
+        );
+    }
     #[test]
     fn preparation_restores_rejections_errors_and_unwinding() {
         let (mut service, groups) = fixture(2, 1);
@@ -2125,6 +2530,8 @@ mod tests {
             placement.version = 3;
         }
         let saved = state(&service);
+        let captured = service.capture_checkpoint_snapshot();
+        let expected = service.export_snapshot();
         let error = prepare(&mut service, &request, 16 * 1024 * 1024, &groups).unwrap_err();
         assert!(
             error
@@ -2133,6 +2540,9 @@ mod tests {
             "{error}"
         );
         assert_eq!(state(&service), saved);
+        let mut captured = captured.into_snapshot();
+        captured.checksum = captured.checksum_material_hash();
+        assert_eq!(captured, expected);
     }
 
     struct PeerFiles(PathBuf);
@@ -2198,14 +2608,27 @@ mod tests {
         let (request, rx) = queued(request, Instant::now() + Duration::from_secs(30));
         let mut requests = VecDeque::from([request]);
         let mut pending = VecDeque::new();
-        propose_batch_suppressing(peer, service, groups, 65536, &mut requests, &mut pending, suppress_ms, now_ms)
-            .unwrap();
+        propose_batch_suppressing(
+            peer,
+            service,
+            groups,
+            65536,
+            &mut requests,
+            &mut pending,
+            suppress_ms,
+            now_ms,
+        )
+        .unwrap();
         let proposed = pending.len();
-        peer.process_ready(|id, bytes| apply_committed(service, groups, 65536, &mut pending, id, bytes))
-            .unwrap();
+        peer.process_ready(|id, bytes| {
+            apply_committed(service, groups, 65536, &mut pending, id, bytes)
+        })
+        .unwrap();
         (rx, proposed)
     }
-    fn node_of(reply: Receiver<Result<MetaReply, ObjectError>>) -> crate::cluster::PlacementNodeSummary {
+    fn node_of(
+        reply: Receiver<Result<MetaReply, ObjectError>>,
+    ) -> crate::cluster::PlacementNodeSummary {
         match reply.try_recv().unwrap().unwrap() {
             MetaReply::PlacementNode(node) => node,
             other => panic!("unexpected reply {other:?}"),
@@ -2222,10 +2645,21 @@ mod tests {
         // Unchanged (usage moved far less than 1% of capacity): answered at once, nothing logged.
         let (rx, proposed) = submit(&mut peer, &mut service, &groups, report(266), window, now);
         assert_eq!(proposed, 0);
-        assert_eq!(node_of(rx).last_heartbeat_ms, now - 1_000, "the stamp is not advanced");
+        assert_eq!(
+            node_of(rx).last_heartbeat_ms,
+            now - 1_000,
+            "the stamp is not advanced"
+        );
         assert_eq!(service.placement_commit_index, index);
         // Usage moved by 2% of capacity: replicated.
-        let (rx, proposed) = submit(&mut peer, &mut service, &groups, report(256 + (1 << 30) / 50), window, now);
+        let (rx, proposed) = submit(
+            &mut peer,
+            &mut service,
+            &groups,
+            report(256 + (1 << 30) / 50),
+            window,
+            now,
+        );
         assert_eq!(proposed, 1);
         assert_eq!(node_of(rx).used_bytes, 256 + (1 << 30) / 50);
         assert_eq!(service.placement_commit_index, index + 1);
@@ -2234,7 +2668,10 @@ mod tests {
         let index = service.placement_commit_index;
         let (rx, proposed) = submit(&mut peer, &mut service, &groups, report(256), window, now);
         assert_eq!(proposed, 1);
-        assert!(node_of(rx).last_heartbeat_ms >= now, "the keepalive advances the stamp");
+        assert!(
+            node_of(rx).last_heartbeat_ms >= now,
+            "the keepalive advances the stamp"
+        );
         assert_eq!(service.placement_commit_index, index + 1);
         // A node that was offline comes back through the log.
         steady(&mut service, now - 1_000);
@@ -2267,11 +2704,17 @@ mod tests {
         let now = wall_clock_ms();
         steady(&mut service, now - 1_000);
         let mut wrong = report(256);
-        if let MetaRequest::ReportChunkNode { expected_endpoint, .. } = &mut wrong {
+        if let MetaRequest::ReportChunkNode {
+            expected_endpoint, ..
+        } = &mut wrong
+        {
             *expected_endpoint = "127.0.0.1:1".into();
         }
         let (rx, _) = submit(&mut peer, &mut service, &groups, wrong, 5_000, now);
-        assert!(rx.try_recv().unwrap().is_err(), "the ordinary path refuses a mismatched endpoint");
+        assert!(
+            rx.try_recv().unwrap().is_err(),
+            "the ordinary path refuses a mismatched endpoint"
+        );
         let mut unknown = report(256);
         if let MetaRequest::ReportChunkNode { node_id, .. } = &mut unknown {
             *node_id = "no-such-node".into();
@@ -2294,19 +2737,30 @@ mod tests {
                 t += 1_000;
                 if (t - 1_000_000) % 4_000 == 0 {
                     let mut queue = VecDeque::new();
-                    let (request, _rx) = queued(report(256), Instant::now() + Duration::from_secs(30));
+                    let (request, _rx) =
+                        queued(report(256), Instant::now() + Duration::from_secs(30));
                     queue.push_back(request);
                     drop_unchanged_reports(&service, &mut queue, window, t);
                     if !queue.is_empty() {
                         // What the leader would replicate: the stamp becomes the leader clock.
-                        service.nodes.get_mut("member-0-0").unwrap().last_heartbeat_ms = t;
+                        service
+                            .nodes
+                            .get_mut("member-0-0")
+                            .unwrap()
+                            .last_heartbeat_ms = t;
                         replicated += 1;
                     }
                 }
                 service.expire_node_heartbeats(ttl, t).unwrap();
-                assert!(service.nodes["member-0-0"].online, "expired at {t} with ttl {ttl}, window {window}");
+                assert!(
+                    service.nodes["member-0-0"].online,
+                    "expired at {t} with ttl {ttl}, window {window}"
+                );
             }
-            assert!(replicated < 30, "ttl {ttl}: {replicated} of 30 reports replicated");
+            assert!(
+                replicated < 30,
+                "ttl {ttl}: {replicated} of 30 reports replicated"
+            );
         }
         // A window as long as the TTL is exactly the bug this guards against.
         let (mut service, _groups) = fixture(2, 1);
@@ -2321,7 +2775,11 @@ mod tests {
                 queue.push_back(request);
                 drop_unchanged_reports(&service, &mut queue, 15_000, t);
                 if !queue.is_empty() {
-                    service.nodes.get_mut("member-0-0").unwrap().last_heartbeat_ms = t;
+                    service
+                        .nodes
+                        .get_mut("member-0-0")
+                        .unwrap()
+                        .last_heartbeat_ms = t;
                 }
             }
             service.expire_node_heartbeats(15_000, t).unwrap();
@@ -2330,7 +2788,10 @@ mod tests {
                 break;
             }
         }
-        assert!(expired, "a window equal to the TTL must let a live node expire, or this test proves nothing");
+        assert!(
+            expired,
+            "a window equal to the TTL must let a live node expire, or this test proves nothing"
+        );
     }
     fn all_ancient(service: &mut MatrixMetaService) {
         for node in service.nodes.values_mut() {
@@ -2354,9 +2815,22 @@ mod tests {
         );
         let mut requests = VecDeque::from([request]);
         let mut pending = VecDeque::new();
-        propose_batch_live(peer, service, groups, 65536, &mut requests, &mut pending, 0, now_ms, live).unwrap();
-        peer.process_ready(|id, bytes| apply_committed(service, groups, 65536, &mut pending, id, bytes))
-            .unwrap();
+        propose_batch_live(
+            peer,
+            service,
+            groups,
+            65536,
+            &mut requests,
+            &mut pending,
+            0,
+            now_ms,
+            live,
+        )
+        .unwrap();
+        peer.process_ready(|id, bytes| {
+            apply_committed(service, groups, 65536, &mut pending, id, bytes)
+        })
+        .unwrap();
         match rx.try_recv().unwrap().unwrap() {
             MetaReply::Expired { offline_count } => offline_count,
             other => panic!("unexpected reply {other:?}"),
@@ -2365,11 +2839,20 @@ mod tests {
     #[test]
     fn the_leader_heard_table_keeps_nodes_alive_gives_grace_and_is_thrown_away_with_leadership() {
         let live = LeaderLiveness::new(true);
-        assert!(!live.active() && !live.keeps_alive("a", 1_000_000, 0), "not the leader: no soft state");
+        assert!(
+            !live.active() && !live.keeps_alive("a", 1_000_000, 0),
+            "not the leader: no soft state"
+        );
         live.observe_term(1, true, 1_000);
         live.note("a", 1_500);
-        assert!(live.keeps_alive("a", 500, 2_000), "heard 500 ms ago with a TTL of 500");
-        assert!(!live.keeps_alive("a", 499, 2_000), "heard 500 ms ago with a TTL of 499");
+        assert!(
+            live.keeps_alive("a", 500, 2_000),
+            "heard 500 ms ago with a TTL of 500"
+        );
+        assert!(
+            !live.keeps_alive("a", 499, 2_000),
+            "heard 500 ms ago with a TTL of 499"
+        );
         // Never heard: judged from the moment this leader took over, the grace window.
         assert!(live.keeps_alive("b", 500, 1_400));
         assert!(!live.keeps_alive("b", 500, 1_501));
@@ -2386,14 +2869,18 @@ mod tests {
         live.observe_term(3, true, 4_000);
         assert!(live.active());
         assert!(live.keeps_alive("a", 100, 4_100));
-        assert!(!live.keeps_alive("a", 100, 4_101), "the old record of a is gone; grace runs from 4_000");
+        assert!(
+            !live.keeps_alive("a", 100, 4_101),
+            "the old record of a is gone; grace runs from 4_000"
+        );
         // Switched off: never active.
         let off = LeaderLiveness::new(false);
         off.observe_term(1, true, 1_000);
         assert!(!off.active() && !off.keeps_alive("a", u64::MAX, 1_000));
     }
     #[test]
-    fn a_node_with_an_ancient_stamp_is_kept_while_the_leader_hears_it_and_given_grace_after_a_takeover() {
+    fn a_node_with_an_ancient_stamp_is_kept_while_the_leader_hears_it_and_given_grace_after_a_takeover(
+    ) {
         let (_files, mut peer) = batch_peer();
         let (mut service, groups) = fixture(2, 1);
         all_ancient(&mut service);
@@ -2403,14 +2890,34 @@ mod tests {
         live.note("member-0-0", t0 + 9_000);
         // Every stamp is a million milliseconds old, yet nothing expires: member-0-0 was heard a
         // second ago and the others are inside the grace window.
-        assert_eq!(expire_through_pipeline(&mut peer, &mut service, &groups, ttl, t0 + 10_000, Some(&live)), 0);
+        assert_eq!(
+            expire_through_pipeline(
+                &mut peer,
+                &mut service,
+                &groups,
+                ttl,
+                t0 + 10_000,
+                Some(&live)
+            ),
+            0
+        );
         assert!(service.nodes["member-0-0"].online && service.nodes["member-0-1"].online);
         // After the grace window only the node that kept being heard survives.
         live.note("member-0-0", t0 + 20_000);
-        let expired = expire_through_pipeline(&mut peer, &mut service, &groups, ttl, t0 + 25_000, Some(&live));
+        let expired = expire_through_pipeline(
+            &mut peer,
+            &mut service,
+            &groups,
+            ttl,
+            t0 + 25_000,
+            Some(&live),
+        );
         assert!(expired > 0);
         assert!(service.nodes["member-0-0"].online, "heard 5 s ago");
-        assert!(!service.nodes["member-0-1"].online, "never heard and the grace is over");
+        assert!(
+            !service.nodes["member-0-1"].online,
+            "never heard and the grace is over"
+        );
     }
     #[test]
     fn a_chunk_group_node_is_never_expired_by_its_own_stamp_and_follows_its_members() {
@@ -2420,19 +2927,52 @@ mod tests {
         let (ttl, t0) = (15_000, 1_000_000);
         let live = LeaderLiveness::new(true);
         live.observe_term(1, true, t0);
-        let members: Vec<String> =
-            service.nodes.keys().filter(|id| groups.get(id).is_none()).cloned().collect();
+        let members: Vec<String> = service
+            .nodes
+            .keys()
+            .filter(|id| groups.get(id).is_none())
+            .cloned()
+            .collect();
         assert!(!members.is_empty());
         for member in &members {
             live.note(member, t0 + 1_000);
         }
         // Every stamp, group stamps included, is ancient; every member is heard.
-        assert_eq!(expire_through_pipeline(&mut peer, &mut service, &groups, ttl, t0 + 10_000, Some(&live)), 0);
-        assert!(groups.groups().all(|g| service.nodes[&g.placement_id].online), "a healthy group left placement");
+        assert_eq!(
+            expire_through_pipeline(
+                &mut peer,
+                &mut service,
+                &groups,
+                ttl,
+                t0 + 10_000,
+                Some(&live)
+            ),
+            0
+        );
+        assert!(
+            groups
+                .groups()
+                .all(|g| service.nodes[&g.placement_id].online),
+            "a healthy group left placement"
+        );
         // The members fall silent: they expire after the TTL and the groups follow by projection.
-        assert!(expire_through_pipeline(&mut peer, &mut service, &groups, ttl, t0 + 40_000, Some(&live)) > 0);
+        assert!(
+            expire_through_pipeline(
+                &mut peer,
+                &mut service,
+                &groups,
+                ttl,
+                t0 + 40_000,
+                Some(&live)
+            ) > 0
+        );
         assert!(members.iter().all(|id| !service.nodes[id].online));
-        assert!(groups.groups().all(|g| !service.nodes[&g.placement_id].online), "a group with no live member stayed online");
+        assert!(
+            groups
+                .groups()
+                .all(|g| !service.nodes[&g.placement_id].online),
+            "a group with no live member stayed online"
+        );
     }
     #[test]
     fn without_an_active_leader_table_expiry_is_the_stamp_rule_as_before() {
@@ -2440,8 +2980,18 @@ mod tests {
         let (mut service, groups) = fixture(2, 1);
         all_ancient(&mut service);
         let inactive = LeaderLiveness::new(true);
-        let count = expire_through_pipeline(&mut peer, &mut service, &groups, 15_000, 1_000_000, Some(&inactive));
-        assert!(count as usize >= service.nodes.len() - 1, "the stamp rule expires every ancient node: {count}");
+        let count = expire_through_pipeline(
+            &mut peer,
+            &mut service,
+            &groups,
+            15_000,
+            1_000_000,
+            Some(&inactive),
+        );
+        assert!(
+            count as usize >= service.nodes.len() - 1,
+            "the stamp rule expires every ancient node: {count}"
+        );
     }
     #[test]
     fn with_leader_liveness_an_unchanged_report_is_answered_whatever_the_age_of_the_stamp() {
@@ -2454,7 +3004,8 @@ mod tests {
         );
         assert!(unchanged_report_reply_live(&service, &report(256), 0, now, true).is_some());
         assert!(
-            unchanged_report_reply_live(&service, &report(256 + (1 << 30) / 50), 0, now, true).is_none(),
+            unchanged_report_reply_live(&service, &report(256 + (1 << 30) / 50), 0, now, true)
+                .is_none(),
             "a real change is still replicated"
         );
         service.nodes.get_mut("member-0-0").unwrap().online = false;
@@ -2478,6 +3029,51 @@ mod tests {
             },
             rx,
         )
+    }
+    /// ONE request whose prepared outcome fails its draft apply (here by injection, standing in for the
+    /// "placement binding mismatch" seen with concurrent appends to one object) is refused alone: the worker
+    /// is not aborted (`prepare_batch` returns `Ok`), the outcomes before it are still proposed, the live
+    /// service is exactly as before the batch, the request after it stays queued, and the next round
+    /// prepares it. The failure is a typed, retryable refusal that says nothing was published.
+    #[test]
+    fn a_prepared_outcome_that_fails_its_draft_apply_is_refused_alone_and_the_worker_survives() {
+        let (mut service, groups) = fixture(1, 0);
+        let (_files, peer) = batch_peer();
+        let saved = state(&service);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut queue = VecDeque::new();
+        let mut replies = Vec::new();
+        for (node, endpoint) in [("member-0-0", "127.0.0.1:10003"), ("member-0-1", "127.0.0.1:10004"), ("member-0-2", "127.0.0.1:10005")] {
+            let mut request = heartbeat();
+            if let MetaRequest::HeartbeatChunkNode { node_id, expected_endpoint, .. } = &mut request {
+                *node_id = node.into();
+                *expected_endpoint = endpoint.into();
+            }
+            let (request, reply) = queued(request, deadline);
+            queue.push_back(request);
+            replies.push(reply);
+        }
+        APPLY_FAULT.with(|fault| fault.set(Some(1)));
+        let result = prepare_batch(&mut service, &groups, 65536, &mut queue, None, &peer.membership());
+        APPLY_FAULT.with(|fault| fault.set(None));
+        let (payloads, prepared) = result.expect("a failing apply of one outcome must not abort the worker");
+        assert_eq!((payloads.len(), prepared.len()), (1, 1), "only the outcome before the failure is proposed");
+        match replies[1].try_recv() {
+            Ok(Err(ObjectError::PreconditionFailed(message))) => {
+                assert!(message.contains("nothing was published"), "{message}");
+                assert!(message.contains("placement binding mismatch"), "{message}");
+            }
+            other => panic!("the failing request must be refused with a typed error: {other:?}"),
+        }
+        assert!(replies[0].try_recv().is_err() && replies[2].try_recv().is_err(), "nobody else was answered");
+        assert_eq!(queue.len(), 1, "the request behind the failure stays queued");
+        assert_eq!(state(&service), saved, "the live service is restored exactly");
+        // The next round prepares the remaining request against the clean state.
+        let (payloads, _) = prepare_batch(&mut service, &groups, 65536, &mut queue, None, &peer.membership())
+            .expect("the next round prepares");
+        assert_eq!(payloads.len(), 1);
+        assert!(queue.is_empty());
+        assert_eq!(state(&service), saved);
     }
     #[test]
     fn proposal_batch_preserves_ordered_outcomes_and_commit_only_replies() {
@@ -2613,7 +3209,8 @@ mod tests {
             65536,
             &mut requests,
             &mut pending,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(requests.is_empty());
         assert!(pending.is_empty());
         assert_eq!(state(&service), saved);
@@ -2763,8 +3360,9 @@ mod tests {
             outgoing_voters: vec![],
             learners: vec![],
         };
-        let initial_health =
-            ChunkMembershipHealth::new(ChunkMembershipFence::from_status(&identity, &status).unwrap());
+        let initial_health = ChunkMembershipHealth::new(
+            ChunkMembershipFence::from_status(&identity, &status).unwrap(),
+        );
         let groups = ChunkGroupCatalog::with_membership_health(
             vec![group.clone()],
             [(group.placement_id.clone(), initial_health.clone())].into(),
@@ -2783,7 +3381,8 @@ mod tests {
         }
         // Use persisted canonical defaults before comparing full recovered state.
         let canonical =
-            crate::MetaSnapshot::from_bytes(&service.export_snapshot().to_bytes().unwrap()).unwrap();
+            crate::MetaSnapshot::from_bytes(&service.export_snapshot().to_bytes().unwrap())
+                .unwrap();
         service = restore_snapshot(canonical, &groups).unwrap();
         let initial_snapshot = service.export_snapshot();
         let mut next = initial_health.clone();
@@ -2851,6 +3450,7 @@ mod tests {
         let first = decide(&service, &groups, &next, true);
         let encode = |outcome: &ChunkCatalogOutcome| {
             Entry {
+            chunk_outcome: Vec::new(),
                 version: 2,
                 outcome: Vec::new(),
                 catalog_outcome: outcome.to_payload().unwrap(),
@@ -2939,8 +3539,12 @@ mod tests {
                 )
             },
             |id, reader, length| {
-                let (snapshot, catalog) =
-                    super::super::meta_checkpoint::restore_live(reader, length, id, &recovered_groups)?;
+                let (snapshot, catalog) = super::super::meta_checkpoint::restore_live(
+                    reader,
+                    length,
+                    id,
+                    &recovered_groups,
+                )?;
                 let service = restore_snapshot(snapshot, &catalog)?;
                 recovered_groups
                     .install_membership_health(&catalog)
@@ -2961,11 +3565,12 @@ mod tests {
     fn manifest_outcomes_recover_from_raft_checkpoint_and_committed_suffix() {
         use std::cell::RefCell;
         let (files, mut peer) = batch_peer();
-        let (mut service, create, replace) = crate::tests::manifest_publication_fixture();
+        let (mut service, create, replace) = crate::test_fixtures::manifest_publication_fixture();
         let groups = super::super::ChunkGroupCatalog::default();
         let mut pending = VecDeque::new();
         let encode = |outcome: &PlacementOutcome| {
             Entry {
+            chunk_outcome: Vec::new(),
                 version: 1,
                 catalog_outcome: Vec::new(),
                 outcome: outcome.to_payload().unwrap(),
@@ -3040,7 +3645,7 @@ mod tests {
         use crate::object_manifest::ManifestOutcome;
         let (_files, mut peer) = batch_peer();
         let (mut service, groups) = fixture(1, 0);
-        let (_, create, _) = crate::tests::manifest_publication_fixture();
+        let (_, create, _) = crate::test_fixtures::manifest_publication_fixture();
         let mut first = create.manifest.unwrap().after.unwrap();
         first.extents[0].group = "group-0".into();
         let mut second = first.clone();
@@ -3105,13 +3710,34 @@ mod tests {
         use crate::object_manifest::{ManifestOutcome, ObjectManifest};
         let (_files, mut peer) = batch_peer();
         let (mut service, groups) = fixture(1, 0);
-        let live = ObjectManifest { format_version: 2, bucket: "bucket".into(), key: "retained".into(),
-            generation: 1, length: 0, extents: Vec::new(), deleted: false };
-        service.object_manifests.apply(&ManifestOutcome::decide(None, live).unwrap()).unwrap();
-        let retain = ManifestRetentionRequest { version: 1, action: 1, bucket: "bucket".into(),
-            key: "retained".into(), generation: 1, ..Default::default() };
+        let live = ObjectManifest {
+            format_version: 2,
+            bucket: "bucket".into(),
+            key: "retained".into(),
+            generation: 1,
+            length: 0,
+            extents: Vec::new(),
+            deleted: false,
+        };
+        service
+            .object_manifests
+            .apply(&ManifestOutcome::decide(None, live).unwrap())
+            .unwrap();
+        let retain = ManifestRetentionRequest {
+            version: 1,
+            action: 1,
+            bucket: "bucket".into(),
+            key: "retained".into(),
+            generation: 1,
+            ..Default::default()
+        };
         let first_id = service.placement_commit_index + 1;
-        let release = ManifestRetentionRequest { version: 1, action: 2, retention_id: first_id, ..Default::default() };
+        let release = ManifestRetentionRequest {
+            version: 1,
+            action: 2,
+            retention_id: first_id,
+            ..Default::default()
+        };
         let mut stale = retain.clone();
         stale.generation = 99;
         let saved = service.export_snapshot().to_bytes().unwrap();
@@ -3119,64 +3745,153 @@ mod tests {
         let mut requests = VecDeque::new();
         let mut receivers = Vec::new();
         for command in [retain.clone(), retain, release, stale] {
-            let (request, rx) = queued(MetaRequest::ManifestRetention(command), Instant::now() + Duration::from_secs(10));
+            let (request, rx) = queued(
+                MetaRequest::ManifestRetention(command),
+                Instant::now() + Duration::from_secs(10),
+            );
             requests.push_back(request);
             receivers.push(rx);
         }
-        propose_batch(&mut peer, &mut service, &groups, 65536, &mut requests, &mut pending).unwrap();
+        propose_batch(
+            &mut peer,
+            &mut service,
+            &groups,
+            65536,
+            &mut requests,
+            &mut pending,
+        )
+        .unwrap();
         assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
-        assert!(receivers.iter().all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
-        peer.process_ready(|id, bytes| apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)).unwrap();
-        assert!(receivers[..3].iter().all(|rx| rx.try_recv().unwrap().is_ok()));
+        assert!(receivers
+            .iter()
+            .all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
+        peer.process_ready(|id, bytes| {
+            apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)
+        })
+        .unwrap();
+        assert!(receivers[..3]
+            .iter()
+            .all(|rx| rx.try_recv().unwrap().is_ok()));
         assert!(receivers[3].try_recv().unwrap().is_err());
-        assert!(service.object_manifests.retained_manifest(first_id).is_none());
-        assert!(service.object_manifests.retained_manifest(first_id + 1).is_some());
+        assert!(service
+            .object_manifests
+            .retained_manifest(first_id)
+            .is_none());
+        assert!(service
+            .object_manifests
+            .retained_manifest(first_id + 1)
+            .is_some());
         assert_eq!(service.placement_commit_index, first_id + 2);
+    }
+
+    mod metadata_feature_batch_tests {
+        include!("metadata_feature_batch_tests.rs");
+    }
+    mod metadata_feature_voter_batch_tests {
+        include!("metadata_feature_voter_batch_tests.rs");
     }
 
     include!("compact_generation_batch_tests.rs");
     include!("compact_append_command_tests.rs");
     include!("reservation_tests.rs");
     include!("append_plan_command_tests.rs");
-    include!("ranged_manifest_read_tests.rs");
     include!("feature_draft_tests.rs");
     include!("log_chunk_outcome_command_tests.rs");
     include!("log_chunk_commands_tests.rs");
+    include!("unified_log_writer_command_tests.rs");
     include!("log_chunk_pipeline_tests.rs");
     include!("log_chunk_cost_probes.rs");
+    include!("chunk_manifest_batch_tests.rs");
+    include!("chunk_manifest_read_tests.rs");
 
     #[test]
-    fn compact_read_session_batches_restore_shared_records_before_committing_removal_and_creation() {
+    fn compact_read_session_batches_restore_shared_records_before_committing_removal_and_creation()
+    {
         use crate::manifest_retention::ManifestRetentionRequest;
         use crate::object_manifest::{ManifestOutcome, ObjectManifest};
         let (_files, mut peer) = batch_peer();
         let (mut service, groups) = fixture(1, 0);
-        PlacementOutcome::publish_manifest(&service, ManifestOutcome::decide(None, ObjectManifest {
-            format_version: 2, bucket: "bucket".into(), key: "reader".into(), generation: 1,
+        PlacementOutcome::publish_manifest(
+            &service,
+            ManifestOutcome::decide(
+                None,
+                ObjectManifest {
+                    format_version: 2,
+                    bucket: "bucket".into(),
+                    key: "reader".into(),
+                    generation: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+            0,
+        )
+        .unwrap()
+        .apply(&mut service)
+        .unwrap();
+        let open = ManifestRetentionRequest {
+            version: 2,
+            action: 5,
+            bucket: "bucket".into(),
+            key: "reader".into(),
+            ttl_ms: 60_000,
             ..Default::default()
-        }).unwrap(), 0).unwrap().apply(&mut service).unwrap();
-        let open = ManifestRetentionRequest { version: 2, action: 5, bucket: "bucket".into(),
-            key: "reader".into(), ttl_ms: 60_000, ..Default::default() };
-        super::super::read_session_commands::prepare_at(&service, &open, 8192,
-            super::super::staged_lease_sweeper::now_ms().unwrap()).unwrap().0.apply(&mut service).unwrap();
+        };
+        super::super::read_session_commands::prepare_at(
+            &service,
+            &open,
+            8192,
+            super::super::staged_lease_sweeper::now_ms().unwrap(),
+        )
+        .unwrap()
+        .0
+        .apply(&mut service)
+        .unwrap();
         let id = service.placement_commit_index;
         let original = service.object_manifests.retained_arc(id).unwrap();
         let before = service.export_snapshot().to_bytes().unwrap();
-        let release = ManifestRetentionRequest { version: 1, action: 2, retention_id: id, ..Default::default() };
-        let release_new = ManifestRetentionRequest { retention_id: id + 2, ..release.clone() };
+        let release = ManifestRetentionRequest {
+            version: 1,
+            action: 2,
+            retention_id: id,
+            ..Default::default()
+        };
+        let release_new = ManifestRetentionRequest {
+            retention_id: id + 2,
+            ..release.clone()
+        };
         let mut requests = VecDeque::new();
         let mut receivers = Vec::new();
         let mut pending = VecDeque::new();
         for command in [release, open, release_new] {
-            let (request, receiver) = queued(MetaRequest::ManifestRetention(command), Instant::now() + Duration::from_secs(10));
+            let (request, receiver) = queued(
+                MetaRequest::ManifestRetention(command),
+                Instant::now() + Duration::from_secs(10),
+            );
             requests.push_back(request);
             receivers.push(receiver);
         }
-        propose_batch(&mut peer, &mut service, &groups, 8192, &mut requests, &mut pending).unwrap();
+        propose_batch(
+            &mut peer,
+            &mut service,
+            &groups,
+            8192,
+            &mut requests,
+            &mut pending,
+        )
+        .unwrap();
         assert_eq!(service.export_snapshot().to_bytes().unwrap(), before);
-        assert!(std::sync::Arc::ptr_eq(&original, &service.object_manifests.retained_arc(id).unwrap()));
-        assert!(receivers.iter().all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
-        peer.process_ready(|id, bytes| apply_committed(&mut service, &groups, 8192, &mut pending, id, bytes)).unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &original,
+            &service.object_manifests.retained_arc(id).unwrap()
+        ));
+        assert!(receivers
+            .iter()
+            .all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
+        peer.process_ready(|id, bytes| {
+            apply_committed(&mut service, &groups, 8192, &mut pending, id, bytes)
+        })
+        .unwrap();
         assert!(receivers.iter().all(|rx| rx.try_recv().unwrap().is_ok()));
         assert!(service.object_manifests.retained_manifest(id).is_none());
         assert!(service.object_manifests.retained_manifest(id + 2).is_none());
@@ -3189,35 +3904,100 @@ mod tests {
         use crate::object_manifest::{ManifestOutcome, ObjectManifest};
         let (_files, mut peer) = batch_peer();
         let (mut service, groups) = fixture(1, 0);
-        PlacementOutcome::publish_manifest(&service, ManifestOutcome::decide(None, ObjectManifest {
-            format_version: 2, bucket: "bucket".into(), key: "reader".into(), generation: 1,
+        PlacementOutcome::publish_manifest(
+            &service,
+            ManifestOutcome::decide(
+                None,
+                ObjectManifest {
+                    format_version: 2,
+                    bucket: "bucket".into(),
+                    key: "reader".into(),
+                    generation: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+            0,
+        )
+        .unwrap()
+        .apply(&mut service)
+        .unwrap();
+        let open = ManifestRetentionRequest {
+            version: 2,
+            action: 5,
+            bucket: "bucket".into(),
+            key: "reader".into(),
+            ttl_ms: 60_000,
             ..Default::default()
-        }).unwrap(), 0).unwrap().apply(&mut service).unwrap();
-        let open = ManifestRetentionRequest { version: 2, action: 5, bucket: "bucket".into(),
-            key: "reader".into(), ttl_ms: 60_000, ..Default::default() };
-        super::super::read_session_commands::prepare_at(&service, &open, 8192,
-            super::super::staged_lease_sweeper::now_ms().unwrap()).unwrap().0.apply(&mut service).unwrap();
+        };
+        super::super::read_session_commands::prepare_at(
+            &service,
+            &open,
+            8192,
+            super::super::staged_lease_sweeper::now_ms().unwrap(),
+        )
+        .unwrap()
+        .0
+        .apply(&mut service)
+        .unwrap();
         let id = service.placement_commit_index;
-        let expiry = service.object_manifests.retained_manifest(id).unwrap().expires_at_ms;
-        let renew = ManifestRetentionRequest { version: 2, action: 6, retention_id: id,
-            expected_expiry_ms: expiry, ttl_ms: 120_000, ..Default::default() };
-        let stale_expiry = ManifestRetentionRequest { action: 7, ttl_ms: 0, ..renew.clone() };
+        let expiry = service
+            .object_manifests
+            .retained_manifest(id)
+            .unwrap()
+            .expires_at_ms;
+        let renew = ManifestRetentionRequest {
+            version: 2,
+            action: 6,
+            retention_id: id,
+            expected_expiry_ms: expiry,
+            ttl_ms: 120_000,
+            ..Default::default()
+        };
+        let stale_expiry = ManifestRetentionRequest {
+            action: 7,
+            ttl_ms: 0,
+            ..renew.clone()
+        };
         let saved = service.export_snapshot().to_bytes().unwrap();
         let mut requests = VecDeque::new();
         let mut receivers = Vec::new();
         let mut pending = VecDeque::new();
         for command in [renew, stale_expiry] {
-            let (request, receiver) = queued(MetaRequest::ManifestRetention(command), Instant::now() + Duration::from_secs(10));
+            let (request, receiver) = queued(
+                MetaRequest::ManifestRetention(command),
+                Instant::now() + Duration::from_secs(10),
+            );
             requests.push_back(request);
             receivers.push(receiver);
         }
-        propose_batch(&mut peer, &mut service, &groups, 8192, &mut requests, &mut pending).unwrap();
+        propose_batch(
+            &mut peer,
+            &mut service,
+            &groups,
+            8192,
+            &mut requests,
+            &mut pending,
+        )
+        .unwrap();
         assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
-        assert!(receivers.iter().all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
-        peer.process_ready(|id, bytes| apply_committed(&mut service, &groups, 8192, &mut pending, id, bytes)).unwrap();
+        assert!(receivers
+            .iter()
+            .all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
+        peer.process_ready(|id, bytes| {
+            apply_committed(&mut service, &groups, 8192, &mut pending, id, bytes)
+        })
+        .unwrap();
         assert!(receivers[0].try_recv().unwrap().is_ok());
         assert!(receivers[1].try_recv().unwrap().is_err());
-        assert!(service.object_manifests.retained_manifest(id).unwrap().expires_at_ms > expiry);
+        assert!(
+            service
+                .object_manifests
+                .retained_manifest(id)
+                .unwrap()
+                .expires_at_ms
+                > expiry
+        );
     }
 
     #[test]
@@ -3225,69 +4005,162 @@ mod tests {
         use crate::staged_allocation::StagedAllocationRequest;
         let (_files, mut peer) = batch_peer();
         let (mut service, groups) = fixture(1, 0);
-        let enable = StagedAllocationRequest { version: 1, action: 6, ..Default::default() };
+        let enable = StagedAllocationRequest {
+            version: 1,
+            action: 6,
+            ..Default::default()
+        };
         super::super::staged_allocation_commands::prepare(&service, &groups, &enable, 8192)
-            .unwrap().0.apply(&mut service).unwrap();
+            .unwrap()
+            .0
+            .apply(&mut service)
+            .unwrap();
         let before = service.placement_commit_index;
-        let reserve = StagedAllocationRequest { version: 3, action: 1, allocation_id: before + 1,
-            page_count: 1, bucket: "bucket".into(), key: "identified".into(),
-            request_nonce: vec![7; 32], ..Default::default() };
-        let competing = StagedAllocationRequest { request_nonce: vec![8; 32], ..reserve.clone() };
-        let abort = StagedAllocationRequest { version: 1, action: 3, allocation_id: before + 1, ..Default::default() };
+        let reserve = StagedAllocationRequest {
+            version: 3,
+            action: 1,
+            allocation_id: before + 1,
+            page_count: 1,
+            bucket: "bucket".into(),
+            key: "identified".into(),
+            request_nonce: vec![7; 32],
+            ..Default::default()
+        };
+        let competing = StagedAllocationRequest {
+            request_nonce: vec![8; 32],
+            ..reserve.clone()
+        };
+        let abort = StagedAllocationRequest {
+            version: 1,
+            action: 3,
+            allocation_id: before + 1,
+            ..Default::default()
+        };
         let saved = service.export_snapshot().to_bytes().unwrap();
         let mut requests = VecDeque::new();
         let mut receivers = Vec::new();
         let mut pending = VecDeque::new();
         for command in [reserve.clone(), reserve.clone(), competing, abort, reserve] {
-            let (request, receiver) = queued(MetaRequest::StagedAllocation(command), Instant::now() + Duration::from_secs(10));
+            let (request, receiver) = queued(
+                MetaRequest::StagedAllocation(command),
+                Instant::now() + Duration::from_secs(10),
+            );
             requests.push_back(request);
             receivers.push(receiver);
         }
-        propose_batch(&mut peer, &mut service, &groups, 65536, &mut requests, &mut pending).unwrap();
+        propose_batch(
+            &mut peer,
+            &mut service,
+            &groups,
+            65536,
+            &mut requests,
+            &mut pending,
+        )
+        .unwrap();
         assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
-        assert!(receivers.iter().all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
-        peer.process_ready(|id, bytes| apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)).unwrap();
+        assert!(receivers
+            .iter()
+            .all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
+        peer.process_ready(|id, bytes| {
+            apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)
+        })
+        .unwrap();
         let first = receivers[0].try_recv().unwrap().unwrap();
         assert_eq!(receivers[1].try_recv().unwrap().unwrap(), first);
         assert!(receivers[2].try_recv().unwrap().is_err());
         assert!(receivers[3].try_recv().unwrap().is_ok());
         assert!(receivers[4].try_recv().unwrap().is_err());
         assert_eq!(service.placement_commit_index, before + 2);
-        assert!(service.object_manifests.staged_allocation(before + 1).is_none());
+        assert!(service
+            .object_manifests
+            .staged_allocation(before + 1)
+            .is_none());
     }
 
     #[test]
     fn staging_batch_restores_reservations_and_objects_before_atomic_commit() {
-        use crate::staged_allocation::StagedAllocationRequest;
         use crate::object_manifest::{ManifestOutcome, ObjectManifest};
+        use crate::staged_allocation::StagedAllocationRequest;
         let (_files, mut peer) = batch_peer();
         let (mut service, groups) = fixture(1, 0);
         let first_id = service.placement_commit_index + 1;
-        let reserve = StagedAllocationRequest { version: 1, action: 1, page_count: 1,
-            bucket: "bucket".into(), key: "owned".into(), ..Default::default() };
-        let live = ObjectManifest { format_version: 2, bucket: "bucket".into(), key: "owned".into(),
-            generation: 1, length: 0, extents: Vec::new(), deleted: false };
-        let publish = StagedAllocationRequest { version: 1, action: 4, allocation_id: first_id,
-            outcome: Some(ManifestOutcome::decide(None, live.clone()).unwrap()), ..Default::default() };
-        let next = StagedAllocationRequest { expected_generation: 1, append: true, ..reserve.clone() };
-        let abort = StagedAllocationRequest { version: 1, action: 3, allocation_id: first_id + 2, ..Default::default() };
+        let reserve = StagedAllocationRequest {
+            version: 1,
+            action: 1,
+            page_count: 1,
+            bucket: "bucket".into(),
+            key: "owned".into(),
+            ..Default::default()
+        };
+        let live = ObjectManifest {
+            format_version: 2,
+            bucket: "bucket".into(),
+            key: "owned".into(),
+            generation: 1,
+            length: 0,
+            extents: Vec::new(),
+            deleted: false,
+        };
+        let publish = StagedAllocationRequest {
+            version: 1,
+            action: 4,
+            allocation_id: first_id,
+            outcome: Some(ManifestOutcome::decide(None, live.clone()).unwrap()),
+            ..Default::default()
+        };
+        let next = StagedAllocationRequest {
+            expected_generation: 1,
+            append: true,
+            ..reserve.clone()
+        };
+        let abort = StagedAllocationRequest {
+            version: 1,
+            action: 3,
+            allocation_id: first_id + 2,
+            ..Default::default()
+        };
         let saved = service.export_snapshot().to_bytes().unwrap();
         let mut requests = VecDeque::new();
         let mut receivers = Vec::new();
         let mut pending = VecDeque::new();
         for command in [reserve, publish, next, abort] {
-            let (request, receiver) = queued(MetaRequest::StagedAllocation(command), Instant::now() + Duration::from_secs(10));
+            let (request, receiver) = queued(
+                MetaRequest::StagedAllocation(command),
+                Instant::now() + Duration::from_secs(10),
+            );
             requests.push_back(request);
             receivers.push(receiver);
         }
-        propose_batch(&mut peer, &mut service, &groups, 65536, &mut requests, &mut pending).unwrap();
+        propose_batch(
+            &mut peer,
+            &mut service,
+            &groups,
+            65536,
+            &mut requests,
+            &mut pending,
+        )
+        .unwrap();
         assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
-        assert!(receivers.iter().all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
-        peer.process_ready(|id, bytes| apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)).unwrap();
+        assert!(receivers
+            .iter()
+            .all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
+        peer.process_ready(|id, bytes| {
+            apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)
+        })
+        .unwrap();
         assert!(receivers.iter().all(|rx| rx.try_recv().unwrap().is_ok()));
-        assert!(service.object_manifests.staged_allocation(first_id).is_none());
-        assert!(service.object_manifests.staged_allocation(first_id + 2).is_none());
-        assert_eq!(service.object_manifests.get_manifest(&live.object_id()), Some(live.clone()));
+        assert!(service
+            .object_manifests
+            .staged_allocation(first_id)
+            .is_none());
+        assert!(service
+            .object_manifests
+            .staged_allocation(first_id + 2)
+            .is_none());
+        assert_eq!(
+            service.object_manifests.get_manifest(&live.object_id()),
+            Some(live.clone())
+        );
     }
 
     #[test]
@@ -3295,74 +4168,86 @@ mod tests {
         use crate::staged_allocation::StagedAllocationRequest;
         let (_files, mut peer) = batch_peer();
         let (mut service, groups) = fixture(1, 0);
-        let enable = StagedAllocationRequest { version: 1, action: 6, ..Default::default() };
-        let reserve = StagedAllocationRequest { version: 2, action: 1, page_count: 1,
-            bucket: "bucket".into(), key: "leased".into(), ttl_ms: 60_000, ..Default::default() };
+        let enable = StagedAllocationRequest {
+            version: 1,
+            action: 6,
+            ..Default::default()
+        };
+        let reserve = StagedAllocationRequest {
+            version: 2,
+            action: 1,
+            page_count: 1,
+            bucket: "bucket".into(),
+            key: "leased".into(),
+            ttl_ms: 60_000,
+            ..Default::default()
+        };
         for command in [enable, reserve] {
             super::super::staged_allocation_commands::prepare(&service, &groups, &command, 8192)
-                .unwrap().0.apply(&mut service).unwrap();
+                .unwrap()
+                .0
+                .apply(&mut service)
+                .unwrap();
         }
         let id = service.placement_commit_index;
-        let original = service.object_manifests.staged_allocation(id).unwrap().clone();
-        let renew = StagedAllocationRequest { version: 2, action: 8, allocation_id: id,
-            expected_expiry_ms: original.expires_at_ms, ttl_ms: 120_000, ..Default::default() };
-        let expire = StagedAllocationRequest { version: 2, action: 9, allocation_id: id,
-            expected_expiry_ms: original.expires_at_ms, ..Default::default() };
+        let original = service
+            .object_manifests
+            .staged_allocation(id)
+            .unwrap()
+            .clone();
+        let renew = StagedAllocationRequest {
+            version: 2,
+            action: 8,
+            allocation_id: id,
+            expected_expiry_ms: original.expires_at_ms,
+            ttl_ms: 120_000,
+            ..Default::default()
+        };
+        let expire = StagedAllocationRequest {
+            version: 2,
+            action: 9,
+            allocation_id: id,
+            expected_expiry_ms: original.expires_at_ms,
+            ..Default::default()
+        };
         let saved = service.export_snapshot().to_bytes().unwrap();
         let mut requests = VecDeque::new();
         let mut receivers = Vec::new();
         let mut pending = VecDeque::new();
         for command in [renew, expire] {
-            let (request, receiver) = queued(MetaRequest::StagedAllocation(command), Instant::now() + Duration::from_secs(10));
+            let (request, receiver) = queued(
+                MetaRequest::StagedAllocation(command),
+                Instant::now() + Duration::from_secs(10),
+            );
             requests.push_back(request);
             receivers.push(receiver);
         }
-        propose_batch(&mut peer, &mut service, &groups, 65536, &mut requests, &mut pending).unwrap();
+        propose_batch(
+            &mut peer,
+            &mut service,
+            &groups,
+            65536,
+            &mut requests,
+            &mut pending,
+        )
+        .unwrap();
         assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
-        peer.process_ready(|id, bytes| apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)).unwrap();
+        peer.process_ready(|id, bytes| {
+            apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)
+        })
+        .unwrap();
         assert!(receivers[0].try_recv().unwrap().is_ok());
         assert!(receivers[1].try_recv().unwrap().is_err());
-        assert!(service.object_manifests.staged_allocation(id).unwrap().expires_at_ms > original.expires_at_ms);
+        assert!(
+            service
+                .object_manifests
+                .staged_allocation(id)
+                .unwrap()
+                .expires_at_ms
+                > original.expires_at_ms
+        );
     }
 
-    #[test]
-    fn publication_fence_and_copy_restore_speculative_state_and_commit_in_order() {
-        use crate::object_manifest::{ManifestOutcome, ObjectManifest};
-        let (_files, mut peer) = batch_peer();
-        let (mut service, groups) = fixture(1, 0);
-        let source = ObjectManifest { format_version: 2, bucket: "bucket".into(), key: "source".into(),
-            generation: 1, length: 0, extents: Vec::new(), deleted: false };
-        PlacementOutcome::publish_manifest(&service, ManifestOutcome::decide(None, source).unwrap(), 0)
-            .unwrap().apply(&mut service).unwrap();
-        let enable = MetaRequest::StagedAllocation(crate::staged_allocation::StagedAllocationRequest {
-            version: 1, action: 6, ..Default::default()
-        });
-        let copy = MetaRequest::CopyManifest(crate::manifest_copy::ManifestCopyRequest { version: 1,
-            source_bucket: "bucket".into(), source_key: "source".into(), bucket: "bucket".into(), key: "copy".into(),
-            max_bytes: 0, ..Default::default() });
-        let late = ObjectManifest { format_version: 2, bucket: "bucket".into(), key: "late".into(), generation: 1,
-            length: 1, deleted: false, extents: vec![crate::object_manifest::ObjectExtent { group: "group-0".into(),
-                chunk_id: 999, length: 1, write_sequence: 1, data_sha256: vec![1; 32], ..Default::default() }] };
-        let late = MetaRequest::PublishManifest { outcome: ManifestOutcome::decide(None, late).unwrap(), update_time_ms: 0 };
-        let saved = service.export_snapshot().to_bytes().unwrap();
-        let mut requests = VecDeque::new();
-        let mut receivers = Vec::new();
-        let mut pending = VecDeque::new();
-        for command in [enable, copy, late] {
-            let (request, receiver) = queued(command, Instant::now() + Duration::from_secs(10));
-            requests.push_back(request);
-            receivers.push(receiver);
-        }
-        propose_batch(&mut peer, &mut service, &groups, 65536, &mut requests, &mut pending).unwrap();
-        assert_eq!(service.export_snapshot().to_bytes().unwrap(), saved);
-        peer.process_ready(|id, bytes| apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)).unwrap();
-        assert!(receivers[0].try_recv().unwrap().is_ok());
-        assert!(receivers[1].try_recv().unwrap().is_ok());
-        assert!(receivers[2].try_recv().unwrap().is_err());
-        assert!(service.object_manifests.publication_fence() > 0);
-        assert!(service.object_manifests.get(&crate::ObjectId::new("bucket", "copy")).is_some());
-        assert!(service.object_manifests.get(&crate::ObjectId::new("bucket", "late")).is_none());
-    }
     #[test]
     fn object_allocations_commit_unique_namespaces_and_restore_speculative_batches() {
         let (_files, mut peer) = batch_peer();
@@ -3465,14 +4350,28 @@ mod read_failure_tests {
     #[test]
     fn committed_membership_confirmation_failure_never_authorizes_replay() {
         use crate::cluster::{MembershipOperation, MembershipRequest};
-        let mut command = MembershipRequest { version: 1, bootstrap_id: 1, operation: MembershipOperation::Promote as i32, node_id: 4 };
-        for error in [RaftError::NotLeader(1), RaftError::NoLeader, RaftError::Storage("storage unavailable".into())] {
-            let failure = confirmation_failure(&MetaRequest::Membership(command.clone()), &error).unwrap_err().to_string();
+        let mut command = MembershipRequest {
+            version: 1,
+            bootstrap_id: 1,
+            operation: MembershipOperation::Promote as i32,
+            node_id: 4,
+        };
+        for error in [
+            RaftError::NotLeader(1),
+            RaftError::NoLeader,
+            RaftError::Storage("storage unavailable".into()),
+        ] {
+            let failure = confirmation_failure(&MetaRequest::Membership(command.clone()), &error)
+                .unwrap_err()
+                .to_string();
             assert!(failure.contains("outcome may be committed; do not replay"));
         }
         command.operation = MembershipOperation::Read as i32;
         command.node_id = 0;
-        assert!(matches!(confirmation_failure(&MetaRequest::Membership(command), &RaftError::NotLeader(1)), Ok(MetaReply::NotLeader)));
+        assert!(matches!(
+            confirmation_failure(&MetaRequest::Membership(command), &RaftError::NotLeader(1)),
+            Ok(MetaReply::NotLeader)
+        ));
     }
 
     #[test]
@@ -3493,5 +4392,18 @@ mod read_failure_tests {
                 Err(ObjectError::InvalidArgument(_))
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod native_object_batch_tests {
+    use super::*;
+    #[test]
+    fn native_stage_batches_restore_every_live_table_before_committed_replay() {
+        let mut leader=crate::native_object_outcome_tests::service();let before=leader.export_snapshot().to_bytes().unwrap();let mut followers=[leader.clone(),leader.clone(),leader.clone()];
+        let mut queued:VecDeque<_>=["a","b"].into_iter().map(|key|{let (reply,_receiver)=mpsc::sync_channel(1);Request{request:MetaRequest::NativeObject(super::super::native_object_commands::tests::begin_request(key)),reply,deadline:Instant::now()+Duration::from_secs(30),progress:RequestProgress::new(false)}}).collect();
+        let membership=matrixraft::peer_runtime::MembershipState{voters:vec![1],outgoing_voters:vec![],learners:vec![],next_learners:vec![],auto_leave:false};let (payloads,prepared)=prepare_batch(&mut leader,&super::super::ChunkGroupCatalog::default(),1<<20,&mut queued,None,&membership).unwrap();assert_eq!(payloads.len(),2);assert!(prepared.iter().all(|(_,reply)|matches!(reply,Some(Ok(MetaReply::NativeObject(_))))));assert_eq!(leader.export_snapshot().to_bytes().unwrap(),before);
+        for follower in &mut followers {for payload in &payloads {let entry=Entry::decode(payload.as_slice()).unwrap();PlacementOutcome::from_payload(&entry.outcome).unwrap().apply(follower).unwrap();}assert_eq!(follower.native_objects.stage_count(),2);assert_eq!(follower.placement_commit_index,3);}
+        assert_eq!(followers[0].export_snapshot().to_bytes().unwrap(),followers[1].export_snapshot().to_bytes().unwrap());assert_eq!(followers[1].export_snapshot().to_bytes().unwrap(),followers[2].export_snapshot().to_bytes().unwrap());
     }
 }

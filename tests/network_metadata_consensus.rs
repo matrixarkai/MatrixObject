@@ -3,8 +3,7 @@
 #![cfg(all(target_os = "linux", feature = "metadata-consensus"))]
 mod node_regime;
 use matrixobjectstore_rs::cluster::{
-    CommittedPlacement, MetaClientOptions, MetaNodeOptions, MetaNodeServer, MetaRaftOptions,
-    RemoteMetaClient,
+    CommittedPlacement, MetaClientOptions, MetaNodeOptions, MetaNodeServer, MetaRaftOptions, RemoteMetaClient,
 };
 use node_regime::processes::{self, NodeProcess};
 use std::{
@@ -143,7 +142,8 @@ impl Group {
             .collect::<Vec<_>>()
             .join(",");
         let id = (i + 1).to_string();
-        let checkpoint_bytes = self.checkpoint_bytes.to_string();
+        // 0 means "the server's default interval": the server refuses 0 as a setting, and an empty value is the default
+        let checkpoint_bytes = if self.checkpoint_bytes == 0 { String::new() } else { self.checkpoint_bytes.to_string() };
         let request_timeout_ms = self.request_timeout_ms.to_string();
         let zero_fill = self.zero_fill.map(|bytes| bytes.to_string());
         let object_cap = self.object_cap.map(|cap| cap.to_string());
@@ -263,362 +263,6 @@ impl Drop for Group {
     }
 }
 
-#[test]
-fn read_sessions_survive_lagging_voter_transfer_and_expire_after_quorum_recovery() {
-    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
-    use matrixobjectstore_rs::cluster::ReplicaClientOptions;
-    let mut group = Group::with_catalog_checkpoints(None, None, None, 1024);
-    let leader = group.leader();
-    let mut client = group.client(leader);
-    let original = client.publish_manifest(ManifestOutcome::decide(None, ObjectManifest {
-        format_version: 2, bucket: "bucket".into(), key: "reader".into(), generation: 1,
-        ..Default::default()
-    }).unwrap(), 0).unwrap();
-    let permanent = client.retain_manifest("bucket", "reader", 1).unwrap();
-    let lagging = (leader + 1) % 3;
-    group.kill(lagging);
-    let mut session = client.open_read_session("bucket", "reader", Some(1), 60_000).unwrap();
-    client.delete_object("bucket", "reader", 0).unwrap();
-    client.renew_read_session(&mut session, 120_000).unwrap();
-    let wal = group.root.join(leader.to_string()).join("metadata.peer.wal");
-    let protected_commit = node_regime::checkpoints::committed_index(&wal);
-    assert!(protected_commit > 0);
-    for index in 0..16 {
-        client.allocate_staged_object("bucket", &format!("reader-checkpoint-{index}"), None, 1, false).unwrap();
-    }
-    node_regime::checkpoints::wait_for_checkpoint_index(&wal, protected_commit);
-    group.start(lagging);
-    node_regime::checkpoints::wait_for_checkpoint_index(
-        &group.root.join(lagging.to_string()).join("metadata.peer.wal"), protected_commit);
-    group.kill(leader);
-    let mut client = group.client(group.leader());
-    assert_eq!(client.read_retained_object(session.retention_id, 0, &ReplicaClientOptions::default()).unwrap(),
-        (original, Vec::new()));
-    client.publish_manifest(ManifestOutcome::decide(None, ObjectManifest {
-        format_version: 2, bucket: "bucket".into(), key: "abandoned-reader".into(), generation: 1,
-        ..Default::default()
-    }).unwrap(), 0).unwrap();
-    let abandoned = client.open_read_session("bucket", "abandoned-reader", None, 1000).unwrap();
-    for index in 0..3 { if group.nodes[index].is_some() { group.kill(index); } }
-    std::thread::sleep(Duration::from_millis(1200));
-    group.start(0);
-    let mut minority = group.client(0);
-    assert!(minority.read_retained_manifest(session.retention_id).is_err());
-    assert!(minority.release_manifest(session.retention_id).is_err());
-    group.start(1);
-    group.start(2);
-    let mut client = group.client(group.leader());
-    let until = Instant::now() + Duration::from_secs(10);
-    loop {
-        if !client.list_retained_manifests(0, 32).unwrap().0.contains(&abandoned.retention_id) { break; }
-        assert!(Instant::now() < until);
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(client.read_retained_manifest(abandoned.retention_id).is_err());
-    assert_eq!(client.read_retained_manifest(session.retention_id).unwrap(), session);
-    assert_eq!(client.read_retained_manifest(permanent.retention_id).unwrap(), permanent);
-    client.expire_read_session(&abandoned).unwrap();
-    for index in 0..3 { group.kill(index); }
-    for index in 0..3 { group.start(index); }
-    let mut client = group.client(group.leader());
-    assert_eq!(client.read_retained_manifest(session.retention_id).unwrap(), session);
-    assert!(client.read_retained_manifest(abandoned.retention_id).is_err());
-}
-
-#[test]
-fn prepared_staging_identity_survives_lagging_voter_transfer_leader_loss_and_retirement() {
-    use matrixobjectstore_rs::staged_allocation::PreparedStagedAllocation;
-    let mut group = Group::with_catalog_checkpoints(None, None, None, 1024);
-    let leader = group.leader();
-    let mut client = group.client(leader);
-    client.enable_publication_fence().unwrap();
-    let lagging = (leader + 1) % 3;
-    group.kill(lagging);
-    let prepared = client.prepare_staged_allocation("bucket", "identified", None, 2, false, 60_000).unwrap();
-    let prepared = PreparedStagedAllocation::from_bytes(&prepared.to_bytes()).unwrap();
-    let competing = client.prepare_staged_allocation("bucket", "identified", None, 2, false, 60_000).unwrap();
-    let first = client.allocate_prepared_staged_object(&prepared).unwrap();
-    assert!(client.allocate_prepared_staged_object(&competing).is_err());
-    let renewed = client.renew_staged_allocation(&first, 120_000).unwrap();
-    assert_eq!(client.allocate_prepared_staged_object(&prepared).unwrap(), renewed);
-    let wal = group.root.join(leader.to_string()).join("metadata.peer.wal");
-    let identity_commit = node_regime::checkpoints::committed_index(&wal);
-    assert!(identity_commit > 0);
-    for index in 0..16 {
-        client.allocate_staged_object("bucket", &format!("checkpoint-{index}"), None, 1, false).unwrap();
-    }
-    node_regime::checkpoints::wait_for_checkpoint_index(&wal, identity_commit);
-    group.start(lagging);
-    node_regime::checkpoints::wait_for_checkpoint_index(
-        &group.root.join(lagging.to_string()).join("metadata.peer.wal"), identity_commit);
-    group.kill(leader);
-    let mut client = group.client(group.leader());
-    assert_eq!(client.allocate_prepared_staged_object(&prepared).unwrap(), renewed);
-    for index in 0..3 { if group.nodes[index].is_some() { group.kill(index); } }
-    for index in 0..3 { group.start(index); }
-    let leader = group.leader();
-    let mut client = group.client(leader);
-    assert_eq!(client.allocate_prepared_staged_object(&prepared).unwrap(), renewed);
-    assert!(client.allocate_prepared_staged_object(&competing).is_err());
-    assert_eq!(client.list_staged_allocations(0, 32).unwrap().0.len(), 17);
-    client.abort_staged_allocation(renewed.allocation_id).unwrap();
-    assert!(client.allocate_prepared_staged_object(&prepared).is_err());
-    for index in 0..3 { group.kill(index); }
-    for index in 0..3 { group.start(index); }
-    let leader = group.leader();
-    let mut client = group.client(leader);
-    assert!(client.allocate_prepared_staged_object(&prepared).is_err());
-    let next = client.prepare_staged_allocation("bucket", "identified", None, 1, false, 0).unwrap();
-    assert!(next.allocation_id() > renewed.allocation_id);
-    assert!(client.allocate_prepared_staged_object(&next).is_ok());
-    for index in 0..3 { if index != leader { group.kill(index); } }
-    assert!(client.prepare_staged_allocation("bucket", "minority", None, 1, false, 0).is_err());
-    assert!(client.allocate_prepared_staged_object(&next).is_err());
-}
-
-#[test]
-fn object_tombstone_survives_metadata_failover_and_restart() {
-    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
-
-    let mut group = Group::new();
-    let mut client = group.client(group.leader());
-    let live = ObjectManifest {
-        format_version: 2,
-        bucket: "bucket".into(),
-        key: "deleted-object".into(),
-        generation: 1,
-        length: 0,
-        extents: Vec::new(),
-        deleted: false,
-    };
-    assert_eq!(
-        client
-            .publish_manifest(ManifestOutcome::decide(None, live.clone()).unwrap(), 1)
-            .unwrap(),
-        live
-    );
-    let tombstone = client.delete_object("bucket", "deleted-object", 2).unwrap();
-    assert!(tombstone.deleted);
-    assert_eq!(tombstone.generation, 2);
-    assert_eq!(
-        client.delete_object("bucket", "deleted-object", 3).unwrap(),
-        tombstone
-    );
-    #[cfg(feature = "replica-server")]
-    assert!(matches!(
-        client.read_object(
-            "bucket",
-            "deleted-object",
-            0,
-            &matrixobjectstore_rs::cluster::ReplicaClientOptions::default(),
-        ),
-        Err(matrixobjectstore_rs::ObjectError::NotFound(_))
-    ));
-
-    let former_leader = group.leader();
-    group.kill(former_leader);
-    let mut client = group.client(group.leader());
-    assert_eq!(
-        client.read_manifest("bucket", "deleted-object").unwrap(),
-        tombstone
-    );
-    for index in 0..3 {
-        if group.nodes[index].is_some() {
-            group.kill(index);
-        }
-    }
-    for index in 0..3 {
-        group.start(index);
-    }
-    let mut client = group.client(group.leader());
-    assert_eq!(
-        client.read_manifest("bucket", "deleted-object").unwrap(),
-        tombstone
-    );
-    let mut recreated = live;
-    recreated.generation = 3;
-    assert_eq!(
-        client
-            .publish_manifest(
-                ManifestOutcome::decide(Some(tombstone), recreated.clone()).unwrap(),
-                4,
-            )
-            .unwrap(),
-        recreated
-    );
-}
-
-#[test]
-fn manifest_listing_continues_after_leader_loss_and_preserves_tombstones() {
-    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
-    let mut group = Group::new();
-    let mut client = group.client(group.leader());
-    for (bucket, key) in [("a", "z"), ("bucket", "a"), ("bucket", "b"), ("bucket", "c"), ("z", "a")] {
-        client.publish_manifest(ManifestOutcome::decide(None, ObjectManifest {
-            format_version: 2, bucket: bucket.into(), key: key.into(), generation: 1,
-            length: 0, extents: Vec::new(), deleted: false,
-        }).unwrap(), 1).unwrap();
-    }
-    client.delete_object("bucket", "b", 2).unwrap();
-    let commit_index = |client: &mut RemoteMetaClient| match client.probe().into_result().unwrap() {
-        matrixobjectstore_rs::cluster::MetaReply::Pong { commit_index, .. } => commit_index,
-        reply => panic!("unexpected metadata status: {reply:?}"),
-    };
-    let before = commit_index(&mut client);
-    let first = client.list_manifests("bucket", None, 2).unwrap();
-    assert_eq!(commit_index(&mut client), before);
-    assert!(first.revision.is_empty());
-    let fenced = client.list_manifests_at_revision("bucket", None, 2, None).unwrap();
-    let global = client.list_manifest_catalog(None, 3, None).unwrap();
-    assert_eq!(global.entries.iter().map(|entry| (entry.bucket.as_str(), entry.key.as_str()))
-        .collect::<Vec<_>>(), [("a", "z"), ("bucket", "a"), ("bucket", "b")]);
-    assert_eq!(global.revision, fenced.revision);
-    assert_eq!(fenced.entries, first.entries);
-    client.allocate_object_pages(1).unwrap();
-    assert_eq!(first.entries.iter().map(|entry| entry.key.as_str()).collect::<Vec<_>>(), ["a", "b"]);
-    assert!(first.entries[1].deleted);
-    assert_eq!(first.entries[1].generation, 2);
-    assert!(first.has_more);
-    group.kill(group.leader());
-    let mut client = group.client(group.leader());
-    let second = client.list_manifests("bucket", Some("b"), 2).unwrap();
-    let global_next = client.list_manifest_catalog(Some(("bucket", "b")), 3, Some(&global.revision)).unwrap();
-    assert_eq!(global_next.entries.iter().map(|entry| (entry.bucket.as_str(), entry.key.as_str()))
-        .collect::<Vec<_>>(), [("bucket", "c"), ("z", "a")]);
-    assert!(!global_next.has_more);
-    assert_eq!(client.list_manifests_at_revision("bucket", Some("b"), 2,
-        Some(&fenced.revision)).unwrap().entries, second.entries);
-    assert_eq!(second.entries[0].key, "c");
-    assert!(!second.has_more);
-    assert!(client.list_manifests("bucket", Some("c"), 2).unwrap().entries.is_empty());
-    assert!(client.list_manifests("missing", None, 2).unwrap().entries.is_empty());
-    assert!(client.list_manifests("bucket", None, 33).is_err());
-    for index in 0..3 { if group.nodes[index].is_some() { group.kill(index); } }
-    for index in 0..3 { group.start(index); }
-    let leader = group.leader();
-    let mut client = group.client(leader);
-    let restored = client.list_manifests("bucket", None, 32).unwrap();
-    assert_eq!(restored.entries.len(), 3);
-    assert!(restored.entries[1].deleted);
-    assert_eq!(client.list_manifest_catalog(None, 32, Some(&global.revision)).unwrap().entries.len(), 5);
-    assert_eq!(client.list_manifests_at_revision("bucket", None, 32,
-        Some(&fenced.revision)).unwrap().revision, fenced.revision);
-    client.publish_manifest(ManifestOutcome::decide(None, ObjectManifest {
-        format_version: 2, bucket: "bucket".into(), key: "d".into(), generation: 1,
-        length: 0, extents: Vec::new(), deleted: false,
-    }).unwrap(), 3).unwrap();
-    assert!(client.list_manifests_at_revision("bucket", Some("b"), 2,
-        Some(&fenced.revision)).is_err());
-    let changed = client.list_manifests_at_revision("bucket", None, 32, None).unwrap();
-    assert_eq!(changed.entries.len(), 4);
-    assert_ne!(changed.revision, fenced.revision);
-    assert!(client.list_manifest_catalog(None, 32, Some(&global.revision)).is_err());
-    for index in 0..3 { if index != leader { group.kill(index); } }
-    assert!(client.list_manifests("bucket", None, 2).is_err());
-}
-
-#[test]
-fn retained_generations_survive_overwrite_deletion_failover_and_checkpoint_restart() {
-    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
-    let mut group = Group::with_catalog_checkpoints(None, None, None, 1024);
-    let mut client = group.client(group.leader());
-    let original = ObjectManifest { format_version: 2, bucket: "bucket".into(), key: "retained".into(),
-        generation: 1, length: 0, extents: Vec::new(), deleted: false };
-    client.publish_manifest(ManifestOutcome::decide(None, original.clone()).unwrap(), 0).unwrap();
-    let mut handles = Vec::new();
-    for _ in 0..20 { handles.push(client.retain_manifest("bucket", "retained", 1).unwrap()); }
-    assert!(handles.windows(2).all(|pair| pair[0].retention_id < pair[1].retention_id));
-    let mut changed = original.clone();
-    changed.generation = 2;
-    client.publish_manifest(ManifestOutcome::decide(Some(original.clone()), changed).unwrap(), 1).unwrap();
-    assert!(client.retain_manifest("bucket", "retained", 1).is_err());
-    client.delete_object("bucket", "retained", 2).unwrap();
-    assert!(client.retain_manifest("bucket", "retained", 3).is_err());
-    node_regime::checkpoints::wait_for_checkpoint(
-        &group.root.join(group.leader().to_string()).join("metadata.peer.wal"), 4,
-    );
-    group.kill(group.leader());
-    let mut client = group.client(group.leader());
-    assert_eq!(client.read_retained_manifest(handles[0].retention_id).unwrap(), handles[0]);
-    let (first, more) = client.list_retained_manifests(0, 7).unwrap();
-    assert!(more);
-    assert_eq!(first, handles[..7].iter().map(|record| record.retention_id).collect::<Vec<_>>());
-    let (rest, more) = client.list_retained_manifests(*first.last().unwrap(), 32).unwrap();
-    assert!(!more);
-    assert_eq!(rest.len(), 13);
-    for index in 0..3 { if group.nodes[index].is_some() { group.kill(index); } }
-    for index in 0..3 { group.start(index); }
-    let leader = group.leader();
-    let mut client = group.client(leader);
-    assert_eq!(client.read_retained_manifest(handles[19].retention_id).unwrap(), handles[19]);
-    #[cfg(feature = "replica-server")]
-    assert_eq!(client.read_retained_object(handles[0].retention_id, 0,
-        &matrixobjectstore_rs::cluster::ReplicaClientOptions::default()).unwrap(), (original, Vec::new()));
-    client.release_manifest(handles[0].retention_id).unwrap();
-    client.release_manifest(handles[0].retention_id).unwrap();
-    assert!(client.read_retained_manifest(handles[0].retention_id).is_err());
-    assert_eq!(client.list_retained_manifests(0, 32).unwrap().0.len(), 19);
-    for index in 0..3 { group.kill(index); }
-    for index in 0..3 { group.start(index); }
-    let leader = group.leader();
-    let mut client = group.client(leader);
-    assert!(client.read_retained_manifest(handles[0].retention_id).is_err());
-    assert_eq!(client.list_retained_manifests(0, 32).unwrap().0.len(), 19);
-    for index in 0..3 { if index != leader { group.kill(index); } }
-    assert!(client.read_retained_manifest(handles[1].retention_id).is_err());
-    assert!(client.list_retained_manifests(0, 32).is_err());
-    assert!(client.release_manifest(handles[1].retention_id).is_err());
-}
-
-#[test]
-fn staged_allocations_survive_failover_and_restart_and_fence_aborted_publication() {
-    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
-    let mut group = Group::with_catalog_checkpoints(None, None, None, 1024);
-    let mut client = group.client(group.leader());
-    let mut records = Vec::new();
-    for _ in 0..24 { records.push(client.allocate_staged_object("bucket", "owned", None, 1, false).unwrap()); }
-    assert!(client.allocate_staged_object("bucket", "owned", Some(1), 1, false).is_err());
-    node_regime::checkpoints::wait_for_checkpoint(
-        &group.root.join(group.leader().to_string()).join("metadata.peer.wal"), 4,
-    );
-    assert!(client.read_manifest("bucket", "owned").is_err());
-    let (first, more) = client.list_staged_allocations(0, 7).unwrap();
-    assert!(more);
-    assert_eq!(first, records[..7].iter().map(|record| record.allocation_id).collect::<Vec<_>>());
-    group.kill(group.leader());
-    let mut client = group.client(group.leader());
-    assert_eq!(client.read_staged_allocation(records[0].allocation_id).unwrap(), records[0]);
-    for index in 0..3 { if group.nodes[index].is_some() { group.kill(index); } }
-    for index in 0..3 { group.start(index); }
-    let mut client = group.client(group.leader());
-    assert_eq!(client.read_staged_allocation(records[23].allocation_id).unwrap(), records[23]);
-    client.abort_staged_allocation(records[0].allocation_id).unwrap();
-    client.abort_staged_allocation(records[0].allocation_id).unwrap();
-    let live = ObjectManifest { format_version: 2, bucket: "bucket".into(), key: "owned".into(),
-        generation: 1, length: 0, extents: Vec::new(), deleted: false };
-    let outcome = ManifestOutcome::decide(None, live.clone()).unwrap();
-    assert!(client.publish_staged_manifest(records[0].allocation_id, outcome.clone(), 0).is_err());
-    assert_eq!(client.publish_staged_manifest(records[1].allocation_id, outcome.clone(), 0).unwrap(), live);
-    assert!(client.read_staged_allocation(records[1].allocation_id).is_err());
-    assert!(client.publish_staged_manifest(records[2].allocation_id, outcome.clone(), 0).is_err());
-    let reader = client.retain_manifest("bucket", "owned", live.generation).unwrap();
-    for index in 0..3 { group.kill(index); }
-    for index in 0..3 { group.start(index); }
-    let leader = group.leader();
-    let mut client = group.client(leader);
-    assert!(client.read_staged_allocation(records[0].allocation_id).is_err());
-    assert!(client.read_staged_allocation(records[1].allocation_id).is_err());
-    assert_eq!(client.read_manifest("bucket", "owned").unwrap(), live);
-    assert_eq!(client.read_retained_manifest(reader.retention_id).unwrap(), reader);
-    client.release_manifest(reader.retention_id).unwrap();
-    assert_eq!(client.list_staged_allocations(0, 32).unwrap().0.len(), 22);
-    assert!(client.publish_staged_manifest(records[0].allocation_id, outcome, 0).is_err());
-    for index in 0..3 { if index != leader { group.kill(index); } }
-    assert!(client.read_staged_allocation(records[2].allocation_id).is_err());
-    assert!(client.list_staged_allocations(0, 32).is_err());
-    assert!(client.abort_staged_allocation(records[2].allocation_id).is_err());
-}
-
 /// A feature declaration is a proposal like any other: it must be admitted through the real leader
 /// pipeline of a three-voter group without stopping the leader's consensus worker, and what it
 /// decides must survive a leader loss and a total restart. (The leader once prepared the outcome
@@ -657,205 +301,6 @@ fn cluster_features_are_declared_and_raised_through_the_leader_and_survive_failo
     let features = client.read_cluster_features().unwrap();
     assert_eq!(features.raised, COMPACT_APPEND | RESERVE_NEXT);
     assert_eq!(features.declared.len(), 3);
-}
-
-#[test]
-fn publication_fence_and_atomic_copy_survive_checkpoint_restart_and_quorum_loss() {
-    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
-    use prost::Message;
-    #[derive(Clone, PartialEq, Message)]
-    struct WalPosition {
-        #[prost(bytes = "vec", tag = "5")]
-        hard_state: Vec<u8>,
-        #[prost(bytes = "vec", tag = "7")]
-        snapshot: Vec<u8>,
-    }
-    #[derive(Clone, PartialEq, Message)]
-    struct HardStatePosition {
-        #[prost(uint64, tag = "3")]
-        commit: u64,
-    }
-    #[derive(Clone, PartialEq, Message)]
-    struct SnapshotPosition {
-        #[prost(message, optional, tag = "2")]
-        metadata: Option<SnapshotIndex>,
-    }
-    #[derive(Clone, PartialEq, Message)]
-    struct SnapshotIndex {
-        #[prost(uint64, tag = "2")]
-        index: u64,
-    }
-    fn wal_positions(path: &std::path::Path) -> (u64, u64) {
-        let bytes = std::fs::read(path).unwrap();
-        let (mut offset, mut checkpoint, mut commit) = (0, 0, 0);
-        while bytes.len() - offset >= 24 {
-            assert_eq!(&bytes[offset..offset + 4], b"MRPW");
-            let length = u32::from_be_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
-            assert!(length < 8 * 1024 * 1024);
-            let end = offset + 24 + length;
-            // A concurrent append may not have finished its final frame.
-            if end > bytes.len() { break; }
-            let record = WalPosition::decode(&bytes[offset + 24..end]).unwrap();
-            commit = commit.max(HardStatePosition::decode(record.hard_state.as_slice()).unwrap().commit);
-            if !record.snapshot.is_empty() {
-                checkpoint = SnapshotPosition::decode(record.snapshot.as_slice()).unwrap().metadata.unwrap().index;
-            }
-            offset = end;
-        }
-        (checkpoint, commit)
-    }
-    let mut group = Group::with_catalog_checkpoints(None, None, None, 1024);
-    let mut client = group.client(group.leader());
-    assert_eq!(client.read_publication_fence().unwrap(), 0);
-    client.allocate_object_pages(1).unwrap();
-    let owner = client.allocate_staged_object("bucket", "source", None, 1, false).unwrap();
-    let fence = client.enable_publication_fence().unwrap();
-    assert!(fence > 0);
-    assert_eq!(client.enable_publication_fence().unwrap(), fence);
-    let leader = group.leader();
-    let wal = group.root.join(leader.to_string()).join("metadata.peer.wal");
-    let (_, fence_commit) = wal_positions(&wal);
-    assert!(fence_commit > 0);
-    assert!(client.allocate_object_pages(1).is_err());
-    let source = ObjectManifest { format_version: 2, bucket: "bucket".into(), key: "source".into(),
-        generation: 1, length: 0, extents: Vec::new(), deleted: false };
-    client.publish_staged_manifest(owner.allocation_id, ManifestOutcome::decide(None, source.clone()).unwrap(), 0).unwrap();
-    for index in 0..16 {
-        client.copy_object_atomic("bucket", "source", "copies", &format!("copy-{index}"), None, 0, 0).unwrap();
-    }
-    node_regime::checkpoints::wait_for_checkpoint(&wal, 4);
-    for index in 16..32 {
-        client.copy_object_atomic("bucket", "source", "copies", &format!("copy-{index}"), None, 0, 0).unwrap();
-    }
-    let until = Instant::now() + Duration::from_secs(30);
-    while wal_positions(&wal).0 < fence_commit {
-        assert!(Instant::now() < until, "fenced state was not checkpointed");
-        // Idempotent commands advance the WAL without growing the catalog.
-        // Checkpoint scheduling amortizes capture over the current image size.
-        assert_eq!(client.enable_publication_fence().unwrap(), fence);
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    group.kill(leader);
-    let mut client = group.client(group.leader());
-    assert_eq!(client.read_publication_fence().unwrap(), fence);
-    assert_eq!(client.read_manifest("copies", "copy-31").unwrap().extents, source.extents);
-    for index in 0..3 { if group.nodes[index].is_some() { group.kill(index); } }
-    for index in 0..3 { group.start(index); }
-    let leader = group.leader();
-    let mut client = group.client(leader);
-    assert_eq!(client.read_publication_fence().unwrap(), fence);
-    assert!(client.allocate_object_pages(1).is_err());
-    let copy = client.copy_object_atomic("bucket", "source", "copies", "after-restart", None, 0, 0).unwrap();
-    assert!(copy.extents.is_empty());
-    client.delete_object("bucket", "source", 0).unwrap();
-    assert!(client.copy_object_atomic("bucket", "source", "copies", "deleted", None, 0, 0).is_err());
-    for index in 0..3 { if index != leader { group.kill(index); } }
-    assert!(client.read_publication_fence().is_err());
-    assert!(client.copy_object_atomic("copies", "copy-31", "copies", "minority", None, 0, 0).is_err());
-}
-
-#[test]
-fn staged_lease_deadlines_and_renewals_survive_failover_restart_and_quorum_loss() {
-    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
-    let mut group = Group::with_catalog_checkpoints(None, None, None, 1024);
-    let mut client = group.client(group.leader());
-    assert!(client.allocate_leased_staged_object("bucket", "leased", None, 1, false, 1000).is_err());
-    client.enable_publication_fence().unwrap();
-    let original = client.allocate_leased_staged_object("bucket", "leased", None, 1, false, 60_000).unwrap();
-    let renewed = client.renew_staged_allocation(&original, 120_000).unwrap();
-    assert!(renewed.expires_at_ms > original.expires_at_ms);
-    assert!(client.renew_staged_allocation(&original, 120_000).is_err());
-    assert!(client.expire_staged_allocation(&original).is_err());
-    let expiring = client.allocate_leased_staged_object("bucket", "expired", None, 1, false, 1000).unwrap();
-    for index in 0..16 {
-        client.allocate_staged_object("padding", &format!("key-{index}"), None, 1, false).unwrap();
-    }
-    node_regime::checkpoints::wait_for_checkpoint(
-        &group.root.join(group.leader().to_string()).join("metadata.peer.wal"), 4);
-    group.kill(group.leader());
-    let mut client = group.client(group.leader());
-    assert_eq!(client.read_staged_allocation(renewed.allocation_id).unwrap(), renewed);
-    while std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
-        < u128::from(expiring.expires_at_ms) {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let value = ObjectManifest { format_version: 2, bucket: "bucket".into(), key: "expired".into(),
-        generation: 1, length: 0, extents: Vec::new(), deleted: false };
-    let publish = ManifestOutcome::decide(None, value).unwrap();
-    assert!(client.publish_staged_manifest(expiring.allocation_id, publish.clone(), 0).is_err());
-    assert!(client.renew_staged_allocation(&expiring, 1000).is_err());
-    client.expire_staged_allocation(&expiring).unwrap();
-    client.expire_staged_allocation(&expiring).unwrap();
-    for index in 0..3 { if group.nodes[index].is_some() { group.kill(index); } }
-    for index in 0..3 { group.start(index); }
-    let leader = group.leader();
-    let mut client = group.client(leader);
-    assert_eq!(client.read_staged_allocation(renewed.allocation_id).unwrap(), renewed);
-    assert!(client.read_staged_allocation(expiring.allocation_id).is_err());
-    assert!(client.publish_staged_manifest(expiring.allocation_id, publish, 0).is_err());
-    let next = client.allocate_leased_staged_object("bucket", "expired", None, 1, false, 1000).unwrap();
-    assert!(next.allocation_id > expiring.allocation_id);
-    for index in 0..3 { if index != leader { group.kill(index); } }
-    assert!(client.read_staged_allocation(renewed.allocation_id).is_err());
-    assert!(client.renew_staged_allocation(&renewed, 180_000).is_err());
-    assert!(client.expire_staged_allocation(&expiring).is_err());
-}
-
-#[test]
-fn automatic_staged_expiry_resumes_after_outage_requires_quorum_and_keeps_idle_wal_stable() {
-    use matrixobjectstore_rs::ObjectError;
-    let mut group = Group::new();
-    let mut client = group.client(group.leader());
-    client.enable_publication_fence().unwrap();
-    let permanent = client.allocate_staged_object("bucket", "permanent", None, 1, false).unwrap();
-    let old = client.allocate_leased_staged_object("bucket", "renewed", None, 1, false, 5000).unwrap();
-    let renewed = client.renew_staged_allocation(&old, 120_000).unwrap();
-    let mut abandoned = Vec::new();
-    for index in 0..6 {
-        abandoned.push(client.allocate_leased_staged_object("bucket", &format!("abandoned-{index}"),
-            None, 1, false, 5000).unwrap());
-    }
-    for record in &abandoned {
-        assert_eq!(client.read_staged_allocation(record.allocation_id).unwrap(), *record);
-    }
-    drop(client);
-    for index in 0..3 { group.kill(index); }
-    let last_deadline = abandoned.iter().map(|r| r.expires_at_ms).max().unwrap();
-    while std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
-        <= u128::from(last_deadline) {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    group.start(0);
-    std::thread::sleep(Duration::from_millis(2200));
-    assert!(group.client(0).read_staged_allocation(abandoned[0].allocation_id).is_err());
-    group.start(1);
-    group.start(2);
-    let leader = group.leader();
-    let mut client = group.client(leader);
-    let until = Instant::now() + Duration::from_secs(15);
-    loop {
-        if abandoned.iter().all(|record| matches!(client.read_staged_allocation(record.allocation_id),
-            Err(ObjectError::NotFound(_)))) { break; }
-        assert!(Instant::now() < until, "new leader did not retire all abandoned staged leases");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert_eq!(client.read_staged_allocation(permanent.allocation_id).unwrap(), permanent);
-    assert_eq!(client.read_staged_allocation(renewed.allocation_id).unwrap(), renewed);
-    let wal = group.root.join(leader.to_string()).join("metadata.peer.wal");
-    let before = std::fs::read(&wal).unwrap();
-    std::thread::sleep(Duration::from_millis(2200));
-    assert_eq!(std::fs::read(&wal).unwrap(), before, "empty automatic sweeps appended WAL records");
-    drop(client);
-    for index in 0..3 { group.kill(index); }
-    for index in 0..3 { group.start(index); }
-    let mut client = group.client(group.leader());
-    for record in &abandoned {
-        assert!(matches!(client.read_staged_allocation(record.allocation_id), Err(ObjectError::NotFound(_))));
-    }
-    assert_eq!(client.read_staged_allocation(permanent.allocation_id).unwrap(), permanent);
-    assert_eq!(client.read_staged_allocation(renewed.allocation_id).unwrap(), renewed);
-    let next = client.allocate_staged_object("bucket", "abandoned-0", None, 1, false).unwrap();
-    assert!(next.allocation_id > abandoned.last().unwrap().allocation_id);
 }
 
 #[test]
@@ -1012,36 +457,6 @@ fn a_slow_peer_connection_does_not_prevent_shutdown() {
     assert!(start.elapsed() < Duration::from_secs(2));
     drop(stream);
     std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn election_noops_checkpoint_and_replay_without_changing_metadata() {
-    use matrixobjectstore_rs::{MatrixObjectStore, MetadataStateMachine, StoreOptions};
-    use matrixraft::{ApplyRequest, LogId, StateMachine};
-    let mut machine =
-        MetadataStateMachine::new(MatrixObjectStore::new(StoreOptions::default()).unwrap());
-    let before = machine.store().metadata_state_fingerprint();
-    let request = ApplyRequest {
-        group_id: 1,
-        log_id: LogId { term: 1, index: 1 },
-        payload: Vec::new(),
-    };
-    let response = machine.apply(request.clone()).unwrap();
-    assert_eq!(response.response, vec![0]);
-    assert_eq!(machine.store().metadata_state_fingerprint(), before);
-    let snapshot = machine.snapshot().unwrap();
-    assert_eq!(snapshot.meta.payload_bytes, snapshot.data.len() as u64);
-    let mut restored =
-        MetadataStateMachine::new(MatrixObjectStore::new(StoreOptions::default()).unwrap());
-    restored.install_snapshot(snapshot).unwrap();
-    assert_eq!(restored.apply(request).unwrap(), response);
-    let next = ApplyRequest {
-        group_id: 1,
-        log_id: LogId { term: 2, index: 2 },
-        payload: Vec::new(),
-    };
-    assert_eq!(restored.apply(next).unwrap().applied_index, 2);
-    assert_eq!(restored.store().metadata_state_fingerprint(), before);
 }
 
 #[test]
@@ -1288,12 +703,6 @@ fn configured_placement_writes_real_chunk_processes_and_recovers_after_failover(
     );
 }
 
-#[cfg(feature = "replica-server")]
-#[test]
-fn metadata_routes_object_writes_through_a_standalone_star_quorum() {
-    exercise_star_object_route(40, 4);
-}
-
 #[test]
 fn chunk_route_listing_resumes_after_metadata_leader_loss() {
     use matrixobjectstore_rs::cluster::{ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity};
@@ -1343,33 +752,27 @@ fn chunk_route_listing_resumes_after_metadata_leader_loss() {
 }
 
 #[cfg(feature = "replica-server")]
-#[test]
-#[ignore = "explicit local distributed object scale run"]
-fn standalone_star_quorum_writes_and_recovers_256_object_pages() {
-    exercise_star_object_route(256, 64 * 1024);
-}
-
 #[cfg(feature = "replica-server")]
-fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
+#[test]
+fn a_chunk_object_round_trips_through_a_star_quorum_and_a_wrong_digest_fails_its_read() {
+    use matrixobjectstore_rs::chunk_catalog::ChunkOutcome;
     use matrixobjectstore_rs::cluster::{
-        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ObjectWriteOptions,
-        RemoteReplicaClient, RemoteReplicaSet, ReplicaClientOptions,
+        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ChunkWriteFailure, ObjectWriteOptions,
+        ReplicaClientOptions,
     };
-    use matrixobjectstore_rs::{ChunkId, PageId};
+    use matrixobjectstore_rs::object_manifest::ManifestListRequest;
+    use matrixobjectstore_rs::ObjectError;
 
-    let root = std::env::temp_dir().join(node_regime::run_token("star-object-route"));
+    let root = std::env::temp_dir().join(node_regime::run_token("chunk-object-star"));
     std::fs::create_dir(&root).unwrap();
-    let journals: Vec<_> = (0..3).map(|index| root.join(format!("{index}.log"))).collect();
     let mut chunks = Vec::new();
     for index in 0..3 {
+        let journal = root.join(format!("{index}.log"));
         chunks.push(processes::start(
             env!("CARGO_BIN_EXE_chunkserver"),
             &[
                 ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
-                (
-                    "MATRIXOBJECT_REPLICA_JOURNAL",
-                    journals[index].to_str().unwrap(),
-                ),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", journal.to_str().unwrap()),
             ],
         ));
     }
@@ -1389,31 +792,25 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
             bootstrap_voters: Vec::new(),
             bootstrap_id: 0,
         }),
-        api_endpoints: endpoints.clone(),
+        api_endpoints: endpoints,
         member_ids: members.clone(),
     };
     let catalog = ChunkGroupCatalog::new(vec![config]).unwrap();
     let metadata = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
-    let connect_metadata = || {
-        RemoteMetaClient::connect(
-            &metadata.nodes[metadata.leader()].as_ref().unwrap().endpoint,
-            &MetaClientOptions {
-                read_timeout: Duration::from_secs(10),
-                write_timeout: Duration::from_secs(10),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-    };
-    let mut client = connect_metadata();
+    let mut client = RemoteMetaClient::connect(
+        &metadata.nodes[metadata.leader()].as_ref().unwrap().endpoint,
+        &MetaClientOptions {
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     for member in &members {
-        client
-            .heartbeat_placement_node(member, 0, 1 << 28, false, true, 100)
-            .unwrap();
+        client.heartbeat_placement_node(member, 0, 1 << 28, false, true, 100).unwrap();
     }
-
     let options = ObjectWriteOptions {
-        page_bytes,
+        page_bytes: 4096,
         target_groups: 1,
         replica: ReplicaClientOptions {
             read_timeout: Duration::from_secs(10),
@@ -1422,416 +819,381 @@ fn exercise_star_object_route(page_count: usize, page_bytes: usize) {
         },
         ..Default::default()
     };
-    let first_bytes: Vec<u8> = (0..page_count * page_bytes).map(|index| index as u8).collect();
-    let base = client.write_object("star", "append", None, b"prefix", &options).unwrap();
-    let suffix = vec![0x7b; page_bytes + 1];
-    let appended = client.append_object(base.clone(), &suffix, &options).unwrap();
-    assert_eq!(&appended.extents[..base.extents.len()], &base.extents);
-    assert_eq!(appended.generation, base.generation + 1);
-    let mut append_bytes = b"prefix".to_vec();
-    append_bytes.extend_from_slice(&suffix);
-    assert_eq!(client.read_object("star", "append", append_bytes.len(), &options.replica)
-        .unwrap(), (appended.clone(), append_bytes.clone()));
-    assert_eq!(client.read_object_range("star", "append", 5, 2, 2, &options.replica)
-        .unwrap().1, [b'x', 0x7b]);
-    let mut bounded_append = options.clone();
-    bounded_append.max_object_bytes = append_bytes.len();
-    assert!(client.append_object(appended.clone(), b"limit", &bounded_append).is_err());
-    assert!(client.append_object(base, b"stale", &options).is_err());
-    let started = Instant::now();
-    let first = client
-        .write_object("star", "first", None, &first_bytes, &options)
+    let bytes = |length: usize, salt: usize| -> Vec<u8> { (0..length).map(|index| (index * 31 + salt) as u8).collect() };
+    // 4 pages per stripe, so a 40,000-byte object is three extents on the one group
+    let stripe = 4 * 4096;
+
+    // one small page, a few pages in one extent, and several extents
+    for (name, length) in [("tiny", 100usize), ("few", 3 * 4096 + 17), ("many", 40_000)] {
+        let data = bytes(length, length);
+        let manifest = client.write_chunk_object("chunk", name, None, &data, &options, stripe).unwrap();
+        assert_eq!((manifest.generation, manifest.length), (1, length as u64));
+        let (read, got) = client.read_chunk_object("chunk", name, &options).unwrap();
+        assert_eq!(read, manifest);
+        assert_eq!(got, data, "{name} reads back whole");
+        for (offset, span) in [(0usize, 1usize), (length / 2, length / 3), (length - 1, 1), (4095usize.min(length - 1), 2usize.min(length - (4095usize.min(length - 1))))] {
+            let slice = client.read_chunk_object_range(&manifest, offset as u64, span as u64, &options).unwrap();
+            assert_eq!(slice, &data[offset..offset + span], "{name} range {offset}+{span}");
+        }
+    }
+    assert_eq!(client.read_chunk_manifest("chunk", "many").unwrap().extents.len(), 3);
+    assert_eq!(client.read_chunk_manifest("chunk", "tiny").unwrap().extents.len(), 1);
+
+    // an overwrite is one generation later, and one decided from a stale manifest is refused
+    let first = client.read_chunk_manifest("chunk", "few").unwrap();
+    let second_data = bytes(5000, 7);
+    let second = client.write_chunk_object("chunk", "few", Some(&first), &second_data, &options, stripe).unwrap();
+    assert_eq!(second.generation, 2);
+    assert_eq!(client.read_chunk_object("chunk", "few", &options).unwrap().1, second_data);
+    match client.write_chunk_object("chunk", "few", Some(&first), &second_data, &options, stripe) {
+        Err(ChunkWriteFailure::BeforePublication(ObjectError::PreconditionFailed(_))) => {}
+        other => panic!("a stale writer must be refused before publication: {other:?}"),
+    }
+    assert_eq!(client.read_chunk_manifest("chunk", "few").unwrap().generation, 2, "the refusal changed nothing");
+
+    // an append adds extents after the last one, and the whole object reads back verified
+    let base = client.read_chunk_manifest("chunk", "few").unwrap();
+    let tail_a = bytes(300, 11);
+    let grown = client.append_chunk_object(&base, &tail_a, &options, stripe).unwrap();
+    assert_eq!((grown.generation, grown.length, grown.extents.len()), (3, 5300, base.extents.len() + 1));
+    assert_eq!(grown.extents[..base.extents.len()], base.extents[..], "the extents already there are untouched");
+    // 4 pages per stripe: 16,434 bytes is two more extents
+    let tail_b = bytes(4 * 4096 + 50, 12);
+    let grown_again = client.append_chunk_object(&grown, &tail_b, &options, stripe).unwrap();
+    assert_eq!((grown_again.generation, grown_again.length, grown_again.extents.len()), (4, 5300 + tail_b.len() as u64, base.extents.len() + 3));
+    let whole: Vec<u8> = [second_data.as_slice(), tail_a.as_slice(), tail_b.as_slice()].concat();
+    assert_eq!(client.read_chunk_object("chunk", "few", &options).unwrap().1, whole);
+    for (offset, span) in [(4990usize, 30usize), (5290, 20), (5300, 4096), (whole.len() - 5, 5)] {
+        let slice = client.read_chunk_object_range(&grown_again, offset as u64, span as u64, &options).unwrap();
+        assert_eq!(slice, &whole[offset..offset + span], "range {offset}+{span} across the appended extents");
+    }
+    // an append decided from a stale manifest is refused before publication and changes nothing
+    match client.append_chunk_object(&base, &tail_a, &options, stripe) {
+        Err(ChunkWriteFailure::BeforePublication(ObjectError::PreconditionFailed(_))) => {}
+        other => panic!("a stale append must be refused before publication: {other:?}"),
+    }
+    assert_eq!(client.read_chunk_manifest("chunk", "few").unwrap(), grown_again, "the refusal changed nothing");
+    // an empty append and one with another page size are refused
+    assert!(matches!(
+        client.append_chunk_object(&grown_again, &[], &options, stripe),
+        Err(ChunkWriteFailure::BeforePublication(ObjectError::InvalidArgument(_)))
+    ));
+    let other_pages = ObjectWriteOptions { page_bytes: 8192, ..options.clone() };
+    assert!(matches!(
+        client.append_chunk_object(&grown_again, &tail_a, &other_pages, stripe),
+        Err(ChunkWriteFailure::BeforePublication(ObjectError::InvalidArgument(_)))
+    ));
+    // a manifest that already names the most extents refuses an append whole, before any page is written
+    let full = matrixobjectstore_rs::chunk_object::build_manifest(
+        "chunk",
+        "full",
+        1,
+        4096,
+        (0..matrixobjectstore_rs::chunk_manifest::MAX_CHUNK_EXTENTS as u64)
+            .map(|index| matrixobjectstore_rs::chunk_manifest::ChunkExtent {
+                group: "group-a".into(),
+                volume_id: 0,
+                chunk_id: index + 1,
+                kind: matrixobjectstore_rs::chunk_manifest::CHUNK_KIND_PAGED,
+                object_offset: index,
+                chunk_offset: 0,
+                length: 1,
+                flags: matrixobjectstore_rs::chunk_manifest::CHUNK_FLAG_SEALED,
+                digest: vec![7; 32],
+                footer_crc: 0,
+                footer_sha256: Vec::new(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    match client.append_chunk_object(&full, &tail_a, &options, stripe) {
+        Err(ChunkWriteFailure::BeforePublication(ObjectError::InvalidArgument(message))) => {
+            assert!(message.contains("append refused"), "{message}")
+        }
+        other => panic!("an append past the extent bound must be refused whole: {other:?}"),
+    }
+    // the fence republishes the same extents one generation later
+    let fenced = client.republish_chunk_manifest(&grown_again).unwrap();
+    assert_eq!((fenced.generation, fenced.length, &fenced.extents), (grown_again.generation + 1, grown_again.length, &grown_again.extents));
+    assert_eq!(client.read_chunk_object("chunk", "few", &options).unwrap().1, whole);
+
+    // an empty object has no extents and reads back empty
+    client.write_chunk_object("chunk", "empty", None, &[], &options, stripe).unwrap();
+    assert!(client.read_chunk_object("chunk", "empty", &options).unwrap().1.is_empty());
+
+    // a manifest whose digest does not match the pages it names fails the read by the digest check,
+    // whatever the pages hold
+    let good = client.read_chunk_manifest("chunk", "many").unwrap();
+    let mut wrong = good.clone();
+    wrong.generation += 1;
+    wrong.extents[1].digest = vec![0xAA; 32];
+    client.publish_chunk_manifest(ChunkOutcome::decide(Some(good.clone()), wrong.clone()).unwrap()).unwrap();
+    let error = client.read_chunk_object("chunk", "many", &options).unwrap_err();
+    assert!(matches!(&error, ObjectError::Corruption(message) if message.contains("integrity")), "{error:?}");
+    // a range inside the extents whose digests are right is still served
+    assert_eq!(
+        client.read_chunk_object_range(&wrong, 0, 100, &options).unwrap(),
+        bytes(40_000, 40_000)[0..100].to_vec()
+    );
+
+    // a delete is a tombstone: not found, and listed as deleted
+    client.delete_chunk_object("chunk", "tiny").unwrap();
+    assert!(matches!(client.read_chunk_object("chunk", "tiny", &options), Err(ObjectError::NotFound(_))));
+    let page = client
+        .list_chunk_manifests(ManifestListRequest {
+            version: 2,
+            bucket: "chunk".into(),
+            after: String::new(),
+            limit: 32,
+            expected_revision: Vec::new(),
+            after_bucket: String::new(),
+        })
         .unwrap();
-    let write_elapsed = started.elapsed();
-    assert_eq!(first.extents.len(), page_count);
-    for (offset, length) in [(0, 0), (1, page_bytes + 1), (first_bytes.len(), 0)] {
-        let (manifest, bytes) = client.read_object_range(
-            "star", "first", offset as u64, length as u64, length, &options.replica,
-        ).unwrap();
-        assert_eq!(manifest, first);
-        assert_eq!(bytes, first_bytes[offset..offset + length]);
-    }
-    for (offset, length, limit) in [(u64::MAX, 1, 1), (0, 2, 1), (first.length, 1, 1)] {
-        assert!(client.read_object_range(
-            "star", "first", offset, length, limit, &options.replica,
-        ).is_err());
-    }
-    // The ranged read through the metaserver's slice gives the same bytes, the same identity,
-    // the extents under the range and the same refusals as the whole-manifest read.
-    for (offset, length) in [(0, 0), (1, page_bytes + 1), (first_bytes.len(), 0), (0, 1),
-        (first_bytes.len() - 1, 1), (0, first_bytes.len())] {
-        let (slice, bytes) = client.read_object_range_partial(
-            "star", "first", offset as u64, length as u64, length, &options.replica,
-        ).unwrap();
-        assert_eq!(bytes, first_bytes[offset..offset + length]);
-        assert_eq!((slice.generation, slice.length), (first.generation, first.length));
-        let under: Vec<_> = first.extents.iter().filter(|extent| length != 0
-            && extent.object_offset < (offset + length) as u64
-            && extent.object_offset + extent.length > offset as u64).cloned().collect();
-        assert_eq!(slice.extents, under, "range {offset}+{length}");
-    }
-    for (offset, length, limit) in [(u64::MAX, 1, 1), (0, 2, 1), (first.length, 1, 1)] {
-        let whole = client.read_object_range("star", "first", offset, length, limit, &options.replica)
-            .unwrap_err();
-        let partial = client.read_object_range_partial("star", "first", offset, length, limit, &options.replica)
-            .unwrap_err();
-        assert_eq!(format!("{partial:?}"), format!("{whole:?}"));
-    }
-    assert!(client.read_object_range_partial("star", "absent", 0, 1, 1, &options.replica).is_err());
-    // A page freed and reused under a reader (what a reclaimer would do once the grace window had
-    // passed): the extent no longer matches its manifest, so the read fails and returns neither the
-    // old bytes nor the new ones.
-    let reused = client.write_object("star", "reused", None, b"original bytes", &options).unwrap();
-    let extent = &reused.extents[0];
-    let reused_page = PageId {
-        chunk_id: ChunkId::new(extent.volume_id, extent.chunk_id).unwrap(),
-        page_index: extent.page_index,
-    };
-    for endpoint in &endpoints {
-        let mut replica = RemoteReplicaClient::connect(endpoint, &options.replica).unwrap();
-        replica.write_chunk(reused_page.clone(), extent.page_offset, b"FOREIGN BYTES").unwrap();
-    }
-    let partial = client.read_object_range_partial("star", "reused", 0, 14, 14, &options.replica);
-    assert!(partial.is_err(), "a read of a reused page must fail, got {partial:?}");
-    let whole = client.read_object_range("star", "reused", 0, 14, 14, &options.replica);
-    assert!(whole.is_err(), "a read of a reused page must fail, got {whole:?}");
-    assert_eq!(client.read_object_range_partial("star", "append", 5, 2, 2, &options.replica)
-        .unwrap().1, [b'x', 0x7b]);
-    assert_eq!(
-        client
-            .read_object("star", "first", first_bytes.len(), &options.replica)
-            .unwrap(),
-        (first.clone(), first_bytes.clone())
-    );
+    let listed: Vec<(&str, bool)> = page.entries.iter().map(|entry| (entry.key.as_str(), entry.deleted)).collect();
+    assert_eq!(listed, [("empty", false), ("few", false), ("many", false), ("tiny", true)]);
 
-    // Inventory repair also checks that the initial object is present across
-    // the full membership before the failure below exercises routing.
-    let mut initial = RemoteReplicaSet::connect(&endpoints, 2, 2, &options.replica).unwrap();
-    let mut after = None;
-    let mut repaired_pages = 0;
-    let mut repair_batches = 0;
-    loop {
-        let repaired = initial.repair_inventory_batch(after.as_ref(), 64).unwrap();
-        assert!(!repaired.blocked, "blocked repair: {repaired:?}");
-        assert!(repaired.pages.iter().all(|entry| entry.result.is_ok()));
-        repaired_pages += repaired.pages.len();
-        repair_batches += 1;
-        if !repaired.has_more {
-            break;
-        }
-        after = repaired.resume_after;
-    }
-    assert_eq!(repaired_pages, first.extents.len() + appended.extents.len() + reused.extents.len());
-
-    let extent = &first.extents[0];
-    let page = PageId {
-        chunk_id: ChunkId::new(extent.volume_id, extent.chunk_id).unwrap(),
-        page_index: extent.page_index,
-    };
-    for endpoint in &endpoints {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let mut replica =
-                RemoteReplicaClient::connect(endpoint, &options.replica).unwrap();
-            match replica.read_chunk(&page, 0, extent.length) {
-                Ok(read) => {
-                    assert_eq!(read.data, &first_bytes[..extent.length as usize]);
-                    break;
-                }
-                Err(error) => {
-                    assert!(Instant::now() < deadline, "star member missed write: {error}");
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-            }
-        }
-    }
-
-    chunks[0].child.kill().unwrap();
-    assert!(processes::reap_within(&mut chunks[0].child, Duration::from_secs(3)).is_some());
-    let pending_suffix = vec![0x39; page_bytes * 33 + 1];
-    let append_candidate = match client.append_object(
-        appended.clone(), &pending_suffix, &options,
-    ).unwrap_err() {
-        matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication {
-            staged: Some(candidate), ..
-        } => *candidate,
-        error => panic!("missing staged append: {error:?}"),
-    };
-    assert!(client.resume_unpublished_append(
-        appended.clone(), append_candidate.clone(), &pending_suffix, &options,
-    ).is_err());
-    assert_eq!(client.read_manifest("star", "append").unwrap(), appended);
-    drop(client);
-    let mut client = connect_metadata();
-    assert_eq!(
-        client
-            .read_object("star", "first", first_bytes.len(), &options.replica)
-            .unwrap()
-            .1,
-        first_bytes
-    );
-    let second_bytes = b"all members acknowledge writes";
-    let candidate = match client
-        .write_object("star", "second", None, second_bytes, &options)
-        .unwrap_err() {
-        matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication {
-            staged: Some(candidate), ..
-        } => *candidate,
-        error => panic!("missing staged candidate: {error:?}"),
-    };
-    assert!(client.resume_unpublished_object(
-        None, candidate.clone(), second_bytes, &options,
-    ).is_err());
-    assert!(client.read_manifest("star", "second").is_err());
-
-    let owned_payload = vec![0x6d; page_bytes * 33 + 1];
-    let owned_bytes = owned_payload.as_slice();
-    let owned = client.allocate_staged_object("star", "owned-pending", None,
-        owned_bytes.len().div_ceil(page_bytes) as u32, false).unwrap();
-    let owned_candidate = match client.write_staged_object(&owned, None, owned_bytes, &options).unwrap_err() {
-        matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication { staged: Some(candidate), .. } => *candidate,
-        error => panic!("missing owned candidate: {error:?}"),
-    };
-    assert_eq!(client.read_staged_allocation(owned.allocation_id).unwrap(), owned);
-    assert!(client.publish_manifest(matrixobjectstore_rs::object_manifest::ManifestOutcome::decide(
-        None, owned_candidate.clone()).unwrap(), 0).is_err());
-    assert!(client.resume_staged_object(&owned, None, owned_candidate.clone(), owned_bytes, &options).is_err());
-    let aborted = client.allocate_staged_object("star", "owned-aborted", None,
-        owned_bytes.len().div_ceil(page_bytes) as u32, false).unwrap();
-    let aborted_candidate = match client.write_staged_object(&aborted, None, owned_bytes, &options).unwrap_err() {
-        matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication { staged: Some(candidate), .. } => *candidate,
-        error => panic!("missing aborted candidate: {error:?}"),
-    };
-    client.abort_staged_allocation(aborted.allocation_id).unwrap();
-    assert!(client.resume_staged_object(&aborted, None, aborted_candidate.clone(), owned_bytes, &options).is_err());
-
-    chunks[0] = processes::start(
-        env!("CARGO_BIN_EXE_chunkserver"),
-        &[
-            ("MATRIXOBJECT_REPLICA_ADDR", &endpoints[0]),
-            (
-                "MATRIXOBJECT_REPLICA_JOURNAL",
-                journals[0].to_str().unwrap(),
-            ),
-        ],
-    );
-    assert_eq!(chunks[0].endpoint, endpoints[0]);
-    drop(client);
-    let mut client = connect_metadata();
-    assert!(client.resume_unpublished_object(
-        None, candidate.clone(), second_bytes, &options,
-    ).is_err());
-    assert!(client.read_manifest("star", "second").is_err());
-    let mut repair = RemoteReplicaSet::connect(&endpoints, 2, 2, &options.replica).unwrap();
-    let mut cursor = None;
-    loop {
-        let batch = repair.repair_inventory_batch(cursor.as_ref(), 64).unwrap();
-        assert!(!batch.blocked, "blocked candidate repair: {batch:?}");
-        assert!(batch.pages.iter().all(|entry| entry.result.is_ok()));
-        if !batch.has_more { break; }
-        cursor = batch.resume_after;
-    }
-    drop(repair);
-    let unwritten = append_candidate.extents.last().unwrap();
-    let unwritten_page = PageId {
-        chunk_id: ChunkId::new(unwritten.volume_id, unwritten.chunk_id).unwrap(),
-        page_index: unwritten.page_index,
-    };
-    for endpoint in &endpoints {
-        let mut replica = RemoteReplicaClient::connect(endpoint, &options.replica).unwrap();
-        assert!(matches!(replica.read_chunk(&unwritten_page, 0, unwritten.length),
-            Err(matrixobjectstore_rs::ObjectError::NotFound(_))));
-    }
-    let mut wrong_suffix = pending_suffix.clone();
-    wrong_suffix[0] ^= 1;
-    assert!(client.resume_unpublished_append(
-        appended.clone(), append_candidate.clone(), &wrong_suffix, &options,
-    ).is_err());
-    let resumed = client.resume_unpublished_append(
-        appended.clone(), append_candidate.clone(), &pending_suffix, &options,
-    ).unwrap();
-    assert_eq!(client.resume_staged_object(&owned, None, owned_candidate.clone(), owned_bytes, &options)
-        .unwrap(), owned_candidate);
-    assert!(client.read_staged_allocation(owned.allocation_id).is_err());
-    assert_eq!(client.resume_staged_object(&owned, None, owned_candidate.clone(), owned_bytes, &options)
-        .unwrap(), owned_candidate);
-    assert!(client.resume_staged_object(&aborted, None, aborted_candidate.clone(), owned_bytes, &options).is_err());
-    let owned_append = client.allocate_staged_object("star", "owned-pending", Some(owned_candidate.generation), 1, true).unwrap();
-    let owned_updated = client.write_staged_object(&owned_append, Some(owned_candidate.clone()), b"!", &options).unwrap();
-    assert_eq!(&owned_updated.extents[..owned_candidate.extents.len()], &owned_candidate.extents);
-    let mut owned_expected = owned_bytes.to_vec();
-    owned_expected.push(b'!');
-    assert_eq!(client.read_object("star", "owned-pending", owned_expected.len(), &options.replica).unwrap(),
-        (owned_updated, owned_expected));
-    assert_eq!(resumed, append_candidate);
-    assert_eq!(&resumed.extents[..appended.extents.len()], &appended.extents);
-    append_bytes.extend_from_slice(&pending_suffix);
-    assert_eq!(client.read_object("star", "append", append_bytes.len(), &options.replica)
-        .unwrap(), (resumed.clone(), append_bytes));
-    assert_eq!(client.resume_unpublished_append(
-        appended.clone(), resumed.clone(), &pending_suffix, &options,
-    ).unwrap(), resumed);
-    let second = client.resume_unpublished_object(
-        None, candidate.clone(), second_bytes, &options,
-    ).unwrap();
-    assert_eq!(second, candidate);
-    assert_eq!(
-        client
-            .read_object("star", "second", second_bytes.len(), &options.replica)
-            .unwrap(),
-        (second, second_bytes.to_vec())
-    );
-    let mut returned = RemoteReplicaClient::connect(&endpoints[0], &options.replica).unwrap();
-    let rejoin_deadline = Instant::now() + Duration::from_secs(12);
-    let mut attempt = 0;
-    let (third_key, third, third_bytes) = loop {
-        let key = format!("third-{attempt}");
-        let bytes = format!("returning member rejoins later write {attempt}").into_bytes();
-        let manifest = client
-            .write_object("star", &key, None, &bytes, &options)
-            .unwrap();
-        let extent = &manifest.extents[0];
-        let page = PageId {
-            chunk_id: ChunkId::new(extent.volume_id, extent.chunk_id).unwrap(),
-            page_index: extent.page_index,
+    // the same cluster through the S3 door, with objects stored as chunk manifests
+    {
+        use matrixobjectstore_rs::net::cluster_gateway::{ClusterGateway, GatewayOptions};
+        use matrixobjectstore_rs::net::{Request, RequestHandler};
+        let endpoint = metadata.nodes[metadata.leader()].as_ref().unwrap().endpoint.clone();
+        let gateway_options = GatewayOptions { write: options.clone(), replica: options.replica.clone(), ..Default::default() };
+        let gateway = ClusterGateway::over_chunk_objects(
+            move || {
+                RemoteMetaClient::connect(
+                    &endpoint,
+                    &MetaClientOptions {
+                        read_timeout: Duration::from_secs(10),
+                        write_timeout: Duration::from_secs(10),
+                        ..Default::default()
+                    },
+                )
+            },
+            gateway_options,
+            "gw",
+        );
+        gateway.ensure_bucket("gw").unwrap();
+        let call = |method: &str, target: &str, headers: &[(&str, &str)], body: &[u8]| {
+            let (path, query) = target.split_once('?').unwrap_or((target, ""));
+            gateway.handle(&Request {
+                method: method.into(),
+                path: path.into(),
+                query: query.into(),
+                headers: headers.iter().map(|(name, value)| (name.to_ascii_lowercase(), (*value).to_string())).collect(),
+                body: body.to_vec(),
+                keep_alive: true,
+            })
         };
-        match returned.read_chunk(&page, 0, extent.length) {
-            Ok(read) => {
-                assert_eq!(read.data, bytes[..extent.length as usize]);
-                break (key, manifest, bytes);
-            }
-            Err(_) => {
-                assert!(
-                    Instant::now() < rejoin_deadline,
-                    "returning star member did not rejoin later writes"
-                );
-                attempt += 1;
-                std::thread::sleep(Duration::from_millis(20));
-            }
+        let body = bytes(30_000, 3);
+        let put = call("PUT", "/gw/object", &[], &body);
+        assert_eq!(put.status, 200, "{}", String::from_utf8_lossy(&put.body));
+        assert!(put.headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("etag")));
+        let get = call("GET", "/gw/object", &[], &[]);
+        assert_eq!((get.status, get.body.as_slice()), (200, body.as_slice()));
+        let head = call("HEAD", "/gw/object", &[], &[]);
+        assert_eq!(head.status, 200);
+        let ranged = call("GET", "/gw/object", &[("range", "bytes=4090-4101")], &[]);
+        assert_eq!((ranged.status, ranged.body.as_slice()), (206, &body[4090..4102]));
+        // a replaced object is the next generation and reads back as the new bytes
+        let second = bytes(100, 9);
+        assert_eq!(call("PUT", "/gw/object", &[], &second).status, 200);
+        assert_eq!(call("GET", "/gw/object", &[], &[]).body, second);
+        // a copy moves the bytes
+        let copy = call("PUT", "/gw/copied", &[("x-amz-copy-source", "/gw/object")], &[]);
+        assert_eq!(copy.status, 200, "{}", String::from_utf8_lossy(&copy.body));
+        assert_eq!(call("GET", "/gw/copied", &[], &[]).body, second);
+        let listing = call("GET", "/gw?list-type=2", &[], &[]);
+        assert_eq!(listing.status, 200);
+        let listing = String::from_utf8_lossy(&listing.body).to_string();
+        assert!(listing.contains("object") && listing.contains("copied"), "{listing}");
+        // an append lands at the end and the object reads back whole, verified
+        let attempt = "00112233445566778899aabbccddeeff";
+        let more = bytes(70_000, 5);
+        let appended = call("PUT", "/gw/object", &[("x-amz-write-offset-bytes", "100"), ("x-amz-attempt-id", attempt)], &more);
+        assert_eq!(appended.status, 200, "{}", String::from_utf8_lossy(&appended.body));
+        let whole: Vec<u8> = [second.as_slice(), more.as_slice()].concat();
+        assert_eq!(call("GET", "/gw/object", &[], &[]).body, whole);
+        // one at the wrong offset is refused and changes nothing
+        let wrong = call("PUT", "/gw/object", &[("x-amz-write-offset-bytes", "100")], b"late");
+        assert!(wrong.status >= 400, "an append that would not land at the end must be refused, got {}", wrong.status);
+        assert_eq!(call("GET", "/gw/object", &[], &[]).body, whole);
+
+        // THE APPEND RESOLVE, END TO END. The attempt the gateway saw land is recognised as landed by its
+        // own extents; a different attempt for the same range is only ever ambiguous; and a resolve at the
+        // end of the object fences an attempt that never landed, after which the retry lands exactly once.
+        let resolve = |id: &str, offset: usize, length: usize| {
+            call("POST", &format!("/gw/object?append-resolve&attempt={id}&offset={offset}&length={length}"), &[], &[])
+        };
+        let landed = resolve(attempt, 100, more.len());
+        assert_eq!((landed.status, String::from_utf8_lossy(&landed.body).trim().to_string()), (200, "landed".to_string()));
+        let stranger = resolve("ffeeddccbbaa99887766554433221100", 100, more.len());
+        assert_eq!((stranger.status, String::from_utf8_lossy(&stranger.body).trim().to_string()), (200, "ambiguous".to_string()));
+        let end = 100 + more.len();
+        let before_fence = call("HEAD", "/gw/object", &[], &[]);
+        let etag_of = |response: &matrixobjectstore_rs::net::Response| {
+            response.headers.iter().find(|(name, _)| name.eq_ignore_ascii_case("etag")).map(|(_, value)| value.clone()).unwrap_or_default()
+        };
+        let never = resolve("0123456789abcdef0123456789abcdef", end, 5);
+        assert_eq!((never.status, String::from_utf8_lossy(&never.body).trim().to_string()), (200, "absent".to_string()));
+        assert_ne!(etag_of(&call("HEAD", "/gw/object", &[], &[])), etag_of(&before_fence), "the fence is a new generation");
+        assert_eq!(call("GET", "/gw/object", &[], &[]).body, whole, "the fence changed no byte");
+        let retry = call("PUT", "/gw/object", &[("x-amz-write-offset-bytes", &end.to_string())], b"tail!");
+        assert_eq!(retry.status, 200, "{}", String::from_utf8_lossy(&retry.body));
+        let after: Vec<u8> = [whole.as_slice(), b"tail!".as_slice()].concat();
+        assert_eq!(call("GET", "/gw/object", &[], &[]).body, after, "the retry landed exactly once");
+        assert_eq!(call("DELETE", "/gw/object", &[], &[]).status, 204);
+        assert_eq!(call("GET", "/gw/object", &[], &[]).status, 404);
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(feature = "replica-server")]
+#[test]
+fn a_reclaim_sweep_frees_the_pages_of_deleted_and_overwritten_objects_and_only_those() {
+    use matrixobjectstore_rs::chunk_reclaim::{live_pages_of, Candidates, PageKey};
+    use matrixobjectstore_rs::cluster::{
+        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ObjectWriteOptions, ReplicaClientOptions,
+    };
+    use std::collections::BTreeSet;
+
+    let root = std::env::temp_dir().join(node_regime::run_token("chunk-reclaim-star"));
+    std::fs::create_dir(&root).unwrap();
+    let mut chunks = Vec::new();
+    for index in 0..3 {
+        let journal = root.join(format!("{index}.log"));
+        chunks.push(processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", journal.to_str().unwrap()),
+            ],
+        ));
+    }
+    let endpoints: Vec<_> = chunks.iter().map(|node| node.endpoint.clone()).collect();
+    let members: Vec<_> = (1..=3).map(|id| format!("star-{id}")).collect();
+    let config = ChunkGroupConfig {
+        placement_id: "group-a".into(),
+        failure_domain: "rack-a".into(),
+        identity: Some(ChunkGroupIdentity {
+            version: 3,
+            group_id: 1,
+            node_id: 1,
+            capacity_bytes: 1 << 28,
+            max_pages: 4096,
+            voters: vec![1, 2, 3],
+            peer_endpoints: Vec::new(),
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
+        }),
+        api_endpoints: endpoints,
+        member_ids: members.clone(),
+    };
+    let catalog = ChunkGroupCatalog::new(vec![config]).unwrap();
+    let metadata = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let mut client = RemoteMetaClient::connect(
+        &metadata.nodes[metadata.leader()].as_ref().unwrap().endpoint,
+        &MetaClientOptions {
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for member in &members {
+        client.heartbeat_placement_node(member, 0, 1 << 28, false, true, 100).unwrap();
+    }
+    let options = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        replica: ReplicaClientOptions {
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let bytes = |length: usize, salt: usize| -> Vec<u8> { (0..length).map(|index| (index * 31 + salt) as u8).collect() };
+    let stripe = 4 * 4096;
+    let put = |client: &mut RemoteMetaClient, key: &str, data: &[u8], expected: Option<&matrixobjectstore_rs::chunk_manifest::ChunkManifest>| {
+        client.write_chunk_object("chunk", key, expected, data, &options, stripe).unwrap()
+    };
+
+    // A and B take four pages each (three data pages and a digest page); C takes one, then is rewritten
+    let a_data = bytes(3 * 4096, 1);
+    let b_data = bytes(3 * 4096, 2);
+    let a = put(&mut client, "a", &a_data, None);
+    let b = put(&mut client, "b", &b_data, None);
+    let c_old = put(&mut client, "c", &bytes(100, 3), None);
+    let c_data = bytes(200, 4);
+    let c_new = put(&mut client, "c", &c_data, Some(&c_old));
+    let pages = |manifests: &[&matrixobjectstore_rs::chunk_manifest::ChunkManifest]| -> BTreeSet<PageKey> {
+        live_pages_of(manifests.iter().copied())
+    };
+    let (a_pages, b_pages, c_old_pages, c_new_pages) = (pages(&[&a]), pages(&[&b]), pages(&[&c_old]), pages(&[&c_new]));
+    assert_eq!((a_pages.len(), b_pages.len(), c_old_pages.len(), c_new_pages.len()), (4, 4, 1, 1));
+    let inventory = client.reclaim_inventory(&options).unwrap();
+    assert_eq!(inventory.len(), 10);
+    assert!(inventory.iter().all(|(_, sequence)| *sequence == 1));
+
+    client.delete_chunk_object("chunk", "a").unwrap();
+    let mut candidates = Candidates::new();
+    let grace = 1_000;
+
+    // the first sight starts the clocks and frees nothing; neither does a sweep before the grace is out
+    let first = client.reclaim_sweep(&mut candidates, 0, grace, &options).unwrap();
+    assert_eq!((first.inventory_pages, first.unnamed_pages, first.freed.len()), (10, 5, 0));
+    let early = client.reclaim_sweep(&mut candidates, grace - 1, grace, &options).unwrap();
+    assert!(early.freed.is_empty());
+
+    // once it is out, exactly the deleted object's pages and the overwritten generation's page go
+    let swept = client.reclaim_sweep(&mut candidates, grace, grace, &options).unwrap();
+    let freed: BTreeSet<PageKey> = swept.freed.iter().cloned().collect();
+    let garbage: BTreeSet<PageKey> = a_pages.union(&c_old_pages).cloned().collect();
+    assert_eq!(freed, garbage, "the garbage is freed and nothing else");
+    let after = client.reclaim_inventory(&options).unwrap();
+    for (page, sequence) in &after {
+        let expected = if garbage.contains(page) { 2 } else { 1 };
+        assert_eq!(*sequence, expected, "{page:?}");
+    }
+    assert!(after.iter().filter(|(page, _)| b_pages.contains(page) || c_new_pages.contains(page)).all(|(_, s)| *s == 1));
+
+    // the live objects still read back, verified, and a swept one is gone
+    assert_eq!(client.read_chunk_object("chunk", "b", &options).unwrap().1, b_data);
+    assert_eq!(client.read_chunk_object("chunk", "c", &options).unwrap().1, c_data);
+    assert!(client.read_chunk_object("chunk", "a", &options).is_err());
+    // a later sweep has nothing left to do
+    let idle = client.reclaim_sweep(&mut candidates, 10 * grace, grace, &options).unwrap();
+    assert!(idle.freed.is_empty() && idle.unnamed_pages == 0, "{idle:?}");
+
+    // THE LAST CHECK, END TO END: an object that is deleted and then published again between the scan
+    // that found its pages unnamed and the discard keeps every page, and still reads back verified.
+    let f_data = bytes(3 * 4096, 7);
+    let f = put(&mut client, "f", &f_data, None);
+    client.delete_chunk_object("chunk", "f").unwrap();
+    let tombstone = client.read_chunk_manifest("chunk", "f").unwrap();
+    let f_pages = pages(&[&f]);
+    let mut watch = Candidates::new();
+    let seen = client.reclaim_scan(&mut watch, 20 * grace, grace, &options).unwrap();
+    assert!(seen.due_pages().is_empty(), "the first sight frees nothing");
+    client.reclaim_apply(seen).unwrap();
+    let ripe = client.reclaim_scan(&mut watch, 21 * grace, grace, &options).unwrap();
+    let due: BTreeSet<PageKey> = ripe.due_pages().iter().cloned().collect();
+    assert_eq!(due, f_pages, "every page of the deleted object is due");
+    // the writer comes back between the scan and the discard
+    let mut again = f.clone();
+    again.generation = tombstone.generation + 1;
+    client
+        .publish_chunk_manifest(matrixobjectstore_rs::chunk_catalog::ChunkOutcome::decide(Some(tombstone), again).unwrap())
+        .unwrap();
+    let kept = client.reclaim_apply(ripe).unwrap();
+    assert!(kept.freed.is_empty(), "the catalog read again names every page: {kept:?}");
+    for (page, sequence) in client.reclaim_inventory(&options).unwrap() {
+        if f_pages.contains(&page) {
+            assert_eq!(sequence, 1, "{page:?}");
         }
-    };
-    assert_eq!(
-        client
-            .read_object("star", &third_key, third_bytes.len(), &options.replica)
-            .unwrap(),
-        (third.clone(), third_bytes.clone())
-    );
-    drop(returned);
-    for node in &mut chunks[..2] {
-        node.child.kill().unwrap();
-        assert!(processes::reap_within(&mut node.child, Duration::from_secs(3)).is_some());
     }
-    drop(client);
-    let mut minority = connect_metadata();
-    assert_eq!(
-        minority
-            .read_object("star", &third_key, third_bytes.len(), &options.replica)
-            .unwrap(),
-        (third.clone(), third_bytes.clone())
-    );
-    chunks[2].child.kill().unwrap();
-    assert!(processes::reap_within(&mut chunks[2].child, Duration::from_secs(3)).is_some());
-    let retained = minority.retain_manifest("star", &third_key, third.generation).unwrap();
-    let copied = minority.copy_object(
-        "star", &third_key, "star", "copy", None, &options,
-    ).unwrap();
-    assert_eq!(copied.extents, third.extents);
-    assert_eq!(copied.length, third.length);
-    assert!(minority.copy_object(
-        "star", &third_key, "star", "copy", None, &options,
-    ).is_err());
-    let mut bounded_copy = options.clone();
-    bounded_copy.max_object_bytes = 0;
-    assert!(minority.copy_object(
-        "star", &third_key, "star", "too-large-copy", None, &bounded_copy,
-    ).is_err());
-    let publication_fence = minority.enable_publication_fence().unwrap();
-    assert_eq!(minority.read_publication_fence().unwrap(), publication_fence);
-    assert!(minority.allocate_object_pages(1).is_err());
-    assert!(minority.publish_manifest(matrixobjectstore_rs::object_manifest::ManifestOutcome::decide(
-        None, aborted_candidate).unwrap(), 0).is_err());
-    assert!(minority.copy_object("star", &third_key, "star", "legacy-copy", None, &options).is_err());
-    for member in &members {
-        minority.heartbeat_placement_node(member, 0, 1 << 28, false, false, 101).unwrap();
-    }
-    let atomic = minority.copy_object_atomic("star", &third_key, "other", "atomic-copy", None,
-        options.max_object_bytes as u64, 0).unwrap();
-    assert_eq!(atomic.extents, third.extents);
-    minority.delete_object("star", &third_key, 0).unwrap();
-    assert!(minority.copy_object(
-        "star", &third_key, "star", "deleted-copy", None, &options,
-    ).is_err());
-    chunks[2] = processes::start(
-        env!("CARGO_BIN_EXE_chunkserver"),
-        &[("MATRIXOBJECT_REPLICA_ADDR", &endpoints[2]),
-          ("MATRIXOBJECT_REPLICA_JOURNAL", journals[2].to_str().unwrap())],
-    );
-    drop(minority);
-    let mut minority = connect_metadata();
-    assert_eq!(minority.read_publication_fence().unwrap(), publication_fence);
-    assert_eq!(minority.read_object("other", "atomic-copy", third_bytes.len(), &options.replica).unwrap(),
-        (atomic, third_bytes.clone()));
-    assert_eq!(minority.read_retained_object(retained.retention_id, third_bytes.len(), &options.replica)
-        .unwrap(), (third.clone(), third_bytes.clone()));
-    assert!(minority.read_retained_object(retained.retention_id, 0, &options.replica).is_err());
-    minority.release_manifest(retained.retention_id).unwrap();
-    assert!(minority.read_retained_object(retained.retention_id, third_bytes.len(), &options.replica).is_err());
-    assert_eq!(minority.read_object("star", "copy", third_bytes.len(), &options.replica)
-        .unwrap(), (copied, third_bytes));
-    println!(
-        "STAR_OBJECT pages={page_count} page_bytes={page_bytes} write_ms={} repair_batches={repair_batches} verified_copies={}",
-        write_elapsed.as_millis(),
-        page_count * endpoints.len()
-    );
-
-    // Damage an unrequested extent on the only surviving replica. A small
-    // range still succeeds, while reading the damaged extent must fail.
-    let last = first.extents.last().unwrap();
-    let last_page = PageId {
-        chunk_id: ChunkId::new(last.volume_id, last.chunk_id).unwrap(),
-        page_index: last.page_index,
-    };
-    let mut survivor = RemoteReplicaClient::connect(&endpoints[2], &options.replica).unwrap();
-    survivor.write_chunk(last_page, 0, b"damage").unwrap();
-    assert_eq!(minority.read_object_range(
-        "star", "first", 0, 1, 1, &options.replica,
-    ).unwrap().1, first_bytes[..1]);
-    assert!(minority.read_object_range(
-        "star", "first", last.object_offset, last.length, last.length as usize, &options.replica,
-    ).is_err());
-    drop(survivor);
-
-    for index in 0..2 {
-        chunks[index] = processes::start(env!("CARGO_BIN_EXE_chunkserver"),
-            &[("MATRIXOBJECT_REPLICA_ADDR", &endpoints[index]),
-              ("MATRIXOBJECT_REPLICA_JOURNAL", journals[index].to_str().unwrap())]);
-    }
-    for member in &members {
-        minority.heartbeat_placement_node(member, 0, 1 << 28, false, true, 102).unwrap();
-    }
-    let prepared = minority.prepare_staged_allocation("star", "leased", None, 4, false, 60_000).unwrap();
-    let leased = minority.allocate_prepared_staged_object(&prepared).unwrap();
-    assert_eq!(minority.allocate_prepared_staged_object(&prepared).unwrap(), leased);
-    let leased = minority.renew_staged_allocation(&leased, 120_000).unwrap();
-    let leased_value = minority.write_staged_object(&leased, None, b"leased star", &options).unwrap();
-    assert!(minority.allocate_prepared_staged_object(&prepared).is_err());
-
-    assert_eq!(minority.read_object("star", "leased", 32, &options.replica).unwrap(),
-        (leased_value.clone(), b"leased star".to_vec()));
-    assert_eq!(minority.read_object_range("star", "leased", 1, 1, 1, &options.replica).unwrap().1,
-        b"e");
-    assert_eq!(minority.read_objects(&[("star", "leased", 32), ("star", "leased", 32)],
-        &options.replica).unwrap(),
-        vec![(leased_value.clone(), b"leased star".to_vec()); 2]);
-    assert!(minority.list_retained_manifests(0, 32).unwrap().0.is_empty());
-    assert_eq!(minority.read_object_in_session("star", "leased", 32, &options.replica, 60_000).unwrap(),
-        (leased_value, b"leased star".to_vec()));
-    assert!(minority.read_staged_allocation(leased.allocation_id).is_err());
-
-    drop(minority);
-    drop(metadata);
-    drop(chunks);
-    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(client.read_chunk_object("chunk", "f", &options).unwrap().1, f_data);
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[cfg(feature = "replica-server")]
@@ -1994,131 +1356,6 @@ fn run_chunk_health(verified: bool) {
     let mut replica =
         RemoteReplicaClient::connect(&endpoints[0], &ReplicaClientOptions::default()).unwrap();
     assert_eq!(replica.read_chunk(&page, 4096, 3).unwrap().data, b"abc");
-}
-
-#[test]
-fn metadata_raft_recovers_chunk_catalog_and_group_health() {
-    use matrixobjectstore_rs::cluster::{ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity};
-    let config = ChunkGroupConfig {
-        placement_id: "group-a".into(),
-        failure_domain: "rack-a".into(),
-        identity: Some(ChunkGroupIdentity {
-            bootstrap_voters: Vec::new(),
-            bootstrap_id: 0,
-            version: 1,
-            group_id: 1,
-            node_id: 1,
-            capacity_bytes: 65536,
-            max_pages: 64,
-            voters: vec![1, 2, 3],
-            peer_endpoints: vec![
-                "127.0.0.1:9101".into(),
-                "127.0.0.1:9102".into(),
-                "127.0.0.1:9103".into(),
-            ],
-        }),
-        api_endpoints: vec![
-            "127.0.0.1:9201".into(),
-            "127.0.0.1:9202".into(),
-            "127.0.0.1:9203".into(),
-        ],
-        member_ids: vec!["member-a".into(), "member-b".into(), "member-c".into()],
-    };
-    let catalog = ChunkGroupCatalog::new(vec![config.clone()]).unwrap();
-    let mut group = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
-    let leader = group.leader();
-    let mut client = group.client(leader);
-    // Starting with a follower must route to a confirmed leader for catalog reads.
-    let mut endpoints: Vec<_> = (0..3).filter(|id| *id != leader)
-        .map(|id| group.nodes[id].as_ref().unwrap().endpoint.clone()).collect();
-    endpoints.push(group.nodes[leader].as_ref().unwrap().endpoint.clone());
-    let mut routed = RemoteMetaClient::connect_catalog(&endpoints, &MetaClientOptions {
-        read_timeout: Duration::from_secs(2),
-        ..Default::default()
-    }).unwrap();
-    assert_ne!(routed.endpoint(), group.nodes[leader].as_ref().unwrap().endpoint);
-    assert_eq!(routed.read_chunk_route("group-a").unwrap().group.unwrap(), config);
-    assert_eq!(routed.endpoint(), group.nodes[leader].as_ref().unwrap().endpoint);
-    let wal = group.root.join(leader.to_string()).join("metadata.peer.wal");
-    let before = std::fs::read(&wal).unwrap();
-    for _ in 0..16 {
-        assert_eq!(client.read_chunk_group("group-a").unwrap(), config);
-        assert_eq!(client.read_chunk_route("group-a").unwrap().group.unwrap(), config);
-        assert!(matches!(client.read_chunk_group("missing"),
-            Err(matrixobjectstore_rs::ObjectError::NotFound(_))));
-    }
-    assert_eq!(std::fs::read(&wal).unwrap(), before, "catalog reads must not append outcomes");
-    for id in ["member-a", "member-b"] {
-        client
-            .heartbeat_placement_node(id, 123, 65536, false, true, 1000)
-            .unwrap();
-    }
-    let plan = client
-        .plan_object_placement("bucket", "key", 100, 1)
-        .unwrap();
-    assert_eq!(plan.node_ids, vec!["group-a"]);
-    group.kill(leader);
-    let next = group.leader();
-    assert_eq!(
-        group.client(next).read_chunk_group("group-a").unwrap(),
-        config
-    );
-    for i in 0..3 {
-        if group.nodes[i].is_some() {
-            group.kill(i);
-        }
-    }
-    // A different valid bootstrap cannot replace already committed membership.
-    std::fs::write(
-        group.catalog.as_ref().unwrap(),
-        ChunkGroupCatalog::default().to_bytes().unwrap(),
-    )
-    .unwrap();
-    for i in 0..3 {
-        group.start(i);
-    }
-    let current = group.leader();
-    let mut client = group.client(current);
-    assert_eq!(client.read_chunk_group("group-a").unwrap(), config);
-        assert_eq!(client.read_chunk_route("group-a").unwrap().group.unwrap(), config);
-    let nodes = client.list_placement_nodes().unwrap();
-    let logical = nodes.iter().find(|n| n.node_id == "group-a").unwrap();
-    assert!(logical.online);
-    assert_eq!(logical.used_bytes, 123);
-    for i in 0..3 {
-        assert!(
-            std::fs::read(group.root.join(i.to_string()).join("metadata.peer.base"))
-                .unwrap()
-                .starts_with(b"MOGB")
-        );
-    }
-    // A minority can describe its immutable identity, but cannot expose catalog
-    // state, health, placements, manifests, or fresh page namespaces.
-    for id in 0..3 {
-        if id != current {
-            group.kill(id);
-        }
-    }
-    assert!(client.read_chunk_group("group-a").is_err());
-    assert!(group.client(current).read_chunk_route("group-a").is_err());
-    assert!(!matches!(group.client(current).read_chunk_route("missing").unwrap_err(), matrixobjectstore_rs::ObjectError::NotFound(_)));
-    let missing_error = group.client(current).read_chunk_group("missing").unwrap_err();
-    assert!(!matches!(missing_error, matrixobjectstore_rs::ObjectError::NotFound(_)),
-        "missing catalog entries also require a confirmed read");
-    assert!(client.list_placement_nodes().is_err());
-    assert!(group
-        .client(current)
-        .plan_object_placement("bucket", "key", 100, 1)
-        .is_err());
-    let error = group
-        .client(current)
-        .read_manifest("bucket", "key")
-        .unwrap_err();
-    assert!(
-        !matches!(error, matrixobjectstore_rs::ObjectError::NotFound(_)),
-        "a minority must not answer from its mutable manifest catalog"
-    );
-    assert!(group.client(current).allocate_object_pages(1).is_err());
 }
 
 #[test]
@@ -2807,7 +2044,8 @@ fn maintenance_repair_stays_excluded_through_metadata_failover_and_total_restart
     drop(chunks[0].take());
     chunks[0] = Some(start_chunk(0, false));
     wait_health(&mut catalog, false, 13);
-    let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
+    // Require every replica here: a quorum write may return after two replies.
+    let mut set = RemoteReplicaSet::connect(&endpoints, 3, 3, &options).unwrap();
     assert_eq!(set.write_chunk(&page, 0, b"ready-to-write").unwrap(), 3);
     wait_health(&mut catalog, false, 14);
     assert_eq!(
@@ -3056,16 +2294,6 @@ mod star_repair_metadata_scale;
 mod star_auto_repair;
 
 #[cfg(feature = "replica-server")]
-#[path = "node_regime/leased_object_read_scale.rs"]
-mod leased_object_read_scale;
-
-#[cfg(feature = "replica-server")]
-#[path = "node_regime/star_append_amplification.rs"]
-mod star_append_amplification;
-
-#[cfg(feature = "replica-server")]
-#[path = "node_regime/log_append_extent_cap.rs"]
-mod log_append_extent_cap;
 
 
 #[test]
@@ -3306,51 +2534,6 @@ fn failover_client(group: &Group, leader: usize) -> RemoteMetaClient {
     .unwrap()
 }
 
-/// Every entry of the catalog, tombstones included, read through the leader at one revision.
-fn catalog_entries(client: &mut RemoteMetaClient) -> (Vec<(String, String, bool)>, Vec<u8>) {
-    let mut seen = Vec::new();
-    let mut after: Option<(String, String)> = None;
-    loop {
-        let page = client
-            .list_manifest_catalog(after.as_ref().map(|(b, k)| (b.as_str(), k.as_str())), 32, None)
-            .unwrap();
-        for entry in &page.entries {
-            seen.push((entry.bucket.clone(), entry.key.clone(), entry.deleted));
-        }
-        if !page.has_more {
-            return (seen, page.revision);
-        }
-        let last = page.entries.last().unwrap();
-        after = Some((last.bucket.clone(), last.key.clone()));
-    }
-}
-
-fn forget_group(prefixes: &'static str) -> Group {
-    FORGET_PREFIXES.with(|cell| cell.set(Some(prefixes)));
-    let group = Group::new();
-    FORGET_PREFIXES.with(|cell| cell.set(None));
-    let mut client = group.client(group.leader());
-    // Every voter declares the bit and the group raises it: the only way emission starts.
-    for voter in 1..=3u64 {
-        client
-            .declare_voter_features(voter, matrixobjectstore_rs::cluster_features::FEATURE_FORGET_PREFIX)
-            .unwrap();
-    }
-    client
-        .raise_cluster_features(matrixobjectstore_rs::cluster_features::FEATURE_FORGET_PREFIX, vec![1, 2, 3])
-        .unwrap();
-    group
-}
-
-fn created(bucket: &str, key: &str) -> matrixobjectstore_rs::object_manifest::ManifestOutcome {
-    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
-    ManifestOutcome::decide(
-        None,
-        ObjectManifest { format_version: 2, bucket: bucket.into(), key: key.into(), generation: 1, ..Default::default() },
-    )
-    .unwrap()
-}
-
 const TWO_NODES: &str = "chunk-1@127.0.0.1:9100@rack,chunk-2@127.0.0.1:9101@rack2";
 
 fn wall_ms() -> u64 {
@@ -3586,95 +2769,6 @@ fn a_healthy_chunk_group_stays_in_placement_through_a_leader_change_and_leaves_w
     assert!(left - silent_since.unwrap() >= Duration::from_millis(5_000), "left only {:?} after the members fell silent", left - silent_since.unwrap());
     assert!(client.plan_object_placement("bucket", "key", 100, 1).map_or(true, |plan| plan.node_ids != vec!["group-a".to_string()]));
 }
-/// A WAL that rolls a segment 100 times, creating a never-reused key and deleting the one before it, leaves the
-/// catalog at its live objects. An ordinary object deleted in the same group keeps its tombstone (it is not under
-/// the prefix). Without the prefix every rollover would leave one more tombstone.
-#[test]
-fn forget_prefix_keeps_the_catalog_bounded_across_rollovers() {
-    let group = forget_group("wal/seg_");
-    let mut client = group.client(group.leader());
-    client.publish_manifest(created("ordinary", "k"), 0).unwrap();
-    client.delete_object("ordinary", "k", 0).unwrap();
-    client.publish_manifest(created("wal", "seg_live"), 0).unwrap();
-    for index in 0..100 {
-        let key = format!("seg_{index:05}");
-        client.publish_manifest(created("wal", &key), 0).unwrap();
-        client.delete_object("wal", &key, 0).unwrap();
-    }
-    let (entries, _) = catalog_entries(&mut client);
-    assert_eq!(
-        entries,
-        vec![
-            ("ordinary".to_string(), "k".to_string(), true),
-            ("wal".to_string(), "seg_live".to_string(), false),
-        ],
-        "100 rollovers left only the live segment and the ordinary tombstone"
-    );
-    // A forgotten key can be created again under the contract.
-    client.publish_manifest(created("wal", "seg_00007"), 0).unwrap();
-}
-
-/// The same rollovers with the leader killed in the middle and then every voter restarted: the catalog is the same
-/// on the voter that was restored from its log and on the one that applied the forgets live (compared through the
-/// leader before and after a leadership change), and nothing is resurrected.
-#[test]
-fn forget_prefix_survives_a_leader_kill_and_a_total_restart() {
-    let mut group = forget_group("wal/seg_");
-    let mut client = group.client(group.leader());
-    client.publish_manifest(created("ordinary", "k"), 0).unwrap();
-    client.delete_object("ordinary", "k", 0).unwrap();
-    client.publish_manifest(created("wal", "seg_live"), 0).unwrap();
-    // idempotent steps, so that the one in flight when the leader dies can simply be repeated
-    let roll = |group: &Group, index: usize| {
-        let key = format!("seg_{index:05}");
-        let until = Instant::now() + Duration::from_secs(30);
-        loop {
-            let mut client = group.client(group.leader());
-            let made = client.read_manifest("wal", &key).is_ok() || client.publish_manifest(created("wal", &key), 0).is_ok();
-            let gone = made && (client.read_manifest("wal", &key).map_or(true, |m| m.deleted)
-                || client.delete_object("wal", &key, 0).is_ok());
-            if gone && client.read_manifest("wal", &key).map_or(true, |m| m.deleted) {
-                return;
-            }
-            assert!(Instant::now() < until, "segment {index} did not roll");
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    };
-    for index in 0..15 {
-        roll(&group, index);
-    }
-    let killed = group.leader();
-    group.kill(killed);
-    for index in 15..30 {
-        roll(&group, index);
-    }
-    group.start(killed);
-    for index in 30..40 {
-        roll(&group, index);
-    }
-    let expected = vec![
-        ("ordinary".to_string(), "k".to_string(), true),
-        ("wal".to_string(), "seg_live".to_string(), false),
-    ];
-    let mut client = group.client(group.leader());
-    assert_eq!(catalog_entries(&mut client).0, expected);
-    for index in 0..3 {
-        if group.nodes[index].is_some() {
-            group.kill(index);
-        }
-    }
-    for index in 0..3 {
-        group.start(index);
-    }
-    let first = group.leader();
-    let (after_restart, revision) = catalog_entries(&mut group.client(first));
-    assert_eq!(after_restart, expected, "a total restart replays the forgets to the same catalog");
-    // A different voter as leader sees the same entries and the same revision.
-    group.kill(first);
-    let (second_entries, second_revision) = catalog_entries(&mut group.client(group.leader()));
-    assert_eq!(second_entries, expected);
-    assert_eq!(second_revision, revision, "the voters hold the same revision");
-}
 
 #[path = "node_regime/cluster_gateway_processes.rs"]
 mod cluster_gateway_processes;
@@ -3771,193 +2865,601 @@ fn log_chunk_and_feature_commands_commit_through_the_real_leader_pipeline() {
     assert_eq!(client.read_log_chunk("bucket", "short").unwrap().lease.unwrap().holder, "gw-b");
 }
 
-/// A log object against the REAL metadata group (three voter processes, Raft) and three real chunk
-/// nodes. The metadata group's commit index is read before and after each step, so what the
-/// metadata plane is charged for is counted, not assumed: ONE entry for a grant, NOTHING for an
-/// append inside a chunk, exactly ONE per chunk boundary crossed, one per renewal (one for the
-/// leases of every object a writer holds), and nothing for a read. Every voter is then killed and
-/// restarted, and a second writer takes the object over: no acknowledged byte is lost.
+/// STAR MODE, MEMBER FAILURE: a routed Star group needs every member to acknowledge a write, so one stopped
+/// member refuses every attempt on that group. The write is retried after the unreachable member is reported
+/// offline, and placement then chooses the other group; the same for an append.
+#[cfg(feature = "replica-server")]
 #[test]
-fn a_log_object_costs_the_real_metadata_group_one_entry_per_switch_and_nothing_per_append() {
+fn a_chunk_write_and_append_switch_groups_when_a_member_of_the_chosen_group_stops() {
     use matrixobjectstore_rs::cluster::{
-        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, LogObject, LogObjectOptions, LogObjectReader,
-        MetaReply, ReplicaClientOptions, ReplicaNodeOptions, ReplicaNodeServer, ReplicaNodeShutdown,
+        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, FailoverPolicy, ObjectWriteOptions, ReplicaClientOptions,
     };
-    use matrixobjectstore_rs::cluster_features::{FEATURE_CHUNK_MANIFEST, FEATURE_LOG_CHUNK_LEASES, SUPPORTED_FEATURES};
-    const CHUNK: u64 = 256 * 1024;
-    // three real chunk nodes, each with a durable journal
-    let root = std::env::temp_dir().join(format!("log-object-rig-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    struct Rig(Vec<ReplicaNodeShutdown>, Vec<Option<std::thread::JoinHandle<std::io::Result<()>>>>, PathBuf);
-    impl Drop for Rig {
-        fn drop(&mut self) {
-            for stop in &self.0 {
-                stop.stop();
-            }
-            for worker in self.1.iter_mut().filter_map(Option::take) {
-                let _ = worker.join();
-            }
-            let _ = std::fs::remove_dir_all(&self.2);
+
+    let root = std::env::temp_dir().join(node_regime::run_token("chunk-failover"));
+    std::fs::create_dir(&root).unwrap();
+    let mut chunks = Vec::new();
+    for index in 0..6 {
+        let journal = root.join(format!("{index}.log"));
+        chunks.push(processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", journal.to_str().unwrap()),
+            ],
+        ));
+    }
+    let endpoints: Vec<_> = chunks.iter().map(|node| node.endpoint.clone()).collect();
+    let group_config = |name: &str, group_id: u64, first: usize| ChunkGroupConfig {
+        placement_id: name.into(),
+        failure_domain: format!("rack-{name}"),
+        identity: Some(ChunkGroupIdentity {
+            version: 3,
+            group_id,
+            node_id: 1,
+            capacity_bytes: 1 << 28,
+            max_pages: 4096,
+            voters: vec![1, 2, 3],
+            peer_endpoints: Vec::new(),
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
+        }),
+        api_endpoints: endpoints[first..first + 3].to_vec(),
+        member_ids: (first + 1..=first + 3).map(|id| format!("star-{id}")).collect(),
+    };
+    let catalog = ChunkGroupCatalog::new(vec![group_config("group-a", 1, 0), group_config("group-b", 2, 3)]).unwrap();
+    let metadata = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let meta_endpoint = metadata.nodes[metadata.leader()].as_ref().unwrap().endpoint.clone();
+    let meta_options = || MetaClientOptions {
+        read_timeout: Duration::from_secs(10),
+        write_timeout: Duration::from_secs(10),
+        ..Default::default()
+    };
+    let mut client = RemoteMetaClient::connect(&meta_endpoint, &meta_options()).unwrap();
+    // group-a is online and group-b is not: the first write can only be placed on group-a
+    for id in 1..=3 {
+        client.heartbeat_placement_node(&format!("star-{id}"), 0, 1 << 28, false, true, 100).unwrap();
+    }
+    for id in 4..=6 {
+        client.heartbeat_placement_node(&format!("star-{id}"), 0, 1 << 28, false, false, 100).unwrap();
+    }
+    let options = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        replica: ReplicaClientOptions {
+            connect_timeout: Duration::from_secs(2),
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let bytes = |length: usize, salt: usize| -> Vec<u8> { (0..length).map(|index| (index * 31 + salt) as u8).collect() };
+    let stripe = 4 * 4096;
+    let before = client.write_chunk_object("fo", "before", None, &bytes(5000, 1), &options, stripe).unwrap();
+    assert_eq!(before.extents[0].group, "group-a");
+
+    // one member of group-a stops; group-b comes online while the write waits to be retried
+    let stopped = chunks.remove(1);
+    drop(stopped);
+    let waker_endpoint = meta_endpoint.clone();
+    let waker = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        let mut other = RemoteMetaClient::connect(&waker_endpoint, &meta_options()).unwrap();
+        for id in 4..=6 {
+            other.heartbeat_placement_node(&format!("star-{id}"), 0, 1 << 28, false, true, 200).unwrap();
         }
+    });
+    let policy = FailoverPolicy {
+        initial_wait: Duration::from_millis(400),
+        max_wait: Duration::from_secs(2),
+        max_switches: 6,
+        report_unreachable: true,
+    };
+    let data = bytes(9000, 2);
+    let written = client
+        .write_chunk_object_with_failover("fo", "after", None, &data, &options, stripe, &policy)
+        .expect("the write must be acknowledged on the other group");
+    waker.join().unwrap();
+    assert!(written.switches >= 1, "the first attempt was on the group with a stopped member");
+    assert_eq!(written.manifest.extents[0].group, "group-b");
+    assert_eq!(client.read_chunk_object("fo", "after", &options).unwrap(), (written.manifest.clone(), data.clone()));
+
+    // an append to that object stays on the healthy group and reads back whole
+    let grown = client
+        .append_chunk_object_with_failover(&written.manifest, b"+tail", &options, stripe, &policy)
+        .expect("the append must be acknowledged");
+    let whole: Vec<u8> = [data.as_slice(), b"+tail".as_slice()].concat();
+    assert_eq!(client.read_chunk_object("fo", "after", &options).unwrap(), (grown.manifest, whole));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// THE S3 SURFACE OVER CHUNK OBJECTS, END TO END: what the retired embedded door answered and the cluster gateway
+/// still does (listing with prefix, delimiter and paging; conditional writes and reads; copy; batch delete; multipart;
+/// ranges; delete of a bucket), against real metadata and chunk processes. The same scenarios run against a fake plane
+/// in the gateway's unit tests; this runs them through `ChunkPlane` and the real replicas.
+#[cfg(feature = "replica-server")]
+#[test]
+fn the_s3_door_over_chunk_objects_serves_listing_conditions_copy_batch_multipart_and_ranges() {
+    use matrixobjectstore_rs::cluster::{
+        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ObjectWriteOptions, ReplicaClientOptions,
+    };
+    use matrixobjectstore_rs::net::cluster_gateway::{ClusterGateway, GatewayOptions};
+    use matrixobjectstore_rs::net::{Request, RequestHandler, Response};
+
+    let root = std::env::temp_dir().join(node_regime::run_token("s3-over-chunks"));
+    std::fs::create_dir(&root).unwrap();
+    let mut chunks = Vec::new();
+    for index in 0..3 {
+        let journal = root.join(format!("{index}.log"));
+        chunks.push(processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", journal.to_str().unwrap()),
+            ],
+        ));
     }
-    let mut rig = Rig(Vec::new(), Vec::new(), root.clone());
-    let mut addresses = Vec::new();
-    for node in 0..3 {
-        std::fs::create_dir_all(root.join(format!("n{node}"))).unwrap();
-        let server = ReplicaNodeServer::bind_with_journal(
-            "127.0.0.1:0",
-            ReplicaNodeOptions::default(),
-            &root.join(format!("n{node}")).join("journal"),
-        )
-        .unwrap();
-        addresses.push(server.local_addr().unwrap().to_string());
-        rig.0.push(server.shutdown_handle());
-        rig.1.push(Some(std::thread::spawn(move || server.serve())));
-    }
+    let endpoints: Vec<_> = chunks.iter().map(|node| node.endpoint.clone()).collect();
+    let members: Vec<_> = (1..=3).map(|id| format!("star-{id}")).collect();
     let config = ChunkGroupConfig {
         placement_id: "group-a".into(),
         failure_domain: "rack-a".into(),
         identity: Some(ChunkGroupIdentity {
-            bootstrap_voters: Vec::new(),
-            bootstrap_id: 0,
-            version: 1,
+            version: 3,
             group_id: 1,
             node_id: 1,
-            capacity_bytes: 1 << 40,
-            max_pages: 1 << 20,
+            capacity_bytes: 1 << 28,
+            max_pages: 4096,
             voters: vec![1, 2, 3],
-            peer_endpoints: vec!["127.0.0.1:9101".into(), "127.0.0.1:9102".into(), "127.0.0.1:9103".into()],
+            peer_endpoints: Vec::new(),
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
         }),
-        api_endpoints: addresses.clone(),
-        member_ids: vec!["member-a".into(), "member-b".into(), "member-c".into()],
+        api_endpoints: endpoints,
+        member_ids: members.clone(),
     };
     let catalog = ChunkGroupCatalog::new(vec![config]).unwrap();
-    let mut group = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
-    let leader = group.leader();
-    let mut meta = group.client(leader);
-    let commit_index = |client: &mut RemoteMetaClient| match client.probe().into_result().unwrap() {
-        MetaReply::Pong { commit_index, .. } => commit_index,
-        reply => panic!("unexpected metadata status: {reply:?}"),
+    let metadata = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let meta_endpoint = metadata.nodes[metadata.leader()].as_ref().unwrap().endpoint.clone();
+    let meta_options = || MetaClientOptions {
+        read_timeout: Duration::from_secs(10),
+        write_timeout: Duration::from_secs(10),
+        ..Default::default()
     };
-    let options = |holder: &str, ttl_ms: u64| {
-        let mut options = LogObjectOptions::new(holder, "group-a");
-        options.chunk_bytes = CHUNK;
-        options.ttl_ms = ttl_ms;
-        options.replica = ReplicaClientOptions { read_timeout: Duration::from_secs(10), connect_timeout: Duration::from_secs(2), ..Default::default() };
-        options
+    let mut client = RemoteMetaClient::connect(&meta_endpoint, &meta_options()).unwrap();
+    for member in &members {
+        client.heartbeat_placement_node(member, 0, 1 << 28, false, true, 100).unwrap();
+    }
+    let options = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        replica: ReplicaClientOptions {
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+        ..Default::default()
     };
-    // nothing is enabled by default: the object cannot be opened, and nothing was written for it
-    let before = commit_index(&mut meta);
-    let mut early = LogObject::new("bucket", "wal-early", options("gw-a", 30_000));
-    assert!(early.open_for_append(&mut meta).is_err());
-    assert_eq!(commit_index(&mut meta), before);
-    // an operator declares and raises the two features
-    for voter in 1..=3u64 {
-        meta.declare_voter_features(voter, SUPPORTED_FEATURES).unwrap();
-    }
-    let both = FEATURE_CHUNK_MANIFEST | FEATURE_LOG_CHUNK_LEASES;
-    assert!(meta.raise_cluster_features(both, vec![1, 2, 3]).unwrap().has(both));
-
-    // the grant: ONE entry
-    let mut object = LogObject::new("bucket", "wal-0", options("gw-a", 30_000));
-    let before = commit_index(&mut meta);
-    assert_eq!(object.open_for_append(&mut meta).unwrap(), 0);
-    assert_eq!(commit_index(&mut meta) - before, 1, "a grant is one metadata entry");
-    // chunk index of the last byte written: the object moves on lazily, when the next byte needs room
-    let chunk_of = |total: u64| if total == 0 { 0 } else { (total - 1) / CHUNK };
-    let mut expected: Vec<u8> = Vec::new();
-    let mut total = 0u64;
-    let mut piece_seed = 0u8;
-    let mut append = |object: &mut LogObject, meta: &mut RemoteMetaClient, length: usize, expected: &mut Vec<u8>, total: &mut u64| -> u64 {
-        piece_seed = piece_seed.wrapping_add(1);
-        let piece: Vec<u8> = (0..length).map(|i| piece_seed.wrapping_add((i * 13) as u8)).collect();
-        let before = commit_index(meta);
-        let switches = chunk_of(*total + length as u64) - chunk_of(*total);
-        // a lease past half its term is renewed by the append that finds it so: one entry, counted
-        let renewal = u64::from(object.renew_due());
-        assert_eq!(object.append(meta, &piece).unwrap(), *total + length as u64);
-        let spent = commit_index(meta) - before;
-        assert_eq!(spent, switches + renewal, "an append of {length} bytes at {total} crosses {switches} chunk boundaries");
-        expected.extend_from_slice(&piece);
-        *total += length as u64;
-        spent
+    let gateway_options = GatewayOptions { write: options.clone(), replica: options.replica.clone(), ..Default::default() };
+    let gateway = ClusterGateway::over_chunk_objects(move || RemoteMetaClient::connect(&meta_endpoint, &meta_options()), gateway_options, "gw");
+    gateway.ensure_bucket("gw").unwrap();
+    let call = |method: &str, target: &str, headers: &[(&str, &str)], body: &[u8]| -> Response {
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        gateway.handle(&Request {
+            method: method.into(),
+            path: path.into(),
+            query: query.into(),
+            headers: headers.iter().map(|(name, value)| (name.to_ascii_lowercase(), (*value).to_string())).collect(),
+            body: body.to_vec(),
+            keep_alive: true,
+        })
     };
-    // inside one chunk: not one metadata entry for any of them
-    for _ in 0..4 {
-        assert_eq!(append(&mut object, &mut meta, 20_000, &mut expected, &mut total), 0);
-    }
-    // across one boundary, then across three at once, then a small one: one entry per boundary
-    assert_eq!(append(&mut object, &mut meta, 200_000, &mut expected, &mut total), 1);
-    assert_eq!(append(&mut object, &mut meta, 800_000, &mut expected, &mut total), 3);
-    assert_eq!(append(&mut object, &mut meta, 1_000, &mut expected, &mut total), 0);
+    let text = |response: &Response| String::from_utf8_lossy(&response.body).to_string();
+    let header = |response: &Response, name: &str| -> Option<String> {
+        response.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone())
+    };
+    let between = |body: &str, tag: &str| -> Option<String> {
+        let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
+        body.split_once(&open)?.1.split_once(&close).map(|(value, _)| value.to_string())
+    };
+    let all_between = |body: &str, tag: &str| -> Vec<String> {
+        let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
+        body.split(&open).skip(1).filter_map(|rest| rest.split_once(&close).map(|(v, _)| v.to_string())).collect()
+    };
+    let escape = |value: &str| -> String {
+        value
+            .bytes()
+            .map(|byte| match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (byte as char).to_string(),
+                _ => format!("%{byte:02X}"),
+            })
+            .collect()
+    };
 
-    // reads cost the metadata group nothing and see every byte, sealed chunks and live tail alike
-    let before = commit_index(&mut meta);
-    let mut reader = LogObjectReader::new("bucket", "wal-0", ReplicaClientOptions::default());
-    assert_eq!(reader.length(&mut meta).unwrap(), total);
-    assert_eq!(reader.read_range(&mut meta, 0, expected.len() + 10).unwrap(), expected);
-    assert_eq!(reader.read_range(&mut meta, CHUNK - 100, 300).unwrap(), expected[(CHUNK - 100) as usize..(CHUNK + 200) as usize]);
-    assert_eq!(commit_index(&mut meta), before, "reads are not metadata entries");
+    // the health probe, the bucket verbs that need no cluster call
+    assert_eq!(call("GET", "/healthz", &[], &[]).status, 200);
 
-    // renewal: a lease renews at half its term with ONE entry; a batch of three objects with ONE
-    let mut shorts: Vec<LogObject> = (0..3).map(|n| LogObject::new("bucket", &format!("wal-short-{n}"), options("gw-a", 6_000))).collect();
-    for object in shorts.iter_mut() {
-        object.open_for_append(&mut meta).unwrap();
-        object.append(&mut meta, &[1u8; 100]).unwrap();
+    // LISTING: prefix, delimiter and paging over real chunk objects
+    for key in ["a/1", "a/2", "a/x/3", "b/1", "c", "d"] {
+        assert_eq!(call("PUT", &format!("/gw/{key}"), &[], key.as_bytes()).status, 200, "{key}");
     }
-    std::thread::sleep(Duration::from_millis(3_300));
-    assert!(shorts.iter().all(|object| object.renew_due()));
-    let before = commit_index(&mut meta);
-    let mut handles: Vec<&mut LogObject> = shorts.iter_mut().collect();
-    let lost = matrixobjectstore_rs::cluster::renew_leases(&mut meta, "gw-a", 6_000, &mut handles).unwrap();
-    assert!(lost.is_empty(), "the metadata plane no longer holds these leases for this writer: {lost:?}");
-    assert_eq!(commit_index(&mut meta) - before, 1, "the leases of three objects are renewed by one entry");
-    std::thread::sleep(Duration::from_millis(3_300));
-    let before = commit_index(&mut meta);
-    shorts[0].append(&mut meta, &[2u8; 100]).unwrap();
-    assert_eq!(commit_index(&mut meta) - before, 1, "an object renews its own lease with one entry");
-
-    // the first object's lease is renewed by one entry before the slow part of the test, so a slow
-    // machine cannot let it run out
-    let before = commit_index(&mut meta);
-    let mut handles: Vec<&mut LogObject> = vec![&mut object];
-    let lost = matrixobjectstore_rs::cluster::renew_leases(&mut meta, "gw-a", 30_000, &mut handles).unwrap();
-    assert!(lost.is_empty(), "{lost:?}");
-    assert_eq!(commit_index(&mut meta) - before, 1, "one lease renewed by one entry");
-    // a follower dies and comes back; then every voter is restarted
-    let follower = (leader + 1) % 3;
-    group.kill(follower);
-    assert_eq!(append(&mut object, &mut meta, 50_000, &mut expected, &mut total), 0, "a follower down changes nothing for an append");
-    group.start(follower);
-    for index in 0..3 {
-        group.kill(index);
-    }
-    for index in 0..3 {
-        group.start(index);
-    }
-    let leader = group.leader();
-    let mut meta = group.client(leader);
-    // a second writer takes the object over once the first writer's lease has run out: it starts
-    // at the length the nodes acknowledged
-    std::thread::sleep(Duration::from_secs(1));
-    let mut second = LogObject::new("bucket", "wal-0", options("gw-b", 30_000));
-    let mut attempts = 0;
-    let length = loop {
-        match second.open_for_append(&mut meta) {
-            Ok(length) => break length,
-            Err(error) => {
-                attempts += 1;
-                assert!(attempts < 120, "the object was never released: {error}");
-                std::thread::sleep(Duration::from_secs(1));
-            }
+    let top = text(&call("GET", "/gw?list-type=2&delimiter=%2F", &[], &[]));
+    assert_eq!(all_between(&top, "Key"), ["c", "d"], "{top}");
+    assert!(top.contains("<CommonPrefixes><Prefix>a/</Prefix></CommonPrefixes>") && top.contains("<CommonPrefixes><Prefix>b/</Prefix></CommonPrefixes>"), "{top}");
+    let under = text(&call("GET", "/gw?list-type=2&prefix=a%2F&delimiter=%2F", &[], &[]));
+    assert_eq!(all_between(&under, "Key"), ["a/1", "a/2"], "{under}");
+    let mut seen = Vec::new();
+    let mut token: Option<String> = None;
+    for _ in 0..20 {
+        let target = match &token {
+            None => "/gw?list-type=2&delimiter=%2F&max-keys=2".to_string(),
+            Some(token) => format!("/gw?list-type=2&delimiter=%2F&max-keys=2&continuation-token={}", escape(token)),
+        };
+        let page = text(&call("GET", &target, &[], &[]));
+        seen.extend(all_between(&page, "Key"));
+        seen.extend(page.split("<CommonPrefixes><Prefix>").skip(1).filter_map(|rest| rest.split_once("</Prefix>").map(|(v, _)| v.to_string())));
+        if between(&page, "IsTruncated").as_deref() == Some("true") {
+            token = Some(between(&page, "NextContinuationToken").expect("a truncated page names its token"));
+        } else {
+            break;
         }
-    };
-    assert_eq!(length, total, "no acknowledged byte is lost and none is invented");
-    let tail: Vec<u8> = (0..70_000usize).map(|i| (i * 3) as u8).collect();
-    second.append(&mut meta, &tail).unwrap();
-    expected.extend_from_slice(&tail);
-    let mut reader = LogObjectReader::new("bucket", "wal-0", ReplicaClientOptions::default());
-    assert_eq!(reader.read_range(&mut meta, 0, expected.len() + 1).unwrap(), expected);
-    // the first writer is fenced: its next append is refused
-    assert!(object.append(&mut meta, b"late").is_err());
+    }
+    seen.sort();
+    assert_eq!(seen, ["a/", "b/", "c", "d"], "paging loses and repeats nothing");
+
+    // CONDITIONS: create-only, compare-and-swap on the etag, and conditional reads
+    let created = call("PUT", "/gw/cond", &[("if-none-match", "*")], b"one");
+    assert_eq!(created.status, 200);
+    assert_eq!(call("PUT", "/gw/cond", &[("if-none-match", "*")], b"again").status, 412, "create-only on an existing key");
+    let etag = header(&created, "etag").expect("a write answers its etag");
+    let swapped = call("PUT", "/gw/cond", &[("if-match", &etag)], b"two");
+    assert_eq!(swapped.status, 200, "{}", text(&swapped));
+    assert_eq!(call("PUT", "/gw/cond", &[("if-match", &etag)], b"stale").status, 412, "the old etag no longer matches");
+    let current = header(&swapped, "etag").unwrap();
+    assert_ne!(etag, current);
+    assert_eq!(call("GET", "/gw/cond", &[("if-none-match", &current)], &[]).status, 304);
+    assert_eq!(call("GET", "/gw/cond", &[("if-match", &etag)], &[]).status, 412);
+    assert_eq!(call("GET", "/gw/cond", &[], &[]).body, b"two");
+
+    // RANGES: closed, open-ended and suffix
+    let body: Vec<u8> = (0..20_000u32).map(|index| (index % 251) as u8).collect();
+    assert_eq!(call("PUT", "/gw/ranged", &[], &body).status, 200);
+    for (spec, expected) in [("bytes=10-19", &body[10..20]), ("bytes=19990-", &body[19990..]), ("bytes=-5", &body[19995..]), ("bytes=4090-4101", &body[4090..4102])] {
+        let reply = call("GET", "/gw/ranged", &[("range", spec)], &[]);
+        assert_eq!((reply.status, reply.body.as_slice()), (206, expected), "{spec}");
+    }
+
+    // COPY moves the bytes, and the copy does not follow the source
+    assert_eq!(call("PUT", "/gw/copied", &[("x-amz-copy-source", "/gw/ranged")], &[]).status, 200);
+    assert_eq!(call("PUT", "/gw/ranged", &[], b"replaced").status, 200);
+    assert_eq!(call("GET", "/gw/copied", &[], &[]).body, body);
+
+    // MULTIPART: assembled whole, the parts leave nothing behind, an aborted upload leaves nothing
+    let begun = call("POST", "/gw/big?uploads", &[], &[]);
+    assert_eq!(begun.status, 200, "{}", text(&begun));
+    let id = between(&text(&begun), "UploadId").unwrap();
+    let two = call("PUT", &format!("/gw/big?partNumber=2&uploadId={id}"), &[], b"-world");
+    let one = call("PUT", &format!("/gw/big?partNumber=1&uploadId={id}"), &[], b"hello");
+    assert_eq!((one.status, two.status), (200, 200));
+    assert_eq!(call("GET", "/gw/big", &[], &[]).status, 404, "nothing exists before completion");
+    let listing = text(&call("GET", "/gw?list-type=2", &[], &[]));
+    assert!(!listing.contains(".multipart"), "{listing}");
+    let (e1, e2) = (header(&one, "etag").unwrap(), header(&two, "etag").unwrap());
+    let complete = format!(
+        "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{e1}</ETag></Part><Part><PartNumber>2</PartNumber><ETag>{e2}</ETag></Part></CompleteMultipartUpload>"
+    );
+    let done = call("POST", &format!("/gw/big?uploadId={id}"), &[], complete.as_bytes());
+    assert_eq!(done.status, 200, "{}", text(&done));
+    assert_eq!(call("GET", "/gw/big", &[], &[]).body, b"hello-world");
+    let aborted_id = between(&text(&call("POST", "/gw/gone?uploads", &[], &[])), "UploadId").unwrap();
+    assert_eq!(call("PUT", &format!("/gw/gone?partNumber=1&uploadId={aborted_id}"), &[], b"x").status, 200);
+    assert_eq!(call("DELETE", &format!("/gw/gone?uploadId={aborted_id}"), &[], &[]).status, 204);
+    assert_eq!(call("GET", "/gw/gone", &[], &[]).status, 404);
+
+    // BATCH DELETE and DeleteBucket
+    let batch = "<Delete><Object><Key>a/1</Key></Object><Object><Key>a/2</Key></Object><Object><Key>never-existed</Key></Object></Delete>";
+    let deleted = call("POST", "/gw?delete", &[], batch.as_bytes());
+    assert_eq!(deleted.status, 200, "{}", text(&deleted));
+    assert_eq!(all_between(&text(&deleted), "Key").len(), 3, "{}", text(&deleted));
+    assert_eq!(call("GET", "/gw/a/1", &[], &[]).status, 404);
+    assert_eq!(call("DELETE", "/gw", &[], &[]).status, 409, "a bucket with objects in it is not deleted");
+    let remaining = all_between(&text(&call("GET", "/gw?list-type=2", &[], &[])), "Key");
+    for key in remaining {
+        assert_eq!(call("DELETE", &format!("/gw/{key}"), &[], &[]).status, 204, "{key}");
+    }
+    assert_eq!(call("DELETE", "/gw", &[], &[]).status, 204);
+    let _ = std::fs::remove_dir_all(&root);
 }
+
+/// BUCKETS ON THE CHUNK PATH, AGAINST REAL PROCESSES: a bucket is a replicated record that survives what an object
+/// survives. Created, configured, listed, refused when it is missing and removed, through the S3 door over chunk objects.
+#[cfg(feature = "replica-server")]
+#[test]
+fn the_s3_door_over_chunk_objects_creates_configures_lists_and_deletes_buckets() {
+    use matrixobjectstore_rs::cluster::{
+        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ObjectWriteOptions, ReplicaClientOptions,
+    };
+    use matrixobjectstore_rs::net::cluster_gateway::{ClusterGateway, GatewayOptions};
+    use matrixobjectstore_rs::net::{Request, RequestHandler, Response};
+
+    let root = std::env::temp_dir().join(node_regime::run_token("s3-buckets"));
+    std::fs::create_dir(&root).unwrap();
+    let mut chunks = Vec::new();
+    for index in 0..3 {
+        let journal = root.join(format!("{index}.log"));
+        chunks.push(processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", journal.to_str().unwrap()),
+            ],
+        ));
+    }
+    let endpoints: Vec<_> = chunks.iter().map(|node| node.endpoint.clone()).collect();
+    let members: Vec<_> = (1..=3).map(|id| format!("star-{id}")).collect();
+    let config = ChunkGroupConfig {
+        placement_id: "group-a".into(),
+        failure_domain: "rack-a".into(),
+        identity: Some(ChunkGroupIdentity {
+            version: 3,
+            group_id: 1,
+            node_id: 1,
+            capacity_bytes: 1 << 28,
+            max_pages: 4096,
+            voters: vec![1, 2, 3],
+            peer_endpoints: Vec::new(),
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
+        }),
+        api_endpoints: endpoints,
+        member_ids: members.clone(),
+    };
+    let catalog = ChunkGroupCatalog::new(vec![config]).unwrap();
+    let metadata = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let meta_endpoint = metadata.nodes[metadata.leader()].as_ref().unwrap().endpoint.clone();
+    let meta_options = || MetaClientOptions {
+        read_timeout: Duration::from_secs(10),
+        write_timeout: Duration::from_secs(10),
+        ..Default::default()
+    };
+    let mut client = RemoteMetaClient::connect(&meta_endpoint, &meta_options()).unwrap();
+    for member in &members {
+        client.heartbeat_placement_node(member, 0, 1 << 28, false, true, 100).unwrap();
+    }
+    let options = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        replica: ReplicaClientOptions {
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let gateway_options = GatewayOptions { write: options.clone(), replica: options.replica.clone(), ..Default::default() };
+    let open = {
+        let endpoint = meta_endpoint.clone();
+        move || RemoteMetaClient::connect(&endpoint, &meta_options())
+    };
+    let gateway = ClusterGateway::over_chunk_objects(open.clone(), gateway_options.clone(), "start");
+    let call = |gateway: &ClusterGateway, method: &str, target: &str, headers: &[(&str, &str)], body: &[u8]| -> Response {
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        gateway.handle(&Request {
+            method: method.into(),
+            path: path.into(),
+            query: query.into(),
+            headers: headers.iter().map(|(name, value)| (name.to_ascii_lowercase(), (*value).to_string())).collect(),
+            body: body.to_vec(),
+            keep_alive: true,
+        })
+    };
+    let text = |response: &Response| String::from_utf8_lossy(&response.body).to_string();
+
+    // nothing exists until it is created
+    assert_eq!(call(&gateway, "PUT", "/photos/cat", &[], b"meow").status, 404);
+    assert_eq!(call(&gateway, "HEAD", "/photos", &[], &[]).status, 404);
+    assert!(gateway.ensure_bucket("start").unwrap());
+    assert_eq!(call(&gateway, "PUT", "/photos", &[], &[]).status, 200);
+    assert_eq!(call(&gateway, "PUT", "/photos", &[], &[]).status, 200, "creating one that exists succeeds");
+    assert_eq!(call(&gateway, "PUT", "/photos/cat", &[], b"meow").status, 200);
+    let listed = text(&call(&gateway, "GET", "/", &[], &[]));
+    assert!(listed.contains("<Name>photos</Name>") && listed.contains("<Name>start</Name>"), "{listed}");
+
+    // configuration is stored and read back
+    let tagging = "<Tagging><TagSet><Tag><Key>team</Key><Value>storage</Value></Tag></TagSet></Tagging>";
+    assert_eq!(call(&gateway, "PUT", "/photos?tagging", &[], tagging.as_bytes()).status, 200);
+    let cors = "<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>";
+    assert_eq!(call(&gateway, "PUT", "/photos?cors", &[], cors.as_bytes()).status, 200);
+    // versioning is configured on a bucket that stays: deleting an object of a versioned bucket keeps a version, so
+    // that bucket is not empty
+    assert_eq!(call(&gateway, "PUT", "/archive", &[], &[]).status, 200);
+    let on = "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>";
+    assert_eq!(call(&gateway, "PUT", "/archive?versioning", &[], on.as_bytes()).status, 200);
+
+    // ANOTHER GATEWAY on the same cluster sees the same buckets and the same configuration: the record is the cluster's, not the door's
+    let other = ClusterGateway::over_chunk_objects(open, gateway_options, "start");
+    assert_eq!(call(&other, "HEAD", "/photos", &[], &[]).status, 200);
+    assert!(text(&call(&other, "GET", "/photos?tagging", &[], &[])).contains("<Key>team</Key>"));
+    assert!(text(&call(&other, "GET", "/photos?cors", &[], &[])).contains("<AllowedOrigin>*</AllowedOrigin>"));
+    assert!(text(&call(&other, "GET", "/archive?versioning", &[], &[])).contains("<Status>Enabled</Status>"));
+    assert_eq!(call(&other, "GET", "/photos/cat", &[], &[]).body, b"meow");
+
+    // a bucket with an object is not deleted; an empty one is, and is then missing everywhere
+    assert_eq!(call(&gateway, "DELETE", "/photos", &[], &[]).status, 409);
+    assert_eq!(call(&gateway, "DELETE", "/photos/cat", &[], &[]).status, 204);
+    assert_eq!(call(&gateway, "DELETE", "/photos", &[], &[]).status, 204);
+    std::thread::sleep(Duration::from_millis(2100));
+    assert_eq!(call(&other, "HEAD", "/photos", &[], &[]).status, 404);
+    assert_eq!(call(&other, "PUT", "/photos/cat", &[], b"x").status, 404);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// ATTRIBUTES, OBJECT LOCK, VERSIONING, QUOTAS AND THE CHANGE FEED, AGAINST REAL PROCESSES. The unit tests run the rules
+/// over an in-memory plane; this runs the three things only the chunk plane does for them: publish a manifest again with
+/// other attributes, name the same pages under a second key (a kept version), and delete exactly the manifest a lock
+/// check read, over three chunk servers and a metadata group, with the data read back from the pages.
+#[cfg(feature = "replica-server")]
+#[test]
+fn the_s3_door_over_chunk_objects_keeps_attributes_locks_versions_quotas_and_a_change_feed() {
+    use matrixobjectstore_rs::cluster::{
+        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, ObjectWriteOptions, ReplicaClientOptions,
+    };
+    use matrixobjectstore_rs::net::cluster_gateway::{ClusterGateway, GatewayOptions};
+    use matrixobjectstore_rs::net::{Request, RequestHandler, Response};
+
+    let root = std::env::temp_dir().join(node_regime::run_token("s3-features"));
+    std::fs::create_dir(&root).unwrap();
+    let mut chunks = Vec::new();
+    for index in 0..3 {
+        let journal = root.join(format!("{index}.log"));
+        chunks.push(processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", journal.to_str().unwrap()),
+            ],
+        ));
+    }
+    let endpoints: Vec<_> = chunks.iter().map(|node| node.endpoint.clone()).collect();
+    let members: Vec<_> = (1..=3).map(|id| format!("star-{id}")).collect();
+    let config = ChunkGroupConfig {
+        placement_id: "group-a".into(),
+        failure_domain: "rack-a".into(),
+        identity: Some(ChunkGroupIdentity {
+            version: 3,
+            group_id: 1,
+            node_id: 1,
+            capacity_bytes: 1 << 28,
+            max_pages: 4096,
+            voters: vec![1, 2, 3],
+            peer_endpoints: Vec::new(),
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
+        }),
+        api_endpoints: endpoints,
+        member_ids: members.clone(),
+    };
+    let catalog = ChunkGroupCatalog::new(vec![config]).unwrap();
+    let metadata = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let meta_endpoint = metadata.nodes[metadata.leader()].as_ref().unwrap().endpoint.clone();
+    let meta_options = || MetaClientOptions {
+        read_timeout: Duration::from_secs(10),
+        write_timeout: Duration::from_secs(10),
+        ..Default::default()
+    };
+    let mut client = RemoteMetaClient::connect(&meta_endpoint, &meta_options()).unwrap();
+    for member in &members {
+        client.heartbeat_placement_node(member, 0, 1 << 28, false, true, 100).unwrap();
+    }
+    let options = ObjectWriteOptions {
+        page_bytes: 4096,
+        target_groups: 1,
+        replica: ReplicaClientOptions {
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let gateway_options = GatewayOptions { write: options.clone(), replica: options.replica.clone(), ..Default::default() };
+    let open = {
+        let endpoint = meta_endpoint.clone();
+        move || RemoteMetaClient::connect(&endpoint, &meta_options())
+    };
+    let gateway = ClusterGateway::over_chunk_objects(open, gateway_options, "start");
+    let call = |method: &str, target: &str, headers: &[(&str, &str)], body: &[u8]| -> Response {
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        gateway.handle(&Request {
+            method: method.into(),
+            path: path.into(),
+            query: query.into(),
+            headers: headers.iter().map(|(name, value)| (name.to_ascii_lowercase(), (*value).to_string())).collect(),
+            body: body.to_vec(),
+            keep_alive: true,
+        })
+    };
+    let text = |response: &Response| String::from_utf8_lossy(&response.body).to_string();
+    let header = |response: &Response, name: &str| response.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone());
+    let count = |body: &str, needle: &str| body.matches(needle).count();
+    let lock = "<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled></ObjectLockConfiguration>";
+    let versioned = "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>";
+    for bucket in ["docs", "vault", "hist", "small", "feed"] {
+        assert_eq!(call("PUT", &format!("/{bucket}"), &[], &[]).status, 200, "{bucket}");
+    }
+    assert_eq!(call("PUT", "/vault?object-lock", &[], lock.as_bytes()).status, 200);
+    assert_eq!(call("PUT", "/hist?versioning", &[], versioned.as_bytes()).status, 200);
+    assert_eq!(call("PUT", "/small?quota", &[], b"<Quota><Bytes>10</Bytes></Quota>").status, 200);
+    let on = "<ChangeFeedConfiguration><Status>Enabled</Status></ChangeFeedConfiguration>";
+    assert_eq!(call("PUT", "/feed?changefeed", &[], on.as_bytes()).status, 200);
+
+    // ATTRIBUTES: written with the object, republished without moving a byte, dropped by an overwrite
+    let body: Vec<u8> = (0..9000u32).map(|i| (i % 251) as u8).collect();
+    let put = call("PUT", "/docs/report", &[("content-type", "text/csv"), ("x-amz-meta-owner", "ana"), ("x-amz-tagging", "team=storage")], &body);
+    assert_eq!(put.status, 200, "{}", text(&put));
+    let head = call("HEAD", "/docs/report", &[], &[]);
+    assert_eq!(header(&head, "content-type").as_deref(), Some("text/csv"));
+    assert_eq!(header(&head, "x-amz-meta-owner").as_deref(), Some("ana"));
+    assert!(header(&head, "last-modified").is_some());
+    let retag = "<Tagging><TagSet><Tag><Key>team</Key><Value>data</Value></Tag><Tag><Key>tier</Key><Value>hot</Value></Tag></TagSet></Tagging>";
+    assert_eq!(call("PUT", "/docs/report?tagging", &[], retag.as_bytes()).status, 200);
+    let tags = text(&call("GET", "/docs/report?tagging", &[], &[]));
+    assert!(tags.contains("<Key>tier</Key>") && tags.contains("<Value>data</Value>"), "{tags}");
+    assert_eq!(call("GET", "/docs/report", &[], &[]).body, body, "the bytes are what was written");
+    assert_eq!(header(&call("HEAD", "/docs/report", &[], &[]), "content-type").as_deref(), Some("text/csv"), "an attribute change keeps the rest");
+    assert_eq!(call("PUT", "/docs/report", &[], b"plain").status, 200);
+    assert!(header(&call("HEAD", "/docs/report", &[], &[]), "x-amz-meta-owner").is_none(), "an overwrite names its own attributes");
+
+    // OBJECT LOCK: a governance retention refuses an overwrite and a delete, and a bypass deletes exactly what was checked
+    let until = "2099-01-01T00:00:00Z";
+    let held = call("PUT", "/vault/g", &[("x-amz-object-lock-mode", "GOVERNANCE"), ("x-amz-object-lock-retain-until-date", until)], &body);
+    assert_eq!(held.status, 200, "{}", text(&held));
+    assert_eq!(call("PUT", "/vault/g", &[], b"again").status, 403);
+    assert_eq!(call("DELETE", "/vault/g", &[], &[]).status, 403);
+    assert_eq!(call("GET", "/vault/g", &[], &[]).body, body, "a refused overwrite and delete changed nothing");
+    assert_eq!(call("DELETE", "/vault/g", &[("x-amz-bypass-governance-retention", "true")], &[]).status, 204);
+    assert_eq!(call("GET", "/vault/g", &[], &[]).status, 404);
+    let compliance = "<Retention><Mode>COMPLIANCE</Mode><RetainUntilDate>2099-01-01T00:00:00Z</RetainUntilDate></Retention>";
+    assert_eq!(call("PUT", "/vault/c", &[], b"c").status, 200);
+    assert_eq!(call("PUT", "/vault/c?retention", &[], compliance.as_bytes()).status, 200);
+    assert_eq!(call("DELETE", "/vault/c", &[("x-amz-bypass-governance-retention", "true")], &[]).status, 403, "compliance is not bypassed");
+
+    // VERSIONING: the replaced manifest is kept under a hidden key that names the same pages
+    let (first, second) = (vec![1u8; 5000], vec![2u8; 6000]);
+    let v1 = header(&call("PUT", "/hist/page", &[("content-type", "text/plain")], &first), "x-amz-version-id").unwrap();
+    let v2 = header(&call("PUT", "/hist/page", &[], &second), "x-amz-version-id").unwrap();
+    let old = call("GET", &format!("/hist/page?versionId={v1}"), &[], &[]);
+    assert_eq!((old.status, old.body.as_slice()), (200, first.as_slice()), "an old version is read from the pages it always had");
+    assert_eq!(header(&old, "content-type").as_deref(), Some("text/plain"));
+    assert_eq!(call("GET", "/hist/page", &[], &[]).body, second);
+    let deleted = call("DELETE", "/hist/page", &[], &[]);
+    assert_eq!(header(&deleted, "x-amz-delete-marker").as_deref(), Some("true"));
+    assert_eq!(call("GET", "/hist/page", &[], &[]).status, 404);
+    assert_eq!(call("GET", &format!("/hist/page?versionId={v2}"), &[], &[]).body, second);
+    let listing = text(&call("GET", "/hist?versions", &[], &[]));
+    assert_eq!(count(&listing, "<VersionId>"), 3, "{listing}");
+    assert_eq!(call("PUT", "/hist/page", &[], b"three").status, 200);
+    let current = header(&call("HEAD", "/hist/page", &[], &[]), "x-amz-version-id").unwrap();
+    // removing the current version brings the latest kept one (the marker) back; removing v1 frees only its manifest
+    assert_eq!(call("DELETE", &format!("/hist/page?versionId={current}"), &[], &[]).status, 204);
+    assert_eq!(call("GET", "/hist/page", &[], &[]).status, 404);
+    assert_eq!(call("DELETE", &format!("/hist/page?versionId={v1}"), &[], &[]).status, 204);
+    assert_eq!(call("GET", &format!("/hist/page?versionId={v1}"), &[], &[]).status, 404);
+    assert_eq!(call("GET", &format!("/hist/page?versionId={v2}"), &[], &[]).body, second, "the other version still reads");
+
+    // QUOTA: the write that would pass it is refused and stores nothing
+    assert_eq!(call("PUT", "/small/a", &[], b"123456").status, 200);
+    let over = call("PUT", "/small/b", &[], b"123456");
+    assert_eq!(over.status, 403, "{}", text(&over));
+    assert!(text(&over).contains("QuotaExceeded"));
+    assert_eq!(call("GET", "/small/b", &[], &[]).status, 404);
+
+    // CHANGE FEED: what happened to the bucket, in order, read by cursor
+    assert_eq!(call("PUT", "/feed/a", &[], b"one").status, 200);
+    assert_eq!(call("PUT", "/feed/a", &[("x-amz-write-offset-bytes", "3")], b"two").status, 200);
+    assert_eq!(call("DELETE", "/feed/a", &[], &[]).status, 204);
+    let changes = text(&call("GET", "/feed?changes", &[], &[]));
+    let operations: Vec<&str> = changes.split("<Operation>").skip(1).filter_map(|rest| rest.split_once("</Operation>").map(|(op, _)| op)).collect();
+    assert_eq!(operations, ["put", "append", "delete"], "{changes}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+

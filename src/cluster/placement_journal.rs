@@ -47,6 +47,11 @@ impl PlacementJournal {
         File::open(path.parent().unwrap())?.sync_all()?;
         let length = file.metadata()?.len();
         let mut offset = 0;
+        // A durable snapshot can include an intact prefix of this journal. Keep normal
+        // command application strict; only recovery skips records covered at entry.
+        let checkpoint = service.placement_commit_index;
+        let mut prior_position = None;
+
         while offset < length {
             let remaining = length - offset;
             if remaining < HEADER as u64 {
@@ -77,16 +82,33 @@ impl PlacementJournal {
             if fnv1a64(&bytes) != u64::from_be_bytes(header[16..24].try_into().unwrap()) {
                 return Err(invalid("placement journal checksum mismatch"));
             }
-            if &header[..4] == MAGIC {
-                PlacementOutcome::from_payload(&bytes)
-                    .map_err(invalid)?
-                    .apply(service)
-                    .map_err(invalid)?;
+            let placement = if &header[..4] == MAGIC {
+                Some(PlacementOutcome::from_payload(&bytes).map_err(invalid)?)
             } else {
-                super::chunk_catalog_outcome::ChunkCatalogOutcome::from_payload(&bytes)
-                    .map_err(invalid)?
-                    .apply(service, catalog)
-                    .map_err(invalid)?;
+                None
+            };
+            let membership = if placement.is_none() {
+                Some(super::chunk_catalog_outcome::ChunkCatalogOutcome::from_payload(&bytes).map_err(invalid)?)
+            } else {
+                None
+            };
+            let (before, after) = if let Some(outcome) = &placement {
+                (outcome.before_index, outcome.after_index)
+            } else {
+                membership.as_ref().unwrap().positions().map_err(invalid)?
+            };
+            if !(after == before || before.checked_add(1) == Some(after))
+                || prior_position.is_some_and(|prior| prior != before)
+            {
+                return Err(invalid("placement journal positions are not contiguous"));
+            }
+            prior_position = Some(after);
+            if after > checkpoint {
+                if let Some(outcome) = placement {
+                    outcome.apply(service).map_err(invalid)?;
+                } else {
+                    membership.unwrap().apply(service, catalog).map_err(invalid)?;
+                }
             }
             offset += HEADER as u64 + size as u64;
         }
@@ -134,6 +156,59 @@ impl PlacementJournal {
 mod tests {
     use super::*;
     #[test]
+    fn unified_writer_journal_recovers_both_tables_and_refuses_unactivated_replay() {
+        let base = crate::chunk_writer_outcome_tests::service();
+        let outcome = crate::chunk_writer_outcome_tests::grant();
+        let snapshot = base.export_snapshot().to_bytes().unwrap();
+        let record = PlacementJournal::record(&outcome).unwrap();
+        let path =
+            std::env::temp_dir().join(format!("unified-writer-journal-{}", std::process::id()));
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        drop(file);
+        let mut expected = base.clone();
+        outcome.apply(&mut expected).unwrap();
+        for cut in 0..=record.len() {
+            std::fs::write(&path, &record[..cut]).unwrap();
+            let mut recovered = MatrixMetaService::new();
+            let decoded = crate::MetaSnapshot::from_bytes(&snapshot).unwrap();
+            recovered.install_snapshot(decoded.clone()).unwrap();
+            recovered.install_placement_roster(&decoded).unwrap();
+            drop(PlacementJournal::open(&path, &mut recovered, true).unwrap());
+            let want = if cut == record.len() {
+                &expected
+            } else {
+                &base
+            };
+            assert_eq!(recovered.chunk_catalog, want.chunk_catalog);
+            assert_eq!(recovered.writer_leases, want.writer_leases);
+            assert_eq!(
+                recovered.placement_commit_index,
+                want.placement_commit_index
+            );
+            assert!(recovered.object_manifests.is_empty());
+        }
+        std::fs::write(&path, &record).unwrap();
+        let mut unactivated = base.clone();
+        unactivated.cluster_features.raised = 0;
+        let before = unactivated.export_snapshot();
+        assert!(PlacementJournal::open(&path, &mut unactivated, true).is_err());
+        assert_eq!(unactivated.export_snapshot(), before);
+        assert_eq!(std::fs::read(&path).unwrap(), record);
+        std::fs::write(&path, []).unwrap();
+        let mut original = base.clone();
+        let mut journal = PlacementJournal::open(&path, &mut original, true).unwrap();
+        journal.append(&outcome).unwrap();
+        drop(journal);
+        let mut recovered = base;
+        drop(PlacementJournal::open(&path, &mut recovered, true).unwrap());
+        assert_eq!(recovered.export_snapshot(), expected.export_snapshot());
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
     fn placement_journal_rejects_corruption_and_recovers_every_torn_tail() {
         let base = MatrixMetaService::new().placement_commit_index;
         let first = PlacementOutcome {
@@ -155,6 +230,8 @@ mod tests {
             features: None,
             log_chunk: None,
             lease_batch: None,
+            chunk_writer: None,
+            native: None,
             forget: false,
         };
         let second = PlacementOutcome {
@@ -189,7 +266,7 @@ mod tests {
     }
     #[test]
     fn manifest_journal_recovers_atomic_publication_and_torn_suffixes() {
-        let (base, create, replace) = crate::tests::manifest_publication_fixture();
+        let (base, create, replace) = crate::test_fixtures::manifest_publication_fixture();
         let first = PlacementJournal::record(&create).unwrap();
         let second = PlacementJournal::record(&replace).unwrap();
         let path = std::env::temp_dir().join(format!("manifest-journal-{}", std::process::id()));

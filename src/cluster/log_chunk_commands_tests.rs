@@ -310,7 +310,7 @@ mod log_chunk_commands_tests {
         }
         let good = LogChunkRequest::grant("bucket", "log", "gateway-a", TTL, "group-0");
         let bad = [
-            LogChunkRequest { version: 2, ..good.clone() },
+            LogChunkRequest { version: 3, ..good.clone() },
             LogChunkRequest { action: 9, ..good.clone() },
             LogChunkRequest { ttl_ms: MIN_TTL_FOR_TESTS - 1, ..good.clone() },
             LogChunkRequest { ttl_ms: MAX_LEASE_TTL_MS + 1, ..good.clone() },
@@ -335,7 +335,7 @@ mod log_chunk_commands_tests {
         }
         let reply = LogChunkReply { version: 1, renewed: 2, lost: vec![lref("a", 3)], ..Default::default() };
         assert_eq!(lcc::reply_from_payload(&reply.encode_to_vec()).unwrap(), reply);
-        assert!(lcc::reply_from_payload(&LogChunkReply { version: 2, ..reply }.encode_to_vec()).is_err());
+        assert!(lcc::reply_from_payload(&LogChunkReply { version: 3, ..reply }.encode_to_vec()).is_err());
     }
 
     const MIN_TTL_FOR_TESTS: u64 = lcc::MIN_TTL_MS;
@@ -603,28 +603,6 @@ mod log_chunk_commands_tests {
         let (swept, committed) = run(&mut service, &groups, LogChunkRequest::sweep(vec![lref("pages", 3)]), NOW + TTL).unwrap();
         assert!(!committed);
         assert_eq!(swept.dropped, 0);
-        assert_eq!(state_of(&service), before);
-    }
-
-    #[test]
-    fn an_ordinary_page_publication_never_writes_a_chunked_manifest_or_appends_pages_to_one() {
-        use crate::object_manifest::ManifestOutcome;
-        let (mut service, groups) = fixture(1, 0);
-        raise(&mut service);
-        grant(&mut service, &groups, "log", "gw-a", NOW);
-        let log = stored(&service, "log").unwrap();
-        assert_eq!(log.format_version, 3);
-        let before = state_of(&service);
-        // the general publication path refuses a chunked manifest, whoever asks
-        let next = ObjectManifest { generation: log.generation + 1, ..log.clone() };
-        assert!(ManifestOutcome::decide(Some(log.clone()), next).is_err());
-        // a page append to a log object: refused as chunked, and the page extent would follow a chunk
-        let mut appended = ObjectManifest { generation: log.generation + 1, length: log.length + 10, ..log.clone() };
-        appended.extents.push(page_extent(501, log.length, 10));
-        assert!(ManifestOutcome::decide_append(log.clone(), appended.clone()).is_err());
-        // an earlier format cannot hold the chunk extents at all
-        let earlier = ObjectManifest { format_version: 2, ..appended };
-        assert!(ManifestOutcome::decide(Some(log), earlier).is_err());
         assert_eq!(state_of(&service), before);
     }
 

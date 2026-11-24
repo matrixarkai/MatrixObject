@@ -79,7 +79,7 @@ fn checkpoint_recovery_folds_history_and_reopens_exact_page_and_scalar_state() {
         cut = Some(append(&log, &mut service, &empty, step % 8, step).position);
     }
     worker
-        .fold_through(&log, cut.as_ref().unwrap(), 16)
+        .fold_through(&log, cut.as_ref().unwrap(), 16, &|| Ok(()))
         .unwrap();
     worker
         .set_scalars(capture_scalars(&service, &empty))

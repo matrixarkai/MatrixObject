@@ -71,7 +71,7 @@ fn publish(
     cut: StoredOutcomePosition,
     epoch: u64,
 ) -> CheckpointCommit {
-    prepare(
+    let (commit, position) = prepare(
         log,
         catalog,
         state,
@@ -83,9 +83,28 @@ fn publish(
         &|| Ok(()),
     )
     .unwrap()
-    .publish(log)
-    .unwrap()
+    .publish_record(log)
+    .unwrap();
+    assert_indexed_protection(state.as_ref().unwrap(), log, catalog, &commit, &position);
+    commit
 }
+fn assert_indexed_protection(
+    index: &IndexState,
+    log: &SegmentedOutcomeLog,
+    pages: &PageCatalog,
+    commit: &CheckpointCommit,
+    position: &StoredOutcomePosition,
+) -> BTreeSet<Vec<u8>> {
+    let complete = index
+        .protected_segments(log, pages, commit, position, &|| Ok(()))
+        .unwrap();
+    let cached = index
+        .protected_segments_indexed(log, pages, commit, position, &BTreeSet::new(), &|| Ok(()))
+        .unwrap();
+    assert_eq!(cached, complete);
+    cached
+}
+
 fn verify_tree(
     node: &Option<Box<Node>>,
     lower: Option<&PageId>,
@@ -423,8 +442,28 @@ fn checkpoint_index_large_page_metadata_streams_and_reopens_without_a_large_inde
             spans,
         },
     );
+    let payload_position = record.position.clone();
+    let advance = || {
+        let count = log.segment_count().unwrap();
+        let fragment = CheckpointFragment {
+            version: 1,
+            checkpoint_id: vec![0x83; 16],
+            kind: CheckpointFragment::PAYLOAD,
+            ordinal: 0,
+            data: vec![0x19; CheckpointFragment::MAX_DATA_BYTES],
+        };
+        loop {
+            let record = log
+                .append_decided_batch(&[DecidedMutation::CheckpointFragment(&fragment)])
+                .unwrap();
+            if log.segment_count().unwrap() > count {
+                break record.position;
+            }
+        }
+    };
+    advance();
     let mut index = None;
-    publish(
+    let first = publish(
         &log,
         &pages,
         &mut index,
@@ -449,6 +488,75 @@ fn checkpoint_index_large_page_metadata_streams_and_reopens_without_a_large_inde
             .unwrap(),
         vec![0x31; 17]
     );
+    drop(loaded);
+    let cut = advance();
+    let catalog_commit =
+        decode_catalog(&index.as_ref().unwrap().root.as_ref().unwrap().value.catalog).unwrap();
+    let old_catalog = catalog_commit.first.clone().unwrap();
+    let catalog_id: [u8; 16] = old_catalog.store_id.as_slice().try_into().unwrap();
+    let selected: Vec<_> = log
+        .compaction_candidates(&cut, None, 64)
+        .unwrap()
+        .into_iter()
+        .filter(|candidate| candidate.store_id == catalog_id)
+        .collect();
+    assert_eq!(selected.len(), 1);
+    let mut coverage = BTreeMap::from([(catalog_id, Vec::new())]);
+    index
+        .as_ref()
+        .unwrap()
+        .compaction_metadata_ranges(&log, &selected, first.epoch, &mut coverage, &|| Ok(()))
+        .unwrap();
+    assert!(coverage[&catalog_id]
+        .iter()
+        .any(|(start, end)| *start <= old_catalog.offset && *end > old_catalog.offset));
+    let mut dirty = BTreeSet::new();
+    index
+        .as_mut()
+        .unwrap()
+        .evacuate_metadata(&log, &selected, &mut dirty, &|| Ok(()))
+        .unwrap();
+    assert_eq!(dirty, BTreeSet::from([id(0)]));
+    let (commit, position) = prepare(
+        &log,
+        &pages,
+        &mut index,
+        &mut dirty,
+        b"scalar-state".to_vec(),
+        Some(cut),
+        2,
+        false,
+        &|| Ok(()),
+    )
+    .unwrap()
+    .publish_record(&log)
+    .unwrap();
+    let keep = assert_indexed_protection(index.as_ref().unwrap(), &log, &pages, &commit, &position);
+    assert!(!keep.contains(catalog_id.as_slice()));
+    let retired = log
+        .prepare_retention(&keep, commit.through.as_ref().unwrap(), &|| Ok(()))
+        .unwrap()
+        .unwrap()
+        .commit()
+        .unwrap();
+    assert!(retired.finish().unwrap().removed > 0);
+    assert!(log.read_metadata(&old_catalog).is_err());
+    assert!(
+        log.read_metadata(&payload_position).is_ok(),
+        "metadata evacuation moved or retired the unchanged payload"
+    );
+    drop(index);
+    drop(pages);
+    drop(log);
+    let log = dir.open();
+    let loaded = catalog::latest(&log, 1).unwrap().unwrap();
+    assert_eq!(loaded.catalog.pages[&id(0)].spans.len(), 65536);
+    assert_eq!(
+        loaded.catalog.pages[&id(0)]
+            .materialize(|extent, offset, length| log.read_payload_range(extent, offset, length))
+            .unwrap(),
+        state
+    );
 }
 #[test]
 fn checkpoint_index_extent_cache_releases_overwritten_descriptor_history() {
@@ -471,7 +579,7 @@ fn checkpoint_index_extent_cache_releases_overwritten_descriptor_history() {
             .append_page(&PageOutcome::between(&id(0), Some(&before), &after).unwrap())
             .unwrap();
         pages.fold(&record).unwrap();
-        index.as_mut().unwrap().prune(&candidates);
+        index.as_mut().unwrap().prune(&candidates).unwrap();
         assert!(index.as_ref().unwrap().extents.is_empty());
         dirty.insert(id(0));
         publish(&log, &pages, &mut index, &mut dirty, record.position, epoch);
@@ -692,13 +800,9 @@ fn checkpoint_index_retention_preserves_every_duplicate_extent_record_after_relo
     // Interning is allowed to choose either valid descriptor record. A leaf
     // that names the other one must remain recoverable after collection.
     index
-        .extents
-        .get_mut(&catalog::extent_key(&extent).unwrap())
-        .unwrap()
-        .saved = Some(duplicate);
-    let keep = index
-        .protected_segments(&log, &loaded.catalog, &loaded.commit, position, &|| Ok(()))
+        .set_extent_saved(catalog::extent_key(&extent).unwrap(), duplicate.clone())
         .unwrap();
+    let keep = assert_indexed_protection(index, &log, &loaded.catalog, &loaded.commit, position);
     assert!(keep.contains(&first.position().unwrap().store_id));
     let before = log.retained_segment_count().unwrap();
     let committed = log
@@ -712,7 +816,7 @@ fn checkpoint_index_retention_preserves_every_duplicate_extent_record_after_relo
     drop(loaded);
     drop(log);
     let log = dir.open();
-    let loaded = catalog::latest(&log, 2).unwrap().unwrap();
+    let mut loaded = catalog::latest(&log, 2).unwrap().unwrap();
     for n in 0..2 {
         assert_eq!(
             loaded.catalog.pages[&id(n)]
@@ -721,4 +825,429 @@ fn checkpoint_index_retention_preserves_every_duplicate_extent_record_after_relo
             page(vec![0x31; 16], 1)
         );
     }
+    let first_id: [u8; 16] = first
+        .position()
+        .unwrap()
+        .store_id
+        .as_slice()
+        .try_into()
+        .unwrap();
+    let selected: Vec<_> = log
+        .compaction_candidates(loaded.commit.through.as_ref().unwrap(), None, 64)
+        .unwrap()
+        .into_iter()
+        .filter(|candidate| candidate.store_id == first_id)
+        .collect();
+    assert_eq!(selected.len(), 1);
+    let index = loaded.index.as_mut().unwrap();
+    index
+        .set_extent_saved(catalog::extent_key(&extent).unwrap(), duplicate)
+        .unwrap();
+    let mut ranges = BTreeMap::from([(first_id, Vec::new())]);
+    index
+        .compaction_metadata_ranges(
+            &log,
+            &selected,
+            loaded.commit.epoch,
+            &mut ranges,
+            &|| Ok(()),
+        )
+        .unwrap();
+    let original = first.position().unwrap();
+    assert_cached_coverage(index, &loaded.catalog);
+    assert!(
+        index.planner.has_metadata(&first_id),
+        "alternate leaf record lost metadata ownership"
+    );
+    assert!(
+        ranges[&first_id]
+            .iter()
+            .any(|(start, end)| *start <= original.offset
+                && *end >= original.offset + original.length)
+    );
+    let mut dirty = BTreeSet::new();
+    index
+        .evacuate_metadata(&log, &selected, &mut dirty, &|| Ok(()))
+        .unwrap();
+    assert!(
+        dirty.contains(&id(0)),
+        "the leaf using the alternate record was not rewritten"
+    );
+    let cut = loaded.publication_position.clone().unwrap();
+    let (commit, position) = prepare(
+        &log,
+        &loaded.catalog,
+        &mut loaded.index,
+        &mut dirty,
+        loaded.header.metadata.clone(),
+        Some(cut),
+        3,
+        false,
+        &|| Ok(()),
+    )
+    .unwrap()
+    .publish_record(&log)
+    .unwrap();
+    let keep = assert_indexed_protection(
+        loaded.index.as_ref().unwrap(),
+        &log,
+        &loaded.catalog,
+        &commit,
+        &position,
+    );
+    assert!(
+        !keep.contains(first_id.as_slice()),
+        "a rewritten alternate record still pins its old file"
+    );
+    let retired = log
+        .prepare_retention(&keep, commit.through.as_ref().unwrap(), &|| Ok(()))
+        .unwrap()
+        .unwrap()
+        .commit()
+        .unwrap();
+    assert!(retired.finish().unwrap().removed > 0);
+    assert!(log.read_metadata(original).is_err());
+    drop(loaded);
+    drop(log);
+    let log = dir.open();
+    let loaded = catalog::latest(&log, 2).unwrap().unwrap();
+    for n in 0..2 {
+        assert_eq!(loaded.catalog.pages[&id(n)].materialize(|extent, offset, length| log.read_payload_range(extent, offset, length)).unwrap(), page(vec![0x31; 16], 1));
+    }
+}
+
+fn assert_cached_coverage(index: &IndexState, pages: &PageCatalog) {
+    assert!(index.ordinary_coverage());
+    let mut ranges: BTreeMap<[u8; 16], Vec<(u64, u64)>> = BTreeMap::new();
+    let mut record = |value: &StoredOutcomePosition| {
+        let id = value.store_id.as_slice().try_into().unwrap();
+        ranges
+            .entry(id)
+            .or_default()
+            .push((value.offset, value.offset + value.length));
+    };
+    let mut stack: Vec<_> = index.root.iter().map(|node| node.as_ref()).collect();
+    while let Some(node) = stack.pop() {
+        if let Some(saved) = &node.saved {
+            record(saved.position().unwrap());
+        }
+        record(node.value.page.as_ref().unwrap().position().unwrap());
+        for extent in &node.extent_records {
+            record(&StoredOutcomePosition {
+                version: 1,
+                store_id: extent.store_id.to_vec(),
+                offset: extent.offset,
+                length: extent.length,
+            });
+        }
+        stack.extend(
+            node.left
+                .iter()
+                .chain(node.right.iter())
+                .map(|node| node.as_ref()),
+        );
+    }
+    for extent in index.extents.values() {
+        if let Some(saved) = &extent.saved {
+            record(saved.position().unwrap());
+        }
+    }
+    let metadata_segments: BTreeSet<_> = ranges.keys().copied().collect();
+    for page in pages.pages.values() {
+        for span in &page.spans {
+            ranges
+                .entry(catalog::extent_key(&span.extent).unwrap().0)
+                .or_default()
+                .push((
+                    span.extent.offset + span.extent_offset,
+                    span.extent.offset + span.extent_offset + span.length,
+                ));
+        }
+    }
+    for segment in ranges.keys().copied().chain([[0; 16], [255; 16]]) {
+        assert_eq!(
+            index.planner.has_metadata(&segment),
+            metadata_segments.contains(&segment)
+        );
+        let mut absent = segment;
+        absent[0] ^= 0x80;
+        assert_eq!(
+            index.planner.has_metadata(&absent),
+            metadata_segments.contains(&absent)
+        );
+    }
+    let mut expected = BTreeMap::new();
+    for (id, mut ranges) in ranges {
+        ranges.sort_unstable();
+        let mut end = 0;
+        let mut bytes = 0;
+        for (start, next) in ranges {
+            if next > end {
+                bytes += next - start.max(end);
+                end = next;
+            }
+        }
+        expected.insert(id, bytes);
+    }
+    assert_eq!(index.planner.totals(), expected);
+    let mut owners: BTreeMap<[u8; 16], BTreeSet<PageId>> = BTreeMap::new();
+    for (id, page) in &pages.pages {
+        for span in &page.spans {
+            owners
+                .entry(catalog::extent_key(&span.extent).unwrap().0)
+                .or_default()
+                .insert(id.clone());
+        }
+    }
+    assert_eq!(index.planner.payload_owner_sets(), &owners);
+    for (segment, keys) in &owners {
+        assert_eq!(
+            index
+                .planned_payload_pages(segment, pages.pages.len())
+                .unwrap(),
+            keys.iter().cloned().collect::<Vec<_>>()
+        );
+    }
+    assert!(index
+        .planned_payload_pages(&[0; 16], pages.pages.len())
+        .unwrap()
+        .is_empty());
+    assert!(index
+        .planned_payload_pages(&[0; 16], pages.pages.len() + 1)
+        .is_err());
+    let stored_spans: usize = pages.pages.values().map(|page| page.spans.len()).sum();
+    assert!(
+        index.planner.retained_payload_range_slots() <= stored_spans,
+        "derived ranges retain more slots than the catalog has spans"
+    );
+}
+#[test]
+fn checkpoint_index_cached_coverage_matches_complete_scan_across_updates_and_restart() {
+    let dir = Dir::new();
+    let log = dir.open();
+    let mut pages = PageCatalog::default();
+    let cut = seed(&log, &mut pages, 512);
+    let mut index = None;
+    let mut dirty = BTreeSet::new();
+    publish(&log, &pages, &mut index, &mut dirty, cut, 1);
+    assert_cached_coverage(index.as_ref().unwrap(), &pages);
+    for epoch in 2..26u64 {
+        let mut outcomes = Vec::new();
+        let mut old = BTreeSet::new();
+        for step in 0..64u64 {
+            let key = if step < 16 {
+                id(512 + (epoch - 2) * 16 + step)
+            } else {
+                id((epoch * 37 + step * 17) % 512)
+            };
+            let before = pages.pages.get(&key).map(|page| {
+                page.materialize(|e, o, n| log.read_payload_range(e, o, n))
+                    .unwrap()
+            });
+            if let Some(page) = pages.pages.get(&key) {
+                for span in &page.spans {
+                    old.insert(catalog::extent_key(&span.extent).unwrap());
+                }
+            }
+            let mut data = before
+                .as_ref()
+                .map_or_else(Vec::new, |state| state.data.as_ref().clone());
+            match (epoch + step) % 3 {
+                0 => data.extend_from_slice(&[0x71; 16]),
+                1 => {
+                    data.resize(32, 0);
+                    data[0] = epoch as u8;
+                }
+                _ => data.truncate((step as usize) % 17),
+            }
+            let after = page(
+                data,
+                before.as_ref().map_or(1, |page| page.write_sequence + 1),
+            );
+            outcomes.push(PageOutcome::between(&key, before.as_ref(), &after).unwrap());
+            dirty.insert(key);
+        }
+        let decisions: Vec<_> = outcomes.iter().map(DecidedMutation::Page).collect();
+        let record = log.append_decided_batch(&decisions).unwrap();
+        pages.fold(&record).unwrap();
+        let current = index.as_mut().unwrap();
+        current.prune(&old).unwrap();
+        current
+            .refresh_planned_payloads(&pages, &dirty, &|| Ok(()))
+            .unwrap();
+        assert_cached_coverage(current, &pages);
+        publish(&log, &pages, &mut index, &mut dirty, record.position, epoch);
+        assert_cached_coverage(index.as_ref().unwrap(), &pages);
+    }
+    drop(index);
+    drop(pages);
+    drop(log);
+    let log = dir.open();
+    let mut loaded = catalog::latest(&log, 1024).unwrap().unwrap();
+    assert_cached_coverage(loaded.index.as_ref().unwrap(), &loaded.catalog);
+    let key = id(7);
+    let before = loaded.catalog.pages[&key]
+        .materialize(|e, o, n| log.read_payload_range(e, o, n))
+        .unwrap();
+    let after = page(vec![0x52; 128], before.write_sequence + 1);
+    let record = log
+        .append_page(&PageOutcome::between(&key, Some(&before), &after).unwrap())
+        .unwrap();
+    loaded.catalog.fold(&record).unwrap();
+    let mut dirty = BTreeSet::from([key]);
+    publish(
+        &log,
+        &loaded.catalog,
+        &mut loaded.index,
+        &mut dirty,
+        record.position,
+        26,
+    );
+    assert_cached_coverage(loaded.index.as_ref().unwrap(), &loaded.catalog);
+}
+
+#[test]
+fn checkpoint_index_protection_is_bounded_and_dirty_catalog_uses_complete_scan() {
+    use std::cell::Cell;
+    let dir = Dir::new();
+    let log = dir.open();
+    let mut pages = PageCatalog::default();
+    let cut = seed(&log, &mut pages, 4096);
+    let mut index = None;
+    let mut dirty = BTreeSet::new();
+    let (commit, position) = prepare(
+        &log,
+        &pages,
+        &mut index,
+        &mut dirty,
+        b"scalar-state".to_vec(),
+        Some(cut),
+        1,
+        false,
+        &|| Ok(()),
+    )
+    .unwrap()
+    .publish_record(&log)
+    .unwrap();
+    let index = index.as_ref().unwrap();
+    let fast_calls = Cell::new(0usize);
+    let cached = index
+        .protected_segments_indexed(&log, &pages, &commit, &position, &dirty, &|| {
+            fast_calls.set(fast_calls.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+    let complete_calls = Cell::new(0usize);
+    let complete = index
+        .protected_segments(&log, &pages, &commit, &position, &|| {
+            complete_calls.set(complete_calls.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(cached, complete);
+    assert!(fast_calls.get() <= 1 + 2 * cached.len());
+    assert!(complete_calls.get() > 8192);
+    assert!(fast_calls.get() < 64);
+    // Logical edits leave the old root valid but require protecting new sources.
+    let mut fragment = CheckpointFragment {
+        version: 1,
+        checkpoint_id: vec![0x93; 16],
+        kind: CheckpointFragment::PAYLOAD,
+        ordinal: 0,
+        data: vec![0x47; CheckpointFragment::MAX_DATA_BYTES],
+    };
+    let initial = log.retained_segment_count().unwrap();
+    while log.retained_segment_count().unwrap() == initial {
+        log.append_decided_batch(&[DecidedMutation::CheckpointFragment(&fragment)])
+            .unwrap();
+        fragment.ordinal += 1;
+        assert!(fragment.ordinal < 32);
+    }
+    let before = pages.pages[&id(0)]
+        .materialize(|e, o, n| log.read_payload_range(e, o, n))
+        .unwrap();
+    let after = page(vec![0x67; 32], before.write_sequence + 1);
+    let record = log
+        .append_page(&PageOutcome::between(&id(0), Some(&before), &after).unwrap())
+        .unwrap();
+    let new_source = record.batch.payloads[0].store_id.clone();
+    pages.fold(&record).unwrap();
+    dirty.insert(id(0));
+    let calls = Cell::new(0usize);
+    let keep = index
+        .protected_segments_indexed(&log, &pages, &commit, &position, &dirty, &|| {
+            calls.set(calls.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+    assert!(calls.get() > 8192);
+    assert!(keep.contains(&new_source));
+    assert_eq!(
+        keep,
+        index
+            .protected_segments(&log, &pages, &commit, &position, &|| Ok(()))
+            .unwrap()
+    );
+    assert!(index
+        .protected_segments_indexed(&log, &pages, &commit, &position, &dirty, &|| Err(
+            io::Error::new(io::ErrorKind::Interrupted, "cancelled protection")
+        ),)
+        .is_err());
+    let mut changed = commit.clone();
+    changed.epoch += 1;
+    assert!(index
+        .protected_segments_indexed(&log, &pages, &changed, &position, &BTreeSet::new(), &|| Ok(
+            ()
+        ),)
+        .is_err());
+}
+
+#[test]
+fn checkpoint_index_metadata_walk_keeps_legacy_and_unpublished_validation() {
+    use crate::durable_payload::outcome_segments::CompactionSegment;
+    use std::cell::Cell;
+    let dir = Dir::new();
+    let log = dir.open();
+    let selected = [CompactionSegment {
+        number: 0,
+        store_id: [0; 16],
+        length: MIN_SEGMENT_BYTES,
+    }];
+    let mut pages = PageCatalog::default();
+    let cut = seed(&log, &mut pages, 512);
+    let mut index = None;
+    publish(&log, &pages, &mut index, &mut BTreeSet::new(), cut, 1);
+    let index = index.as_mut().unwrap();
+    assert!(!index.planner.has_metadata(&selected[0].store_id));
+    let key = id(7);
+    let (value, records) = {
+        let node = index.root.as_mut().unwrap().find_mut(&key);
+        (node.value.clone(), node.extent_records.clone())
+    };
+    index.put_with_extents(key, value, records).unwrap();
+    assert!(!index.ordinary_coverage());
+    let mut dirty = BTreeSet::new();
+    let visits = Cell::new(0usize);
+    index
+        .evacuate_metadata(&log, &selected, &mut dirty, &|| {
+            visits.set(visits.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+    assert!(visits.get() > 512);
+    assert!(dirty.is_empty());
+    // An invalid legacy catalog must still be decoded and rejected.
+    let mut legacy = IndexState::default();
+    legacy.put(
+        id(0),
+        Value {
+            page: None,
+            catalog: vec![1],
+        },
+    );
+    assert!(!legacy.ordinary_coverage());
+    assert!(!legacy.planner.has_metadata(&selected[0].store_id));
+    assert!(legacy
+        .evacuate_metadata(&log, &selected, &mut dirty, &|| Ok(()))
+        .is_err());
 }

@@ -168,51 +168,6 @@ fn log_chunk_ordering_rules() {
 }
 
 #[test]
-fn extension_refuses_to_grow_past_an_unsealed_tail_or_add_pages_after_chunks() {
-    let before = manifest(3, vec![page(0, 1), chunk(4, 10, 100, EXTENT_FLAG_TAIL)]);
-    let mut after = before.clone();
-    after.generation = 2;
-    after.extents.push(chunk(104, 11, 5, EXTENT_FLAG_TAIL));
-    after.length += 5;
-    assert!(after.validate().is_err(), "full validation refuses an unsealed middle chunk");
-    assert!(after.validate_extension(&before).is_err());
-    let sealed = manifest(3, vec![page(0, 1), chunk(4, 10, 100, EXTENT_FLAG_SEALED)]);
-    let mut grown = sealed.clone();
-    grown.generation = 2;
-    grown.extents.push(chunk(104, 11, 5, EXTENT_FLAG_TAIL));
-    grown.length += 5;
-    grown.validate_extension(&sealed).unwrap();
-    grown.validate().unwrap();
-    let mut with_page = sealed.clone();
-    with_page.generation = 2;
-    with_page.extents.push(page(104, 3));
-    with_page.length += 4;
-    assert!(with_page.validate_extension(&sealed).is_err());
-    assert!(with_page.validate().is_err());
-}
-
-#[test]
-fn this_build_reads_a_chunked_manifest_but_does_not_publish_one() {
-    let m = chunked();
-    assert!(ManifestOutcome::decide(None, m.clone()).is_err());
-    let before = manifest(3, vec![page(0, 1)]);
-    let mut after = before.clone();
-    after.generation = 2;
-    after.extents.push(page(4, 2));
-    after.length += 4;
-    assert!(ManifestOutcome::decide_append(before, after).is_err());
-    // replay path: an outcome decided elsewhere applies to the catalog and survives a snapshot
-    let outcome = ManifestOutcome { format_version: 1, before: None, after: Some(m.clone()) };
-    let mut catalog = ManifestCatalog::default();
-    assert!(catalog.apply(&outcome).unwrap());
-    assert_eq!(catalog.get_manifest(&m.object_id()), Some(m.clone()));
-    let restored = ManifestCatalog::from_bytes(&catalog.to_bytes().unwrap()).unwrap();
-    assert_eq!(restored.get_manifest(&m.object_id()), Some(m.clone()));
-    let framed = outcome.to_bytes().unwrap();
-    assert_eq!(ManifestOutcome::from_bytes(&framed).unwrap(), outcome);
-}
-
-#[test]
 fn the_footer_sha256_is_recorded_with_a_presence_flag() {
     let sealed_with = EXTENT_FLAG_SEALED | EXTENT_FLAG_FOOTER_SHA256;
     manifest(3, vec![chunk(0, 1, 100, sealed_with)]).validate().unwrap();

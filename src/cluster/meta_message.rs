@@ -207,9 +207,15 @@ pub fn object_id(bucket: &str, key: &str) -> ObjectId {
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaRequest {
-    CopyManifest(crate::manifest_copy::ManifestCopyRequest),
     Features(super::features_commands::FeaturesRequest),
     LogChunk(super::log_chunk_commands::LogChunkRequest),
+    NativeObject(super::native_object_commands::NativeObjectRequest),
+    PublishChunkManifest(crate::chunk_catalog::ChunkOutcome),
+    ReadChunkManifest {
+        bucket: String,
+        key: String,
+    },
+    ListChunkManifests(crate::object_manifest::ManifestListRequest),
     PlanAppendRoutes(super::append_plan::AppendPlanRequest),
     StagedAllocation(crate::staged_allocation::StagedAllocationRequest),
     ManifestRetention(crate::manifest_retention::ManifestRetentionRequest),
@@ -340,9 +346,12 @@ impl MetaRequest {
             MetaRequest::ListManifests(_) => MetaRequestCode::ListManifests,
             MetaRequest::ManifestRetention(_) => MetaRequestCode::ManifestRetention,
             MetaRequest::StagedAllocation(_) => MetaRequestCode::StagedAllocation,
-            MetaRequest::CopyManifest(_) => MetaRequestCode::CopyManifest,
             MetaRequest::Features(_) => MetaRequestCode::Features,
             MetaRequest::LogChunk(_) => MetaRequestCode::LogChunk,
+            MetaRequest::NativeObject(_) => MetaRequestCode::NativeObject,
+            MetaRequest::PublishChunkManifest(_) => MetaRequestCode::PublishChunkManifest,
+            MetaRequest::ReadChunkManifest { .. } => MetaRequestCode::ReadChunkManifest,
+            MetaRequest::ListChunkManifests(_) => MetaRequestCode::ListChunkManifests,
             MetaRequest::PlanAppendRoutes(_) => MetaRequestCode::PlanAppendRoutes,
             MetaRequest::GroupIdentity => MetaRequestCode::GroupIdentity,
             MetaRequest::HeartbeatRootNode { .. } => MetaRequestCode::HeartbeatRootNode,
@@ -377,6 +386,7 @@ impl MetaRequest {
                 .encode_to_vec();
             }
             MetaRequest::ReadManifest { bucket, key }
+            | MetaRequest::ReadChunkManifest { bucket, key }
             | MetaRequest::ReadManifestRoutes { bucket, key }
             | MetaRequest::ReadManifestRoutesWide { bucket, key } => {
                 return super::conditional_requests::ManifestRead {
@@ -419,12 +429,14 @@ impl MetaRequest {
             MetaRequest::ReadChunkRoutes { placement_ids }
             | MetaRequest::ReadChunkRoutesWide { placement_ids } => return super::chunk_group_route::RouteReads { version: 1, placement_ids: placement_ids.clone() }.encode_to_vec(),
             MetaRequest::ListChunkRoutes { after, limit } => return super::chunk_group_route::RoutePageRead { version: 1, after: after.clone(), limit: *limit }.encode_to_vec(),
-            MetaRequest::ListManifests(request) => return request.encode_to_vec(),
+            MetaRequest::ListManifests(request) | MetaRequest::ListChunkManifests(request) => return request.encode_to_vec(),
             MetaRequest::ManifestRetention(request) => return request.encode_to_vec(),
             MetaRequest::StagedAllocation(request) => return request.encode_to_vec(),
-            MetaRequest::CopyManifest(request) => return request.encode_to_vec(),
             MetaRequest::Features(request) => return request.encode_to_vec(),
             MetaRequest::LogChunk(request) => return request.encode_to_vec(),
+            MetaRequest::NativeObject(request) => return request.encode_to_vec(),
+            // An outcome that cannot be framed encodes to nothing, which the server refuses by name.
+            MetaRequest::PublishChunkManifest(outcome) => return outcome.to_bytes().unwrap_or_default(),
             MetaRequest::PlanAppendRoutes(request) => return request.encode_to_vec(),
             MetaRequest::GroupIdentity => {}
             MetaRequest::CommitObjectPlacementIfCurrent {
@@ -565,6 +577,21 @@ impl MetaRequest {
         if code == MetaRequestCode::ListManifests {
             return crate::object_manifest::ManifestListRequest::from_payload(payload).map(Self::ListManifests);
         }
+        if code == MetaRequestCode::ListChunkManifests {
+            return crate::object_manifest::ManifestListRequest::from_payload(payload).map(Self::ListChunkManifests);
+        }
+        if code == MetaRequestCode::ReadChunkManifest {
+            if payload.len() > 8192 {
+                return Err(ObjectError::Corruption("chunk manifest read exceeds bound".into()));
+            }
+            let value: super::conditional_requests::ManifestRead = super::conditional_requests::decode(payload)?;
+            if value.version != 1 {
+                return Err(ObjectError::Corruption("chunk manifest read version mismatch".into()));
+            }
+            crate::validate_bucket(&value.bucket)?;
+            crate::validate_key(&value.key)?;
+            return Ok(Self::ReadChunkManifest { bucket: value.bucket, key: value.key });
+        }
         if code == MetaRequestCode::ManifestRetention {
             return crate::manifest_retention::ManifestRetentionRequest::from_payload(payload).map(Self::ManifestRetention);
         }
@@ -574,11 +601,11 @@ impl MetaRequest {
         if code == MetaRequestCode::PlanAppendRoutes {
             return super::append_plan::AppendPlanRequest::from_payload(payload).map(Self::PlanAppendRoutes);
         }
-        if code == MetaRequestCode::CopyManifest {
-            return crate::manifest_copy::ManifestCopyRequest::from_payload(payload).map(Self::CopyManifest);
-        }
         if code == MetaRequestCode::Features {
             return super::features_commands::FeaturesRequest::from_payload(payload).map(Self::Features);
+        }
+        if code == MetaRequestCode::NativeObject {
+            return super::native_object_commands::NativeObjectRequest::from_payload(payload).map(Self::NativeObject);
         }
         if code == MetaRequestCode::LogChunk {
             return super::log_chunk_commands::LogChunkRequest::from_payload(payload).map(Self::LogChunk);
@@ -668,6 +695,14 @@ impl MetaRequest {
             }
             return Ok(Self::ReadManifestRoutesBatch { objects });
         }
+        if code == MetaRequestCode::PublishChunkManifest {
+            if payload.len() > 2 * 1024 * 1024 + 256 {
+                return Err(ObjectError::Corruption(
+                    "chunk manifest publication exceeds bound".into(),
+                ));
+            }
+            return Ok(Self::PublishChunkManifest(crate::chunk_catalog::ChunkOutcome::from_bytes(payload)?));
+        }
         if code == MetaRequestCode::PublishManifest {
             if payload.len() > 2 * 1024 * 1024 + 256 {
                 return Err(ObjectError::Corruption(
@@ -721,9 +756,9 @@ impl MetaRequest {
             | MetaRequestCode::ListManifests
             | MetaRequestCode::ManifestRetention
             | MetaRequestCode::StagedAllocation
-            | MetaRequestCode::CopyManifest
             | MetaRequestCode::Features
             | MetaRequestCode::LogChunk
+            | MetaRequestCode::NativeObject
             | MetaRequestCode::PlanAppendRoutes
             | MetaRequestCode::ReportChunkNode
             | MetaRequestCode::AllocateObjectPages
@@ -733,6 +768,9 @@ impl MetaRequest {
             | MetaRequestCode::ReadManifestRoutesBatch
             | MetaRequestCode::ReadManifestRange
             | MetaRequestCode::PublishManifest
+            | MetaRequestCode::PublishChunkManifest
+            | MetaRequestCode::ReadChunkManifest
+            | MetaRequestCode::ListChunkManifests
             | MetaRequestCode::CommitObjectPlacementIfCurrent => unreachable!(),
             MetaRequestCode::ReadChunkGroup => MetaRequest::ReadChunkGroup {
                 placement_id: cursor.take_str()?,
@@ -898,6 +936,9 @@ pub enum MetaReply {
     StagedAllocation(crate::staged_allocation::StagedAllocationReply),
     Features(crate::placement_outcome::FeatureTable),
     LogChunk(super::log_chunk_commands::LogChunkReply),
+    NativeObject(super::native_object_commands::NativeObjectReply),
+    /// The manifest a chunk publication left in the catalog.
+    ChunkManifest(crate::chunk_manifest::ChunkManifest),
     AppendPlan(super::append_plan::AppendPlanReply),
     ManifestRetention(crate::manifest_retention::ManifestRetentionReply),
     Manifests(crate::object_manifest::ManifestListPage),
@@ -966,6 +1007,8 @@ impl MetaReply {
             Self::StagedAllocation(reply) => reply.encoded_len(),
             Self::Features(reply) => reply.encoded_len(),
             Self::LogChunk(reply) => reply.encoded_len(),
+            Self::NativeObject(reply) => reply.encoded_len(),
+            Self::ChunkManifest(manifest) => manifest.to_bytes().map_or(0, |bytes| bytes.len()),
             Self::AppendPlan(reply) => reply.encoded_len(),
             Self::PlacementNode(node) => node_payload_len(
                 &node.node_id,
@@ -1034,6 +1077,8 @@ impl MetaReply {
             MetaReply::StagedAllocation(reply) => return reply.encode_to_vec(),
             MetaReply::Features(reply) => return reply.encode_to_vec(),
             MetaReply::LogChunk(reply) => return reply.encode_to_vec(),
+            MetaReply::NativeObject(reply) => return reply.encode_to_vec(),
+            MetaReply::ChunkManifest(manifest) => return manifest.to_bytes().unwrap_or_default(),
             MetaReply::AppendPlan(reply) => return reply.encode_to_vec(),
             MetaReply::PlacementNode(node) => put_node(&mut out, node),
             MetaReply::RootNodes(nodes) => {
@@ -1086,6 +1131,14 @@ impl MetaReply {
             value.validate()?;
             return Ok(Self::Membership(value));
         }
+        if matches!(code, MetaRequestCode::PublishChunkManifest | MetaRequestCode::ReadChunkManifest) {
+            if payload.len() > 1024 * 1024 + 64 {
+                return Err(ObjectError::Corruption(
+                    "chunk manifest reply exceeds bound".into(),
+                ));
+            }
+            return Ok(Self::ChunkManifest(crate::chunk_manifest::ChunkManifest::from_bytes(payload)?));
+        }
         if code == MetaRequestCode::AllocateObjectPages {
             if payload.len() > 32 {
                 return Err(ObjectError::Corruption(
@@ -1099,7 +1152,7 @@ impl MetaReply {
         }
         if matches!(
             code,
-            MetaRequestCode::ReadManifest | MetaRequestCode::PublishManifest | MetaRequestCode::CopyManifest
+            MetaRequestCode::ReadManifest | MetaRequestCode::PublishManifest
         ) {
             if payload.len() > 1024 * 1024 {
                 return Err(ObjectError::Corruption(
@@ -1222,7 +1275,7 @@ impl MetaReply {
             return super::chunk_group_route::RouteBatch::from_wide_payload(payload)
                 .map(Self::ChunkRoutes);
         }
-        if code == MetaRequestCode::ListManifests {
+        if matches!(code, MetaRequestCode::ListManifests | MetaRequestCode::ListChunkManifests) {
             return crate::object_manifest::ManifestListPage::from_payload(payload).map(Self::Manifests);
         }
         if code == MetaRequestCode::ManifestRetention {
@@ -1236,6 +1289,9 @@ impl MetaReply {
         }
         if code == MetaRequestCode::Features {
             return super::features_commands::reply_from_payload(payload).map(Self::Features);
+        }
+        if code == MetaRequestCode::NativeObject {
+            return super::native_object_commands::NativeObjectReply::from_payload(payload).map(Self::NativeObject);
         }
         if code == MetaRequestCode::LogChunk {
             return super::log_chunk_commands::reply_from_payload(payload).map(Self::LogChunk);
@@ -1282,9 +1338,12 @@ impl MetaReply {
             | MetaRequestCode::ListManifests
             | MetaRequestCode::ManifestRetention
             | MetaRequestCode::StagedAllocation
-            | MetaRequestCode::CopyManifest
             | MetaRequestCode::Features
             | MetaRequestCode::LogChunk
+            | MetaRequestCode::NativeObject
+            | MetaRequestCode::PublishChunkManifest
+            | MetaRequestCode::ReadChunkManifest
+            | MetaRequestCode::ListChunkManifests
             | MetaRequestCode::PlanAppendRoutes
             | MetaRequestCode::GroupIdentity => unreachable!(),
             MetaRequestCode::ChunkCatalog

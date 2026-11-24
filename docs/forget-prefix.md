@@ -7,7 +7,8 @@ workload that creates a key once, deletes it later and never touches it again (a
 segments are named by an ever-growing index) therefore fills the catalog with tombstones at the rate it
 rolls segments, whatever its live size.
 
-This page describes the one way to stop that growth and what it costs. It is off by default.
+This page describes the opt-in forget-prefix behavior of the placement-manifest catalog.
+It is off by default and does not retire initialized native objects.
 
 ## The contract
 
@@ -28,8 +29,8 @@ refused. **Ordinary objects must not be listed.**
   field refuses the log entry that carries it: raise it only when every voter runs a build that knows it.
 * The decision is the leader's. While it prepares a plain delete of a live object under a forget prefix, and
   only then, it sets `forget` (placement outcome field 20) in the outcome; voters never re-decide, so a
-  voter configured differently only changes which deletes the current leader forgets. Apply drops the
-  tombstone and the placement record.
+  follower configured differently cannot change a committed decision. If that follower later becomes
+  leader, its own list governs later deletes. Apply drops the tombstone and the placement record.
 * The leader does not forget a key that its own state still names (a retained manifest, which includes every
   read session and lease, or a staged allocation): that delete is the ordinary tombstone, and is not an
   error. It cannot see a gateway's or a client's cache; the contract covers those.
@@ -44,11 +45,14 @@ refused. **Ordinary objects must not be listed.**
 
 These need no format change and only slow the growth:
 
-* Run the store with compact WAL segments (`TS_SHARED_STORE_WAL_SEGMENT_APPENDS=2048`), several times
-  fewer segments for the same appends.
+* Larger compact WAL segments reduce key churn per append. For example,
+  `TS_SHARED_STORE_WAL_SEGMENT_APPENDS=2048` rolls eight times fewer segments than 256 appends
+  per segment, for the same append count.
 * Put the log bucket on its own cell, so its tombstones cannot fill the catalog of ordinary data.
 
-Estimated days until 100,000 tombstones, two per segment, at 10 / 100 / 1,000 appends per second:
-about 15 days / 1.5 days / 3.6 hours with 256-append segments, and 118 days / 12 days / 28 hours with
-2048-append segments. These are estimates; the structure (two objects per segment, one tombstone each) is
-read from the code.
+For a workload that deletes two uniquely named keys per segment, estimated time until
+100,000 tombstones at 10 / 100 / 1,000 appends per second is about 15 days / 1.5 days /
+3.6 hours with 256-append segments, and 118 days / 12 days / 28 hours with 2048-append
+segments. These estimates assume a steady append rate and two tombstones per rolled
+segment; they are capacity examples, not measured retention times or a claim about
+every WAL configuration.

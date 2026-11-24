@@ -221,9 +221,20 @@ pub struct PlacementOutcome {
     /// refuses the entry (the canonical re-encoding differs), which is why the bit gates every emission.
     #[prost(bool, tag = "20")]
     pub forget: bool,
+    /// Version 17: one atomic unified LOG catalog and writer-lease transition.
+    #[prost(message, optional, tag = "21")]
+    pub chunk_writer: Option<crate::chunk_writer_outcome::ChunkWriterChange>,
+    /// Version 18: one deterministic native stage, publication, pin or lease transition.
+    #[prost(message, optional, tag = "22")]
+    pub native: Option<crate::native_object_outcome::NativeObjectChange>,
 }
 fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
+}
+
+/// A publication whose expected prior state is no longer the stored one: the writer lost a race.
+fn stale_expected() -> ObjectError {
+    ObjectError::PreconditionFailed("object manifest changed before publication".into())
 }
 
 /// The leader's decision, taken while it prepares a delete: forget the tombstone only when ALL hold. The cluster has
@@ -367,12 +378,107 @@ fn matches_manifest(placement: &PlacementValue, manifest: &ObjectManifest) -> bo
             || placement.group_bytes == manifest_group_bytes(manifest, &placement.node_ids))
 }
 impl PlacementOutcome {
+    pub(crate) fn check_legacy_namespace(
+        &self,
+        service: &MatrixMetaService,
+    ) -> Result<(), ObjectError> {
+        if self.native.is_some()
+            || !service
+                .cluster_features
+                .has(crate::cluster_features::FEATURE_NATIVE_OBJECT_STATE)
+        {
+            return Ok(());
+        }
+        let mut names = BTreeSet::new();
+        for change in &self.placements {
+            for value in change.before.iter().chain(change.after.iter()) {
+                names.insert(value.id());
+            }
+        }
+        if let Some(manifest) = &self.manifest {
+            for value in manifest.before.iter().chain(manifest.after.iter()) {
+                names.insert(value.object_id());
+            }
+        }
+        if let Some(append) = &self.manifest_append {
+            names.insert(ObjectId::new(&append.bucket, &append.key));
+        }
+        if let Some(staging) = &self.staging {
+            for value in staging.before.iter().chain(staging.after.iter()) {
+                names.insert(ObjectId::new(&value.bucket, &value.key));
+            }
+        }
+        if let Some(reserved) = &self.reserved {
+            names.insert(ObjectId::new(&reserved.bucket, &reserved.key));
+        }
+        if let Some(change) = &self.log_chunk {
+            names.insert(ObjectId::new(&change.bucket, &change.key));
+        }
+        if let Some(change) = &self.chunk_writer {
+            let lease = change.lease()?;
+            names.insert(ObjectId::new(&lease.bucket, &lease.key));
+        }
+        if let Some(batch) = &self.lease_batch {
+            for value in batch.renewed.iter().chain(batch.dropped.iter()) {
+                names.insert(ObjectId::new(&value.bucket, &value.key));
+            }
+        }
+        for id in names {
+            crate::native_object_outcome::reject_legacy_write(service, &id)?;
+        }
+        Ok(())
+    }
     fn validate_manifest_binding(&self) -> Result<(), ObjectError> {
         self.validate_manifest_binding_with(false)
     }
     /// `manifest_validated` says the publication's manifests were validated by the caller
     /// (the expansion of a compact append), so they are not walked again.
     fn validate_manifest_binding_with(&self, manifest_validated: bool) -> Result<(), ObjectError> {
+        if self.native.is_some() || matches!(self.version,18|19) {
+            let change = self.native.as_ref().filter(|c| (self.version==18 && c.version==1)||(self.version==19 && c.version==2))
+                .ok_or_else(|| invalid("native outcome version and change version must agree"))?;
+            change.validate(self.before_index, self.after_index)?;
+            if self.manifest.is_some() || self.retention.is_some() || self.staging.is_some()
+                || self.publication_fence.is_some() || self.copy_source.is_some() || self.retention_deadline.is_some()
+                || self.read_session_open.is_some() || self.read_session_removal.is_some() || self.manifest_append.is_some()
+                || self.reserved.is_some() || self.features.is_some() || self.log_chunk.is_some() || self.lease_batch.is_some()
+                || self.chunk_writer.is_some() || self.forget || !self.nodes.is_empty() || !self.placements.is_empty() {
+                return Err(invalid("native metadata outcome changes unrelated state"));
+            }
+            return Ok(());
+        }
+        if self.chunk_writer.is_some() || self.version == 17 {
+            let change = self
+                .chunk_writer
+                .as_ref()
+                .filter(|_| self.version == 17)
+                .ok_or_else(|| {
+                    invalid("a unified chunk writer outcome is version 17 and carries its change")
+                })?;
+            change.validate(self.before_index, self.after_index)?;
+            if self.manifest.is_some()
+                || self.retention.is_some()
+                || self.staging.is_some()
+                || self.publication_fence.is_some()
+                || self.copy_source.is_some()
+                || self.retention_deadline.is_some()
+                || self.read_session_open.is_some()
+                || self.read_session_removal.is_some()
+                || self.manifest_append.is_some()
+                || self.reserved.is_some()
+                || self.features.is_some()
+                || self.log_chunk.is_some()
+                || self.lease_batch.is_some()
+                || self.forget
+                || !self.nodes.is_empty()
+                || !self.placements.is_empty()
+            {
+                return Err(invalid(
+                    "a unified chunk writer outcome changes unrelated state",
+                ));
+            }
+            return Ok(());
+        }
         if self.forget {
             let sound = self.version == 2
                 && self.staging.is_none()
@@ -628,10 +734,6 @@ impl PlacementOutcome {
         Self::publish_manifest_with_staging(service, manifest, update_time_ms,
             Some(crate::staged_allocation::StagedAllocationChange { before: Some(allocation), after: None }), None)
     }
-    pub(crate) fn publish_copied_manifest(service: &MatrixMetaService, manifest: ManifestOutcome,
-        update_time_ms: u64, source: crate::manifest_copy::LiveCopySource) -> Result<Self, ObjectError> {
-        Self::publish_manifest_with_staging(service, manifest, update_time_ms, None, Some(source))
-    }
     /// The outcome that publishes a compact append: `after` is `before`, the stored manifest,
     /// plus the new extents of `append` (see `ManifestAppend::expand_shared`). The outcome
     /// carries the decision, not the manifests; everything it must be bound to is read from
@@ -692,6 +794,8 @@ impl PlacementOutcome {
             features: None,
             log_chunk: None,
             lease_batch: None,
+            chunk_writer: None,
+            native: None,
             forget: false,
         };
         outcome.validate_manifest_binding()?;
@@ -746,6 +850,12 @@ impl PlacementOutcome {
     ) -> Result<Self, ObjectError> {
         manifest.validate()?;
         let after = manifest.after.as_ref().unwrap();
+        // THE EXPECTED STATE FIRST. A writer that read the object before another writer published it holds a
+        // stale `before`; the placement record in `service` already follows the NEWER manifest, so the binding
+        // check below would fail and call a lost race "placement binding mismatch" (a Corruption, which the
+        // SDK cannot tell from a publication that might have landed: an unconfirmed 503). A lost race is a
+        // precondition failure, in the SDK's "not admitted" list, so the writer re-reads and retries.
+        if !service.object_manifests.matches_expected(&after.object_id(), manifest.before.as_ref()) { return Err(stale_expected()); }
         let before = service
             .placements
             .get(&after.object_id())
@@ -787,6 +897,8 @@ impl PlacementOutcome {
             features: None,
             log_chunk: None,
             lease_batch: None,
+            chunk_writer: None,
+            native: None,
             forget: false,
         };
         outcome.forget = forget_decided(service, &outcome);
@@ -806,6 +918,7 @@ impl PlacementOutcome {
         before: &crate::extent_list::StoredManifest,
         after: &crate::extent_list::StoredManifest,
     ) -> Result<usize, ObjectError> {
+        self.check_legacy_namespace(service)?;
         let allocation_id = self.staging.as_ref().and_then(|change| change.before.as_ref()).map(|record| record.allocation_id);
         let body_bytes = service.object_manifests.check_append_publication(before, after, allocation_id)?;
         let change = &self.placements[0];
@@ -838,6 +951,7 @@ impl PlacementOutcome {
         service: &MatrixMetaService,
         admit: bool,
     ) -> Result<Option<usize>, ObjectError> {
+        self.check_legacy_namespace(service)?;
         let manifest = self.manifest.as_ref().unwrap();
         let after = manifest.after.as_ref().unwrap();
         if !service.object_manifests.matches_expected(&after.object_id(), manifest.before.as_ref()) {
@@ -934,6 +1048,7 @@ impl PlacementOutcome {
         nodes: Vec<String>,
         object: Option<ObjectId>,
     ) -> Result<Self, ObjectError> {
+        if let Some(id) = &object { crate::native_object_outcome::reject_legacy_write(service, id)?; }
         let mut changes = Vec::new();
         for id in nodes.into_iter().collect::<BTreeSet<_>>() {
             let before = NodeUsage::from_node(
@@ -981,6 +1096,8 @@ impl PlacementOutcome {
             features: None,
             log_chunk: None,
             lease_batch: None,
+            chunk_writer: None,
+            native: None,
             forget: false,
         })
     }
@@ -1108,6 +1225,13 @@ impl PlacementOutcome {
     /// append against the stored manifest, which validated them.
     fn apply_with(&self, service: &mut MatrixMetaService, manifest_validated: bool) -> Result<(), ObjectError> {
         self.validate_manifest_binding_with(manifest_validated)?;
+        if let Some(change) = &self.native {
+            return change.apply(service, self.before_index, self.after_index);
+        }
+        self.check_legacy_namespace(service)?;
+        if let Some(change) = &self.chunk_writer {
+            return change.apply(service, self.before_index, self.after_index);
+        }
         if let Some(change) = &self.features {
             // checked against exactly the state it was decided from; never skipped
             let before = change.before.as_ref().unwrap().to_features()?;

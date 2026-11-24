@@ -72,45 +72,4 @@ impl MatrixChunkService {
         }
     }
 
-    pub(crate) fn check_prepared_route_control_proof_cursor(
-        &self,
-        prepared_proof: &ChunkRouteControlProof,
-        context: &str,
-    ) -> Result<(), ObjectError> {
-        let current_proof = self.route_control_proof();
-        if current_proof.state_checksum != prepared_proof.state_checksum
-            || current_proof.chunk_route_control_commit_index
-                != prepared_proof.chunk_route_control_commit_index
-            || current_proof.chunk_route_control_next_log_index
-                != prepared_proof.chunk_route_control_next_log_index
-        {
-            return Err(ObjectError::PreconditionFailed(format!(
-                "{context} route proof cursor mismatch"
-            )));
-        }
-        self.check_expected_route_control_checksum(Some(&current_proof.state_checksum))
-    }
-
-    pub(crate) fn check_prepared_chunk_control_proof_cursor(
-        &self,
-        prepared_proof: &ReplicaControlProof,
-        context: &str,
-    ) -> Result<(), ObjectError> {
-        if prepared_proof.proof_count == 0 || prepared_proof.proof_checksum.is_empty() {
-            return Err(ObjectError::PreconditionFailed(format!(
-                "{context} chunk control proof is required"
-            )));
-        }
-        let current_proof = self.chunk_control_proof();
-        if current_proof.proof_count != prepared_proof.proof_count
-            || current_proof.proof_checksum != prepared_proof.proof_checksum
-            || current_proof.min_raft_commit_index != prepared_proof.min_raft_commit_index
-            || current_proof.max_raft_commit_index != prepared_proof.max_raft_commit_index
-        {
-            return Err(ObjectError::PreconditionFailed(format!(
-                "{context} chunk control proof cursor mismatch"
-            )));
-        }
-        Ok(())
-    }
 }

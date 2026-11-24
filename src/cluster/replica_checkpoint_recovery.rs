@@ -66,6 +66,8 @@ pub(super) struct CheckpointState {
     )>,
     pub next_collection_segments: usize,
     pub next_collection_attempt: std::time::Instant,
+    pub compaction_cursor: Option<u64>,
+    pub next_compaction_attempt: std::time::Instant,
 }
 impl CheckpointState {
     pub fn new(metadata: ReplicaServiceSnapshot) -> io::Result<Self> {
@@ -86,6 +88,8 @@ impl CheckpointState {
             publication: None,
             next_collection_segments: 16,
             next_collection_attempt: std::time::Instant::now(),
+            compaction_cursor: None,
+            next_compaction_attempt: std::time::Instant::now(),
         })
     }
     pub fn from_checkpoint(loaded: LoadedCheckpoint) -> io::Result<Self> {
@@ -107,6 +111,8 @@ impl CheckpointState {
             publication,
             next_collection_segments: 16,
             next_collection_attempt: std::time::Instant::now(),
+            compaction_cursor: None,
+            next_compaction_attempt: std::time::Instant::now(),
         })
     }
     pub fn fold_record(
@@ -132,10 +138,19 @@ impl CheckpointState {
                 let id = page.page_id().map_err(invalid)?;
                 if self.index.is_some() {
                     if let Some(old) = self.catalog.pages.get(&id) {
-                        for span in &old.spans {
-                            old_extents.insert(super::replica_checkpoint_catalog::extent_key(
-                                &span.extent,
-                            )?);
+                        let retains_prefix = page.data_length >= old.metadata.data_length
+                            && page
+                                .patches
+                                .iter()
+                                .all(|patch| patch.offset >= old.metadata.data_length);
+                        // Appends retain every descriptor already in the index.
+                        // New within-batch extents have not entered it yet.
+                        if !retains_prefix {
+                            for span in &old.spans {
+                                old_extents.insert(super::replica_checkpoint_catalog::extent_key(
+                                    &span.extent,
+                                )?);
+                            }
                         }
                     }
                 }
@@ -144,7 +159,7 @@ impl CheckpointState {
         }
         self.catalog.fold(record)?;
         if let Some(index) = &mut self.index {
-            index.prune(&old_extents);
+            index.prune(&old_extents)?;
         }
         if self.catalog.pages.len() > max_pages {
             return Err(invalid("replica page count exceeds configured limit"));
@@ -167,9 +182,11 @@ impl CheckpointState {
         log: &SegmentedOutcomeLog,
         through: &StoredOutcomePosition,
         max_pages: usize,
+        check: &dyn Fn() -> io::Result<()>,
     ) -> io::Result<()> {
         let mut cursor = log.metadata_cursor_after_through(self.cut.as_ref(), through)?;
         while let Some(record) = cursor.next_record()? {
+            check()?;
             self.fold_record(&record, max_pages)?;
         }
         Ok(())
@@ -205,6 +222,19 @@ impl CheckpointState {
         let mut metadata = self.metadata.clone();
         metadata.seal_checksum();
         metadata.to_bytes().map_err(invalid)
+    }
+    pub fn restore_metadata(&self, service: &mut MatrixReplicaService) -> io::Result<()> {
+        let total = self.catalog.pages.values().try_fold(0u64, |sum, page| {
+            sum.checked_add(page.metadata.data_length)
+                .ok_or_else(|| invalid("replica byte count overflow"))
+        })?;
+        let mut snapshot =
+            ReplicaServiceSnapshot::from_bytes(&self.metadata_bytes()?).map_err(invalid)?;
+        if snapshot.capacity_bytes != 0 && total > snapshot.capacity_bytes {
+            return Err(invalid("replica catalog exceeds configured capacity"));
+        }
+        snapshot.seal_for_checkpoint();
+        service.install_snapshot(snapshot).map_err(invalid)
     }
     /// Startup work: materialize each surviving page once, independent of the
     /// number or payload size of its obsolete historical mutations.

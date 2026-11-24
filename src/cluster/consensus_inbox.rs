@@ -183,6 +183,7 @@ impl<T> ConsensusInbox<T> {
     pub(super) fn notifier(&self) -> Option<Notify> {
         self.readiness.as_ref().map(SocketReadiness::notifier)
     }
+    #[cfg(any(feature = "chunk-consensus", all(test, unix)))]
     pub(super) fn receiver(&self) -> &Receiver<T> {
         &self.receiver
     }

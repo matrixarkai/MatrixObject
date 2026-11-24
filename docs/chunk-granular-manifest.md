@@ -32,11 +32,12 @@ has not been measured or tested.
 | Metadata readers: outcome version 15, snapshot version 22, and the writer lease table restore in the proposal draft | In the tree |
 | Sealed chunk reads from disk through a bounded cache, with a handle limit and an open tail budget | In the tree |
 | Leader commands (grant, switch, renew, sweep), batched renewal (outcome version 16) and the feature gate wiring (feature bit 4) | In the tree, behind the two cluster features |
-| Replica client and quorum log writer and reader | In the tree |
+| Replica client and quorum log writer and reader | In the tree. A reader repeats a failed read-only call once on a fresh connection when a connection it kept was closed by the node |
 | Log object API (open, append, read, take over) | In the tree, behind the two cluster features |
 | Reclaiming the log chunk files of a deleted log object | Not implemented |
 | Repair of a log chunk left under-replicated | Not implemented |
-| End-to-end latency and metadata cost at multi-gigabyte object sizes | Not measured yet |
+| End-to-end harness: ignored tests and scripts that grow a log object past 4 GiB on a private cluster | In the tree. Not run by CI |
+| End-to-end latency and metadata cost at multi-gigabyte object sizes | Measured on a private cluster, single runs, one writer, 64 KiB appends: see [What the end-to-end runs measured](#what-the-end-to-end-runs-measured) |
 
 With neither cluster feature raised, a grant or a switch is refused ("chunk-granular
 manifests are not enabled for this cluster"), so no lease exists and no format 3
@@ -75,7 +76,7 @@ a SHA-256 of them. The last entry may instead be marked as the tail: still being
 written, its recorded length only a lower bound. Only the last entry may be the
 tail. Readers older than this format reject the new fields.
 
-**Record format.** A chunk file is a sequence of records, each a 40-byte header
+**Record format.** Legacy writes use records with a 40-byte header
 followed by its data. The header holds the magic `MOL1`, the record kind (append,
 seal or truncate), the chunk generation, the writer epoch, the offset, the data
 length, a CRC-32C of the data and a CRC-32C of the header. A record carries at
@@ -95,14 +96,12 @@ epochs only go up. A replica refuses any write whose epoch is below the highest
 it has seen for that chunk. That moves the single-writer and offset checks onto
 the chunk owner and off the metadata plane.
 
-**Tail length at open.** A writer that opens a chunk decides where it ends from
-what the replicas hold. When the metadata plane recorded a length at a chunk
-switch it wins. Otherwise, with strong writes (all three replicas hold every
-acknowledged byte), the tail is the shortest replica length. With quorum writes
-(two of three), the tail is the second longest length when all three answer, the
-longest of two when two answer, and the rule refuses when only one answers.
-Replicas that hold more are truncated to the decided length, at the new epoch,
-before any append. A sealed replica fixes the chunk at its sealed length.
+**Tail length at open.** Recovery keeps the earlier two-copy rule so previously
+acknowledged data is not shortened to an older third replica. With three answers,
+the recovered length is the second longest durable length; with two answers it is
+the shorter of the two. One answer is insufficient. Nodes holding a longer tail
+are truncated at the new epoch. New appends and seals require all three durable
+replicas; an under-replicated recovered prefix needs repair before they succeed.
 
 **Chunk identity.** A new tail chunk is named after the raft index of the entry
 that opens it, with the same function a page allocation uses to name its chunk.
@@ -155,24 +154,29 @@ A log chunk lives on three nodes. The client side has a writer, which appends to
 the three nodes of one chunk, and a reader.
 
 **Writing.** A writer holding the chunk's epoch sends every record to all three
-nodes. A record is acknowledged to the caller once two nodes report it durable.
+nodes. A record is acknowledged only after all three report it durable (`N=3, W=3`).
 Each node reports where the bytes landed (its applied and durable lengths), so the
 writer never guesses: a node that lost an offset, answered late or came back after
 a restart is brought up from the bytes the writer still holds, starting at the
-length that node reports. The writer sends records of at most 1 MiB and keeps up
-to 32 MiB of bytes a node may still need. A node further behind than that cannot
-be caught up from the writer and is given up on.
+length that node reports. The writer sends records of at most 1 MiB and retains
+pending bytes until all three replicas report them durable. The 64 MiB chunk limit
+bounds that buffer. A replica behind the recovered prefix needs repair; its absence
+cannot release pending bytes or complete a write.
 
 **The quorum-durable length.** It is the second largest durable length among the
-three nodes. Every acknowledged byte lies below it, and a reader never goes above
-it: a byte held by one node only has not been acknowledged and may be discarded.
+three nodes. Recovery and reads retain this rule for data produced by older
+two-copy clients; changing it to the shortest replica could discard previously
+acknowledged data. New writes wait for the shortest of all three durable lengths.
+A byte held by one node only is outside the recovery prefix and may be discarded.
+If a replica is behind that recovered prefix, new writes fail until it is repaired;
+opening the writer preserves the existing data rather than shortening it.
 
 **Sealing.** A seal is final, so a node is sealed only once it holds every byte the
 writer has. The writer first waits for the nodes that lag to be given the bytes
 they lack, bounded by the connection's read timeout, and then seals only the nodes
 that hold exactly the chunk's length. A node whose appends are still in flight is
 not sealed at the shorter length it happens to hold. The footer (length, CRC-32C
-and, when asked for, SHA-256) is returned only when at least two nodes sealed and
+and, when asked for, SHA-256) is returned only when all three nodes sealed and
 all of them report the same footer; otherwise the seal fails with an error.
 
 - A node that answers a seal with a length other than the one it was asked to hold
@@ -180,11 +184,22 @@ all of them report the same footer; otherwise the seal fails with an error.
   footer is returned, the writer is finished, and the chunk must not be recorded as
   sealed.
 - A node that is down, or that does not catch up within the read timeout, is not
-  sealed. It is left open and is under-replicated, and a reader falls back to the
-  nodes that sealed. Repair of log chunks is a separate path and is not
+  sealed. It is left open, the seal reports an error, and no metadata switch is
+  published. A reader can still use the nodes holding a recoverable prefix. Repair of log chunks is a separate path and is not
   implemented (see the limits below).
 
-**Reading.** The reader asks each node for its durable length and its writer epoch.
+**Sealed reads.** A sealed extent already carries its final length, CRC-32C and
+optional SHA-256 in committed metadata. The log-object reader sends one read per
+piece to a replica, validates that its immutable footer matches those values, and
+reuses that replica for later pieces. A refused, incomplete or mismatched response
+tries another replica. This path does not query the three tails, and remains usable
+with one matching live replica. New readers distribute their initial choice among
+replicas and keep a successful peer for connection reuse. Connections are pooled
+per group across chunks. A cached manifest is validated once and ranged reads
+locate their first extent by binary search, then visit only the requested extents.
+Open-tail reads still resolve their safe length.
+
+**Reading an open tail.** The reader asks each node for its durable length and its writer epoch.
 A node whose epoch is below the highest any node reports takes no part in the
 quorum length and serves no read: it missed a change of writer, so what it holds
 past the point the new writer started from may be bytes that were never
@@ -261,7 +276,7 @@ up to the 64 MiB limit and the other values can be set.
    node that answers unknown-verb stops the writer with a "does not speak log
    chunks" error before any grant is sent, because a grant is a metadata commit and
    cannot be taken back. A node that cannot be reached is skipped, and fewer than
-   two reachable nodes is an error;
+   three reachable nodes is an error;
 3. sends one grant, which takes the lease and, if the object is new, creates it as a
    log object, and opens the chunk being written at the lease's epoch;
 4. returns the object's length, which is where the next byte goes. After a writer
@@ -269,8 +284,10 @@ up to the 64 MiB limit and the other values can be set.
 
 **Appending.** An append is cut at chunk boundaries and goes to the three nodes of
 the open chunk. No metadata command is sent for it. It returns the object length
-once two nodes hold every byte durably; if the quorum is not reached the bytes are
-kept and `settle` waits for them. A handle stops writing, with a lost-lease error,
+once all three nodes hold every byte durably; if any required replica is missing,
+the bytes are kept and `settle` retries them. An empty append also settles pending
+bytes instead of returning a shorter durable length. `settle` and empty appends
+refuse to resend bytes after the handle's lease expires. A handle stops writing, with a lost-lease error,
 when its own view of the lease has run out. That view is measured from the moment
 the request that granted or renewed the lease was sent, so a writer never believes
 in a lease longer than the metadata plane does.
@@ -297,12 +314,10 @@ footer.
 **Recovering an interrupted switch.** A writer can die after it sealed the chunk and
 before the switch reached the metadata plane, so that the manifest still names the
 sealed chunk as the open one. The next writer, when it opens, finds the chunk sealed
-and reads the tail of every reachable node. If two nodes report the same sealed
-footer it sends the switch with it. If fewer than two do (a seal that reached only
-one node), it seals, at its own epoch, every node that holds exactly the sealed
-length, and then sends the switch if two nodes hold the same footer. A node at any
-other length is not touched. Nodes that report different footers, or fewer than two
-sealed nodes, are an error.
+and reads the tail of every reachable node. It completes the seal at its own
+epoch on every unsealed node holding exactly the sealed length. Only three
+matching sealed footers permit the metadata switch. A node at another length is
+left for repair; mismatched footers or fewer than three sealed replicas are errors.
 
 **Renewal.** An append that finds the lease past half its term renews it with one
 command. A writer that holds many objects renews all their leases in one command.
@@ -433,26 +448,86 @@ Measured by tests of the sealed read change: the peak heap while opening a seale
 64 MiB chunk fell from 71,303,204 bytes to 524,924 bytes, and reading all 64 MiB
 through an 8 MiB cache peaked at 13,632,156 bytes.
 
+## What the end-to-end runs measured
+
+The ignored tests in `tests/node_regime/log_object_end_to_end.rs`, run by
+`scripts/log_object_e2e/run.sh`, grow a log object on a private cluster of three
+metadata voters and three chunk servers on one machine. Both cluster features are
+raised on that cluster only, and the metadata servers run with the default Raft
+checkpoint interval. One writer appends 64 KiB at a time and waits for each append
+to be acknowledged. The object is grown to 4,362,076,160 bytes (65 chunks of 64 MiB),
+a voter is killed and restarted at 1.62 GiB and a chunk server at 2.84 GiB, the whole
+object is read back and compared with the bytes that were appended, and a second
+writer takes the object over.
+
+The measurements below used the earlier two-copy completion policy (`N=3, W=2`).
+They do not measure the current three-copy client. Current three-copy throughput,
+latency and recovery measurements must be collected separately; a stopped member
+blocks success until it returns or is repaired.
+
+These are single runs (four log object runs in all, across fixes of the harness and of
+the reader), on a machine that was shared with other builds: the load average reached
+10 to 16 and 2 to 7 GB of swap were in use for part of the time. They show the
+behaviour of that earlier client at this size. They are not a benchmark, and the tails in
+particular are not clean.
+
+| Measured | Result |
+|---|---|
+| Append latency per 256 MiB window | Median 4.5 to 11.1 ms and 99th percentile 13.5 to 116 ms in every window of every run. No trend with object size from 0.25 GiB to 4.06 GiB. The slowest single append in a window ranged from 0.08 s to 6.5 s |
+| Metadata commit entries per 256 MiB window | 4 in almost every window: the four chunk switches. A window also holds the extra entries of a grant (at the start, and again when a writer reopens the object) or of batched renewals that landed in it, up to three renewals in one window. None are written per append: 0.001 entries per append |
+| Manifest size | 144 bytes at 4 chunks, 2,280 bytes at 65 chunks (about 35 bytes per chunk) |
+| Metadata write-ahead log, summed over the three voters | 7.8 KB after the first 256 MiB, about 514 KB at 4.06 GiB. It did not reach a checkpoint |
+| Voter killed at 1.62 GiB | The append in flight failed, the writer reopened the object at the same offset with no extra bytes, recovery 2.9 to 4.4 s; the voter was back in 3.1 to 4.8 s |
+| Chunk server killed at 2.84 GiB | Down 1.0 to 4.8 s; the 201 appends made while it was down were acknowledged by the other two replicas, the slowest taking 20 to 288 ms |
+| Sealed range read of 16 MiB | 0.67 to 1.6 s cold, 0.07 to 0.32 s warm, bytes correct |
+| Read back and compare the whole 4.06 GiB object | 0 mismatches and no acknowledged byte lost, in 72 to 194 s |
+| Tail rule | The second writer opened the object at exactly the acknowledged length (4,362,076,160 bytes, equal to what the nodes durably held); the first writer was fenced; takeover 0.6 to 0.84 s |
+| Chunk server resident memory | 72 to 81 MB during growth; up to 185 MB on the node that served the whole-object read |
+| Metadata voter resident memory | 6 to 8 MB per voter at 4 GiB, read in the first run only |
+| Processes at the end | All three voters and all three chunk servers were still running |
+
+The log object is not faster in single-writer bytes per second. Each append here is
+64 KiB and is acknowledged by two of three replicas before the next is sent; the runs
+moved 4.06 GiB in 563 to 753 seconds, about 5.5 to 7.4 MiB per second (a run that
+was paused for seven minutes by the machine's other load is left out). What the runs
+show is that the cost of an append does not depend on the size of the object and that
+the metadata plane is touched once per chunk, not once per append.
+
+**A defect the runs found, and its fix.** The first read of the open chunk during the
+whole-object verification failed with no quorum, although all three nodes were up, in
+the two runs that reported it (chunk index 64, position 4,294,967,296) and succeeded on
+a retry. A log object reader keeps a connection to each node between calls; a node
+closes a connection that has sent nothing for its read timeout (30 seconds), and the
+reader treated the first failed request on such a connection as a node that had not
+answered. The verification took 72 to 144 seconds to reach that chunk. The reader now
+repeats a failed tail query or read once on a fresh connection when the connection that
+failed had been used before (only read-only calls: a mutation whose outcome is unknown
+is never sent twice). A run with the change shows no failed read.
+
+**Not shown.** One writer only; appends of 64 KiB only; one run of each kind, so no
+variance; no reader running while the object grows; one voter or one chunk server down
+at a time; no gateway or S3 path writes a log object yet, so nothing here exercises
+one; and no run on a cluster that carries other traffic.
+
 ## Limits and what is not measured
 
-- The metadata cost per GiB appended is about 16 entries for a log object and one
-  entry per page range in page mode. That is a count from the format, not a
-  measurement of a running cluster.
-- Append latency against object size up to 4 GiB, the cost of a ranged read at that
-  size, and a restart and recovery run at that size are pending measurement on a
-  private cluster with both bits raised. No end-to-end latency or object-size
-  measurement exists yet. The number of metadata entries per append is asserted by
-  a test (see the log object section) and has not been measured at multi-gigabyte
-  sizes.
-- Chunk server memory against corpus size, and metadata server memory per GiB
-  appended, are pending measurement.
+- The metadata cost per GiB appended is about 16 entries for a log object (one per
+  64 MiB chunk) and one entry per page range in page mode. The runs above measured 16
+  per GiB for the log object at 64 KiB appends.
+- Append latency against object size was measured up to 4.06 GiB at one append size,
+  with one writer using the earlier two-copy completion rule (see above). The cost of a ranged read was measured for one 16 MiB
+  range and for reading the whole object once per run, and a restart and recovery
+  at that size once per kind of node per run. Other append
+  sizes, several writers, readers during growth and objects beyond 4.06 GiB are not
+  measured.
+- Chunk server memory against corpus size was measured only for the one object above;
+  metadata server memory per GiB appended only as the 6 to 8 MB per voter at 4 GiB.
 - A node refuses to open a new tail past its tail budget, and the metadata plane
   refuses a 4,097th entry. Both are errors the caller must handle.
-- Quorum writes acknowledge at two of three replicas. A third replica that falls
-  behind must catch up or be replaced before it serves a write again.
+- New log writes require all three replicas. A missing replica prevents success,
+  and an older two-copy prefix remains readable while its third copy needs repair.
 - A chunk can be left unsealed on a lagging node: a node that is down or does not
-  catch up when the chunk is sealed stays open and under-replicated, and there is
-  no automatic repair for log chunks yet. When a writer completes an interrupted
+  catch up keeps the seal incomplete, and there is no automatic repair for log chunks yet. When a writer completes an interrupted
   switch it does not touch a node at any other length.
 - Not tested at the log object level: a writer that keeps appending on the same
   handle after a seal that reached no node (the tests show the handle is kept open
@@ -486,3 +561,28 @@ through an 8 MiB cache peaked at 13,632,156 bytes.
   object and a deleted key.
 - Format 3 objects cannot be read by older builds, and a raised feature cannot be
   lowered. See the irreversibility statement above.
+- **Trust assumption: cluster clients are trusted for page addressing.** A chunk manifest names the
+  pages it holds by address (group, chunk, page range) and a publication is checked for its generation
+  and its own validity, not for whether the publisher wrote those pages. A client that can publish can
+  therefore name pages that belong to another object (an alias). The digest check on a read is
+  **integrity, not access control**: it proves that the bytes are the ones the manifest committed, not
+  that the publisher was entitled to name them. Publishing is not authorization. What an alias cannot
+  do is make the reclaim sweep free a live page: a page any manifest names stays live. Deployments that
+  do not trust every cluster client must put that boundary in front of the metadata plane.
+
+## Appending to a paged object through the gateway
+
+A paged object is appended to by writing the new bytes as new extents after the last one (data pages, then
+the digest page of a multi-page extent) and publishing the manifest one generation later, with the
+generation check: an append that read a stale manifest is refused and changes nothing. The gateway answers
+the append with the offset it landed at, and settles an append whose outcome is not known with the
+extents the attempt published as its identity, as it does for page-granular objects.
+
+Known limits: an append adds at least one extent, and a manifest names at most 4,096, so an object that has
+reached the bound refuses the append whole and is rewritten; a log chunk writer (several appends in one
+chunk, no extent per append) is not part of this path.
+
+Readers also accept identified 56-byte append headers, with an opaque 16-byte tag
+covered by the header checksum. Ordinary writes retain the legacy encoding during
+reader deployment. See [log chunk recovery](log-chunk-recovery.md) for byte layout
+and the limits of storage-level identity lookup.

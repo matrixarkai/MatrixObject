@@ -6,7 +6,7 @@ include!("meta/records_leases_shards.inc.rs");
 include!("meta/retention_transactions_routes.inc.rs");
 include!("meta/sessions_changefeed_snapshot.inc.rs");
 include!("meta/maintenance_persistence.inc.rs");
-include!("meta/meta_footprint.rs");
+include!("meta/footprint_ledger.rs");
 
 // The placement service, folded in: these live in this module because the
 // state they operate on is private to it.
@@ -22,3 +22,7 @@ include!("meta/placement/placement_policy_internals.rs");
 include!("meta/placement/placement_repair_internals.rs");
 include!("meta/placement/placement_capacity_internals.rs");
 include!("meta/placement/leader_validation.rs");
+
+#[cfg(test)]
+#[path = "meta/checkpoint_capture_tests.rs"]
+mod checkpoint_capture_tests;

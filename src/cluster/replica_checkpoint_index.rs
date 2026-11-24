@@ -192,6 +192,24 @@ impl Block {
         }
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ExtentRecord {
+    store_id: [u8; 16],
+    offset: u64,
+    length: u64,
+}
+impl ExtentRecord {
+    fn new(position: &StoredOutcomePosition) -> io::Result<Self> {
+        if position.version != 1 || position.length == 0 {
+            return Err(invalid("invalid extent record position"));
+        }
+        Ok(Self {
+            store_id: position.store_id.as_slice().try_into().map_err(invalid)?,
+            offset: position.offset,
+            length: position.length,
+        })
+    }
+}
 struct Node {
     key: PageId,
     value: Value,
@@ -200,7 +218,7 @@ struct Node {
     height: u32,
     count: u64,
     saved: Option<BlobRef>,
-    extent_segments: Vec<[u8; 16]>,
+    extent_records: Vec<ExtentRecord>,
 }
 fn height(node: &Option<Box<Node>>) -> u32 {
     node.as_ref().map_or(0, |n| n.height)
@@ -234,13 +252,13 @@ impl Node {
         node: Option<Box<Self>>,
         key: PageId,
         value: Value,
-        extent_segments: Vec<[u8; 16]>,
+        extent_records: Vec<ExtentRecord>,
     ) -> Box<Self> {
         let Some(mut node) = node else {
             return Box::new(Self {
                 key,
                 value,
-                extent_segments,
+                extent_records,
                 left: None,
                 right: None,
                 height: 1,
@@ -250,14 +268,14 @@ impl Node {
         };
         match key.cmp(&node.key) {
             std::cmp::Ordering::Less => {
-                node.left = Some(Self::put(node.left.take(), key, value, extent_segments))
+                node.left = Some(Self::put(node.left.take(), key, value, extent_records))
             }
             std::cmp::Ordering::Greater => {
-                node.right = Some(Self::put(node.right.take(), key, value, extent_segments))
+                node.right = Some(Self::put(node.right.take(), key, value, extent_records))
             }
             std::cmp::Ordering::Equal => {
                 node.value = value;
-                node.extent_segments = extent_segments;
+                node.extent_records = extent_records;
             }
         }
         node.update();
@@ -315,6 +333,10 @@ impl Node {
         })
     }
 }
+#[path = "replica_checkpoint_coverage.rs"]
+mod planner_coverage;
+use planner_coverage::PlannerCoverage;
+
 struct SavedExtent {
     descriptor: Arc<PayloadExtent>,
     saved: Option<BlobRef>,
@@ -323,30 +345,148 @@ struct SavedExtent {
 pub(super) struct IndexState {
     root: Option<Box<Node>>,
     extents: BTreeMap<ExtentKey, SavedExtent>,
+    planner: PlannerCoverage,
 }
 impl IndexState {
-    pub fn prune(&mut self, candidates: &BTreeSet<ExtentKey>) {
+    pub fn prune(&mut self, candidates: &BTreeSet<ExtentKey>) -> io::Result<()> {
         for key in candidates {
             if self
                 .extents
                 .get(key)
                 .is_some_and(|e| Arc::strong_count(&e.descriptor) == 1)
             {
+                self.planner
+                    .remove_saved(self.extents[key].saved.as_ref())?;
+                self.planner.remove_source(&key.0)?;
                 self.extents.remove(key);
             }
         }
+        Ok(())
     }
     #[cfg(all(test, unix))]
     fn put(&mut self, key: PageId, value: Value) {
-        self.put_with_extents(key, value, Vec::new());
+        self.put_with_extents(key, value, Vec::new()).unwrap();
     }
-    fn put_with_extents(&mut self, key: PageId, value: Value, extent_segments: Vec<[u8; 16]>) {
-        self.root = Some(Node::put(self.root.take(), key, value, extent_segments));
+    fn put_with_extents(
+        &mut self,
+        key: PageId,
+        value: Value,
+        extent_records: Vec<ExtentRecord>,
+    ) -> io::Result<()> {
+        PlannerCoverage::validate_value(&value, &extent_records)?;
+        let mut current = self.root.as_deref();
+        while let Some(node) = current {
+            self.planner.remove_saved(node.saved.as_ref())?;
+            match key.cmp(&node.key) {
+                std::cmp::Ordering::Less => current = node.left.as_deref(),
+                std::cmp::Ordering::Greater => current = node.right.as_deref(),
+                std::cmp::Ordering::Equal => {
+                    self.planner
+                        .remove_value(&node.value, &node.extent_records)?;
+                    break;
+                }
+            }
+        }
+        self.planner.add_value(&value, &extent_records)?;
+        self.root = Some(Node::put(self.root.take(), key, value, extent_records));
+        Ok(())
+    }
+    fn save_node(&mut self, key: &PageId, saved: BlobRef) -> io::Result<()> {
+        let node = self.root.as_mut().unwrap().find_mut(key);
+        self.planner.remove_saved(node.saved.as_ref())?;
+        self.planner.add_saved(Some(&saved))?;
+        node.saved = Some(saved);
+        Ok(())
+    }
+    fn save_extent(
+        &mut self,
+        key: ExtentKey,
+        descriptor: Arc<PayloadExtent>,
+        saved: Option<BlobRef>,
+    ) -> io::Result<()> {
+        if catalog::extent_key(&descriptor)? != key {
+            return Err(invalid("cached extent source identity differs"));
+        }
+        if let Some(old) = self.extents.get(&key) {
+            if old.descriptor.as_ref() != descriptor.as_ref() {
+                return Err(invalid("conflicting cached extent"));
+            }
+            self.planner.remove_saved(old.saved.as_ref())?;
+        }
+        if let Some(location) = &saved {
+            location.plain()?;
+            location.position()?;
+        }
+        self.planner.add_saved(saved.as_ref())?;
+        if !self.extents.contains_key(&key) {
+            self.planner.add_source(key.0)?;
+        }
+        self.extents.insert(key, SavedExtent { descriptor, saved });
+        Ok(())
+    }
+    #[cfg(all(test, unix))]
+    fn set_extent_saved(&mut self, key: ExtentKey, saved: BlobRef) -> io::Result<()> {
+        let descriptor = self.extents[&key].descriptor.clone();
+        self.save_extent(key, descriptor, Some(saved))
+    }
+    fn rebuild_planner(&mut self, pages: &PageCatalog) -> io::Result<()> {
+        let mut planner = PlannerCoverage::default();
+        let mut stack: Vec<_> = self.root.iter().map(|node| node.as_ref()).collect();
+        while let Some(node) = stack.pop() {
+            planner.add_saved(node.saved.as_ref())?;
+            planner.add_value(&node.value, &node.extent_records)?;
+            stack.extend(
+                node.left
+                    .iter()
+                    .chain(node.right.iter())
+                    .map(|node| node.as_ref()),
+            );
+        }
+        for (key, extent) in &self.extents {
+            planner.add_saved(extent.saved.as_ref())?;
+            planner.add_source(key.0)?;
+        }
+        planner.refresh_payloads(pages, pages.pages.keys(), &|| Ok(()))?;
+        self.planner = planner;
+        Ok(())
+    }
+    pub(in crate::cluster) fn refresh_planned_payloads(
+        &mut self,
+        pages: &PageCatalog,
+        dirty: &BTreeSet<PageId>,
+        check: &dyn Fn() -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.planner.refresh_payloads(pages, dirty.iter(), check)
+    }
+    pub(in crate::cluster) fn planned_payload_pages(
+        &self,
+        segment: &[u8; 16],
+        pages: usize,
+    ) -> io::Result<Vec<PageId>> {
+        self.planner.payload_pages(segment, pages)
+    }
+    pub(in crate::cluster) fn planned_payload_lower_bound(&self, pages: usize) -> io::Result<u64> {
+        self.planner.payload_lower_bound(pages)
+    }
+    pub(in crate::cluster) fn planned_live_bytes(
+        &self,
+        segment: &[u8; 16],
+        length: u64,
+    ) -> io::Result<u64> {
+        self.planner.live_bytes(segment, length)
+    }
+    pub(in crate::cluster) fn ordinary_coverage(&self) -> bool {
+        self.planner.ordinary()
+            && self.root.as_ref().is_none_or(|root| {
+                root.saved
+                    .as_ref()
+                    .is_some_and(|saved| saved.position.is_some())
+            })
     }
 }
 enum Slot {
     Extent(ExtentKey, Arc<PayloadExtent>),
-    Page(PageId, Vec<[u8; 16]>),
+    Page(PageId, Vec<ExtentRecord>),
     Node(PageId),
 }
 struct Pending {
@@ -406,7 +546,7 @@ impl Writer<'_> {
                 height,
                 count,
             };
-            state.root.as_mut().unwrap().find_mut(key).saved = Some(saved);
+            state.save_node(key, saved)?;
         }
         self.bytes += fragment.data.len();
         self.pending.push(Pending {
@@ -442,24 +582,16 @@ impl Writer<'_> {
                 count: pending.count,
             };
             match pending.slot {
-                Slot::Extent(key, descriptor) => {
-                    state.extents.insert(
-                        key,
-                        SavedExtent {
-                            descriptor,
-                            saved: Some(saved),
-                        },
-                    );
-                }
-                Slot::Page(key, extent_segments) => state.put_with_extents(
+                Slot::Extent(key, descriptor) => state.save_extent(key, descriptor, Some(saved))?,
+                Slot::Page(key, extent_records) => state.put_with_extents(
                     key,
                     Value {
                         page: Some(saved),
                         catalog: Vec::new(),
                     },
-                    extent_segments,
-                ),
-                Slot::Node(key) => state.root.as_mut().unwrap().find_mut(&key).saved = Some(saved),
+                    extent_records,
+                )?,
+                Slot::Node(key) => state.save_node(&key, saved)?,
             }
         }
         self.bytes = 0;
@@ -513,6 +645,9 @@ pub(super) fn prepare(
         dirty.iter().cloned().collect()
     };
     let state = state.get_or_insert_with(IndexState::default);
+    state
+        .planner
+        .refresh_payloads(catalog, keys.iter(), check)?;
     let id = identity()?;
     let mut writer = Writer {
         log,
@@ -552,7 +687,7 @@ pub(super) fn prepare(
         check()?;
         let page = &catalog.pages[key];
         let mut block = Block::new(log, epoch, PAGE);
-        let mut extent_segments = BTreeSet::new();
+        let mut extent_records = BTreeSet::new();
         let mut large = page.metadata.encoded_len() > CheckpointFragment::MAX_DATA_BYTES / 2;
         if !large {
             block.page = Some(Page {
@@ -565,13 +700,7 @@ pub(super) fn prepare(
                     .saved
                     .clone()
                     .ok_or_else(|| invalid("unsaved page extent"))?;
-                let segment: [u8; 16] = extent
-                    .position()?
-                    .store_id
-                    .as_slice()
-                    .try_into()
-                    .map_err(invalid)?;
-                extent_segments.insert(segment);
+                extent_records.insert(ExtentRecord::new(extent.position()?)?);
                 let value = Span {
                     offset: span.offset,
                     length: span.length,
@@ -596,11 +725,11 @@ pub(super) fn prepare(
                     catalog: prepared.commit.encode_to_vec(),
                 },
                 Vec::new(),
-            );
+            )?;
         } else {
             writer.push(
                 state,
-                Slot::Page(key.clone(), extent_segments.into_iter().collect()),
+                Slot::Page(key.clone(), extent_records.into_iter().collect()),
                 block,
                 0,
                 0,
@@ -881,8 +1010,8 @@ impl Reader<'_> {
         key: &PageId,
         parent: &StoredOutcomePosition,
         state: &mut IndexState,
-    ) -> io::Result<(CatalogPage, Vec<[u8; 16]>)> {
-        let mut extent_segments = BTreeSet::new();
+    ) -> io::Result<(CatalogPage, Vec<ExtentRecord>)> {
+        let mut extent_records = BTreeSet::new();
         let page = match (&value.page, value.catalog.is_empty()) {
             (Some(location), true) => {
                 location.plain()?;
@@ -896,13 +1025,7 @@ impl Reader<'_> {
                         .extent
                         .as_ref()
                         .ok_or_else(|| invalid("missing indexed page extent"))?;
-                    let segment: [u8; 16] = saved_extent
-                        .position()?
-                        .store_id
-                        .as_slice()
-                        .try_into()
-                        .map_err(invalid)?;
-                    extent_segments.insert(segment);
+                    extent_records.insert(ExtentRecord::new(saved_extent.position()?)?);
                     let extent = self.extent(saved_extent, location.position()?, state)?;
                     spans.push(PayloadSpan {
                         offset: span.offset,
@@ -946,7 +1069,7 @@ impl Reader<'_> {
             return Err(invalid("index page key mismatch"));
         }
         page.validate_spans()?;
-        Ok((page, extent_segments.into_iter().collect()))
+        Ok((page, extent_records.into_iter().collect()))
     }
     fn node(
         &mut self,
@@ -1065,7 +1188,7 @@ impl Reader<'_> {
         {
             return Err(invalid("unbalanced or inconsistent index geometry"));
         }
-        let (page, extent_segments) = self.page(&value, &key, position, state)?;
+        let (page, extent_records) = self.page(&value, &key, position, state)?;
         if pages.pages.insert(key.clone(), page).is_some() {
             return Err(invalid("duplicate indexed page"));
         }
@@ -1077,7 +1200,7 @@ impl Reader<'_> {
             height,
             count,
             saved: Some(location.clone()),
-            extent_segments,
+            extent_records,
         }))
     }
 }
@@ -1137,6 +1260,7 @@ pub(super) fn load(
         })
         .transpose()?;
     index.root = tree;
+    index.rebuild_planner(&pages)?;
     if count(&index.root) != root.pages || pages.pages.len() as u64 != root.pages {
         return Err(invalid("indexed checkpoint page count mismatch"));
     }

@@ -30,12 +30,24 @@ impl MetaSnapshot {
                 .any(|placement| !placement.group_bytes.is_empty());
             // Version 21 is only written when the feature set is not empty, and carries the
             // group-bytes roster shape, a presence flag for the manifest catalog, and the set.
-            let has_leases = !self.writer_leases.is_empty();
+            // Version 23 is only written while a chunk manifest catalog is not empty; it carries
+            // everything version 22 does, the lease table included even when empty, and then the
+            // catalog image.
+            let native_objects = self.cluster_features.has(crate::cluster_features::FEATURE_NATIVE_OBJECT_STATE);
+            let unified_writers = self.cluster_features.has(crate::cluster_features::FEATURE_UNIFIED_LOG_WRITERS);
+            let has_chunk_catalog = !self.chunk_catalog.is_empty() || unified_writers;
+            let has_leases = !self.writer_leases.is_empty() || has_chunk_catalog;
             // Version 22 is only written while a writer lease exists; it carries everything
             // version 21 does, the feature set included even when empty.
             let has_features = !self.cluster_features.is_default() || has_leases;
             let has_group_bytes = has_group_bytes || has_features;
-            let version = if has_leases {
+            let version = if native_objects {
+                "MOSRSMETA26"
+            } else if unified_writers {
+                "MOSRSMETA24"
+            } else if has_chunk_catalog {
+                "MOSRSMETA23"
+            } else if has_leases {
                 "MOSRSMETA22"
             } else if has_features {
                 "MOSRSMETA21"
@@ -224,11 +236,10 @@ impl MetaSnapshot {
             }
             if !self.object_manifests.is_empty() {
                 // Catalog mutation enforces its checkpoint bound.
-                let bytes = self.object_manifests.to_bytes().expect("valid manifest catalog");
-                append_u64(&mut out, bytes.len() as u64);
+                append_u64(&mut out, self.object_manifests.encoded_size() as u64);
                 emit_body(&out)?;
                 out.clear();
-                emit_body(&bytes)?;
+                self.object_manifests.visit_encoded(&mut emit_body)?;
             }
             if has_features {
                 append_u64(&mut out, self.cluster_features.raised);
@@ -251,6 +262,18 @@ impl MetaSnapshot {
                 }
                 emit_body(&out)?;
                 out.clear();
+            }
+            if has_chunk_catalog {
+                // Catalog mutation enforces its image bound.
+                let bytes = self.chunk_catalog.to_bytes().expect("valid chunk catalog");
+                append_u64(&mut out, bytes.len() as u64);
+                emit_body(&out)?;
+                out.clear();
+                emit_body(&bytes)?;
+            }
+            if native_objects {
+                let bytes = self.native_objects.to_bytes().expect("valid native object state");
+                append_u64(&mut out, bytes.len() as u64); emit_body(&out)?; out.clear(); emit_body(&bytes)?;
             }
             append_string(&mut out, &self.checksum);
             emit_body(&out)?;
@@ -355,6 +378,9 @@ impl MetaSnapshot {
                         .saturating_add(metadata_transaction_receipt_encoded_size(receipt))
                 });
         FIXED_HEADER_BYTES
+            .saturating_add(if self.cluster_features.has(crate::cluster_features::FEATURE_NATIVE_OBJECT_STATE) {
+                8usize.saturating_add(self.native_objects.image_size_bound())
+            } else { 0 })
             .saturating_add(if self.object_manifests.is_empty() {
                 0
             } else {

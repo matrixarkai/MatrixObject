@@ -20,10 +20,8 @@ use std::sync::Arc;
 pub(crate) const CHUNK: usize = crate::manifest_chain::CHECKPOINT_EVERY;
 
 /// Protobuf field 6 of `ObjectManifest` (the extents), wire type 2.
-#[cfg(test)]
 const EXTENT_FIELD_KEY: u8 = (6 << 3) | 2;
 /// Protobuf field 7 of `ObjectManifest` (`deleted`) set to true: key, then the value 1.
-#[cfg(test)]
 const DELETED_TRUE: [u8; 2] = [(7 << 3), 1];
 
 #[cfg(test)]
@@ -189,7 +187,6 @@ impl ExtentList {
     }
 
     /// Append the extents to `buf` as field 6 of the manifest message.
-    #[cfg(test)]
     pub(crate) fn encode_into(&self, buf: &mut Vec<u8>) {
         for extent in self.iter() {
             buf.push(EXTENT_FIELD_KEY);
@@ -274,36 +271,49 @@ impl StoredManifest {
         crate::ObjectId::new(self.bucket.clone(), self.key.clone())
     }
 
-    /// The manifest message without its extents.
-    fn header(&self) -> ObjectManifest {
-        ObjectManifest {
-            format_version: self.format_version,
-            bucket: self.bucket.clone(),
-            key: self.key.clone(),
-            generation: self.generation,
-            length: self.length,
-            extents: Vec::new(),
-            deleted: self.deleted,
-        }
-    }
-
-    /// `ObjectManifest::encoded_len` of the same manifest.
+    /// The encoded size without constructing a temporary manifest header.
     pub(crate) fn encoded_len(&self) -> usize {
-        self.header().encoded_len() + self.extents.encoded_len()
+        fn scalar(value: u64) -> usize {
+            if value == 0 { 0 } else { 1 + prost::encoding::encoded_len_varint(value) }
+        }
+        fn text(value: &str) -> usize {
+            if value.is_empty() { 0 } else {
+                1 + prost::encoding::encoded_len_varint(value.len() as u64) + value.len()
+            }
+        }
+        scalar(u64::from(self.format_version)) + text(&self.bucket) + text(&self.key)
+            + scalar(self.generation) + scalar(self.length) + self.extents.encoded_len()
+            + if self.deleted { 2 } else { 0 }
     }
 
-    /// `ObjectManifest::encode_to_vec` of the same manifest, byte for byte. The catalog image
-    /// still encodes through `ObjectManifest`; this pins that the two forms are the same bytes.
+    /// Append exactly the canonical ObjectManifest protobuf bytes to reusable storage.
+    pub(crate) fn encode_into(&self, buf: &mut Vec<u8>) {
+        fn scalar(buf: &mut Vec<u8>, tag: u8, value: u64) {
+            if value != 0 {
+                buf.push(tag << 3);
+                prost::encoding::encode_varint(value, buf);
+            }
+        }
+        fn text(buf: &mut Vec<u8>, tag: u8, value: &str) {
+            if !value.is_empty() {
+                buf.push((tag << 3) | 2);
+                prost::encoding::encode_varint(value.len() as u64, buf);
+                buf.extend_from_slice(value.as_bytes());
+            }
+        }
+        scalar(buf, 1, u64::from(self.format_version));
+        text(buf, 2, &self.bucket);
+        text(buf, 3, &self.key);
+        scalar(buf, 4, self.generation);
+        scalar(buf, 5, self.length);
+        self.extents.encode_into(buf);
+        if self.deleted { buf.extend_from_slice(&DELETED_TRUE); }
+    }
+
     #[cfg(test)]
     pub(crate) fn encode(&self) -> Vec<u8> {
-        let mut header = self.header();
-        let deleted = std::mem::replace(&mut header.deleted, false);
         let mut buf = Vec::with_capacity(self.encoded_len());
-        header.encode_raw(&mut buf);
-        self.extents.encode_into(&mut buf);
-        if deleted {
-            buf.extend_from_slice(&DELETED_TRUE);
-        }
+        self.encode_into(&mut buf);
         buf
     }
 

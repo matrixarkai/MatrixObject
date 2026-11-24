@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Serve one object store over HTTP.
+//! Serve the cluster's object plane over HTTP.
 //!
 //! # RUNNING IT
 //!
@@ -16,47 +16,37 @@
 //! |---|---|---|
 //! | `MATRIXOBJECT_HTTP_ADDR` | `127.0.0.1:17200` | address to bind |
 //! | `MATRIXOBJECT_BUCKET` | `default` | bucket created at startup |
-//! | `MATRIXOBJECT_SNAPSHOT_PATH` | *(unset)* | durable snapshot file; in memory when unset |
-//! | `MATRIXOBJECT_REPLICAS` | *(unset: the store's default, 3)* | in-process replica count, 1 to 7; the write quorum is a majority |
-//! | `MATRIXOBJECT_JOURNAL_PATH` | *(unset)* | durable append-only journal; exclusive with the snapshot |
-//! | `MATRIXOBJECT_JOURNAL_REPAIR_TORN_TAIL` | *(unset)* | `1` drops a torn final journal frame at start, keeping it beside the journal |
+//! | `MATRIXOBJECT_LIFECYCLE_INTERVAL_MS` | `3600000` | time between lifecycle passes (expirations and abandoned multipart uploads of the buckets' rules), 1000 to 86400000; any other value is refused |
 //! | `MATRIXOBJECT_MAX_BODY_BYTES` | `67108864` | largest object this door accepts |
 //! | `MATRIXOBJECT_THREADS` | `4` | accept threads |
 //! | `MATRIXOBJECT_CLUSTER_META` | *(unset)* | `host:port[,host:port...]`: serve the replicated object plane through these metadata endpoints instead of an in-process store (see below) |
 //! | `MATRIXOBJECT_CLUSTER_META_GROUP` | *(unset)* | metadata Raft group id; set for a Raft metadata quorum (several endpoints imply `1`) |
 //! | `MATRIXOBJECT_CLUSTER_TIMEOUT_MS` | `10000` | bound on one cluster operation |
 //! | `MATRIXOBJECT_CLUSTER_PAGE_BYTES` | `1048576` | page size for written data, 1 to 1048576 |
-//! | `MATRIXOBJECT_CLUSTER_COMPACT_APPEND` | `0` | `1` publishes appends as compact staged decisions; every metadata voter must support the version 11 outcome |
-//! | `MATRIXOBJECT_CLUSTER_RESERVE_NEXT` | `1` with compact append, else `0` | reserves the next append's staged allocation in the commit that publishes the current one, one metadata commit per append instead of two; every metadata voter must support the version 13 outcome; `0` turns it off |
 //! | `MATRIXOBJECT_CLUSTER_CACHE_ENTRIES` | `4096` | manifests the door remembers so a repeated append can skip reading one (and `MATRIXOBJECT_CLUSTER_CACHE_MIB`, `64`, bounds their memory: a manifest of 4,000 extents is about 0.75 MiB); the least recently used leave first |
 //! | `MATRIXOBJECT_CLUSTER_POOL_MAX` | `64` (at least the thread count) | idle metadata connections kept for reuse; a request that finds the pool empty opens one and drops it when the pool is full |
-//! | `MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS` | *(unset)* | 2 to 4096: merge a log object's short tail once it holds this many extents, so it stays appendable past 4096 |
 //! | `MATRIXOBJECT_CLUSTER_TARGET_GROUPS` | `1` | data groups one object is spread over |
 //! | `MATRIXOBJECT_GATEWAY_NODE_ID` | *(unset)* | cluster mode: this door's id in the metaserver roster (declared there with `MATRIXOBJECT_METASERVER_GATEWAY_ROSTER`). When set, the door heartbeats that node online, withdraws it (draining) on SIGTERM, and clients find live doors with `RemoteMetaClient::list_gateways` |
 //! | `MATRIXOBJECT_GATEWAY_HEARTBEAT_MS` | `3000` | roster heartbeat interval, 100..60000 |
 //! | `MATRIXOBJECT_GATEWAY_DRAIN_GRACE_MS` | `5000` | after SIGTERM: how long to keep answering after withdrawing from the roster, so requests already routed here finish |
+//! | `MATRIXOBJECT_RECLAIM_GRACE_MS` | `3600000` | a page must stay unnamed this long (60000..604800000) before it is freed; longer than any write takes from its first page to its publication |
+//! | `MATRIXOBJECT_RECLAIM_INTERVAL_MS` | a quarter of the grace | time between rounds, 1000 up to the grace |
 //! | `MATRIXOBJECT_CLIENT_TLS_CA_CERT`, `MATRIXOBJECT_CLIENT_TLS_CERT`, `MATRIXOBJECT_CLIENT_TLS_KEY` | *(unset)* | mutual TLS from this door to the metadata and chunk servers (cluster mode only); the door itself still listens in plaintext |
 //!
 //! # CLUSTER MODE
 //!
-//! With `MATRIXOBJECT_CLUSTER_META` set this door serves a metadata quorum and its chunk
-//! groups, running as separate processes, rather than a store in its own memory. It answers
-//! PUT, append (`x-amz-write-offset-bytes`), GET with `Range`, HEAD, DELETE and ListObjectsV2,
-//! and answers every other S3 verb `NotImplemented`. The snapshot, journal and in-process
-//! replica variables do not apply and are refused when combined with it. See
-//! `docs/cluster-gateway.md`.
+//! `MATRIXOBJECT_CLUSTER_META` is required: this door serves a metadata quorum and its chunk
+//! groups, running as separate processes. It answers PUT, append (`x-amz-write-offset-bytes`),
+//! GET with `Range`, HEAD, DELETE and ListObjectsV2, and answers every other S3 verb
+//! `NotImplemented`. Without it the process refuses to start. See `docs/cluster-gateway.md`.
 //!
-//! # TWO THINGS TO KNOW BEFORE PUTTING DATA IN IT
+//! # BEFORE PUTTING DATA IN IT
 //!
 //! **It is unauthenticated.** No signing, no token, no TLS. Anything that can open a socket to the
 //! port can read, overwrite and delete every object. That is why the default bind is loopback, and
 //! moving it off loopback means putting the whole store behind whatever else protects that
 //! network.
-//!
-//! **Without `MATRIXOBJECT_SNAPSHOT_PATH` nothing survives the process.** The default store is
-//! entirely in memory. The variable is reported at startup, including when it is unset, so an
-//! operator reading the first line of the log can see which of the two they have rather than
-//! finding out at the next restart.
+
 
 /// Set by the SIGTERM handler; polled by the thread that withdraws this door from the roster.
 #[cfg(all(feature = "http-server", unix))]
@@ -143,12 +133,10 @@ fn main() {
 }
 
 #[cfg(feature = "http-server")]
+#[cfg_attr(not(all(feature = "replica-server", feature = "meta-server")), allow(unused_variables))]
 fn main() {
-    use std::sync::{Arc, Mutex};
+    #[cfg(all(feature = "replica-server", feature = "meta-server"))]
     use std::time::Duration;
-
-    use matrixobjectstore_rs::net::{ObjectHttpServer, ServerOptions};
-    use matrixobjectstore_rs::{MatrixObjectStore, StoreOptions};
 
     fn env_string(name: &str, default: &str) -> String {
         std::env::var(name)
@@ -177,66 +165,17 @@ fn main() {
 
     let addr = env_string("MATRIXOBJECT_HTTP_ADDR", "127.0.0.1:17200");
     let bucket = env_string("MATRIXOBJECT_BUCKET", "default");
-    let snapshot_path = std::env::var("MATRIXOBJECT_SNAPSHOT_PATH")
-        .ok()
-        .filter(|value| !value.trim().is_empty());
     let max_body_bytes = env_usize("MATRIXOBJECT_MAX_BODY_BYTES", 64 * 1024 * 1024);
     let worker_threads = env_usize("MATRIXOBJECT_THREADS", 4).max(1);
-
-    let journal_path = std::env::var("MATRIXOBJECT_JOURNAL_PATH")
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    if snapshot_path.is_some() && journal_path.is_some() {
-        // The store refuses this pair itself; saying so here names the two variables instead
-        // of surfacing a store-open error that mentions neither.
-        eprintln!(
-            "MATRIXOBJECT_SNAPSHOT_PATH and MATRIXOBJECT_JOURNAL_PATH are mutually exclusive"
-        );
-        std::process::exit(2);
-    }
 
     #[cfg(all(feature = "replica-server", feature = "meta-server"))]
     if let Some(meta) = std::env::var("MATRIXOBJECT_CLUSTER_META")
         .ok()
         .filter(|value| !value.trim().is_empty())
     {
-        if snapshot_path.is_some()
-            || journal_path.is_some()
-            || std::env::var("MATRIXOBJECT_REPLICAS").map_or(false, |v| !v.trim().is_empty())
-        {
-            eprintln!(
-                "MATRIXOBJECT_CLUSTER_META serves the cluster; MATRIXOBJECT_SNAPSHOT_PATH,                  MATRIXOBJECT_JOURNAL_PATH and MATRIXOBJECT_REPLICAS describe an in-process store                  and cannot be combined with it"
-            );
-            std::process::exit(2);
-        }
         let timeout_ms = env_usize("MATRIXOBJECT_CLUSTER_TIMEOUT_MS", 10_000).max(1) as u64;
         let page_bytes = env_usize("MATRIXOBJECT_CLUSTER_PAGE_BYTES", 1024 * 1024);
         let target_groups = env_usize("MATRIXOBJECT_CLUSTER_TARGET_GROUPS", 1);
-        let compact_append = env_usize("MATRIXOBJECT_CLUSTER_COMPACT_APPEND", 0) != 0;
-        // On whenever compact append is: it saves a metadata commit per append (see the table
-        // above). `MATRIXOBJECT_CLUSTER_RESERVE_NEXT=0` turns it off.
-        let reserve_requested = std::env::var("MATRIXOBJECT_CLUSTER_RESERVE_NEXT")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .map(|_| env_usize("MATRIXOBJECT_CLUSTER_RESERVE_NEXT", 0));
-        let reserve_next = match matrixobjectstore_rs::net::cluster_gateway::resolve_reserve_next(
-            compact_append,
-            reserve_requested,
-        ) {
-            Ok(reserve) => reserve,
-            Err(message) => {
-                eprintln!("{message}");
-                std::process::exit(2);
-            }
-        };
-        let compact_extents = match env_usize("MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS", 0) {
-            0 => None,
-            bound if (2..=4096).contains(&bound) => Some(bound),
-            bound => {
-                eprintln!("MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS={bound} is outside 2 to 4096");
-                std::process::exit(2);
-            }
-        };
         let group = std::env::var("MATRIXOBJECT_CLUSTER_META_GROUP")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -251,120 +190,26 @@ fn main() {
             Duration::from_millis(timeout_ms),
             page_bytes,
             target_groups as u32,
-            compact_append,
-            compact_extents,
-            reserve_next,
         );
     }
 
-    let mut options = StoreOptions {
-        persistent_snapshot_path: snapshot_path.clone().unwrap_or_default(),
-        persistent_snapshot_flush_on_commit: snapshot_path.is_some(),
-        persistent_journal_path: journal_path.clone().unwrap_or_default(),
-        ..StoreOptions::default()
-    };
-    // IN-PROCESS REPLICAS. The store defaults to three, held in this one process: they multiply
-    // resident memory and the copies written by the replica count, and survive no failure that
-    // this process does not. Left unset, the default is unchanged.
-    if std::env::var("MATRIXOBJECT_REPLICAS").map_or(false, |value| !value.trim().is_empty()) {
-        let replicas = env_usize("MATRIXOBJECT_REPLICAS", 0);
-        if !(1..=7).contains(&replicas) {
-            eprintln!("MATRIXOBJECT_REPLICAS={replicas} is outside 1 to 7");
-            std::process::exit(2);
-        }
-        options.replica_count = replicas;
-        options.write_quorum = replicas / 2 + 1;
-    }
-
-    if let Some(path) = journal_path.as_deref() {
-        let repair = std::env::var("MATRIXOBJECT_JOURNAL_REPAIR_TORN_TAIL")
-            .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-            .unwrap_or(false);
-        if repair {
-            match MatrixObjectStore::repair_persistent_journal_tail(path) {
-                Ok(None) => eprintln!("journal {path}: no torn tail, nothing repaired"),
-                Ok(Some((kept, dropped, preserved))) => eprintln!(
-                    "journal {path}: dropped a torn tail of {dropped} bytes after byte {kept}; \
-                     the dropped bytes are preserved at {preserved}"
-                ),
-                Err(err) => {
-                    eprintln!("journal repair refused: {err}");
-                    std::process::exit(1);
-                }
-            }
-        }
-    }
-
-    let mut store = match MatrixObjectStore::new(options) {
-        Ok(store) => store,
-        Err(err) => {
-            eprintln!("the store could not be opened: {err}");
-            std::process::exit(1);
-        }
-    };
-    // IDEMPOTENT, so restarting against an existing snapshot is not an error.
-    if let Err(err) = store.ensure_bucket(&bucket) {
-        // A bucket that already exists is the normal case on a restart; anything else is fatal,
-        // because every request addresses this bucket.
-        let message = err.to_string();
-        if !message.contains("exists") {
-            eprintln!("the bucket {bucket:?} could not be created: {err}");
-            std::process::exit(1);
-        }
-    }
-
-    let store = Arc::new(Mutex::new(store));
-    let server = match ObjectHttpServer::bind(
-        &addr,
-        store,
-        ServerOptions {
-            max_body_bytes,
-            worker_threads,
-            ..ServerOptions::default()
-        },
-    ) {
-        Ok(server) => server.with_bucket_hint(bucket.clone()),
-        Err(err) => {
-            eprintln!("binding {addr} failed: {err}");
-            std::process::exit(1);
-        }
-    };
-
-    let bound = match server.local_addr() {
-        Ok(bound) => bound,
-        Err(err) => {
-            eprintln!("the bound address could not be read back: {err}");
-            std::process::exit(1);
-        }
-    };
-
-    // THE DURABILITY STATE IS IN THE FIRST LINE, named either way. "snapshot=none" is the one an
-    // operator most needs to see and the one a log that only mentioned a configured path would
-    // leave silent.
-    println!(
-        "object_server listening on {bound} bucket={bucket} snapshot={} \
-         max_body_bytes={max_body_bytes} threads={worker_threads} auth=none",
-        snapshot_path.as_deref().unwrap_or("none")
+    eprintln!(
+        "object_server serves the cluster: set MATRIXOBJECT_CLUSTER_META to the metadata endpoints \
+         (and build with the replica-server and meta-server features)"
     );
-    if snapshot_path.is_none() {
-        println!(
-            "WARNING: no MATRIXOBJECT_SNAPSHOT_PATH, so every object is held in memory only and \
-             is lost when this process exits"
-        );
-    }
-    if !bound.ip().is_loopback() {
-        println!(
-            "WARNING: {bound} is not loopback and this server is unauthenticated, so anything \
-             that can reach this port can read, overwrite and delete every object"
-        );
-    }
+    std::process::exit(2);
+}
 
-    // `serve` blocks for the life of the process; the handle's shutdown path exists for callers
-    // embedding the server, which a binary with no control socket cannot use.
-    let _ = Duration::from_secs(0);
-    if let Err(err) = server.serve() {
-        eprintln!("the accept loop stopped: {err}");
-        std::process::exit(1);
+/// The time between lifecycle passes: 1000 to 86400000 ms, one hour when the variable is unset. Any other value,
+/// `0` included, is refused.
+#[cfg(all(feature = "http-server", feature = "replica-server", feature = "meta-server"))]
+fn resolve_lifecycle_interval(raw: Option<&str>) -> Result<u64, String> {
+    match raw {
+        None => Ok(3_600_000),
+        Some(raw) => match raw.trim().parse::<u64>() {
+            Ok(ms) if (1_000..=86_400_000).contains(&ms) => Ok(ms),
+            _ => Err(format!("MATRIXOBJECT_LIFECYCLE_INTERVAL_MS must be from 1000 to 86400000, and {raw:?} is not")),
+        },
     }
 }
 
@@ -380,9 +225,6 @@ fn run_cluster_gateway(
     timeout: std::time::Duration,
     page_bytes: usize,
     target_groups: u32,
-    compact_append: bool,
-    compact_extents: Option<usize>,
-    reserve_next: bool,
 ) -> ! {
     use std::sync::Arc;
 
@@ -390,7 +232,7 @@ fn run_cluster_gateway(
         ObjectWriteOptions, RemoteMetaClient, ReplicaClientOptions,
     };
     use matrixobjectstore_rs::net::cluster_gateway::{ClusterGateway, GatewayOptions};
-    use matrixobjectstore_rs::net::{ObjectHttpServer, ServerOptions};
+    use matrixobjectstore_rs::net::{ObjectHttpServer, RequestHandler, ServerOptions};
 
     let endpoints: Vec<String> = meta
         .split(',')
@@ -428,6 +270,7 @@ fn run_cluster_gateway(
         std::env::var("MATRIXOBJECT_CLUSTER_POOL_MAX").ok().as_deref(),
         worker_threads,
     );
+    let reclaim_write = write.clone();
     let options = GatewayOptions {
         write,
         replica,
@@ -442,34 +285,128 @@ fn run_cluster_gateway(
             std::env::var("MATRIXOBJECT_CLUSTER_CACHE_MIB").ok().as_deref(),
             GatewayOptions::default().cache_bytes / (1024 * 1024),
         ) * 1024 * 1024,
-        compact_append,
-        compact_extents,
-        reserve_next,
         ..GatewayOptions::default()
     };
     let mut meta_options = ClusterGateway::meta_options(timeout);
     meta_options.tls = tls;
     let open_endpoints = endpoints.clone();
-    let open = move || {
+    let connect = move |options: &matrixobjectstore_rs::cluster::MetaClientOptions| {
         if let Some(group) = group.or(if open_endpoints.len() > 1 { Some(1) } else { None }) {
-            RemoteMetaClient::connect_raft_catalog(&open_endpoints, group, &meta_options)
+            RemoteMetaClient::connect_raft_catalog(&open_endpoints, group, options)
         } else {
-            RemoteMetaClient::connect(&open_endpoints[0], &meta_options)
+            RemoteMetaClient::connect(&open_endpoints[0], options)
         }
     };
-    // THE CLUSTER MUST ANSWER BEFORE THIS BINDS: a door that listens while its metadata quorum
-    // is unreachable reports ready and then fails every request.
-    if let Err(err) = open() {
-        eprintln!("no metadata endpoint in {meta} answered: {err}");
+    // Startup reads share the operation deadline so a listening voter may elect
+    // a leader before the door serves. Runtime connections get fresh deadlines.
+    let mut startup_options = meta_options.clone();
+    let startup_deadline = std::time::Instant::now() + timeout;
+    startup_options.deadline = Some(startup_deadline);
+    // THE SWEEP THAT FREES THE PAGES NO MANIFEST NAMES always runs in this process: objects are chunk manifests.
+    let reclaim = match matrixobjectstore_rs::cluster::reclaim_loop::resolve_reclaim(
+        std::env::var("MATRIXOBJECT_RECLAIM_GRACE_MS").ok().as_deref(),
+        std::env::var("MATRIXOBJECT_RECLAIM_INTERVAL_MS").ok().as_deref(),
+    ) {
+        Ok(settings) => settings,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    };
+    // OBJECTS ARE CHUNK MANIFESTS AND NOTHING ELSE. A data directory written by an earlier build holds page-granular
+    // objects this build cannot read or reclaim, and there is no migration: refuse to start over one.
+    match connect(&startup_options) {
+        Ok(mut client) => {
+            if let Err(message) = matrixobjectstore_rs::cluster::reclaim_loop::refuse_older_data_directory(&mut client) {
+                eprintln!("{message}");
+                std::process::exit(1);
+            }
+        }
+        Err(err) => {
+            eprintln!("no metadata endpoint in {meta} answered: {err}");
+            std::process::exit(1);
+        }
+    }
+    // Bucket creation is idempotent and must finish before the listener binds.
+    // Keep its metadata and replica calls inside the same startup budget.
+    let startup_connect = connect.clone();
+    let mut startup_gateway_options = options.clone();
+    startup_gateway_options.replica.deadline = Some(startup_deadline);
+    let startup_gateway = ClusterGateway::over_chunk_objects(
+        move || startup_connect(&startup_options), startup_gateway_options, bucket.to_string(),
+    );
+    let create_bucket = matrixobjectstore_rs::net::Request {
+        method: "PUT".into(), path: format!("/{bucket}"), query: String::new(),
+        headers: Vec::new(), body: Vec::new(), keep_alive: false,
+    };
+    let mut reported_wait = false;
+    loop {
+        let response = startup_gateway.handle(&create_bucket);
+        if response.status == 200 {
+            break;
+        }
+        let remaining = startup_deadline.saturating_duration_since(std::time::Instant::now());
+        if matches!(response.status, 412 | 503) && remaining > std::time::Duration::from_millis(25) {
+            if !reported_wait {
+                eprintln!("waiting for bucket {bucket} readiness before listening");
+                reported_wait = true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            continue;
+        }
+        eprintln!("the bucket {bucket} could not be created before the startup deadline: status={} {}",
+            response.status, String::from_utf8_lossy(&response.body));
         std::process::exit(1);
     }
-    let open = Arc::new(open);
+    drop(startup_gateway);
+    let open = Arc::new(move || connect(&meta_options));
     let for_gateway = Arc::clone(&open);
-    let gateway = Arc::new(ClusterGateway::over_sdk(move || (*for_gateway)(), options, bucket.to_string()));
+    let gateway = Arc::new(ClusterGateway::over_chunk_objects(move || (*for_gateway)(), options, bucket.to_string()));
     // `/livez` and `/readyz` in front of the gateway, and the drain switch behind them.
+    let for_lifecycle = Arc::clone(&gateway);
     let door = matrixobjectstore_rs::net::gateway_door::GatewayDoor::new(gateway);
     let drain_flag = door.drain_flag();
+    // THE LIFECYCLE RULES OF THE BUCKETS are acted on by a pass every interval: expirations and abandoned multipart
+    // uploads. A pass is safe to repeat and to run from several doors at once.
+    let lifecycle_interval = match resolve_lifecycle_interval(std::env::var("MATRIXOBJECT_LIFECYCLE_INTERVAL_MS").ok().as_deref()) {
+        Ok(ms) => ms,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    };
+    let stop = Arc::clone(&drain_flag);
+    std::thread::spawn(move || {
+        let mut waited = 0u64;
+        while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            waited += 500;
+            if waited < lifecycle_interval {
+                continue;
+            }
+            waited = 0;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_millis() as u64);
+            match for_lifecycle.run_lifecycle(now) {
+                Ok(report) if report.expired + report.expired_versions + report.aborted_uploads + report.kept_locked > 0 => eprintln!(
+                    "lifecycle: {} expired, {} old versions expired, {} kept by a lock, {} uploads aborted in {} buckets",
+                    report.expired, report.expired_versions, report.kept_locked, report.aborted_uploads, report.buckets
+                ),
+                Ok(_) => {}
+                Err(error) => eprintln!("lifecycle pass failed: {error}"),
+            }
+        }
+    });
     let gateway = Arc::new(door);
+    {
+        let stop = Arc::clone(&drain_flag);
+        let for_reclaim = Arc::clone(&open);
+        std::thread::spawn(move || {
+            matrixobjectstore_rs::cluster::reclaim_loop::ReclaimLoop::new(move || (*for_reclaim)(), reclaim_write, reclaim)
+                .run(stop)
+        });
+    }
     #[cfg(unix)]
     start_roster_heartbeat(Arc::clone(&open), drain_flag);
     #[cfg(not(unix))]
@@ -502,6 +439,10 @@ fn run_cluster_gateway(
     );
     // Flushed: a supervisor reading this line from a pipe must not wait for a full buffer.
     let _ = std::io::Write::flush(&mut std::io::stdout());
+    // The sweep's status follows the listening line: a supervisor reads the FIRST line for the address.
+    println!("object_server reclaim_refused_page_objects=0 (a sweep refused because page objects exist is reported as a warning)");
+    println!("object_server reclaim grace_ms={} interval_ms={}", reclaim.grace_ms, reclaim.interval_ms);
+    let _ = std::io::Write::flush(&mut std::io::stdout());
     if !bound.ip().is_loopback() {
         println!(
             "WARNING: {bound} is not loopback and this server is unauthenticated, so anything              that can reach this port can read, overwrite and delete every object"
@@ -512,4 +453,19 @@ fn run_cluster_gateway(
         std::process::exit(1);
     }
     std::process::exit(0);
+}
+
+#[cfg(all(test, feature = "http-server", feature = "replica-server", feature = "meta-server"))]
+mod tests {
+    use super::resolve_lifecycle_interval;
+
+    #[test]
+    fn the_lifecycle_interval_is_one_hour_by_default_and_zero_or_out_of_range_is_refused() {
+        assert_eq!(resolve_lifecycle_interval(None), Ok(3_600_000));
+        assert_eq!(resolve_lifecycle_interval(Some(" 1000 ")), Ok(1_000));
+        assert_eq!(resolve_lifecycle_interval(Some("86400000")), Ok(86_400_000));
+        for refused in ["0", "999", "86400001", "x", "", "-1"] {
+            assert!(resolve_lifecycle_interval(Some(refused)).is_err(), "{refused:?}");
+        }
+    }
 }

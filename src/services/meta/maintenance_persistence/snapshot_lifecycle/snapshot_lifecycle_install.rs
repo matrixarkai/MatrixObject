@@ -42,6 +42,8 @@ impl MatrixMetaService {
         self.qos_state = snapshot.qos_state;
         self.cluster_features = snapshot.cluster_features;
         self.writer_leases = snapshot.writer_leases;
+        self.chunk_catalog = snapshot.chunk_catalog;
+        self.native_objects = snapshot.native_objects;
         self.trim_meta_retention();
         Ok(())
     }

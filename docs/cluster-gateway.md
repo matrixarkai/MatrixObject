@@ -1,10 +1,9 @@
 # Cluster-backed S3 gateway
 
-`object_server` normally serves one in-process `MatrixObjectStore`. With
-`MATRIXOBJECT_CLUSTER_META` set it serves the replicated object plane instead: a metadata
-quorum plus chunk groups running as separate processes, reached through the cluster SDK
-(`RemoteMetaClient::write_object`, `append_object`, `read_object`, `read_object_range`,
-`delete_object`, `list_manifests`). The in-process path is untouched.
+`object_server` serves the replicated object plane: a metadata quorum plus chunk groups running as
+separate processes, reached through the cluster SDK (`RemoteMetaClient::write_object`,
+`append_object`, `read_object`, `read_object_range`, `delete_object`, `list_manifests`).
+`MATRIXOBJECT_CLUSTER_META` is required, and the process refuses to start without it.
 
 This door answers the S3 verbs a shared-log client needs, and the rest of what an S3 client
 commonly uses (copy, multipart, batch delete, conditional requests, delimiter listings). Every
@@ -27,14 +26,18 @@ fall back and nothing returns a plausible-looking wrong answer.
 | `PUT /{b}/{k}` + `x-amz-copy-source` | `copy_object_atomic` on the SDK plane: the destination names the source's extents, no data moves; the destination's generation is the compare-and-swap |
 | `POST /{b}?delete` | one `delete_object` per key; an absent key is reported deleted |
 | `POST /{b}/{k}?uploads`, `PUT ?partNumber=&uploadId=`, `POST ?uploadId=`, `DELETE ?uploadId=`, `GET ?uploadId=`, `GET /{b}?uploads` | multipart, below |
-| `GET /` | the bucket the gateway was started for (buckets are implicit and cannot be enumerated) |
-| `DELETE /{b}` | 409 `BucketNotEmpty` while any live object remains, else 204 |
-| `GET /{b}?versioning`, `GET /{b}?acl`, `GET /{b}/{k}?acl`, `GET /{b}/{k}?tagging` | fixed answers: not versioned, private to the owner, no tags |
-| `PUT /{b}`, `HEAD /{b}`, `GET /{b}?location` | answered without a cluster call: buckets are implicit |
+| `GET /` | the buckets that have a record, in order |
+| `DELETE /{b}` | 409 `BucketNotEmpty` while any live object remains, else 204 and the bucket's record is removed |
+| `GET /{b}?acl`, `GET /{b}/{k}?acl`, `GET /{b}/{k}?tagging` | fixed answers: private to the owner, no tags |
+| `PUT /{b}`, `HEAD /{b}` | create and read the bucket's record; a request to a bucket with no record is refused with `NoSuchBucket` |
+| `GET /{b}?location` | answered without a cluster call |
 | `GET /healthz` | one `list_manifests` call |
 
-Refused with `NotImplemented`: changing tags, ACLs, versioning, CORS or any other bucket
-configuration, `versionId`, `UploadPartCopy`, `versions`. `If-None-Match: *` on a PUT is honoured.
+Buckets that are created and configured, object attributes (content type, metadata, tags), object lock, quotas,
+CORS, lifecycle rules, versioning (`versionId`, `versions`) and the change feed are described in
+[gateway-buckets-and-object-features.md](gateway-buckets-and-object-features.md). Refused with `NotImplemented`: ACL changes,
+`UploadPartCopy`, the bucket policy as an access rule (it is stored and read back, not evaluated). `If-None-Match: *`
+on a PUT is honoured.
 
 ### Multipart uploads
 
@@ -50,6 +53,36 @@ completion is refused with 400 and the upload stays usable. A part's etag is its
 generation, so uploading a part again replaces it and invalidates the old etag. Parts that could
 not be removed after a completion are invisible and are removed by a later abort.
 
+## What the retired embedded door answered, and where each is tested now
+
+The embedded store had its own HTTP door. The cluster gateway answers the same S3 requests over chunk objects.
+Each row says what happens now and which test proves it against real metadata and chunk processes (the same
+scenarios also run against a fake plane in the gateway's unit tests, so a plane cannot change a verb's meaning).
+
+| request | now | tested end to end by |
+|---|---|---|
+| `PUT`, `GET`, `HEAD`, `DELETE` of an object | served | `a_chunk_object_round_trips_through_a_star_quorum_and_a_wrong_digest_fails_its_read` (Star), `chunk_objects_over_raft_groups_survive_leader_loss_races_appends_and_total_restart` (Raft, through the client) |
+| append (`x-amz-write-offset-bytes`) and its attempt-id resolve | served | the same Star test (append, wrong offset, resolve landed / ambiguous / absent, fence, retry lands once) |
+| append through the loss of one data node | served by `append_chunk_object_with_failover` | `a_chunk_write_and_append_switch_groups_when_a_member_of_the_chosen_group_stops` |
+| `Range` (closed, open-ended, suffix) | served | `the_s3_door_over_chunk_objects_serves_listing_conditions_copy_batch_multipart_and_ranges` |
+| `ListObjectsV2` with prefix, delimiter, paging | served | the same test |
+| `If-Match`, `If-None-Match` on writes and reads | served | the same test |
+| copy (`x-amz-copy-source`) | served: the bytes are copied and the copy does not follow the source | the same test |
+| `POST ?delete` (batch delete), `DELETE` of a bucket (409 while objects remain) | served | the same test |
+| multipart upload (create, part, list, complete, abort) | served | the same test |
+| `GET /healthz` | served | the same test |
+| buckets (create, head, list, delete) and their configuration: versioning, tags, CORS, policy, lifecycle, object lock, quota, change feed | served: a bucket is a replicated record | `the_s3_door_over_chunk_objects_creates_configures_lists_and_deletes_buckets`, `bucket_configuration_is_stored_read_back_and_removed` |
+| object content type, metadata, tags; retention and legal hold; object lock enforcement | served: attributes are fields of the manifest | `an_object_carries_its_content_type_metadata_and_tags_until_it_is_overwritten`, `a_retention_or_legal_hold_refuses_overwrite_and_delete_and_only_governance_can_be_bypassed`, `the_s3_door_over_chunk_objects_keeps_attributes_locks_versions_quotas_and_a_change_feed` (real processes) |
+| versioning: `versionId`, `?versions`, delete markers | served: a replaced manifest is kept under a hidden key that names the same pages | `versioning_keeps_what_an_overwrite_or_a_delete_replaces_and_serves_each_version` and the real-process test above |
+| quotas | served: soft across gateways, see the feature guide | `a_quota_refuses_the_write_that_would_pass_it_and_counts_an_overwrite_once` |
+| CORS rules and preflight | served | `cors_rules_answer_a_preflight_and_dress_a_cross_origin_response` |
+| lifecycle (expiration, noncurrent expiration, abandoned uploads) | served by a timed pass in the door | `a_lifecycle_pass_expires_old_objects_under_the_prefix_and_leaves_locked_ones`, `a_noncurrent_expiration_removes_old_versions_and_an_expiration_leaves_a_marker` |
+| change feed | served: opt-in per bucket, at most once per mutation | `a_bucket_that_opts_in_keeps_an_ordered_change_feed_read_by_cursor_and_trimmed_by_the_consumer` |
+
+The Raft and Star group modes both carry chunk objects; the Star tests run against real chunk servers, the Raft test
+against a Raft group of three voters per group. The features above run through the same chunk plane in both modes.
+Their real-process test runs on a Star group; a Raft-group run of the feature test is not written yet.
+
 ## Mapping
 
 * Bucket and key are passed to the SDK unchanged, so the same names work through either door.
@@ -64,6 +97,11 @@ not be removed after a completion are invisible and are removed by a later abort
   re-evaluates: the offset now either still matches (retry) or no longer does (412, which the
   client answers by re-reading the length). The `x-amz-object-size` in the reply is the length
   the published manifest reports, so a receipt always says where the bytes landed.
+* Concurrent appends to one object are serialised by the client, not hidden by the gateway. A writer
+  that loses the race is refused with 412 and told the object's new length, and retries at it. The
+  gateway never turns that refusal into a success because bytes equal to the append's are present: two
+  writers appending identical bytes at one offset leave one copy, and only the attempt's own extents
+  (its attempt id) say that it landed.
 * An unconfirmed publication is not retried and not reported as success: it answers 503 with
   the SDK's own words.
 * Listing walks the bucket's manifest catalog in key order from the beginning (the SDK takes
@@ -77,85 +115,7 @@ not be removed after a completion are invisible and are removed by a later abort
   page and answers `400 InvalidRequest` naming the extent count; it does not work around it.
 * A catalog holds at most 100,000 objects and a manifest at most 1 MiB.
 * Whole-object GET reads the entire object into the gateway before answering.
-* The gateway is unauthenticated, like the in-process door.
-
-## Opt-in append modes
-
-Compact publication and tail compaction are off by default, and the default append is the plain
-one described above. Reserving the next allocation follows compact publication: on with it,
-off without it.
-
-| Variable | Mode |
-|---|---|
-| `MATRIXOBJECT_CLUSTER_COMPACT_APPEND=1` | compact publication |
-| `MATRIXOBJECT_CLUSTER_RESERVE_NEXT` (on with compact publication; `0` turns it off) | with compact publication, reserve the next append's allocation in the publishing commit (one metadata commit per append instead of two) |
-| `MATRIXOBJECT_CLUSTER_COMPACT_EXTENTS=N` (2 to 4096, for example 3500) | tail compaction |
-
-**Upgrade order.** Compact publication needs every metadata voter to support the version 11
-outcome, and reserving the next allocation the version 13 outcome. Upgrade the voters before the
-gateways. A gateway paired with a voter that does not understand them is not detected: the gateway
-does not fall back, and its appends fail (the S3 answer is a 412 "the object kept changing under
-this append" after its retries). There is no capability handshake yet.
-
-**Compact publication.** Each append takes a leased staged allocation (60 s) and publishes a
-digest-bound decision with `append_staged_object_compact`, instead of the whole manifest. On
-the measured workload the metadata plane wrote about 1.5 KB per write instead of about
-134 KB, at the price of one more metadata commit per append (higher sync write latency).
-Requirements:
-
-* Every metadata voter and journal reader must support the version 12 outcome; downgrading
-  after use is unsupported.
-* It turns on the durable publication fence the first time it is used. The fence is
-  cluster-wide and permanent, and from then on the plain publish path is refused for EVERY
-  write ("fresh extents require owned publication"). The gateway therefore also publishes
-  whole-object PUTs under an owned allocation while this mode is on.
-* If enabling the fence is refused, the gateway prints one line,
-  `cluster gateway: compact append is unavailable (enabling the publication fence: ...); using the plain publish path from here on`,
-  and uses the plain path for the rest of the process. Once the fence is on there is no
-  fallback: a failed staged write is reported as the failure it is, and a failed append
-  releases its allocation.
-
-**Tail compaction.** When an object holds `N` extents, the next append goes through
-`append_object_compacting`: the short tail is merged into full pages by compare-and-set, so a
-log object stays appendable past 4096 extents. This is plain publication (the full manifest
-per append) and so cannot be combined with compact publication, because the fence refuses
-plain publication. Do not set both: below its bound compact publication would turn the fence
-on, and at the bound tail compaction would then be refused. With tail compaction on, the
-gateway no longer refuses appends at 4096 extents itself.
-
-### What was measured
-
-TemporalStore's shared-store harness, three nodes, 2000 operations per phase (4000 writes),
-one host, loopback, a single metaserver and three chunk servers, release builds. The in-process
-door is the same server with its journal.
-
-| | sync write p50 / p99 | metadata written per write |
-|---|---|---|
-| plain append (default) | 42-59 ms / 150-167 ms | about 134 KB |
-| compact publication | 77-81 ms / 143-161 ms (earlier round, loaded machine: 101-131 ms) | about 1.35 KB |
-| in-process door | about 6 ms / 11-14 ms | not applicable |
-
-* Compact publication cuts the metadata written per append by about 100 times. The sync write
-  p50 is not better than the plain path: every append now costs one more metadata commit (the
-  allocation). The compact-publication figures above were taken on a machine whose door
-  latency was itself higher than on the plain-path round, so compare within a round.
-* The plain path fails at the 4097th append to one object with
-  `400 InvalidRequest` ("the object already holds 4096 extents"). Compact publication does not
-  lift that bound.
-* Crossing 4096 extents worked only with tail compaction on and compact publication off
-  (16000 writes at 8000 operations per phase, sync p50 95 ms against 8 ms for the door), and
-  that run wrote 3.45 GB of metadata because it is plain publication. The disk was 97 percent
-  full during that run, so its absolute latencies are inflated.
-* Not measured: data-node failure, and any metadata checkpoint setting (the Raft checkpoint
-  size was left unset; 4000 writes ran without it).
-
-### Which mode for a log workload
-
-For a log that stays below 4096 appends per object (rotate the object before that), compact
-publication: it removes the metadata growth that dominates the plain path, at a latency cost
-that the extra allocation commit explains. For a log that must grow one object past 4096
-appends, tail compaction, accepting plain publication's metadata cost, until a staged variant
-of the tail merge exists. The default remains the plain path.
+* The gateway is unauthenticated: anything that can reach its port can read, overwrite and delete.
 
 ## Running it for real
 
@@ -175,8 +135,60 @@ of the tail merge exists. The default remains the plain path.
 * **Not yet covered.** Data-node failure through the gateway, a metadata checkpoint setting,
   request authentication, and streaming of large whole-object reads.
 
+## Reclaiming the pages no manifest names
+
+A door stores objects as chunk manifests, and the pages of a
+deleted object, of an overwritten generation and of a writer that died before publishing are named by no
+manifest. The door runs a sweep that frees them, in a thread of its own process, with no setting needed:
+
+| variable | default | meaning |
+|---|---|---|
+| `MATRIXOBJECT_RECLAIM_GRACE_MS` | `3600000` | a page must stay unnamed this long before it is freed; 60000 to 604800000. Keep it longer than a write takes from its first page to its publication |
+| `MATRIXOBJECT_RECLAIM_INTERVAL_MS` | a quarter of the grace | time between rounds, 1000 up to the grace |
+
+The sweep always runs. A value that is out of range or not a number is refused, never replaced by the default.
+
+Known limits:
+
+* **N doors make N scans.** No door is elected to sweep. Every door that runs one reads the page inventory of
+  every group and the whole chunk catalog each round. That is safe, because a discard is conditional on the
+  page still having its first-write sequence and the catalog is read again just before each one, but it is
+  repeated work. Electing one sweeper is a follow-up.
+* **A restart delays freeing, never advances it.** What a sweeper has seen is in memory, so a restarted door
+  starts every grace clock again.
+* **Data directories from earlier builds are not supported.** This build stores and reads chunk objects
+  only, and there is no migration. A door that finds a page-granular object that is not deleted when it
+  starts refuses to start, with `older data directory not supported` and the number of such objects. The
+  sweep also checks before every round (the counter `reclaim_refused_page_objects` counts the rounds it
+  refused) because it takes a page that no chunk manifest names for garbage and would otherwise free the
+  pages of such an object.
+* **The digest check is integrity, not access control.** A manifest that names a page keeps it alive;
+  publishing assumes trusted cluster clients.
+
 ## Concurrency
 
 The SDK client takes `&mut self`, so the gateway keeps a small pool of metadata connections and
-lends one to each request. Accept threads serve one connection at a time (as the in-process
-door does), so `MATRIXOBJECT_THREADS` bounds concurrent clients.
+lends one to each request. Accept threads serve one connection at a time, so `MATRIXOBJECT_THREADS` bounds concurrent clients.
+
+## Appends that may have landed: attempt ids
+
+An append whose reply was lost (a timeout, a reset, a consensus deadline, a killed gateway) may or may not be in the
+object. The gateway answers "did my append land?" by the attempt, never by the bytes: two writers that append identical
+bytes at one offset leave one copy, and a byte comparison would tell both that theirs landed.
+
+* An append may carry `x-amz-attempt-id`, 32 hex characters (16 random bytes) chosen by the client once per attempt and
+  reused on every retry of that attempt. The gateway echoes it. A malformed id is a 400.
+* Every attempt allocates its own pages, so the extents it publishes are its identity: the committed manifest holds
+  them if and only if the attempt landed, even if later appends followed. When an append's outcome is unknown, the
+  gateway checks that identity; it answers 200 only when the attempt's extents are in the manifest.
+* `POST /bucket/key?append-resolve&attempt=<id>&offset=O&length=N[&sha256=<hex>]` settles an attempt later and answers
+  `landed`, `absent` or `ambiguous` in `x-append-resolution`. `absent` is returned only after the attempt is fenced: the
+  object is published again unchanged at the next generation, so a late copy of the attempt is refused, and the client
+  may retry it as a new append. `ambiguous` means bytes equal to the append's are at that range but this gateway cannot
+  prove they are this attempt's (it never saw the attempt, for instance after a restart); it is never reported as
+  `landed`. The `attempt` parameter is required; `sha256` is optional evidence about the bytes.
+* An append with an unknown outcome that the gateway cannot decide is a 409 `AppendAmbiguous` with
+  `x-amz-append-state: ambiguous` and `x-amz-object-size`. The client decides from its own record of the length it last
+  acknowledged: a client that is the object's only writer can, because the length then proves the bytes are its own.
+* The gateway remembers the last 4096 attempts. After a restart it remembers none, so an attempt it served before is
+  `ambiguous` or `absent` afterwards, never `landed`.

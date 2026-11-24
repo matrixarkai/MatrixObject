@@ -26,7 +26,6 @@ use crate::object_manifest::{
 };
 use crate::ObjectError;
 use prost::Message;
-use std::collections::BTreeMap;
 
 pub const ACTION_GRANT: u32 = 1;
 pub const ACTION_SEAL_SWITCH: u32 = 2;
@@ -69,7 +68,8 @@ impl WriterLease {
 /// The writer leases the metadata state holds, one per object.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WriterLeaseTable {
-    leases: BTreeMap<(String, String), WriterLeaseValue>,
+    leases: imbl::OrdMap<std::sync::Arc<(String, String)>, WriterLeaseValue>,
+    deadlines: imbl::OrdSet<(u64, std::sync::Arc<(String, String)>, u64)>,
 }
 /// A lease as the table keeps it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,29 +99,56 @@ impl WriterLeaseTable {
     pub fn restore(&mut self, bucket: &str, key: &str, lease: Option<&WriterLease>) {
         match lease {
             Some(lease) => self.set(bucket, key, lease),
-            None => {
-                self.leases.remove(&(bucket.to_string(), key.to_string()));
-            }
+            None => self.remove(bucket, key),
         }
     }
     pub fn set(&mut self, bucket: &str, key: &str, lease: &WriterLease) {
+        let lookup = (bucket.to_string(), key.to_string());
+        let (identity, before) = match self.leases.get_key_value(&lookup) {
+            Some((identity, before)) => (
+                std::sync::Arc::clone(identity),
+                Some((before.expires_at_ms, before.epoch)),
+            ),
+            None => (std::sync::Arc::new(lookup), None),
+        };
+        let after = (lease.expires_at_ms, lease.epoch);
+        if before != Some(after) {
+            if let Some((deadline, epoch)) = before {
+                self.deadlines.remove(&(deadline, std::sync::Arc::clone(&identity), epoch));
+            }
+            self.deadlines.insert((after.0, std::sync::Arc::clone(&identity), after.1));
+        }
         self.leases.insert(
-            (bucket.to_string(), key.to_string()),
+            identity,
             WriterLeaseValue { holder: lease.holder.clone(), epoch: lease.epoch, expires_at_ms: lease.expires_at_ms },
         );
     }
     pub fn remove(&mut self, bucket: &str, key: &str) {
-        self.leases.remove(&(bucket.to_string(), key.to_string()));
+        if let Some((identity, lease)) = self.leases.remove_with_key(&(bucket.to_string(), key.to_string())) {
+            self.deadlines.remove(&(lease.expires_at_ms, identity, lease.epoch));
+        }
     }
     /// `(bucket, key, lease)` in key order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str, &WriterLeaseValue)> {
-        self.leases.iter().map(|((bucket, key), lease)| (bucket.as_str(), key.as_str(), lease))
+        self.leases.iter().map(|(identity, lease)| (identity.0.as_str(), identity.1.as_str(), lease))
+    }
+    /// Leases strictly older than `now_ms`, in expiry and then object order.
+    /// The derived index shares object names with the lease table and is rebuilt
+    /// by `set` during snapshot decoding; it adds nothing to the wire format.
+    pub fn expired_before(&self, now_ms: u64) -> impl Iterator<Item = (&str, &str, u64)> {
+        self.deadlines.iter()
+            .take_while(move |(deadline, _, _)| *deadline < now_ms)
+            .map(|(_, identity, epoch)| (identity.0.as_str(), identity.1.as_str(), *epoch))
     }
     pub fn validate(&self) -> Result<(), ObjectError> {
         if self.leases.len() > MAX_WRITER_LEASES {
             return Err(invalid("writer lease table exceeds its bound"));
         }
-        for ((bucket, key), lease) in &self.leases {
+        if self.deadlines.len() != self.leases.len() {
+            return Err(invalid("writer lease deadline index differs from the table"));
+        }
+        for (identity, lease) in &self.leases {
+            let (bucket, key) = identity.as_ref();
             if bucket.is_empty() || bucket.len() > MAX_NAME || key.is_empty() || key.len() > MAX_NAME {
                 return Err(invalid("writer lease names no object"));
             }
@@ -437,3 +464,11 @@ impl LeaseBatch {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "writer_lease_snapshot_tests.rs"]
+mod writer_lease_snapshot_tests;
+
+#[cfg(test)]
+#[path = "writer_lease_expiry_tests.rs"]
+mod writer_lease_expiry_tests;

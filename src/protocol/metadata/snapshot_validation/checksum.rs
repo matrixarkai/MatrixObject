@@ -175,11 +175,13 @@ impl MetaSnapshot {
         )
         .unwrap();
         if !self.object_manifests.is_empty() {
-            let bytes = self.object_manifests.to_bytes().expect("valid manifest catalog");
             append_string(&mut material, "MOSRSMANIFEST1");
-            append_u64(&mut material, bytes.len() as u64);
+            append_u64(&mut material, self.object_manifests.encoded_size() as u64);
             digest = fnv1a64_resumed(digest, &material);
-            digest = fnv1a64_resumed(digest, &bytes);
+            self.object_manifests.visit_encoded(&mut |bytes| {
+                digest = fnv1a64_resumed(digest, bytes);
+                Ok::<(), std::convert::Infallible>(())
+            }).unwrap();
         }
         if !self.cluster_features.is_default() {
             // Covered only when present, so every snapshot that predates it keeps its checksum.
@@ -206,6 +208,21 @@ impl MetaSnapshot {
                 append_u64(&mut material, lease.expires_at_ms);
             }
             digest = fnv1a64_resumed(digest, &material);
+        }
+        if !self.chunk_catalog.is_empty() {
+            // Covered only when present, so every snapshot that predates it keeps its checksum.
+            let bytes = self.chunk_catalog.to_bytes().expect("valid chunk catalog");
+            material.clear();
+            append_string(&mut material, "MOSRSCHUNKS1");
+            append_u64(&mut material, bytes.len() as u64);
+            digest = fnv1a64_resumed(digest, &material);
+            digest = fnv1a64_resumed(digest, &bytes);
+        }
+        if !self.native_objects.is_default() {
+            let bytes = self.native_objects.to_bytes().expect("valid native object state");
+            material.clear(); append_string(&mut material, "MONATIVE-STATE1");
+            append_u64(&mut material, bytes.len() as u64); digest = fnv1a64_resumed(digest, &material);
+            digest = fnv1a64_resumed(digest, &bytes);
         }
         let mut checksum = String::with_capacity(24);
         append_etag_of_digest(&mut checksum, digest);

@@ -180,7 +180,6 @@ pub mod gateway_picker;
 #[cfg(feature = "meta-server")]
 pub mod gateway_roster;
 #[cfg(feature = "meta-server")]
-mod manifest_copy_commands;
 #[cfg(feature = "meta-server")]
 pub mod meta_message;
 #[cfg(feature = "meta-server")]
@@ -196,6 +195,7 @@ mod staged_lease_sweeper;
 #[cfg(feature = "meta-server")]
 mod features_commands;
 mod log_chunk_commands;
+mod unified_log_writer_commands;
 #[cfg(feature = "meta-server")]
 pub use features_commands::FeaturesRequest;
 #[cfg(feature = "meta-server")]
@@ -226,7 +226,7 @@ pub use server::{
 #[cfg(feature = "meta-server")]
 pub use directory::{ControlPlaneStatus, MetaDirectory};
 #[cfg(feature = "meta-server")]
-pub use meta_client::{MetaCallOutcome, MetaClientOptions, ReadLeaseCache, RemoteMetaClient};
+pub use meta_client::{MetaCallOutcome, MetaClientOptions, RemoteMetaClient};
 #[cfg(feature = "meta-server")]
 pub use meta_message::{
     CommittedPlacement, ManifestRangeEntry, ManifestRouteEntry, MetaReply, MetaRequest, PlacementAssignment,
@@ -240,25 +240,30 @@ pub use meta_wire::{MetaRequestCode, META_CODE_BASE};
 #[cfg(feature = "replica-server")]
 mod replica_checkpoint_catalog;
 #[cfg(feature = "replica-server")]
+mod replica_checkpoint_compaction;
+#[cfg(feature = "replica-server")]
 mod replica_checkpoint_index;
 #[cfg(feature = "replica-server")]
 mod replica_checkpoint_recovery;
 #[cfg(feature = "replica-server")]
 mod replica_checkpoint_spans;
 #[cfg(feature = "replica-server")]
+mod replica_page_backing;
+#[cfg(feature = "replica-server")]
+mod replica_payload_relocation;
 mod log_op;
 #[cfg(feature = "replica-server")]
 mod log_chunk_store;
-#[cfg(feature = "replica-server")]
-pub use log_op::{LogOpReply, LogOpRequest};
+mod native_storage_authority;
+pub use log_op::{LogOpReply, LogOpRequest, PublishedPrefixObservation};
 #[cfg(feature = "replica-server")]
 mod chunk_log;
 #[cfg(feature = "replica-server")]
-pub use chunk_log::{ChunkLogError, ChunkLogReader, ChunkLogWriter, LogCallError, SealedFooter, LOG_QUORUM, LOG_REPLICAS};
-#[cfg(all(feature = "replica-server", feature = "meta-server"))]
-mod log_object;
-#[cfg(all(feature = "replica-server", feature = "meta-server"))]
-pub use log_object::{renew_leases, LogMeta, LogObject, LogObjectError, LogObjectOptions, LogObjectReader};
+mod object_append_plan;
+#[cfg(feature = "replica-server")]
+pub use object_append_plan::{plan_object_append, ObjectAppendPlan, ObjectAppendPlanError};
+#[cfg(feature = "replica-server")]
+pub use chunk_log::{AppendIdentity, ChunkLogError, ChunkLogReader, ChunkLogWriter, LogCallError, SealedFooter, LOG_QUORUM, LOG_REPLICAS};
 #[cfg(all(test, feature = "replica-server"))]
 mod chunk_log_tests;
 #[cfg(feature = "replica-server")]
@@ -301,6 +306,8 @@ pub use chunk_group_route::{
 #[cfg(feature = "meta-server")]
 mod chunk_catalog_command;
 #[cfg(feature = "meta-server")]
+mod chunk_manifest_command;
+#[cfg(feature = "meta-server")]
 mod chunk_catalog_outcome;
 #[cfg(feature = "meta-server")]
 pub use chunk_catalog_command::ChunkCatalogCommand;
@@ -324,15 +331,14 @@ mod meta_checkpoint;
 
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
 mod object_client;
+pub mod reclaim_loop;
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
-pub use object_client::{ObjectWriteFailure, ObjectWriteOptions};
+pub use object_client::{ChunkWriteFailure, ObjectWriteFailure, ObjectWriteOptions, ReclaimPlan, ReclaimReport};
+
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
-mod append_failover;
+mod chunk_failover;
 #[cfg(all(feature = "meta-server", feature = "replica-server"))]
-pub use append_failover::{
-    read_abandoned_log, AbandonedAttempt, AbandonedRecord, AppendFailoverPolicy, FailoverAppend,
-    FailoverFailure,
-};
+pub use chunk_failover::{ChunkFailover, ChunkFailoverFailure, FailoverPolicy};
 
 #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
 mod peer_delivery;
@@ -358,3 +364,7 @@ pub use wal_zero_fill::{
     validate_wal_zero_fill_bytes, wal_zero_fill_from_env, WAL_ZERO_FILL_ENV,
     WAL_ZERO_FILL_MAX_BYTES, WAL_ZERO_FILL_MIN_BYTES,
 };
+
+pub mod native_object_commands;
+
+pub mod native_object_client;

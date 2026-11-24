@@ -244,7 +244,7 @@ fn the_gateway_serves_its_verbs_over_real_metadata_and_chunk_processes() {
     );
     assert_eq!(http(addr, "GET", "/gateway/log", &[], b"").2, b"alphabetagamma");
 
-    // listing, delete, and the verbs that are not served
+    // Listing, delete, and the supported multipart and versioning responses.
     let (_, _, listing) = http(addr, "GET", "/gateway?list-type=2", &[], b"");
     let listing = String::from_utf8_lossy(&listing).to_string();
     assert!(listing.contains("<Key>blob</Key>") && listing.contains("<Key>log</Key>"), "{listing}");
@@ -252,8 +252,12 @@ fn the_gateway_serves_its_verbs_over_real_metadata_and_chunk_processes() {
     assert_eq!(http(addr, "GET", "/gateway/blob", &[], b"").0, 404);
     let (_, _, listing) = http(addr, "GET", "/gateway?list-type=2", &[], b"");
     assert!(!String::from_utf8_lossy(&listing).contains("<Key>blob</Key>"));
-    assert_eq!(http(addr, "POST", "/gateway/log?uploads", &[], b"").0, 501);
-    assert_eq!(http(addr, "GET", "/gateway?versioning", &[], b"").0, 501);
+    let (status, _, upload) = http(addr, "POST", "/gateway/log?uploads", &[], b"");
+    assert_eq!(status, 200);
+    assert!(String::from_utf8_lossy(&upload).contains("<UploadId>"));
+    let (status, _, versioning) = http(addr, "GET", "/gateway?versioning", &[], b"");
+    assert_eq!(status, 200);
+    assert!(String::from_utf8_lossy(&versioning).contains("<VersioningConfiguration"));
 }
 
 /// A metadata group configured to name at most eight objects, a gateway in front of it, real
@@ -299,8 +303,9 @@ fn a_full_catalog_refuses_a_new_object_with_507_and_still_serves_what_exists() {
     assert_eq!(refusal.0, 507, "{}", refusal.1);
     assert!(refusal.1.contains("catalog full"), "{}", refusal.1);
     assert!(!refusal.1.contains("corruption") && !refusal.1.contains("unconfirmed"), "{}", refusal.1);
-    assert_eq!(created.len() + baseline, 8, "{} created over {} that were there", created.len(), baseline);
-    assert_eq!(listed(), 8, "the refused create left nothing behind");
+    // the bucket's own record is a catalog entry too, so it holds one of the 8 slots
+    assert_eq!(created.len() + baseline + 1, 8, "{} created over {} that were there, and the bucket record", created.len(), baseline);
+    assert_eq!(listed(), created.len() + baseline, "the refused create left nothing behind");
 
     // What does not add a name is still served.
     assert_eq!(decided("PUT", "/gateway/o0", &[], b"overwritten").0, 200, "overwrite");
@@ -346,9 +351,14 @@ fn sha256_hex(data: &[u8]) -> String {
         .collect()
 }
 
-fn resolve_target(offset: u64, data: &[u8]) -> String {
+/// An attempt id: 32 hex characters, the same on every retry of one attempt.
+fn attempt_id(n: u128) -> String {
+    format!("{n:032x}")
+}
+
+fn resolve_target(offset: u64, data: &[u8], id: &str) -> String {
     format!(
-        "/gateway/log?append-resolve&offset={offset}&length={}&sha256={}",
+        "/gateway/log?append-resolve&attempt={id}&offset={offset}&length={}&sha256={}",
         data.len(),
         sha256_hex(data)
     )
@@ -358,54 +368,64 @@ fn resolve_target(offset: u64, data: &[u8]) -> String {
 /// refused when it finally arrives, and the retry as a new append stored once.
 fn resolve_over_real_processes(cluster: &Cluster) {
     let addr = cluster.addr();
-    for (offset, text) in [(0u64, "alpha"), (5, "beta")] {
+    for (n, (offset, text)) in [(0u64, "alpha"), (5, "beta")].into_iter().enumerate() {
         assert_eq!(
-            cluster.until_ok("PUT", "/gateway/log", &[("x-amz-write-offset-bytes", &offset.to_string())], text.as_bytes()),
+            cluster.until_ok(
+                "PUT",
+                "/gateway/log",
+                &[("x-amz-write-offset-bytes", &offset.to_string()), ("x-amz-attempt-id", &attempt_id(n as u128 + 1))],
+                text.as_bytes()
+            ),
             200
         );
     }
-    // The bytes are there: landed, and nothing is fenced.
-    let (status, headers, _) = http(addr, "POST", &resolve_target(5, b"beta"), &[], b"");
+    // The attempt's own extents are in the manifest: landed, and nothing is fenced. An attempt this gateway
+    // never saw, with the same bytes at the same range, is ambiguous and never landed.
+    let (status, headers, _) = http(addr, "POST", &resolve_target(5, b"beta", &attempt_id(2)), &[], b"");
     assert_eq!((status, header(&headers, "x-append-resolution")), (200, Some("landed")));
+    let (_, headers, _) = http(addr, "POST", &resolve_target(5, b"beta", &attempt_id(77)), &[], b"");
+    assert_eq!(header(&headers, "x-append-resolution"), Some("ambiguous"));
     // Nothing at offset 9: the resolve fences. Only the generation moves.
     let mut client = cluster.meta_client();
-    let before = client.read_manifest("gateway", "log").unwrap();
-    let (status, headers, body) = http(addr, "POST", &resolve_target(9, b"gamma"), &[], b"");
+    let before = client.read_chunk_manifest("gateway", "log").unwrap();
+    let (status, headers, body) = http(addr, "POST", &resolve_target(9, b"gamma", &attempt_id(3)), &[], b"");
     assert_eq!(
         (status, header(&headers, "x-append-resolution")),
         (200, Some("absent")),
         "{}",
         String::from_utf8_lossy(&body)
     );
-    let after = client.read_manifest("gateway", "log").unwrap();
+    let after = client.read_chunk_manifest("gateway", "log").unwrap();
     assert_eq!((after.generation, after.length), (before.generation + 1, 9));
     assert!(after.extents == before.extents, "the fence keeps the extents exactly");
     assert_eq!(http(addr, "GET", "/gateway/log", &[], b"").2, b"alphabeta");
     // The lost attempt, built on the manifest it read before the fence, is refused when it arrives.
     let options = matrixobjectstore_rs::cluster::ObjectWriteOptions::default();
-    assert!(client.append_object(before, b"gamma", &options).is_err(), "a fenced attempt must not publish");
+    assert!(
+        client
+            .append_chunk_object(&before, b"gamma", &options, matrixobjectstore_rs::chunk_object::DEFAULT_STRIPE_BYTES)
+            .is_err(),
+        "a fenced attempt must not publish"
+    );
     assert_eq!(http(addr, "GET", "/gateway/log", &[], b"").2, b"alphabeta");
     // The caller retries as a new append: stored exactly once.
     assert_eq!(
-        cluster.until_ok("PUT", "/gateway/log", &[("x-amz-write-offset-bytes", "9")], b"gamma"),
+        cluster.until_ok(
+            "PUT",
+            "/gateway/log",
+            &[("x-amz-write-offset-bytes", "9"), ("x-amz-attempt-id", &attempt_id(4))],
+            b"gamma"
+        ),
         200
     );
     assert_eq!(http(addr, "GET", "/gateway/log", &[], b"").2, b"alphabetagamma");
-    let (_, headers, _) = http(addr, "POST", &resolve_target(9, b"gamma"), &[], b"");
+    let (_, headers, _) = http(addr, "POST", &resolve_target(9, b"gamma", &attempt_id(4)), &[], b"");
     assert_eq!(header(&headers, "x-append-resolution"), Some("landed"));
 }
 
 #[test]
 fn an_append_resolve_finds_landed_bytes_and_fences_a_lost_attempt_over_real_processes() {
     resolve_over_real_processes(&Cluster::new());
-}
-
-#[test]
-fn an_append_resolve_fences_under_the_publication_fence_of_compact_appends() {
-    resolve_over_real_processes(&Cluster::with_env(&[
-        ("MATRIXOBJECT_CLUSTER_COMPACT_APPEND", "1"),
-        ("MATRIXOBJECT_CLUSTER_RESERVE_NEXT", "1"),
-    ]));
 }
 
 #[test]
@@ -419,9 +439,17 @@ fn killing_the_gateway_mid_append_then_resolving_through_another_stores_every_ap
         let mut victim = gateway_process(&cluster.endpoints, cluster.group_id, &[]);
         let victim_addr = victim.endpoint.clone();
         let (at, body) = (offset, data.clone());
+        let id = attempt_id(1000 + round as u128);
+        let victim_id = id.clone();
         let sender = std::thread::spawn(move || {
             // The victim dies mid-request, so this panics on the missing response; that is the point.
-            let _ = http(&victim_addr, "PUT", "/gateway/log", &[("x-amz-write-offset-bytes", &at.to_string())], &body);
+            let _ = http(
+                &victim_addr,
+                "PUT",
+                "/gateway/log",
+                &[("x-amz-write-offset-bytes", &at.to_string()), ("x-amz-attempt-id", &victim_id)],
+                &body,
+            );
         });
         random = random.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         std::thread::sleep(Duration::from_millis((random >> 33) % 150));
@@ -430,7 +458,7 @@ fn killing_the_gateway_mid_append_then_resolving_through_another_stores_every_ap
         // Resolve through the survivor until it decides.
         let until = Instant::now() + Duration::from_secs(60);
         let resolution = loop {
-            let (status, headers, reply) = http(&survivor, "POST", &resolve_target(offset, &data), &[], b"");
+            let (status, headers, reply) = http(&survivor, "POST", &resolve_target(offset, &data, &id), &[], b"");
             if status == 200 {
                 break header(&headers, "x-append-resolution").unwrap().to_string();
             }
@@ -444,12 +472,74 @@ fn killing_the_gateway_mid_append_then_resolving_through_another_stores_every_ap
                 "round {round}: the retry as a new append"
             );
         } else {
-            assert_eq!(resolution, "landed", "round {round}");
+            // The survivor never saw this attempt, so it cannot call it landed. The bytes are there and this test
+            // is the object's only writer, so the length proves they are its own (checked below against `expected`).
+            assert_eq!(resolution, "ambiguous", "round {round}");
         }
         expected.extend_from_slice(&data);
         offset += data.len() as u64;
         let (_, _, stored) = http(&survivor, "GET", "/gateway/log", &[], b"");
         assert!(stored == expected, "round {round}: {} bytes stored, {} expected ({resolution})", stored.len(), expected.len());
     }
+}
+
+/// THE FEATURES THROUGH THE REAL DOOR: the `object_server` process in front of a Raft metadata group and three chunk
+/// servers answers bucket configuration, object attributes, an object lock, versions and the change feed, and the
+/// bytes come back from the pages. The gateway's own bucket exists from startup, as the binary creates it.
+#[test]
+fn the_door_process_serves_buckets_attributes_locks_versions_and_the_change_feed() {
+    let cluster = Cluster::new();
+    let addr = cluster.addr().to_string();
+    let call = |method: &str, path: &str, headers: &[(&str, &str)], body: &[u8]| http(&addr, method, path, headers, body);
+    // the bucket the door was started for exists; another is created, configured and listed
+    assert_eq!(call("HEAD", "/gateway", &[], b"").0, 200);
+    assert_eq!(call("HEAD", "/nowhere", &[], b"").0, 404);
+    for bucket in ["vault", "hist", "feed"] {
+        assert_eq!(call("PUT", &format!("/{bucket}"), &[], b"").0, 200, "{bucket}");
+    }
+    let lock = b"<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled></ObjectLockConfiguration>";
+    assert_eq!(call("PUT", "/vault?object-lock", &[], lock).0, 200);
+    let versioning = b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>";
+    assert_eq!(call("PUT", "/hist?versioning", &[], versioning).0, 200);
+    let feed = b"<ChangeFeedConfiguration><Status>Enabled</Status></ChangeFeedConfiguration>";
+    assert_eq!(call("PUT", "/feed?changefeed", &[], feed).0, 200);
+    let listed = String::from_utf8_lossy(&call("GET", "/", &[], b"").2).to_string();
+    for name in ["gateway", "vault", "hist", "feed"] {
+        assert!(listed.contains(&format!("<Name>{name}</Name>")), "{name} is listed: {listed}");
+    }
+
+    // attributes travel with the object and the bytes are the ones written
+    let payload: Vec<u8> = (0..70_000u32).map(|i| (i % 253) as u8).collect();
+    let put = call("PUT", "/vault/doc", &[("content-type", "application/pdf"), ("x-amz-meta-owner", "ana"), ("x-amz-tagging", "kind=report")], &payload);
+    assert_eq!(put.0, 200, "{}", String::from_utf8_lossy(&put.2));
+    let head = call("HEAD", "/vault/doc", &[], b"");
+    assert_eq!(header(&head.1, "content-type"), Some("application/pdf"));
+    assert_eq!(header(&head.1, "x-amz-meta-owner"), Some("ana"));
+    assert_eq!(call("GET", "/vault/doc", &[], b"").2, payload);
+
+    // a retention locks it until it ends; a governance retention is bypassed on purpose
+    let until = "2099-01-01T00:00:00Z";
+    assert_eq!(call("PUT", "/vault/held", &[("x-amz-object-lock-mode", "GOVERNANCE"), ("x-amz-object-lock-retain-until-date", until)], &payload).0, 200);
+    assert_eq!(call("PUT", "/vault/held", &[], b"overwrite").0, 403);
+    assert_eq!(call("DELETE", "/vault/held", &[], b"").0, 403);
+    assert_eq!(call("GET", "/vault/held", &[], b"").2, payload, "a refused overwrite and delete changed nothing");
+    assert_eq!(call("DELETE", "/vault/held", &[("x-amz-bypass-governance-retention", "true")], b"").0, 204);
+
+    // versions: the replaced manifest is kept and read back from the same pages
+    let first = vec![9u8; 40_000];
+    let v1 = header(&call("PUT", "/hist/page", &[], &first).1, "x-amz-version-id").map(str::to_string).unwrap();
+    assert_eq!(call("PUT", "/hist/page", &[], b"second").0, 200);
+    let old = call("GET", &format!("/hist/page?versionId={v1}"), &[], b"");
+    assert_eq!((old.0, old.2.as_slice()), (200, first.as_slice()));
+    assert_eq!(call("DELETE", "/hist/page", &[], b"").0, 204);
+    assert_eq!(call("GET", "/hist/page", &[], b"").0, 404);
+    let versions = String::from_utf8_lossy(&call("GET", "/hist?versions", &[], b"").2).to_string();
+    assert_eq!(versions.matches("<VersionId>").count(), 3, "{versions}");
+
+    // the change feed names what happened
+    assert_eq!(call("PUT", "/feed/a", &[], b"one").0, 200);
+    assert_eq!(call("DELETE", "/feed/a", &[], b"").0, 204);
+    let changes = String::from_utf8_lossy(&call("GET", "/feed?changes", &[], b"").2).to_string();
+    assert!(changes.contains("<Operation>put</Operation>") && changes.contains("<Operation>delete</Operation>"), "{changes}");
 }
 

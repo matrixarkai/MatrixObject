@@ -144,26 +144,64 @@ impl PendingReplicaReply<'_> {
     }
 
     fn send_pending(&mut self) -> Result<bool, ObjectError> {
-        let Some(frame) = &self.request else { return Ok(true) };
+        let Some(frame) = &self.request else {
+            return Ok(true);
+        };
         time_left(self.deadline).map_err(|error| {
-            transport_error(&self.client.endpoint, "sending a fan-out request", &error.to_string())
+            transport_error(
+                &self.client.endpoint,
+                "sending a fan-out request",
+                &error.to_string(),
+            )
         })?;
         if self.request_written < frame.len() {
             let end = frame.len().min(self.request_written + 64 * 1024);
             match self.client.writer.write(&frame[self.request_written..end]) {
-                Ok(0) => return Err(transport_error(&self.client.endpoint, "sending a fan-out request", "zero-byte write")),
+                Ok(0) => {
+                    return Err(transport_error(
+                        &self.client.endpoint,
+                        "sending a fan-out request",
+                        "zero-byte write",
+                    ))
+                }
                 Ok(count) => self.request_written += count,
-                Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => return Ok(false),
-                Err(error) => return Err(transport_error(&self.client.endpoint, "sending a fan-out request", &error.to_string())),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    return Ok(false)
+                }
+                Err(error) => {
+                    return Err(transport_error(
+                        &self.client.endpoint,
+                        "sending a fan-out request",
+                        &error.to_string(),
+                    ))
+                }
             }
         }
         if self.request_written != frame.len() {
             return Ok(false);
         }
         match self.client.writer.flush() {
-            Ok(()) => {},
-            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => return Ok(false),
-            Err(error) => return Err(transport_error(&self.client.endpoint, "flushing a fan-out request", &error.to_string())),
+            Ok(()) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                return Ok(false)
+            }
+            Err(error) => {
+                return Err(transport_error(
+                    &self.client.endpoint,
+                    "flushing a fan-out request",
+                    &error.to_string(),
+                ))
+            }
         }
         self.request = None;
         self.deadline = exchange_deadline(self.client.read_timeout, self.absolute_deadline)?;
@@ -186,7 +224,11 @@ impl PendingReplicaReply<'_> {
         let mut budget = 64 * 1024;
         loop {
             time_left(self.deadline).map_err(|error| {
-                transport_error(&self.client.endpoint, "collecting a fan-out response", &error.to_string())
+                transport_error(
+                    &self.client.endpoint,
+                    "collecting a fan-out response",
+                    &error.to_string(),
+                )
             })?;
             if self.header_read == HEADER_BYTES && self.payload.is_none() {
                 let (status, length) = self.client.reply_header(&self.header)?;
@@ -195,9 +237,16 @@ impl PendingReplicaReply<'_> {
             if let Some((status, payload)) = &self.payload {
                 if self.payload_read == payload.len() {
                     self.client.writer.set_nonblocking(false).map_err(|error| {
-                        transport_error(&self.client.endpoint, "restoring response socket", &error.to_string())
+                        transport_error(
+                            &self.client.endpoint,
+                            "restoring response socket",
+                            &error.to_string(),
+                        )
                     })?;
-                    return self.client.decode_reply(self.code, *status, payload).map(Some);
+                    return self
+                        .client
+                        .decode_reply(self.code, *status, payload)
+                        .map(Some);
                 }
             }
             if budget == 0 {
@@ -210,7 +259,13 @@ impl PendingReplicaReply<'_> {
             };
             let limit = target.len().min(budget);
             match self.client.reader.read(&mut target[..limit]) {
-                Ok(0) => return Err(transport_error(&self.client.endpoint, "collecting a fan-out response", "incomplete frame")),
+                Ok(0) => {
+                    return Err(transport_error(
+                        &self.client.endpoint,
+                        "collecting a fan-out response",
+                        "incomplete frame",
+                    ))
+                }
                 Ok(count) => {
                     if self.header_read < HEADER_BYTES {
                         self.header_read += count;
@@ -221,7 +276,13 @@ impl PendingReplicaReply<'_> {
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => return Ok(None),
-                Err(error) => return Err(transport_error(&self.client.endpoint, "collecting a fan-out response", &error.to_string())),
+                Err(error) => {
+                    return Err(transport_error(
+                        &self.client.endpoint,
+                        "collecting a fan-out response",
+                        &error.to_string(),
+                    ))
+                }
             }
         }
     }
@@ -311,22 +372,36 @@ impl RemoteReplicaClient {
     /// processes are talking to each other".
     pub fn connect(endpoint: &str, options: &ReplicaClientOptions) -> Result<Self, ObjectError> {
         let address = if options.deadline.is_some() || options.tls.is_some() {
-            endpoint.parse::<SocketAddr>().map_err(|_| ObjectError::InvalidArgument(
-                "deadline-bound connections require a numeric IP endpoint".into()))?
+            endpoint.parse::<SocketAddr>().map_err(|_| {
+                ObjectError::InvalidArgument(
+                    "deadline-bound connections require a numeric IP endpoint".into(),
+                )
+            })?
         } else {
             resolve(endpoint)?
         };
         let connect_timeout = match options.deadline {
-            Some(deadline) => options.connect_timeout.min(time_left(deadline)
-                .map_err(|error| transport_error(endpoint, "connecting", &error.to_string()))?),
+            Some(deadline) => options
+                .connect_timeout
+                .min(time_left(deadline).map_err(|error| {
+                    transport_error(endpoint, "connecting", &error.to_string())
+                })?),
             None => options.connect_timeout,
         };
-        let handshake_deadline = Instant::now().checked_add(connect_timeout)
-            .ok_or_else(|| ObjectError::InvalidArgument("connection timeout exceeds clock range".into()))?;
+        let handshake_deadline = Instant::now().checked_add(connect_timeout).ok_or_else(|| {
+            ObjectError::InvalidArgument("connection timeout exceeds clock range".into())
+        })?;
         let stream = TcpStream::connect_timeout(&address, connect_timeout)
             .map_err(|err| transport_error(endpoint, "connecting", &err.to_string()))?;
-        let stream = super::api_tls::ApiSocket::client(stream, address, options.tls.as_ref(), handshake_deadline)
-            .map_err(|err| transport_error(endpoint, "authenticating API connection", &err.to_string()))?;
+        let stream = super::api_tls::ApiSocket::client(
+            stream,
+            address,
+            options.tls.as_ref(),
+            handshake_deadline,
+        )
+        .map_err(|err| {
+            transport_error(endpoint, "authenticating API connection", &err.to_string())
+        })?;
         stream
             .set_read_timeout(Some(options.read_timeout))
             .map_err(|err| transport_error(endpoint, "setting a read timeout", &err.to_string()))?;
@@ -398,11 +473,15 @@ impl RemoteReplicaClient {
     ) -> Result<Self, ObjectError> {
         Self::connect_catalog_bounded(endpoints, options, 7)
     }
-    fn connect_catalog_bounded(endpoints: &[String], options: &ReplicaClientOptions, bound: usize) -> Result<Self, ObjectError> {
+    fn connect_catalog_bounded(
+        endpoints: &[String],
+        options: &ReplicaClientOptions,
+        bound: usize,
+    ) -> Result<Self, ObjectError> {
         if endpoints.is_empty() || endpoints.len() > bound {
-            return Err(ObjectError::InvalidArgument(
-                format!("chunk catalog requires one through {bound} endpoints"),
-            ));
+            return Err(ObjectError::InvalidArgument(format!(
+                "chunk catalog requires one through {bound} endpoints"
+            )));
         }
         let mut unique = std::collections::BTreeSet::new();
         let mut canonical = Vec::with_capacity(endpoints.len());
@@ -457,7 +536,12 @@ impl RemoteReplicaClient {
     ) -> Result<Self, ObjectError> {
         Self::connect_raft_catalog_bounded(endpoints, group_id, options, 7)
     }
-    fn connect_raft_catalog_bounded(endpoints: &[String], group_id: u64, options: &ReplicaClientOptions, bound: usize) -> Result<Self, ObjectError> {
+    fn connect_raft_catalog_bounded(
+        endpoints: &[String],
+        group_id: u64,
+        options: &ReplicaClientOptions,
+        bound: usize,
+    ) -> Result<Self, ObjectError> {
         if group_id == 0 {
             return Err(ObjectError::InvalidArgument(
                 "chunk group ID must be nonzero".into(),
@@ -515,20 +599,29 @@ impl RemoteReplicaClient {
     /// Connect only to voters selected by a quorum-confirmed metadata route.
     /// A new metadata route is needed when a later operation outlives this configuration.
     #[cfg(feature = "meta-server")]
-    pub fn connect_routed_raft_catalog(route: &crate::cluster::ChunkGroupRoute, options: &ReplicaClientOptions) -> Result<Self, ObjectError> {
+    pub fn connect_routed_raft_catalog(
+        route: &crate::cluster::ChunkGroupRoute,
+        options: &ReplicaClientOptions,
+    ) -> Result<Self, ObjectError> {
         if route.standalone_star_route()?.is_some() {
             return Err(ObjectError::InvalidArgument(
                 "standalone star route is not a Raft catalog".into(),
             ));
         }
         let active = route.active_members()?;
-        let endpoints: Vec<_> = active.iter().map(|(endpoint, _)| endpoint.clone()).collect();
+        let endpoints: Vec<_> = active
+            .iter()
+            .map(|(endpoint, _)| endpoint.clone())
+            .collect();
         let members: std::collections::BTreeMap<_, _> = active.into_iter().collect();
         let expected = route.group.as_ref().unwrap().identity.as_ref().unwrap();
-        let mut client = Self::connect_raft_catalog_bounded(&endpoints, expected.group_id, options, 14)?;
+        let mut client =
+            Self::connect_raft_catalog_bounded(&endpoints, expected.group_id, options, 14)?;
         let actual = client.group_identity.as_ref().unwrap();
         if !expected.same_group(actual) || members.get(client.endpoint()) != Some(&actual.node_id) {
-            return Err(ObjectError::PreconditionFailed("chunk route socket identity mismatch".into()));
+            return Err(ObjectError::PreconditionFailed(
+                "chunk route socket identity mismatch".into(),
+            ));
         }
         client.catalog_members = Some(members);
         Ok(client)
@@ -646,7 +739,9 @@ impl RemoteReplicaClient {
         writes: &[(PageId, u64, &[u8], u64)],
     ) -> Result<(), ObjectError> {
         if writes.len() > 8 {
-            return Err(ObjectError::InvalidArgument("write batch exceeds eight pages".into()));
+            return Err(ObjectError::InvalidArgument(
+                "write batch exceeds eight pages".into(),
+            ));
         }
         if writes.is_empty() {
             return Ok(());
@@ -661,7 +756,11 @@ impl RemoteReplicaClient {
             let mut written = 0;
             while written < writes.len() {
                 let remaining = &writes[written..];
-                let limit = if self.conditional_write_eight == Some(false) { 4 } else { 8 };
+                let limit = if self.conditional_write_eight == Some(false) {
+                    4
+                } else {
+                    8
+                };
                 let batch = &remaining[..remaining.len().min(limit)];
                 if batch.len() == 1 {
                     let (page, offset, data, sequence) = &batch[0];
@@ -669,11 +768,17 @@ impl RemoteReplicaClient {
                     return Ok(());
                 }
                 let request = ReplicaRequest::WriteChunkBatchIfSequence {
-                    writes: batch.iter().map(|(page, offset, data, sequence)|
-                        crate::cluster::message::ConditionalChunkWrite {
-                            page_id: page.clone(), offset: *offset,
-                            data: data.to_vec(), expected_sequence: *sequence,
-                        }).collect(),
+                    writes: batch
+                        .iter()
+                        .map(|(page, offset, data, sequence)| {
+                            crate::cluster::message::ConditionalChunkWrite {
+                                page_id: page.clone(),
+                                offset: *offset,
+                                data: data.to_vec(),
+                                expected_sequence: *sequence,
+                            }
+                        })
+                        .collect(),
                 };
                 if request.encode_payload().len() > self.max_payload_bytes {
                     return self.write_chunks_individually_pipelined(remaining);
@@ -692,18 +797,13 @@ impl RemoteReplicaClient {
                         self.conditional_write_eight = Some(false);
                     }
                     Err(ObjectError::PreconditionFailed(message))
-                        if message.starts_with(
-                            "the replica does not implement this request:",
-                        ) =>
+                        if message.starts_with("the replica does not implement this request:") =>
                     {
                         self.conditional_write_batch = Some(false);
                         return self.write_chunks_individually_pipelined(remaining);
                     }
                     Ok(other) => {
-                        return Err(unexpected_reply(
-                            "a conditional chunk write batch",
-                            &other,
-                        ))
+                        return Err(unexpected_reply("a conditional chunk write batch", &other))
                     }
                     Err(error) => return Err(error),
                 }
@@ -732,12 +832,7 @@ impl RemoteReplicaClient {
         };
         if writes.len() == 1 {
             return self
-                .write_chunk_if_sequence_with_digest(
-                    page.clone(),
-                    *offset,
-                    data,
-                    *sequence,
-                )
+                .write_chunk_if_sequence_with_digest(page.clone(), *offset, data, *sequence)
                 .map(|digest| vec![digest]);
         }
 
@@ -748,7 +843,11 @@ impl RemoteReplicaClient {
         {
             while completed < writes.len() {
                 let remaining = &writes[completed..];
-                let limit = if self.conditional_write_eight == Some(false) { 4 } else { 8 };
+                let limit = if self.conditional_write_eight == Some(false) {
+                    4
+                } else {
+                    8
+                };
                 let batch = &remaining[..remaining.len().min(limit)];
                 if batch.len() == 1 {
                     let (page, offset, data, sequence) = &batch[0];
@@ -794,18 +893,13 @@ impl RemoteReplicaClient {
                         ));
                     }
                     Err(ObjectError::PreconditionFailed(message))
-                        if message.starts_with(
-                            "the replica does not implement this request:",
-                        ) =>
+                        if message.starts_with("the replica does not implement this request:") =>
                     {
                         self.conditional_write_digest_batch = Some(false);
                         break;
                     }
                     Ok(other) => {
-                        return Err(unexpected_reply(
-                            "a conditional write digest batch",
-                            &other,
-                        ));
+                        return Err(unexpected_reply("a conditional write digest batch", &other));
                     }
                     Err(ObjectError::InvalidArgument(message))
                         if batch.len() > 4 && message == "invalid conditional write batch" =>
@@ -941,13 +1035,20 @@ impl RemoteReplicaClient {
     }
 
     fn try_digest_batch(
-        &mut self, pages: &[(PageId, u64, u64)],
+        &mut self,
+        pages: &[(PageId, u64, u64)],
     ) -> Result<Option<Vec<(u64, u64, [u8; 32])>>, ObjectError> {
         if pages.iter().any(|(_, _, length)| *length > 1024 * 1024) {
-            return Err(ObjectError::InvalidArgument("digest range exceeds one MiB".into()));
+            return Err(ObjectError::InvalidArgument(
+                "digest range exceeds one MiB".into(),
+            ));
         }
-        if pages.len() <= 1 || self.digest_batch == Some(false) { return Ok(None); }
-        match self.call(ReplicaRequest::DigestChunkBatch { reads: pages.to_vec() }) {
+        if pages.len() <= 1 || self.digest_batch == Some(false) {
+            return Ok(None);
+        }
+        match self.call(ReplicaRequest::DigestChunkBatch {
+            reads: pages.to_vec(),
+        }) {
             Ok(ReplicaReply::Digests(digests)) if digests.len() == pages.len() => {
                 self.digest_batch = Some(true);
                 Ok(Some(digests))
@@ -956,10 +1057,11 @@ impl RemoteReplicaClient {
                 "digest batch reply count differs from request".into(),
             )),
             Err(ObjectError::PreconditionFailed(message))
-                if message.starts_with("the replica does not implement this request:") => {
-                    self.digest_batch = Some(false);
-                    Ok(None)
-                }
+                if message.starts_with("the replica does not implement this request:") =>
+            {
+                self.digest_batch = Some(false);
+                Ok(None)
+            }
             Ok(other) => Err(unexpected_reply("a chunk digest batch", &other)),
             Err(error) => Err(error),
         }
@@ -973,7 +1075,9 @@ impl RemoteReplicaClient {
         pages: &[(PageId, u64, u64)],
     ) -> Result<Vec<Option<(u64, u64, [u8; 32])>>, ObjectError> {
         if pages.len() > 8 {
-            return Err(ObjectError::InvalidArgument("digest probe exceeds eight pages".into()));
+            return Err(ObjectError::InvalidArgument(
+                "digest probe exceeds eight pages".into(),
+            ));
         }
         let Some((page, offset, length)) = pages.first() else {
             return Ok(Vec::new());
@@ -1007,9 +1111,11 @@ impl RemoteReplicaClient {
                     crate::cluster::wire::RequestCode::DigestChunk,
                     exchange_deadline(self.read_timeout, self.deadline)?,
                 ) {
-                    Ok(ReplicaReply::Digest { write_sequence, length, sha256 }) => {
-                        Some((write_sequence, length, sha256))
-                    }
+                    Ok(ReplicaReply::Digest {
+                        write_sequence,
+                        length,
+                        sha256,
+                    }) => Some((write_sequence, length, sha256)),
                     Err(ObjectError::NotFound(_)) => None,
                     Ok(ReplicaReply::NotLeader) => return Err(not_leader()),
                     Ok(other) => return Err(unexpected_reply("a chunk digest", &other)),
@@ -1045,12 +1151,16 @@ impl RemoteReplicaClient {
         pages: &[(PageId, u64, u64)],
     ) -> Result<Vec<(u64, u64, [u8; 32])>, ObjectError> {
         if pages.len() > 8 {
-            return Err(ObjectError::InvalidArgument("digest batch exceeds eight pages".into()));
+            return Err(ObjectError::InvalidArgument(
+                "digest batch exceeds eight pages".into(),
+            ));
         }
         let Some((first_page, first_offset, first_length)) = pages.first() else {
             return Ok(Vec::new());
         };
-        if let Some(digests) = self.try_digest_batch(pages)? { return Ok(digests); }
+        if let Some(digests) = self.try_digest_batch(pages)? {
+            return Ok(digests);
+        }
         let first = self.digest_chunk(first_page, *first_offset, *first_length)?;
         if pages.len() == 1 {
             return Ok(vec![first]);
@@ -1071,7 +1181,11 @@ impl RemoteReplicaClient {
                     crate::cluster::wire::RequestCode::DigestChunk,
                     exchange_deadline(self.read_timeout, self.deadline)?,
                 )? {
-                    ReplicaReply::Digest { write_sequence, length, sha256 } => {
+                    ReplicaReply::Digest {
+                        write_sequence,
+                        length,
+                        sha256,
+                    } => {
                         digests.push((write_sequence, length, sha256));
                     }
                     ReplicaReply::NotLeader => return Err(not_leader()),
@@ -1098,7 +1212,9 @@ impl RemoteReplicaClient {
         pages: &[(PageId, u64, u64)],
     ) -> Result<Vec<ReplicaReadResult>, ObjectError> {
         if pages.len() > 8 {
-            return Err(ObjectError::InvalidArgument("read batch exceeds eight pages".into()));
+            return Err(ObjectError::InvalidArgument(
+                "read batch exceeds eight pages".into(),
+            ));
         }
         if pages.is_empty() {
             return Ok(Vec::new());
@@ -1109,13 +1225,17 @@ impl RemoteReplicaClient {
                 .map(|read| vec![read]);
         }
         let total = pages.iter().try_fold(0usize, |sum, (_, _, length)| {
-            usize::try_from(*length).ok().and_then(|length| sum.checked_add(length))
+            usize::try_from(*length)
+                .ok()
+                .and_then(|length| sum.checked_add(length))
         });
         if pages.iter().all(|(_, _, length)| *length <= 64 * 1024)
             && total.is_some_and(|total| total.saturating_add(1024) <= self.max_payload_bytes)
             && self.read_batch != Some(false)
         {
-            match self.call(ReplicaRequest::ReadChunkBatch { reads: pages.to_vec() }) {
+            match self.call(ReplicaRequest::ReadChunkBatch {
+                reads: pages.to_vec(),
+            }) {
                 Ok(ReplicaReply::Reads(reads)) if reads.len() == pages.len() => {
                     self.read_batch = Some(true);
                     return Ok(reads);
@@ -1340,7 +1460,9 @@ impl RemoteReplicaClient {
         request.validate()?;
         if let Some(identity) = &self.group_identity {
             if identity.version != 2 || identity.bootstrap_id != request.bootstrap_id {
-                return Err(ObjectError::PreconditionFailed("membership request does not match trusted group".into()));
+                return Err(ObjectError::PreconditionFailed(
+                    "membership request does not match trusted group".into(),
+                ));
             }
         }
         match self.call(ReplicaRequest::Membership(request))? {
@@ -1349,7 +1471,7 @@ impl RemoteReplicaClient {
                     status.validate_inventory(&identity.voters)?;
                 }
                 Ok(status)
-            },
+            }
             reply => Err(unexpected_reply("chunk membership", &reply)),
         }
     }
@@ -1505,6 +1627,26 @@ impl RemoteReplicaClient {
             2,
         )
     }
+    /// Observe confirmed record traffic and maintenance progress on a version-3 node.
+    /// Segmented journals have per-open counters; legacy journals return no counters.
+    /// Quiesce writes and finish maintenance before measuring a complete interval.
+    pub fn journal_write_statistics(
+        &mut self,
+    ) -> Result<super::replica_journal_control::ReplicaJournalStatus, ObjectError> {
+        self.journal_control(
+            super::replica_journal_control::ReplicaJournalControl::STATUS,
+            3,
+        )
+    }
+    /// Start a checkpoint and return version-3 progress and per-open write counters.
+    pub fn checkpoint_journal_with_write_statistics(
+        &mut self,
+    ) -> Result<super::replica_journal_control::ReplicaJournalStatus, ObjectError> {
+        self.journal_control(
+            super::replica_journal_control::ReplicaJournalControl::CHECKPOINT,
+            3,
+        )
+    }
     fn journal_control(
         &mut self,
         action: u32,
@@ -1524,50 +1666,110 @@ impl RemoteReplicaClient {
 
     /// Close a namespace or retire a subset of its pinned immutable pages.
     /// Inspect the fence after an uncertain reply before attempting another transition.
-    pub fn fence_namespace(&mut self, fence: crate::chunk_namespace_fence::NamespaceFence)
-        -> Result<crate::chunk_namespace_fence::NamespaceFence, ObjectError> {
+    pub fn fence_namespace(
+        &mut self,
+        fence: crate::chunk_namespace_fence::NamespaceFence,
+    ) -> Result<crate::chunk_namespace_fence::NamespaceFence, ObjectError> {
         fence.validate()?;
         let request = ReplicaRequest::FenceNamespace(fence);
-        let ReplicaRequest::FenceNamespace(expected) = &request else { unreachable!() };
+        let ReplicaRequest::FenceNamespace(expected) = &request else {
+            unreachable!()
+        };
         match self.call_ref(&request)? {
             ReplicaReply::NamespaceFence(actual) if &actual == expected => Ok(actual),
-            _ => Err(ObjectError::Corruption("namespace fence reply differs from requested closure".into())),
+            _ => Err(ObjectError::Corruption(
+                "namespace fence reply differs from requested closure".into(),
+            )),
         }
     }
 
-    pub fn read_namespace_fence(&mut self, namespace: &crate::ChunkId)
-        -> Result<crate::chunk_namespace_fence::NamespaceFence, ObjectError> {
-        match self.call(ReplicaRequest::ReadNamespaceFence { namespace: namespace.clone() })? {
+    pub fn read_namespace_fence(
+        &mut self,
+        namespace: &crate::ChunkId,
+    ) -> Result<crate::chunk_namespace_fence::NamespaceFence, ObjectError> {
+        match self.call(ReplicaRequest::ReadNamespaceFence {
+            namespace: namespace.clone(),
+        })? {
             ReplicaReply::NamespaceFence(actual) if actual.namespace()? == *namespace => Ok(actual),
-            _ => Err(ObjectError::Corruption("namespace fence reply names another namespace".into())),
+            _ => Err(ObjectError::Corruption(
+                "namespace fence reply names another namespace".into(),
+            )),
         }
     }
 
     /// One log chunk operation on this node. A node that does not know the verb answers
     /// `LogCallError::NotSpoken`, which proves nothing was applied.
-    pub fn log_call(&mut self, op: super::log_op::LogOpRequest) -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
+    pub fn log_call(
+        &mut self,
+        op: super::log_op::LogOpRequest,
+    ) -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
         use super::chunk_log::LogCallError;
         match self.call(ReplicaRequest::LogOp(op)) {
             Ok(ReplicaReply::LogOp(reply)) => Ok(reply),
-            Ok(other) => Err(LogCallError::Refused(unexpected_reply("a log chunk operation", &other))),
+            Ok(other) => Err(LogCallError::Refused(unexpected_reply(
+                "a log chunk operation",
+                &other,
+            ))),
             Err(error) => Err(LogCallError::from_object(error, !self.connection_usable)),
         }
     }
 
-    pub fn log_tail(&mut self, volume: u64, chunk: u64, generation: u32) -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
+    pub fn log_tail(
+        &mut self,
+        volume: u64,
+        chunk: u64,
+        generation: u32,
+    ) -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
         self.log_call(super::log_op::LogOpRequest::tail(volume, chunk, generation))
     }
 
-    pub fn log_read(&mut self, volume: u64, chunk: u64, generation: u32, offset: u64, length: u32) -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
-        self.log_call(super::log_op::LogOpRequest::read(volume, chunk, generation, offset, length))
+    /// Observe one durable record. A missing record does not fence a concurrent append.
+    pub fn log_identity(&mut self, volume: u64, chunk: u64, generation: u32, offset: u64)
+        -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
+        self.log_call(super::log_op::LogOpRequest::identity(volume, chunk, generation, offset))
     }
 
-    pub fn log_seal(&mut self, volume: u64, chunk: u64, generation: u32, epoch: u64, with_sha256: bool) -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
-        self.log_call(super::log_op::LogOpRequest::seal(volume, chunk, generation, epoch, with_sha256))
+    pub fn log_read(
+        &mut self,
+        volume: u64,
+        chunk: u64,
+        generation: u32,
+        offset: u64,
+        length: u32,
+    ) -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
+        self.log_call(super::log_op::LogOpRequest::read(
+            volume, chunk, generation, offset, length,
+        ))
     }
 
-    pub fn log_truncate(&mut self, volume: u64, chunk: u64, generation: u32, epoch: u64, length: u64) -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
-        self.log_call(super::log_op::LogOpRequest::truncate(volume, chunk, generation, epoch, length))
+    pub fn log_seal(
+        &mut self,
+        volume: u64,
+        chunk: u64,
+        generation: u32,
+        epoch: u64,
+        with_sha256: bool,
+    ) -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
+        self.log_call(super::log_op::LogOpRequest::seal(
+            volume,
+            chunk,
+            generation,
+            epoch,
+            with_sha256,
+        ))
+    }
+
+    pub fn log_truncate(
+        &mut self,
+        volume: u64,
+        chunk: u64,
+        generation: u32,
+        epoch: u64,
+        length: u64,
+    ) -> Result<super::log_op::LogOpReply, super::chunk_log::LogCallError> {
+        self.log_call(super::log_op::LogOpRequest::truncate(
+            volume, chunk, generation, epoch, length,
+        ))
     }
 
     /// Send up to [`LOG_PIPELINE_DEPTH`] appends back to back on this connection and collect
@@ -1580,10 +1782,19 @@ impl RemoteReplicaClient {
     /// get their own answers; a transport failure ends the batch, and every request it did not
     /// get an answer for reports `LogCallError::Transport` (the bytes may or may not have
     /// landed: the caller learns where by asking for the tail on a new connection).
-    pub fn log_append_pipelined(&mut self, ops: &[super::log_op::LogOpRequest]) -> Vec<Result<super::log_op::LogOpReply, super::chunk_log::LogCallError>> {
+    pub fn log_append_pipelined(
+        &mut self,
+        ops: &[super::log_op::LogOpRequest],
+    ) -> Vec<Result<super::log_op::LogOpReply, super::chunk_log::LogCallError>> {
         use super::chunk_log::LogCallError;
         let refuse = |message: &str| -> Vec<Result<super::log_op::LogOpReply, LogCallError>> {
-            ops.iter().map(|_| Err(LogCallError::Refused(ObjectError::InvalidArgument(message.into())))).collect()
+            ops.iter()
+                .map(|_| {
+                    Err(LogCallError::Refused(ObjectError::InvalidArgument(
+                        message.into(),
+                    )))
+                })
+                .collect()
         };
         if ops.len() > LOG_PIPELINE_DEPTH {
             return refuse("a log append pipeline is bounded");
@@ -1591,13 +1802,19 @@ impl RemoteReplicaClient {
         if ops.iter().any(|op| op.op != super::log_op::OP_APPEND) {
             return refuse("a log append pipeline carries appends only");
         }
-        if ops.iter().any(|op| ReplicaRequest::LogOp(op.clone()).encode_payload().len() > self.max_payload_bytes) {
+        if ops.iter().any(|op| {
+            prost::Message::encoded_len(op) > self.max_payload_bytes
+        }) {
             return refuse("a log append exceeds the payload bound");
         }
-        let Some(first) = ops.first() else { return Vec::new() };
+        let Some(first) = ops.first() else {
+            return Vec::new();
+        };
         let mut results = Vec::with_capacity(ops.len());
         results.push(self.log_call(first.clone()));
-        let stop = |error: &LogCallError| matches!(error, LogCallError::NotSpoken | LogCallError::Transport(_));
+        let stop = |error: &LogCallError| {
+            matches!(error, LogCallError::NotSpoken | LogCallError::Transport(_))
+        };
         if let Some(Err(error)) = results.first() {
             if stop(error) {
                 let error = error.clone();
@@ -1625,12 +1842,15 @@ impl RemoteReplicaClient {
             // A status error is fully read and leaves the socket usable; a transport failure
             // does not, so the flag tells the two apart.
             self.connection_usable = false;
-            match exchange_deadline(self.read_timeout, self.deadline)
-                .and_then(|deadline| self.read_reply(crate::cluster::wire::RequestCode::LogOp, deadline))
-            {
+            match exchange_deadline(self.read_timeout, self.deadline).and_then(|deadline| {
+                self.read_reply(crate::cluster::wire::RequestCode::LogOp, deadline)
+            }) {
                 Ok(ReplicaReply::LogOp(reply)) => results.push(Ok(reply)),
                 Ok(other) => {
-                    failure = Some(LogCallError::Refused(unexpected_reply("a log append", &other)));
+                    failure = Some(LogCallError::Refused(unexpected_reply(
+                        "a log append",
+                        &other,
+                    )));
                     self.connection_usable = false;
                 }
                 Err(error) => {
@@ -1644,7 +1864,13 @@ impl RemoteReplicaClient {
             }
         }
         let failure = failure.or_else(|| {
-            (sent < ops.len()).then(|| LogCallError::Transport(transport_error(&self.endpoint, "pipelining log appends", "a request was not sent")))
+            (sent < ops.len()).then(|| {
+                LogCallError::Transport(transport_error(
+                    &self.endpoint,
+                    "pipelining log appends",
+                    "a request was not sent",
+                ))
+            })
         });
         if let Some(error) = failure {
             let _ = self.writer.shutdown(Shutdown::Both);
@@ -1657,6 +1883,18 @@ impl RemoteReplicaClient {
         }
         self.last_exchange = Instant::now();
         results
+    }
+
+    /// Execute one native log operation on this replica. The caller owns quorum policy.
+    pub fn log_operation(
+        &mut self,
+        operation: super::log_op::LogOpRequest,
+    ) -> Result<super::log_op::LogOpReply, ObjectError> {
+        operation.validate()?;
+        match self.call(ReplicaRequest::LogOp(operation))? {
+            ReplicaReply::LogOp(value) => Ok(value),
+            other => Err(unexpected_reply("a native log operation", &other)),
+        }
     }
 
     fn call(&mut self, request: ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
@@ -1729,8 +1967,12 @@ impl RemoteReplicaClient {
                                         "chunk voter configuration does not match catalog".into(),
                                     ));
                                 }
-                                if self.catalog_members.as_ref().is_some_and(|members| members.get(endpoint) != Some(&actual.node_id)) {
-                                    return Err(ObjectError::PreconditionFailed("chunk route socket identity mismatch".into()));
+                                if self.catalog_members.as_ref().is_some_and(|members| {
+                                    members.get(endpoint) != Some(&actual.node_id)
+                                }) {
+                                    return Err(ObjectError::PreconditionFailed(
+                                        "chunk route socket identity mismatch".into(),
+                                    ));
                                 }
                                 next.group_identity = Some(expected.clone());
                             }
@@ -1765,8 +2007,11 @@ impl RemoteReplicaClient {
             // Reads can wait through voter restarts. Uncertain mutations cannot.
             let retryable = refusals == endpoints.len()
                 || (read_only && refusals + unreachable == endpoints.len());
-            if !retryable || !retry_until.is_some_and(|deadline|
-                deadline.saturating_duration_since(Instant::now()) > retry_delay) {
+            if !retryable
+                || !retry_until.is_some_and(|deadline| {
+                    deadline.saturating_duration_since(Instant::now()) > retry_delay
+                })
+            {
                 break;
             }
             std::thread::sleep(retry_delay);
@@ -1799,10 +2044,8 @@ impl RemoteReplicaClient {
         &mut self,
         request: &ReplicaRequest,
     ) -> Result<PendingReplicaReply<'_>, ObjectError> {
-        let mut pending = self.begin_encoded(
-            request.code(),
-            std::sync::Arc::new(encode_request(request)),
-        )?;
+        let mut pending =
+            self.begin_encoded(request.code(), std::sync::Arc::new(encode_request(request)))?;
         pending.send_pending()?;
         Ok(pending)
     }
@@ -1835,7 +2078,11 @@ impl RemoteReplicaClient {
         self.connection_usable = false;
         if let Err(error) = self.writer.set_nonblocking(true) {
             let _ = self.writer.shutdown(Shutdown::Both);
-            return Err(transport_error(&self.endpoint, "starting fan-out", &error.to_string()));
+            return Err(transport_error(
+                &self.endpoint,
+                "starting fan-out",
+                &error.to_string(),
+            ));
         }
         Ok(PendingReplicaReply {
             client: self,
@@ -1853,7 +2100,10 @@ impl RemoteReplicaClient {
 
     fn exchange(&mut self, request: &ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
         self.send_request(request)?;
-        self.read_reply(request.code(), exchange_deadline(self.read_timeout, self.deadline)?)
+        self.read_reply(
+            request.code(),
+            exchange_deadline(self.read_timeout, self.deadline)?,
+        )
     }
 
     fn send_request(&mut self, request: &ReplicaRequest) -> Result<(), ObjectError> {
@@ -1889,10 +2139,13 @@ impl RemoteReplicaClient {
                 &err.to_string(),
             )
         })?;
-        self.decode_reply(code, status, &payload)
+        self.decode_reply_owned(code, status, payload)
     }
 
-    fn reply_header(&self, header: &[u8; HEADER_BYTES]) -> Result<(StatusCode, usize), ObjectError> {
+    fn reply_header(
+        &self,
+        header: &[u8; HEADER_BYTES],
+    ) -> Result<(StatusCode, usize), ObjectError> {
         check_stamp(header[0])?;
         let status = StatusCode::from_u8(header[1]).ok_or_else(|| {
             ObjectError::Corruption(format!(
@@ -1911,7 +2164,26 @@ impl RemoteReplicaClient {
         Ok((status, payload_len))
     }
 
-    fn decode_reply(&mut self, code: crate::cluster::wire::RequestCode, status: StatusCode, payload: &[u8]) -> Result<ReplicaReply, ObjectError> {
+    fn decode_reply_owned(
+        &mut self,
+        code: crate::cluster::wire::RequestCode,
+        status: StatusCode,
+        payload: Vec<u8>,
+    ) -> Result<ReplicaReply, ObjectError> {
+        if status == StatusCode::Ok {
+            let reply = ReplicaReply::decode_owned(code, payload)?;
+            self.connection_usable = true;
+            return Ok(reply);
+        }
+        self.decode_reply(code, status, &payload)
+    }
+
+    fn decode_reply(
+        &mut self,
+        code: crate::cluster::wire::RequestCode,
+        status: StatusCode,
+        payload: &[u8],
+    ) -> Result<ReplicaReply, ObjectError> {
         if status == StatusCode::NotLeader {
             if !payload.is_empty() {
                 return Err(ObjectError::Corruption(
@@ -1994,7 +2266,14 @@ fn read_before(
             .set_read_timeout(Some(time_left(deadline)?))?;
         let count = match reader.read(bytes) {
             Ok(count) => count,
-            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue
+            }
             Err(error) => return Err(error),
         };
         if count == 0 {
@@ -2016,7 +2295,14 @@ fn write_before(
         writer.set_write_timeout(Some(time_left(deadline)?))?;
         let count = match writer.write(bytes) {
             Ok(count) => count,
-            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue
+            }
             Err(error) => return Err(error),
         };
         if count == 0 {
@@ -2031,7 +2317,14 @@ fn write_before(
         writer.set_write_timeout(Some(time_left(deadline)?))?;
         match writer.flush() {
             Ok(()) => return Ok(()),
-            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue
+            }
             Err(error) => return Err(error),
         }
     }
@@ -2058,52 +2351,111 @@ mod pending_tests {
                 let mut scalars = 0;
                 loop {
                     let mut header = [0; 6];
-                    if peer.read_exact(&mut header).is_err() { break; }
-                    let mut bytes = vec![0; u32::from_be_bytes(header[2..].try_into().unwrap()) as usize];
+                    if peer.read_exact(&mut header).is_err() {
+                        break;
+                    }
+                    let mut bytes =
+                        vec![0; u32::from_be_bytes(header[2..].try_into().unwrap()) as usize];
                     peer.read_exact(&mut bytes).unwrap();
-                    let request = ReplicaRequest::decode(crate::cluster::wire::RequestCode::from_u8(header[1]).unwrap(), &bytes).unwrap();
+                    let request = ReplicaRequest::decode(
+                        crate::cluster::wire::RequestCode::from_u8(header[1]).unwrap(),
+                        &bytes,
+                    )
+                    .unwrap();
                     let reply = match request {
                         ReplicaRequest::DigestChunkBatch { .. } => {
                             batches += 1;
                             if mode == 1 || mode == 2 {
                                 peer.write_all(&crate::cluster::message::encode_failure(
-                                    if mode == 1 { StatusCode::UnknownRequest } else { StatusCode::NotFound }, "batch unavailable",
-                                )).unwrap();
+                                    if mode == 1 {
+                                        StatusCode::UnknownRequest
+                                    } else {
+                                        StatusCode::NotFound
+                                    },
+                                    "batch unavailable",
+                                ))
+                                .unwrap();
                                 continue;
                             }
-                            ReplicaReply::Digests(vec![(1, 7, [2; 32]); if mode == 3 { 1 } else { 2 }])
+                            ReplicaReply::Digests(vec![
+                                (1, 7, [2; 32]);
+                                if mode == 3 { 1 } else { 2 }
+                            ])
                         }
                         ReplicaRequest::DigestChunk { page_id, .. } => {
                             scalars += 1;
                             if mode == 2 && page_id.page_index == 1 {
-                                peer.write_all(&crate::cluster::message::encode_failure(StatusCode::NotFound, "absent")).unwrap();
+                                peer.write_all(&crate::cluster::message::encode_failure(
+                                    StatusCode::NotFound,
+                                    "absent",
+                                ))
+                                .unwrap();
                                 continue;
                             }
-                            ReplicaReply::Digest { write_sequence: 1, length: 7, sha256: [2; 32] }
+                            ReplicaReply::Digest {
+                                write_sequence: 1,
+                                length: 7,
+                                sha256: [2; 32],
+                            }
                         }
                         request => panic!("unexpected digest request {request:?}"),
                     };
-                    peer.write_all(&crate::cluster::message::encode_reply(&reply)).unwrap();
+                    peer.write_all(&crate::cluster::message::encode_reply(&reply))
+                        .unwrap();
                 }
                 (batches, scalars)
             });
-            let mut client = RemoteReplicaClient::connect(&endpoint, &ReplicaClientOptions::default()).unwrap();
-            let pages: Vec<_> = (0..2).map(|index| (PageId {
-                chunk_id: crate::ChunkId::new(1, 2).unwrap(), page_index: index,
-            }, 0, 7)).collect();
+            let mut client =
+                RemoteReplicaClient::connect(&endpoint, &ReplicaClientOptions::default()).unwrap();
+            let pages: Vec<_> = (0..2)
+                .map(|index| {
+                    (
+                        PageId {
+                            chunk_id: crate::ChunkId::new(1, 2).unwrap(),
+                            page_index: index,
+                        },
+                        0,
+                        7,
+                    )
+                })
+                .collect();
             if mode == 3 {
                 assert!(client.probe_chunk_digests_pipelined(&pages).is_err());
             } else {
-                let expected = vec![Some((1, 7, [2; 32])), if mode == 2 { None } else { Some((1, 7, [2; 32])) }];
-                assert_eq!(client.probe_chunk_digests_pipelined(&pages).unwrap(), expected);
+                let expected = vec![
+                    Some((1, 7, [2; 32])),
+                    if mode == 2 {
+                        None
+                    } else {
+                        Some((1, 7, [2; 32]))
+                    },
+                ];
+                assert_eq!(
+                    client.probe_chunk_digests_pipelined(&pages).unwrap(),
+                    expected
+                );
                 if mode == 2 {
-                    assert_eq!(client.probe_chunk_digests_pipelined(&pages).unwrap(), expected);
+                    assert_eq!(
+                        client.probe_chunk_digests_pipelined(&pages).unwrap(),
+                        expected
+                    );
                 } else {
-                    assert_eq!(client.digest_chunks_pipelined(&pages).unwrap(), vec![(1, 7, [2; 32]); 2]);
+                    assert_eq!(
+                        client.digest_chunks_pipelined(&pages).unwrap(),
+                        vec![(1, 7, [2; 32]); 2]
+                    );
                 }
             }
             drop(client);
-            assert_eq!(worker.join().unwrap(), match mode { 0 => (2, 0), 1 => (1, 4), 2 => (2, 4), _ => (1, 0) });
+            assert_eq!(
+                worker.join().unwrap(),
+                match mode {
+                    0 => (2, 0),
+                    1 => (1, 4),
+                    2 => (2, 4),
+                    _ => (1, 0),
+                }
+            );
         }
     }
 
@@ -2128,7 +2480,9 @@ mod pending_tests {
         });
         let worker = std::thread::spawn(move || {
             let (mut server, _) = listener.accept().unwrap();
-            server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            server
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
             for reply in [
                 ReplicaReply::NotLeader,
                 ReplicaReply::Read(ReplicaReadResult {
@@ -2140,7 +2494,9 @@ mod pending_tests {
                 let mut request = vec![0; expected.len()];
                 server.read_exact(&mut request).unwrap();
                 assert_eq!(request, expected);
-                server.write_all(&super::super::message::encode_reply(&reply)).unwrap();
+                server
+                    .write_all(&super::super::message::encode_reply(&reply))
+                    .unwrap();
             }
         });
         assert_eq!(client.read_chunk(&page_id, 0, 1).unwrap().data, vec![7]);
@@ -2180,11 +2536,15 @@ mod pending_tests {
                 }),
             ] {
                 let (mut server, _) = first.accept().unwrap();
-                server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                server
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
                 let mut request = vec![0; expected.len()];
                 server.read_exact(&mut request).unwrap();
                 assert_eq!(request, expected);
-                server.write_all(&super::super::message::encode_reply(&reply)).unwrap();
+                server
+                    .write_all(&super::super::message::encode_reply(&reply))
+                    .unwrap();
             }
         });
         let second_worker = std::thread::spawn(move || {
@@ -2209,31 +2569,47 @@ mod pending_tests {
             let mut client = RemoteReplicaClient::connect(&endpoint, &options).unwrap();
             client.catalog = Some((vec![endpoint], options));
             let request = ReplicaRequest::WriteChunk {
-                page_id: crate::PageId { chunk_id: crate::ChunkId::new(0, 1).unwrap(), page_index: 0 },
+                page_id: crate::PageId {
+                    chunk_id: crate::ChunkId::new(0, 1).unwrap(),
+                    page_index: 0,
+                },
                 offset: 0,
                 data: vec![7],
             };
             let expected = encode_request(&request);
             let worker = std::thread::spawn(move || {
                 let (mut server, _) = listener.accept().unwrap();
-                server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                server
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
                 let mut calls = 0;
                 let mut bytes = vec![0; expected.len()];
                 while server.read_exact(&mut bytes).is_ok() {
                     assert_eq!(bytes, expected);
                     calls += 1;
-                    if mode == 2 { break; }
+                    if mode == 2 {
+                        break;
+                    }
                     if mode == 4 {
-                        server.write_all(&super::super::message::encode_failure(
-                            StatusCode::PreconditionFailed, "rejected mutation",
-                        )).unwrap();
+                        server
+                            .write_all(&super::super::message::encode_failure(
+                                StatusCode::PreconditionFailed,
+                                "rejected mutation",
+                            ))
+                            .unwrap();
                         continue;
                     }
                     let reply = if mode == 0 && calls == 2 {
                         ReplicaReply::Applied
-                    } else { ReplicaReply::NotLeader };
-                    server.write_all(&super::super::message::encode_reply(&reply)).unwrap();
-                    if mode == 0 && calls == 2 { break; }
+                    } else {
+                        ReplicaReply::NotLeader
+                    };
+                    server
+                        .write_all(&super::super::message::encode_reply(&reply))
+                        .unwrap();
+                    if mode == 0 && calls == 2 {
+                        break;
+                    }
                 }
                 calls
             });
@@ -2257,10 +2633,17 @@ mod pending_tests {
             deadline: Some(Instant::now() + Duration::from_millis(300)),
             ..Default::default()
         };
-        assert!(matches!(RemoteReplicaClient::connect("localhost:80", &options), Err(ObjectError::InvalidArgument(_))));
-        let mut client = RemoteReplicaClient::connect(&listener.local_addr().unwrap().to_string(), &options).unwrap();
+        assert!(matches!(
+            RemoteReplicaClient::connect("localhost:80", &options),
+            Err(ObjectError::InvalidArgument(_))
+        ));
+        let mut client =
+            RemoteReplicaClient::connect(&listener.local_addr().unwrap().to_string(), &options)
+                .unwrap();
         let (mut server, _) = listener.accept().unwrap();
-        server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
         let request = ReplicaRequest::Ping;
         let started = Instant::now();
         let pending = client.begin_standalone(&request).unwrap();
@@ -2278,17 +2661,30 @@ mod pending_tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut client = RemoteReplicaClient::connect(
             &listener.local_addr().unwrap().to_string(),
-            &ReplicaClientOptions { read_timeout: Duration::from_millis(100), ..Default::default() },
-        ).unwrap();
+            &ReplicaClientOptions {
+                read_timeout: Duration::from_millis(100),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let (mut server, _) = listener.accept().unwrap();
-        server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         let request = ReplicaRequest::Ping;
         let pending = client.begin_standalone(&request).unwrap();
         let mut sent = vec![0; encode_request(&request).len()];
         server.read_exact(&mut sent).unwrap();
         std::thread::sleep(Duration::from_millis(150));
-        server.write_all(&crate::cluster::message::encode_reply(&ReplicaReply::Pong { page_count: 0 })).unwrap();
-        assert!(pending.finish().is_err(), "collecting a late reply must not grant a new timeout");
+        server
+            .write_all(&crate::cluster::message::encode_reply(
+                &ReplicaReply::Pong { page_count: 0 },
+            ))
+            .unwrap();
+        assert!(
+            pending.finish().is_err(),
+            "collecting a late reply must not grant a new timeout"
+        );
         assert!(!client.connection_usable);
         assert!(client.begin_standalone(&request).is_err());
     }

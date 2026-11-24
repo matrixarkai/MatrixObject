@@ -140,29 +140,6 @@ impl MatrixReplicaService {
             .map_or(0u64, |state| state.data.len() as u64)
     }
 
-    /// Put a page state in place WITHOUT re-checking that this replica accepts writes.
-    ///
-    /// # WHY THIS IS NOT `install_chunk_state`
-    ///
-    /// `install_chunk_state` begins with `ensure_writable`, which is right for a caller
-    /// arriving from outside. The two callers here are the apply halves of a prepared batch
-    /// mutation, and they have already fenced the write in a stronger way than a writability
-    /// check: they compared the replica's whole control proof -- state checksum, commit index
-    /// and next log index -- against the proof the entry was prepared against, and refused
-    /// unless all three matched.
-    ///
-    /// Re-running `ensure_writable` there would let a service-mode change between prepare and
-    /// apply abandon an entry the log has already committed, which is how a replica ends up
-    /// disagreeing with the log it is replaying. So the fence is named in the method rather
-    /// than duplicated: `unfenced` says the caller owes one, and the two callers pay it.
-    pub(crate) fn install_page_unfenced(&mut self, page_id: PageId, state: PageState) {
-        // NOT AN APPEND, so the batch undo cannot be a length here.
-        self.materialise_page_undo(&page_id);
-        let accounting_before = self.page_accounting(&page_id);
-        self.pages.insert(page_id.clone(), std::sync::Arc::new(state));
-        self.reaccount_page(&page_id, accounting_before);
-    }
-
     /// The whole page map, by reference. **THIS CALL CANNOT CROSS A PROCESS BOUNDARY.**
     ///
     /// Named `_local` on purpose. Every other accessor in this file answers a question; this
@@ -245,47 +222,6 @@ impl MatrixReplicaService {
     // Receipts
     // -----------------------------------------------------------------------------------
 
-    /// The batch write receipt filed under this idempotency key, if there is one.
-    pub(crate) fn batch_write_receipt(&self, key: &str) -> Option<&ReplicaBatchWriteReceipt> {
-        self.batch_write_request_receipts.get(key)
-    }
-
-    /// File a batch write receipt under its idempotency key.
-    pub(crate) fn record_batch_write_receipt(
-        &mut self,
-        key: String,
-        receipt: ReplicaBatchWriteReceipt,
-    ) {
-        std::sync::Arc::make_mut(&mut self.batch_write_request_receipts).insert(key, receipt);
-    }
-
-    /// The batch discard receipt filed under this idempotency key, if there is one.
-    pub(crate) fn batch_discard_receipt(&self, key: &str) -> Option<&ReplicaBatchDiscardReceipt> {
-        self.batch_discard_request_receipts.get(key)
-    }
-
-    /// File a batch discard receipt under its idempotency key.
-    pub(crate) fn record_batch_discard_receipt(
-        &mut self,
-        key: String,
-        receipt: ReplicaBatchDiscardReceipt,
-    ) {
-        std::sync::Arc::make_mut(&mut self.batch_discard_request_receipts).insert(key, receipt);
-    }
-
-    /// How many receipts this replica is retaining, over the four maps the audit charges for.
-    ///
-    /// ALL FOUR TERMS, NAMED. The caller was adding four `len()` calls together, and a helper
-    /// that quietly dropped one of them would move the published figure while still looking
-    /// like the sum of a list. The four are written out here so the omission would be visible
-    /// at the one place it could happen.
-    pub(crate) fn retained_receipt_count(&self) -> u64 {
-        (self.write_request_receipts.len() as u64)
-            .saturating_add(self.discard_request_receipts.len() as u64)
-            .saturating_add(self.batch_write_request_receipts.len() as u64)
-            .saturating_add(self.batch_discard_request_receipts.len() as u64)
-    }
-
     // -----------------------------------------------------------------------------------
     // The rest of the whole-state reach, named `_local`, and reachable only from the suite
     // -----------------------------------------------------------------------------------
@@ -309,53 +245,11 @@ impl MatrixReplicaService {
     // once it is `pub(crate)`, while a call named `_local` is a thing that can be counted,
     // and the count is what says how much of the reach is left.
 
-    /// The whole page map, mutably. **THIS CALL CANNOT CROSS A PROCESS BOUNDARY.**
-    ///
-    /// Separate from [`MatrixReplicaService::pages_local`] so that the read-only callers and
-    /// the ones that change pages under the service's feet are told apart by name: a test
-    /// that clears every page is doing something no production path may do, and it should not
-    /// be reachable through the accessor the footprint audit uses.
-    #[cfg(test)]
-    pub(crate) fn pages_local_mut(&mut self) -> &mut BTreeMap<PageId, std::sync::Arc<PageState>> {
-        &mut self.pages
-    }
 
-    /// This replica's write receipts. **LOCAL ONLY** -- see [`MatrixReplicaService::pages_local`].
-    #[cfg(test)]
-    pub(crate) fn write_receipts_local(&self) -> &BTreeMap<String, ReplicaWriteReceipt> {
-        &self.write_request_receipts
-    }
 
-    /// This replica's discard receipts. **LOCAL ONLY.**
-    #[cfg(test)]
-    pub(crate) fn discard_receipts_local(&self) -> &BTreeMap<String, ReplicaDiscardReceipt> {
-        &self.discard_request_receipts
-    }
 
-    /// This replica's batch write receipts. **LOCAL ONLY.**
-    #[cfg(test)]
-    pub(crate) fn batch_write_receipts_local(
-        &self,
-    ) -> &BTreeMap<String, ReplicaBatchWriteReceipt> {
-        &self.batch_write_request_receipts
-    }
 
-    /// This replica's batch discard receipts. **LOCAL ONLY.**
-    #[cfg(test)]
-    pub(crate) fn batch_discard_receipts_local(
-        &self,
-    ) -> &BTreeMap<String, ReplicaBatchDiscardReceipt> {
-        &self.batch_discard_request_receipts
-    }
 
-    /// This replica's read cache. **LOCAL ONLY**, and a `RefCell`, so this is enough to
-    /// change it -- which is why only a test reaches for it.
-    #[cfg(test)]
-    pub(crate) fn read_cache_local(
-        &self,
-    ) -> &RefCell<HashMap<ReplicaReadCacheKey, ReplicaReadCacheEntry>> {
-        &self.read_cache
-    }
 
     // -----------------------------------------------------------------------------------
     // The shared handles, which are NOT the same accessor as the maps
@@ -373,35 +267,7 @@ impl MatrixReplicaService {
     // the handle gets its own accessor rather than being reachable by accident through the
     // other one.
 
-    /// The shared handle holding the write receipts, for proving a snapshot shares it.
-    #[cfg(test)]
-    pub(crate) fn write_receipts_handle(
-        &self,
-    ) -> &std::sync::Arc<BTreeMap<String, ReplicaWriteReceipt>> {
-        &self.write_request_receipts
-    }
 
-    /// The shared handle holding the discard receipts.
-    #[cfg(test)]
-    pub(crate) fn discard_receipts_handle(
-        &self,
-    ) -> &std::sync::Arc<BTreeMap<String, ReplicaDiscardReceipt>> {
-        &self.discard_request_receipts
-    }
 
-    /// The shared handle holding the batch write receipts.
-    #[cfg(test)]
-    pub(crate) fn batch_write_receipts_handle(
-        &self,
-    ) -> &std::sync::Arc<BTreeMap<String, ReplicaBatchWriteReceipt>> {
-        &self.batch_write_request_receipts
-    }
 
-    /// The shared handle holding the batch discard receipts.
-    #[cfg(test)]
-    pub(crate) fn batch_discard_receipts_handle(
-        &self,
-    ) -> &std::sync::Arc<BTreeMap<String, ReplicaBatchDiscardReceipt>> {
-        &self.batch_discard_request_receipts
-    }
 }

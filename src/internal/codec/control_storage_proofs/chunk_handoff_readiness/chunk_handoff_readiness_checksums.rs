@@ -5,18 +5,34 @@ pub(crate) fn chunk_state_handoff_checksum(
     state: &PageState,
     payload_checksum: &str,
 ) -> String {
+    chunk_state_handoff_checksum_from_parts(
+        page_id,
+        state.logical_length,
+        state.write_sequence,
+        payload_checksum,
+        &state.discarded_ranges,
+    )
+}
+
+pub(crate) fn chunk_state_handoff_checksum_from_parts(
+    page_id: &PageId,
+    logical_length: u64,
+    write_sequence: u64,
+    payload_checksum: &str,
+    discarded_ranges: &[DataRange],
+) -> String {
     let mut material = Vec::with_capacity(
         std::mem::size_of::<u64>() * 6
             + encoded_string_len(payload_checksum)
-            + state.discarded_ranges.len() * std::mem::size_of::<u64>() * 2,
+            + discarded_ranges.len() * std::mem::size_of::<u64>() * 2,
     );
     append_chunk_id(&mut material, &page_id.chunk_id);
     append_u64(&mut material, page_id.page_index);
-    append_u64(&mut material, state.logical_length);
-    append_u64(&mut material, state.write_sequence);
+    append_u64(&mut material, logical_length);
+    append_u64(&mut material, write_sequence);
     append_string(&mut material, payload_checksum);
-    append_u64(&mut material, state.discarded_ranges.len() as u64);
-    for range in &state.discarded_ranges {
+    append_u64(&mut material, discarded_ranges.len() as u64);
+    for range in discarded_ranges {
         append_range(&mut material, range);
     }
     etag(&material)
@@ -103,29 +119,6 @@ pub(crate) fn chunk_local_state_handoff_request_checksum(
     append_string(&mut material, "MXOSCHUNK-HANDOFF-REQUEST1");
     append_page_id(&mut material, page_id);
     append_u64(&mut material, max_payload_bytes);
-    etag(&material)
-}
-
-pub(crate) fn replica_state_handoff_request_checksum(
-    chunk_id: &ChunkId,
-    offset: u64,
-    length: u64,
-    source_replica_index: usize,
-    max_payload_bytes: u64,
-    route_control_proof_checksum: &str,
-) -> String {
-    let mut material = Vec::with_capacity(
-        encoded_string_len("MXOSBLOCK-CHUNK-HANDOFF-REQUEST1")
-            + std::mem::size_of::<u64>() * 6
-            + encoded_string_len(route_control_proof_checksum),
-    );
-    append_string(&mut material, "MXOSBLOCK-CHUNK-HANDOFF-REQUEST1");
-    append_chunk_id(&mut material, chunk_id);
-    append_u64(&mut material, offset);
-    append_u64(&mut material, length);
-    append_u64(&mut material, source_replica_index as u64);
-    append_u64(&mut material, max_payload_bytes);
-    append_string(&mut material, route_control_proof_checksum);
     etag(&material)
 }
 

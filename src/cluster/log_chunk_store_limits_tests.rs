@@ -141,3 +141,19 @@ fn a_tail_is_not_closed_even_when_it_is_the_least_recently_used_chunk() {
     assert_eq!(read(&mut store, 1, 0, 700).unwrap(), payload(1, 700));
     append(&mut store, 1, 700, payload(9, 100)).unwrap();
 }
+
+#[test]
+fn nested_log_directory_creation_finishes_before_serving_queries() {
+    let dir = Dir::new("nested-directory");
+    let nested = dir.0.join("first").join("second").join("store");
+    let mut store = LogChunkStore::open(&nested).unwrap();
+    assert!(nested.is_dir());
+    assert_eq!(std::fs::read_dir(&nested).unwrap().count(), 0);
+    let reply = store
+        .apply(&LogOpRequest::publication_tail(3, 11, 7))
+        .unwrap();
+    assert!(reply.publication_supported);
+    assert!(!reply.chunk_present);
+    assert!(reply.published_prefix().is_none());
+    assert_eq!(std::fs::read_dir(&nested).unwrap().count(), 0);
+}

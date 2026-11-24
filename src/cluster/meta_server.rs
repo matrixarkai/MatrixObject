@@ -843,6 +843,11 @@ fn apply(
         drop(guard);
         return consensus.request(request);
     }
+    if let MetaRequest::PublishChunkManifest(_) = &request {
+        return Err(ObjectError::PreconditionFailed(
+            "chunk manifest publication requires metadata consensus".into(),
+        ));
+    }
     if let MetaRequest::ChunkCatalog(command) = &request {
         if guard.storage.is_none() {
             return Err(ObjectError::PreconditionFailed("catalog update requires durable metadata storage".into()));
@@ -862,8 +867,6 @@ fn apply(
     }
     let request = super::health_report::stamp(request, &guard.service)?;
     let decision = match &request {
-        MetaRequest::CopyManifest(command) => Some(super::manifest_copy_commands::prepare(
-            &guard.service, &guard.groups, command, max_payload_bytes)?),
         MetaRequest::Features(command) if !command.is_read() => match super::features_commands::prepare(&guard.service, command)? {
             Some(outcome) => {
                 let after = outcome.features.as_ref().and_then(|change| change.after.clone())
@@ -872,6 +875,12 @@ fn apply(
             }
             None => return Ok(super::features_commands::reply(&guard.service.cluster_features)),
         },
+        MetaRequest::NativeObject(command) if !command.is_read() => {
+            if guard.storage.is_none() {
+                return Err(ObjectError::PreconditionFailed("native object mutation requires durable metadata storage".into()));
+            }
+            Some(super::native_object_commands::prepare(&guard.service, &guard.groups, command, max_payload_bytes, super::staged_lease_sweeper::now_ms()?)?)
+        }
         MetaRequest::LogChunk(command) if !command.is_read() => {
             match super::log_chunk_commands::prepare(&guard.service, &guard.groups, command, super::staged_lease_sweeper::now_ms()?)? {
                 super::log_chunk_commands::Decision::Change(outcome, reply) => Some((outcome, reply)),
@@ -917,6 +926,7 @@ fn apply(
         _ => None,
     };
     if let Some((decided, reply)) = decision {
+        decided.check_legacy_namespace(&guard.service)?;
         if guard.storage.is_some() {
             // Preflight the local snapshot bound before persisting an outcome.
             let renewal_grows = decided.retention_deadline.as_ref().is_some_and(|change|
@@ -1100,6 +1110,8 @@ pub(super) fn decide_allocation(
             features: None,
             log_chunk: None,
             lease_batch: None,
+            chunk_writer: None,
+        native: None,
             forget: false,
     };
     outcome.to_payload()?;
@@ -1189,11 +1201,6 @@ pub(super) fn apply_with_groups(
     groups: &super::ChunkGroupCatalog,
 ) -> Result<MetaReply, ObjectError> {
     groups.check_request(&request)?;
-    if let MetaRequest::CopyManifest(command) = &request {
-        let (outcome, reply) = super::manifest_copy_commands::prepare(service, groups, command, limit)?;
-        outcome.apply(service)?;
-        return Ok(reply);
-    }
     if let MetaRequest::Features(command) = &request {
         if !command.is_read() {
             return match super::features_commands::prepare(service, command)? {
@@ -1205,6 +1212,22 @@ pub(super) fn apply_with_groups(
                 }
                 None => Ok(super::features_commands::reply(&service.cluster_features)),
             };
+        }
+    }
+    if let MetaRequest::PublishChunkManifest(outcome) = &request {
+        return match super::chunk_manifest_command::prepare(service, outcome)? {
+            super::chunk_manifest_command::Decision::Change(outcome, manifest) => {
+                super::chunk_manifest_command::apply(service, &outcome)?;
+                Ok(MetaReply::ChunkManifest(manifest))
+            }
+            super::chunk_manifest_command::Decision::Unchanged(manifest) => Ok(MetaReply::ChunkManifest(manifest)),
+        };
+    }
+    if let MetaRequest::NativeObject(command) = &request {
+        if !command.is_read() {
+            let (outcome, reply) = super::native_object_commands::prepare(service, groups, command, limit, super::staged_lease_sweeper::now_ms()?)?;
+            outcome.apply(service)?;
+            return Ok(reply);
         }
     }
     if let MetaRequest::LogChunk(command) = &request {
@@ -1464,11 +1487,13 @@ pub(super) fn apply_to_meta(
     max_payload_bytes: usize,
 ) -> Result<MetaReply, ObjectError> {
     match request {
-        MetaRequest::CopyManifest(_) => Err(ObjectError::InvalidArgument("atomic copy requires catalog dispatch".into())),
         MetaRequest::Features(command) if command.is_read() => super::features_commands::read(guard, &command),
         MetaRequest::Features(_) => Err(ObjectError::InvalidArgument("feature changes require catalog dispatch".into())),
+        MetaRequest::NativeObject(command) if command.is_read() => super::native_object_commands::read(guard, &command, max_payload_bytes, super::staged_lease_sweeper::now_ms()?),
+        MetaRequest::NativeObject(_) => Err(ObjectError::InvalidArgument("native object mutations require catalog dispatch".into())),
         MetaRequest::LogChunk(command) if command.is_read() => super::log_chunk_commands::read(guard, &command),
         MetaRequest::LogChunk(_) => Err(ObjectError::InvalidArgument("log chunk changes require catalog dispatch".into())),
+        MetaRequest::PublishChunkManifest(_) => Err(ObjectError::InvalidArgument("chunk manifest publication requires durable dispatch".into())),
         MetaRequest::StagedAllocation(command) => super::staged_allocation_commands::read(guard, &command, max_payload_bytes),
         MetaRequest::ManifestRetention(command) => {
             command.validate()?;
@@ -1495,6 +1520,22 @@ pub(super) fn apply_to_meta(
         MetaRequest::PublishManifest { .. } => Err(ObjectError::InvalidArgument(
             "publication requires a chunk catalog".into(),
         )),
+        MetaRequest::ReadChunkManifest { bucket, key } => {
+            crate::validate_bucket(&bucket)?;
+            crate::validate_key(&key)?;
+            let manifest = guard
+                .chunk_catalog
+                .get(&crate::ObjectId::new(bucket.clone(), key.clone()))
+                .ok_or_else(|| ObjectError::NotFound(format!("chunk manifest {bucket}/{key} is not in the catalog")))?;
+            let reply = MetaReply::ChunkManifest(manifest.as_ref().clone());
+            crate::cluster::message::check_reply_size(reply.payload_len(), max_payload_bytes)?;
+            Ok(reply)
+        }
+        MetaRequest::ListChunkManifests(request) => {
+            let reply = MetaReply::Manifests(guard.chunk_catalog.list_page(&request)?);
+            crate::cluster::message::check_reply_size(reply.payload_len(), max_payload_bytes)?;
+            Ok(reply)
+        }
         MetaRequest::ListManifests(request) => {
             let reply = MetaReply::Manifests(guard.object_manifests.list_page(&request)?);
             crate::cluster::message::check_reply_size(reply.payload_len(), max_payload_bytes)?;
@@ -2257,3 +2298,7 @@ mod snapshot_bound_tests {
         assert!(bound.admits_without_measuring(1));
     }
 }
+
+#[cfg(all(test, feature = "metadata-consensus"))]
+#[path = "native_object_path_tests.rs"]
+mod native_object_path_tests;

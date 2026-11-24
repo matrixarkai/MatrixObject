@@ -4,6 +4,19 @@ impl MetaSnapshot {
     pub fn validate(&self) -> Result<(), ObjectError> {
         self.cluster_features.validate()?;
         self.writer_leases.validate()?;
+        let native = self.cluster_features.has(crate::cluster_features::FEATURE_NATIVE_OBJECT_STATE);
+        if native {
+            if !self.cluster_features.has(crate::cluster_features::FEATURE_UNIFIED_LOG_WRITERS) {
+                return Err(ObjectError::Corruption("native object state requires unified writer readers".into()));
+            }
+            self.native_objects.validate_snapshot(&self.chunk_catalog, self.placement_commit_index)?;
+            if self.chunk_catalog.iter().filter(|(_, m)| m.initialized_log.is_some()).any(|(id, _)| self.object_manifests.get(id).is_some())
+                || self.native_objects.staged_objects().any(|id| self.object_manifests.get(id).is_some()) {
+                return Err(ObjectError::Corruption("native object ownership crosses manifest catalogs".into()));
+            }
+        } else if !self.native_objects.is_default() || self.chunk_catalog.iter().any(|(_, m)| m.initialized_log.is_some()) {
+            return Err(ObjectError::Corruption("initialized LOG metadata reader floor is not activated".into()));
+        }
         if self.next_commit_index == 0 {
             return Err(ObjectError::Corruption(
                 "metadata snapshot next commit index is invalid".to_string(),

@@ -100,38 +100,3 @@ pub(crate) fn prepared_metadata_qos_config_checksum(
     etag(&material)
 }
 
-pub(crate) fn append_metadata_route_cache_config(
-    material: &mut Vec<u8>,
-    config: &MetadataRouteCacheConfig,
-) {
-    append_u64(material, config.entries as u64);
-    append_u64(material, config.ttl_ms);
-}
-
-pub(crate) fn metadata_route_cache_config_request_checksum(
-    config: &MetadataRouteCacheConfig,
-) -> String {
-    let mut material = Vec::new();
-    append_string(&mut material, "MOS-RUST-META-ROUTE-CACHE-CONFIG-REQUEST1");
-    append_metadata_route_cache_config(&mut material, config);
-    etag(&material)
-}
-
-pub(crate) fn prepared_metadata_route_cache_config_checksum(
-    prepared: &PreparedMetadataRouteCacheConfig,
-) -> String {
-    let mut material = Vec::new();
-    append_string(&mut material, "MOS-RUST-PREPARED-META-ROUTE-CACHE-CONFIG3");
-    append_u64(&mut material, prepared.expected_previous_commit_index);
-    append_u64(&mut material, prepared.prepared_commit_index);
-    append_metadata_route_cache_config(&mut material, &prepared.config);
-    append_string(&mut material, &prepared.before_state_fingerprint);
-    append_string(&mut material, &prepared.after_state_fingerprint);
-    append_string(&mut material, &prepared.metadata_control_proof_format);
-    append_string(&mut material, &prepared.metadata_control_proof_checksum);
-    append_u64(&mut material, prepared.metadata_control_proof_bytes);
-    append_u64(&mut material, prepared.metadata_control_proof_now_ms);
-    append_string(&mut material, &prepared.request_checksum);
-    etag(&material)
-}
-

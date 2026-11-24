@@ -29,7 +29,7 @@ const MAX_PART_NUMBER: u32 = 10_000;
 const DEFAULT_LISTING: usize = 1000;
 
 pub(super) fn is_reserved(key: &str) -> bool {
-    key.starts_with(RESERVED_PREFIX)
+    key.starts_with(RESERVED_PREFIX) || key.starts_with(super::versions::VERSIONS_PREFIX) || key.starts_with(super::feed::FEED_PREFIX)
 }
 
 /// The key to resume a listing from so that every key starting with `common_prefix` is skipped.
@@ -86,6 +86,52 @@ fn valid_upload_id(id: &str) -> bool {
     id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// The attributes of an upload as the lines that follow its begin time in its record: `ct`, `meta`, `tag`, `ret`, `hold`,
+/// fields separated by tabs. A header value cannot hold a line break, so a line is one value.
+fn encode_upload_attributes(attributes: &ChunkAttributes) -> String {
+    let mut out = String::new();
+    if !attributes.content_type.is_empty() {
+        out.push_str(&format!("\nct\t{}", attributes.content_type));
+    }
+    for (key, value) in &attributes.user_metadata {
+        out.push_str(&format!("\nmeta\t{key}\t{value}"));
+    }
+    for (key, value) in &attributes.tags {
+        out.push_str(&format!("\ntag\t{key}\t{value}"));
+    }
+    if attributes.retention_mode != 0 {
+        out.push_str(&format!("\nret\t{}\t{}", attributes.retention_mode, attributes.retain_until_ms));
+    }
+    if attributes.legal_hold {
+        out.push_str("\nhold");
+    }
+    out
+}
+
+fn decode_upload_attributes(record: &str) -> ChunkAttributes {
+    let mut attributes = ChunkAttributes::default();
+    // the first line is the key and the second the time
+    for line in record.lines().skip(2) {
+        let mut fields = line.splitn(3, '\t');
+        match (fields.next(), fields.next(), fields.next()) {
+            (Some("ct"), Some(value), _) => attributes.content_type = value.to_string(),
+            (Some("meta"), Some(key), Some(value)) => {
+                attributes.user_metadata.insert(key.to_string(), value.to_string());
+            }
+            (Some("tag"), Some(key), Some(value)) => {
+                attributes.tags.insert(key.to_string(), value.to_string());
+            }
+            (Some("ret"), Some(mode), Some(until)) => {
+                attributes.retention_mode = mode.parse().unwrap_or(0);
+                attributes.retain_until_ms = until.parse().unwrap_or(0);
+            }
+            (Some("hold"), _, _) => attributes.legal_hold = true,
+            _ => {}
+        }
+    }
+    attributes
+}
+
 fn record_key(id: &str) -> String {
     format!("{RESERVED_PREFIX}{id}/meta")
 }
@@ -110,18 +156,7 @@ fn acl_xml() -> String {
 }
 
 impl ClusterGateway {
-    /// `ListBuckets`: buckets are implicit in the replica plane (one exists as soon as an object is
-    /// published under it) and the plane cannot enumerate them, so this names the bucket the
-    /// gateway was started for.
-    pub(super) fn list_buckets(&self, request: &Request) -> Response {
-        if !matches!(request.method.as_str(), "GET" | "HEAD") {
-            return method_not_allowed("GET, HEAD", "/");
-        }
-        s3::xml_response(200, s3::list_all_my_buckets_xml(&[self.bucket_hint.clone()]))
-    }
-
-    /// `DeleteBucket`: refused while any live object remains, otherwise a no-op (a bucket has no
-    /// existence apart from its objects).
+    /// `DeleteBucket`: refused while any live object remains, otherwise the bucket's record is removed.
     pub(super) fn delete_bucket(&self, bucket: &str) -> Response {
         let resource = format!("/{bucket}");
         let held = self.with_plane(|plane| {
@@ -130,7 +165,7 @@ impl ClusterGateway {
                 let page = plane.list(bucket, after.as_deref(), LIST_PAGE)?;
                 for summary in &page.entries {
                     after = Some(summary.key.clone());
-                    if !summary.deleted && !is_reserved(&summary.key) {
+                    if !summary.deleted && (!is_reserved(&summary.key) || summary.key.starts_with(super::versions::VERSIONS_PREFIX)) {
                         return Ok(true);
                     }
                 }
@@ -146,8 +181,66 @@ impl ClusterGateway {
                 "the bucket still holds objects",
                 &resource,
             ),
-            Ok(false) => Response::status(204),
+            Ok(false) => match self.drop_bucket_record(bucket) {
+                Ok(()) => Response::status(204),
+                Err(error) => error_response(error, &resource, true),
+            },
         }
+    }
+
+    /// `DELETE /{bucket}?delete-prefix=P[&limit=N][&marker=K]`: delete up to `limit` live objects whose keys start with `P`
+    /// and come after `marker`, as `DeleteObjects` would (a lock refuses an object, versioning leaves a delete marker).
+    /// The answer counts what was deleted and what was refused, and names the key to resume after when more remain.
+    pub(super) fn delete_prefix(&self, request: &Request, bucket: &str) -> Response {
+        let resource = format!("/{bucket}");
+        let prefix = request.query_param("delete-prefix").unwrap_or_default();
+        if prefix.is_empty() {
+            return s3::error_response(s3::S3ErrorCode::InvalidArgument, "delete-prefix names the prefix to delete; an empty one would empty the bucket", &resource);
+        }
+        let limit = request.query_param("limit").and_then(|raw| raw.parse::<usize>().ok()).unwrap_or(1000).clamp(1, 10_000);
+        let marker = request.query_param("marker").unwrap_or_default();
+        let lock = match self.lock_check(request, bucket, &resource) {
+            Ok(lock) => lock,
+            Err(refusal) => return refusal,
+        };
+        let versioned = match self.versioning_on(bucket) {
+            Ok(on) => on,
+            Err(error) => return error_response(error, &resource, true),
+        };
+        let keys = match self.keys_under(bucket, &prefix) {
+            Ok(keys) => keys,
+            Err(error) => return error_response(error, &resource, true),
+        };
+        let mut pending: Vec<String> = keys.into_iter().filter(|key| marker.is_empty() || key.as_str() > marker.as_str()).collect();
+        let more = pending.len() > limit;
+        pending.truncate(limit);
+        let (mut deleted, mut refused) = (0u64, 0u64);
+        for key in &pending {
+            self.forget(bucket, key);
+            let removed = if versioned {
+                self.versioned_delete(bucket, key, lock).and_then(|marker| marker.ok_or_else(|| ObjectError::NotFound("already deleted".into())))
+            } else {
+                self.delete_checked(bucket, key, lock)
+            };
+            match removed {
+                Ok(manifest) => {
+                    self.remember(&manifest);
+                    self.note_change(bucket, "delete", key, manifest.generation, 0);
+                    deleted += 1;
+                }
+                Err(ObjectError::NotFound(_)) => {}
+                Err(ObjectError::PreconditionFailed(_)) => refused += 1,
+                Err(error) => return error_response(error, &resource, true),
+            }
+        }
+        let mut body = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<DeletePrefixResult><Deleted>{deleted}</Deleted><Refused>{refused}</Refused><IsTruncated>{more}</IsTruncated>");
+        if more {
+            if let Some(last) = pending.last() {
+                body.push_str(&format!("<NextMarker>{}</NextMarker>", crate::bucket_config::xml_escape(last)));
+            }
+        }
+        body.push_str("</DeletePrefixResult>\n");
+        s3::xml_response(200, body)
     }
 
     /// `DeleteObjects`: `POST /{bucket}?delete` with a list of keys.
@@ -158,6 +251,14 @@ impl ClusterGateway {
             Err(reason) => {
                 return s3::error_response(s3::S3ErrorCode::MalformedXml, &reason, &resource)
             }
+        };
+        let lock = match self.lock_check(request, bucket, &resource) {
+            Ok(lock) => lock,
+            Err(refusal) => return refusal,
+        };
+        let versioned = match self.versioning_on(bucket) {
+            Ok(on) => on,
+            Err(error) => return error_response(error, &resource, true),
         };
         let mut outcomes = Vec::with_capacity(asked.keys.len());
         for key in &asked.keys {
@@ -170,9 +271,15 @@ impl ClusterGateway {
                 continue;
             }
             self.forget(bucket, key);
-            match self.with_plane(|plane| plane.delete(bucket, key)) {
+            let removed = if versioned {
+                self.versioned_delete(bucket, key, lock).and_then(|marker| marker.ok_or_else(|| ObjectError::NotFound("already deleted".into())))
+            } else {
+                self.delete_checked(bucket, key, lock)
+            };
+            match removed {
                 Ok(manifest) => {
                     self.remember(&manifest);
+                    self.note_change(bucket, "delete", key, manifest.generation, 0);
                     outcomes.push(batch::DeleteOutcome::Deleted(key.clone()));
                 }
                 // Deleting what is not there is a success, so a retried batch sees its keys gone.
@@ -181,7 +288,10 @@ impl ClusterGateway {
                 }
                 Err(error) => outcomes.push(batch::DeleteOutcome::Failed {
                     key: key.clone(),
-                    code: s3::code_for(&error, false),
+                    code: match &error {
+                        ObjectError::PreconditionFailed(message) if message.starts_with(super::attributes::LOCKED) => s3::S3ErrorCode::AccessDenied,
+                        _ => s3::code_for(&error, false),
+                    },
                     message: error.to_string(),
                 }),
             }
@@ -213,7 +323,7 @@ impl ClusterGateway {
         source: &str,
     ) -> Response {
         let resource = format!("/{bucket}/{key}");
-        let (source_bucket, source_key) = match batch::parse_copy_source(source) {
+        let (source_bucket, source_key, source_version) = match batch::parse_copy_source_with_version(source) {
             Ok(parsed) => parsed,
             Err(reason) => {
                 return s3::error_response(s3::S3ErrorCode::InvalidArgument, &reason, &resource)
@@ -231,7 +341,8 @@ impl ClusterGateway {
                 &resource,
             );
         }
-        if source_bucket == bucket && source_key == key {
+        // copying a version onto its own key is how an old version is brought back, so only the plain form is refused
+        if source_bucket == bucket && source_key == key && source_version.is_none() {
             return s3::error_response(
                 s3::S3ErrorCode::InvalidRequest,
                 "the copy source and destination are the same object, so this request would change nothing",
@@ -239,11 +350,39 @@ impl ClusterGateway {
             );
         }
         let source_resource = format!("/{source_bucket}/{source_key}");
+        // the key the named version is stored at: the key itself when it is the current version
+        let read_key = match &source_version {
+            None => source_key.clone(),
+            Some(version) => match self.version_key(&source_bucket, &source_key, version, &source_resource) {
+                Ok(read_key) => read_key,
+                Err(response) => return response,
+            },
+        };
+        let versioned = match self.versioning_on(bucket) {
+            Ok(on) => on,
+            Err(error) => return error_response(error, &resource, true),
+        };
+        // the destination carries what the request says (its lock, and its default retention), and the source's content
+        // type, metadata and tags unless the request replaces them
+        let lock = match self.lock_check(request, bucket, &resource).and_then(|lock| self.with_quota(lock, bucket, &resource)) {
+            Ok(lock) => lock,
+            Err(refusal) => return refusal,
+        };
+        let named = match self.request_attributes(request, bucket, &resource) {
+            Ok(named) => named,
+            Err(refusal) => return refusal,
+        };
+        let replace_metadata = request
+            .header("x-amz-metadata-directive")
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("REPLACE"));
+        let replace_tags = request
+            .header("x-amz-tagging-directive")
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("REPLACE"));
         const ATTEMPTS: usize = 4;
         for _ in 0..ATTEMPTS {
             let outcome = self.with_plane(|plane| {
-                let source = match plane.read_manifest(&source_bucket, &source_key) {
-                    Ok(manifest) if !manifest.deleted => manifest,
+                let (source, source_attributes) = match plane.read_manifest_with_attributes(&source_bucket, &read_key) {
+                    Ok((manifest, carried)) if !manifest.deleted => (manifest, carried),
                     Ok(_) | Err(ObjectError::NotFound(_)) => {
                         return Ok(Err(s3::error_response(
                             s3::S3ErrorCode::NoSuchKey,
@@ -272,18 +411,49 @@ impl ClusterGateway {
                         )));
                     }
                 }
-                let current = match plane.read_manifest(bucket, key) {
-                    Ok(manifest) => Some(manifest),
-                    Err(ObjectError::NotFound(_)) => None,
+                let (current, current_attributes) = match plane.read_manifest_with_attributes(bucket, key) {
+                    Ok((manifest, carried)) => (Some(manifest), carried),
+                    Err(ObjectError::NotFound(_)) => (None, ChunkAttributes::default()),
                     Err(error) => return Err(error),
                 };
-                Ok(Ok(plane.copy(&source_bucket, &source_key, bucket, key, current)))
+                if current.as_ref().is_some_and(|manifest| !manifest.deleted) {
+                    if let Some(refusal) = lock.refuse(&current_attributes) {
+                        return Ok(Ok(Err(refusal)));
+                    }
+                }
+                let replaced = current.as_ref().filter(|manifest| !manifest.deleted).map_or(0, |manifest| manifest.length);
+                if let Some(refusal) = lock.refuse_quota(source.length, replaced) {
+                    return Ok(Ok(Err(refusal)));
+                }
+                // a copy over a key keeps the version it replaces, like any other write
+                if versioned {
+                    if let Some(kept) = current.as_ref() {
+                        if let Err(failure) = ClusterGateway::retain(plane, kept) {
+                            return Ok(Ok(Err(failure)));
+                        }
+                    }
+                }
+                let destination = ChunkAttributes {
+                    content_type: if replace_metadata { named.content_type.clone() } else { source_attributes.content_type.clone() },
+                    user_metadata: if replace_metadata { named.user_metadata.clone() } else { source_attributes.user_metadata.clone() },
+                    tags: if replace_tags { named.tags.clone() } else { source_attributes.tags.clone() },
+                    retention_mode: named.retention_mode,
+                    retain_until_ms: named.retain_until_ms,
+                    legal_hold: named.legal_hold,
+                    // the copy is a new write: the client that publishes stamps its own clock
+                    modified_ms: 0,
+                    // and it is in the class the request names, not the source's, and is not restored
+                    storage_class: named.storage_class.clone(),
+                    restore_until_ms: 0,
+                };
+                Ok(Ok(plane.copy_with(&source_bucket, &read_key, bucket, key, current, &destination)))
             });
             match outcome {
                 Err(error) => return error_response(error, &resource, false),
                 Ok(Err(refusal)) => return refusal,
                 Ok(Ok(Ok(manifest))) => {
                     self.remember(&manifest);
+                    self.note_change(bucket, "copy", key, manifest.generation, manifest.length);
                     return s3::xml_response(
                         200,
                         batch::copy_object_result_xml(now_ms(), &etag_of(manifest.generation)),
@@ -331,8 +501,18 @@ impl ClusterGateway {
         };
         let text = String::from_utf8_lossy(&bytes).to_string();
         match text.split_once('\n') {
-            Some((key, begun)) => Ok((key.to_string(), begun.trim().parse().unwrap_or(0))),
+            Some((key, rest)) => Ok((key.to_string(), rest.lines().next().unwrap_or("").trim().parse().unwrap_or(0))),
             None => Err(unknown()),
+        }
+    }
+
+    /// The attributes named when the upload began.
+    fn upload_attributes(&self, bucket: &str, id: &str, resource: &str) -> Result<ChunkAttributes, Response> {
+        let record = self.with_plane(|plane| plane.read(bucket, &record_key(id)));
+        match record {
+            Ok((_, bytes)) => Ok(decode_upload_attributes(&String::from_utf8_lossy(&bytes))),
+            Err(ObjectError::NotFound(_)) => Ok(ChunkAttributes::default()),
+            Err(error) => Err(error_response(error, resource, false)),
         }
     }
 
@@ -377,10 +557,14 @@ impl ClusterGateway {
     }
 
     /// `CreateMultipartUpload`: `POST /{bucket}/{key}?uploads`.
-    pub(super) fn create_multipart_upload(&self, bucket: &str, key: &str) -> Response {
+    pub(super) fn create_multipart_upload(&self, request: &Request, bucket: &str, key: &str) -> Response {
         let resource = format!("/{bucket}/{key}");
+        let named = match self.request_attributes(request, bucket, &resource) {
+            Ok(named) => named,
+            Err(refusal) => return refusal,
+        };
         let id = new_upload_id();
-        let record = format!("{key}\n{}", now_ms());
+        let record = format!("{key}\n{}{}", now_ms(), encode_upload_attributes(&named));
         let written = self.with_plane(|plane| {
             plane
                 .write(bucket, &record_key(&id), None, record.as_bytes())
@@ -504,7 +688,15 @@ impl ClusterGateway {
                 Err(error) => return error_response(error, &resource, false),
             }
         }
-        match self.replace_manifest(bucket, key, &assembled, false, None) {
+        let attributes = match self.upload_attributes(bucket, id, &resource) {
+            Ok(attributes) => attributes,
+            Err(response) => return response,
+        };
+        let lock = match self.lock_check(request, bucket, &resource).and_then(|lock| self.with_quota(lock, bucket, &resource)) {
+            Ok(lock) => lock,
+            Err(refusal) => return refusal,
+        };
+        match self.replace_manifest_with(bucket, key, &assembled, false, None, &attributes, lock) {
             Ok(manifest) => {
                 self.remove_upload(bucket, id);
                 s3::xml_response(

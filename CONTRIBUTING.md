@@ -24,7 +24,7 @@ processes. Run them in separate invocations so children cannot briefly inherit
 file locks held by unrelated parallel library tests:
 
 ```bash
-cargo test --locked --lib tests::every_guard_the_workflow_pins_by_name_exists -- --exact --ignored
+cargo test --locked --lib repo_guard_tests::every_guard_the_workflow_pins_by_name_exists -- --exact --ignored
 cargo test --locked --all-features --lib stored_outcomes_ -- --ignored --test-threads=1
 cargo test --locked --all-features --lib outcome_segments_ -- --ignored --test-threads=1
 ```
@@ -65,7 +65,7 @@ Four jobs, all on a pinned toolchain:
 
 | job | what it does |
 |---|---|
-| **build & docs** | `cargo build --all-targets --locked` and `--all-features`, then `cargo doc --no-deps --locked` and `--all-features`, all with warnings denied |
+| **build & docs** | `cargo build --all-targets --locked` and `--all-features`, then `cargo doc --no-deps --locked` and `--all-features`, all with warnings denied; process tests for gateway startup during metadata election and its deadline |
 | **format and rollback guards** | Named library guards, grouped test filters, integration targets and network-partition checks |
 
 The **network metadata consensus** job also runs named health, routing, preparation, and consensus tests
@@ -75,10 +75,10 @@ The **network chunk consensus** job runs identity, routing, process, recovery, c
 capacity, shutdown, and metadata-health tests with the chunk consensus feature. The coupled
 quorum test additionally enables metadata consensus and starts three voters for each service.
 
-Across these jobs, the workflow explicitly names 308 individual tests. It also
+Across these jobs, the workflow explicitly names 250 individual tests. It also
 runs grouped library filters and integration targets.
 
-**CI does not run the suite.** It compiles everything and runs those 308 guards plus grouped tests and integration targets. A green
+**CI does not run the suite.** It compiles everything and runs those 250 guards plus grouped tests and integration targets. A green
 tick means the tree builds and those guards hold; it does not mean the suite passed. Run
 `tools/suite_gate.sh` yourself.
 

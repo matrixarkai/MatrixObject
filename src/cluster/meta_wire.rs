@@ -107,15 +107,21 @@ pub enum MetaRequestCode {
     ListManifests = 91,
     ManifestRetention = 92,
     StagedAllocation = 93,
-    CopyManifest = 94,
     PlanAppendRoutes = 95,
     /// Declare, raise or read the cluster feature set.
     Features = 96,
     /// Lease an object for log writing, switch it to its next chunk, renew leases in a batch.
     LogChunk = 97,
+    /// Publish one chunk manifest: the client's decided outcome, checked again by every voter.
+    PublishChunkManifest = 98,
+    /// Read the chunk manifest of one object from the committed state.
+    ReadChunkManifest = 99,
     /// Read the extents of a manifest that overlap one byte range, its cached digest, and the
     /// routes of the groups those extents name, at one metadata barrier.
     ReadManifestRange = 100,
+    /// List a page of the chunk manifest catalog.
+    ListChunkManifests = 101,
+    NativeObject = 102,
 }
 
 impl MetaRequestCode {
@@ -156,11 +162,14 @@ impl MetaRequestCode {
             91 => Some(MetaRequestCode::ListManifests),
             92 => Some(MetaRequestCode::ManifestRetention),
             93 => Some(MetaRequestCode::StagedAllocation),
-            94 => Some(MetaRequestCode::CopyManifest),
             95 => Some(MetaRequestCode::PlanAppendRoutes),
             96 => Some(MetaRequestCode::Features),
             97 => Some(MetaRequestCode::LogChunk),
+            98 => Some(MetaRequestCode::PublishChunkManifest),
+            99 => Some(MetaRequestCode::ReadChunkManifest),
             100 => Some(MetaRequestCode::ReadManifestRange),
+            101 => Some(MetaRequestCode::ListChunkManifests),
+            102 => Some(MetaRequestCode::NativeObject),
             _ => None,
         }
     }
@@ -198,11 +207,14 @@ impl MetaRequestCode {
             MetaRequestCode::ListManifests,
             MetaRequestCode::ManifestRetention,
             MetaRequestCode::StagedAllocation,
-            MetaRequestCode::CopyManifest,
             MetaRequestCode::PlanAppendRoutes,
             MetaRequestCode::Features,
             MetaRequestCode::LogChunk,
+            MetaRequestCode::NativeObject,
+            MetaRequestCode::PublishChunkManifest,
+            MetaRequestCode::ReadChunkManifest,
             MetaRequestCode::ReadManifestRange,
+            MetaRequestCode::ListChunkManifests,
         ]
     }
 }

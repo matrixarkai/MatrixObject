@@ -54,6 +54,31 @@ pub(super) struct CatalogPageMetadata {
     pub state_checksum: String,
 }
 impl CatalogPageMetadata {
+    pub fn head(&self, id: &PageId) -> crate::ReplicaHead {
+        let mut checksum = String::with_capacity(24);
+        crate::append_etag_of_digest(&mut checksum, self.data_checksum);
+        let discarded_ranges: Vec<_> = self
+            .discarded_ranges
+            .iter()
+            .map(|r| DataRange {
+                offset: r.offset,
+                length: r.length,
+            })
+            .collect();
+        crate::ReplicaHead {
+            logical_length: self.logical_length,
+            write_sequence: self.write_sequence,
+            state_checksum: crate::chunk_state_handoff_checksum_from_parts(
+                id,
+                self.logical_length,
+                self.write_sequence,
+                &checksum,
+                &discarded_ranges,
+            ),
+            checksum,
+            discarded_ranges,
+        }
+    }
     pub fn from_state(id: &PageId, state: &PageState) -> io::Result<Self> {
         let etag = crate::validate_chunk_state_with_data_etag(state)
             .map_err(|e| invalid(&e.to_string()))?;
@@ -92,6 +117,7 @@ impl From<&PageOutcome> for CatalogPageMetadata {
         }
     }
 }
+#[derive(Clone)]
 pub(super) struct CatalogPage {
     pub metadata: CatalogPageMetadata,
     pub spans: Vec<PayloadSpan>,
@@ -133,7 +159,7 @@ impl PageCatalog {
                 return Err(invalid("checkpoint page prior state mismatch"));
             }
             let mut patch_ranges = Vec::with_capacity(page.patches.len());
-            let mut replacements = Vec::new();
+            let mut replacements = Vec::with_capacity(usize::from(!page.patches.is_empty()));
             let mut virtual_offset = decision.data_offset;
             let mut prior_end = 0;
             for (patch, &length) in page.patches.iter().zip(&decision.patch_lengths) {
@@ -160,6 +186,21 @@ impl PageCatalog {
                     .checked_add(u64::from(length))
                     .ok_or_else(|| invalid("checkpoint payload overflow"))?;
                 prior_end = end;
+            }
+            if previous.is_some_and(|old| {
+                page.data_length >= old.metadata.data_length
+                    && patch_ranges
+                        .iter()
+                        .all(|(start, _)| *start >= old.metadata.data_length)
+            }) {
+                let current = self.pages.get_mut(&id).unwrap();
+                // This record owns fresh descriptors. Coalescing can join its
+                // own adjacent spans, but cannot change an older span prefix.
+                for span in replacements {
+                    super::replica_payload_relocation::push_span(&mut current.spans, span);
+                }
+                current.metadata = CatalogPageMetadata::from(page);
+                continue;
             }
             let old = previous.map_or(&[][..], |page| page.spans.as_slice());
             let kept = retain_unmodified(old, &patch_ranges, page.data_length);
@@ -247,9 +288,13 @@ fn retain_unmodified(old: &[PayloadSpan], patches: &[(u64, u64)], length: u64) -
 }
 
 fn merge_spans(old: Vec<PayloadSpan>, updates: Vec<PayloadSpan>) -> Vec<PayloadSpan> {
+    if old.is_empty() && updates.len() <= 1 {
+        return updates;
+    }
+    let capacity = usize::from(!old.is_empty() || !updates.is_empty());
     let mut old = old.into_iter().peekable();
     let mut updates = updates.into_iter().peekable();
-    let mut out: Vec<PayloadSpan> = Vec::new();
+    let mut out: Vec<PayloadSpan> = Vec::with_capacity(capacity);
     while old.peek().is_some() || updates.peek().is_some() {
         let take_old = match (old.peek(), updates.peek()) {
             (Some(a), Some(b)) => a.offset < b.offset,
@@ -278,11 +323,30 @@ fn merge_spans(old: Vec<PayloadSpan>, updates: Vec<PayloadSpan>) -> Vec<PayloadS
 impl CatalogPage {
     /// Validate once when constructing or decoding an immutable catalog page.
     pub fn validate_spans(&self) -> io::Result<()> {
+        self.validate_span_suffix(0)
+    }
+
+    /// An append preserves a previously validated prefix. Check its boundary
+    /// and the new suffix without walking that prefix again.
+    pub fn validate_span_suffix(&self, first: usize) -> io::Result<()> {
+        if first > self.spans.len() {
+            return Err(invalid("checkpoint span suffix exceeds page"));
+        }
         if self.metadata.data_length > 256 * 1024 * 1024 {
             return Err(invalid("checkpoint page exceeds limit"));
         }
-        let mut previous = 0;
-        for span in &self.spans {
+        let mut previous = if first == 0 {
+            0
+        } else {
+            self.spans[first - 1]
+                .offset
+                .checked_add(self.spans[first - 1].length)
+                .ok_or_else(|| invalid("checkpoint span overflow"))?
+        };
+        if previous > self.metadata.data_length {
+            return Err(invalid("checkpoint span prefix exceeds page"));
+        }
+        for span in &self.spans[first..] {
             let end = span
                 .offset
                 .checked_add(span.length)
@@ -319,13 +383,36 @@ impl CatalogPage {
             .checked_add(length)
             .ok_or_else(|| invalid("checkpoint read overflow"))?
             .min(self.metadata.data_length);
-        let mut bytes = vec![0; (end - offset) as usize];
         if offset == end {
-            return Ok(bytes);
+            return Ok(Vec::new());
         }
         let first = self
             .spans
             .partition_point(|span| span.offset.saturating_add(span.length) <= offset);
+        if let Some(span) = self.spans.get(first).filter(|span| span.offset <= offset) {
+            let span_end = span
+                .offset
+                .checked_add(span.length)
+                .ok_or_else(|| invalid("checkpoint span overflow"))?;
+            if end <= span_end {
+                let physical = span
+                    .extent_offset
+                    .checked_add(offset - span.offset)
+                    .ok_or_else(|| invalid("checkpoint extent offset overflow"))?;
+                let data = read(&span.extent, physical, end - offset)?;
+                if data.len() as u64 != end - offset {
+                    return Err(invalid("short checkpoint payload read"));
+                }
+                // Keep the old tightly sized result even if the provider read
+                // padded sectors or reused a much larger allocation.
+                return Ok(if data.capacity() == data.len() {
+                    data
+                } else {
+                    data.into_boxed_slice().into_vec()
+                });
+            }
+        }
+        let mut bytes = vec![0; (end - offset) as usize];
         for span in &self.spans[first..] {
             if span.offset >= end {
                 break;
@@ -593,6 +680,93 @@ mod tests {
 #[cfg(all(test, unix))]
 mod range_tests {
     use super::*;
+    fn covered_page() -> CatalogPage {
+        CatalogPage {
+            metadata: CatalogPageMetadata {
+                volume_id: 1,
+                chunk_id: 1,
+                page_index: 0,
+                logical_length: 64,
+                write_sequence: 1,
+                data_checksum: 0,
+                data_length: 64,
+                discarded_ranges: Vec::new(),
+                state_checksum: String::new(),
+            },
+            spans: vec![PayloadSpan {
+                offset: 0,
+                length: 64,
+                extent_offset: 19,
+                extent: Arc::new(PayloadExtent {
+                    version: 1,
+                    store_id: vec![7; 16],
+                    offset: 4096,
+                    length: 128,
+                    sha256: vec![1; 32],
+                    sector_sha256: vec![2; 32],
+                }),
+            }],
+        }
+    }
+    #[test]
+    fn catalog_covered_ranges_reuse_the_provider_buffer_and_clamp_reads() {
+        let page = covered_page();
+        page.validate_spans().unwrap();
+        for (offset, length, expected) in [(0, 64, 64), (7, 9, 9), (60, 100, 4), (64, 9, 0)] {
+            let mut pointer = std::ptr::null();
+            let mut calls = 0;
+            let data = page
+                .read_data_range(offset, length, |_, physical, n| {
+                    calls += 1;
+                    assert_eq!(physical, 19 + offset);
+                    assert_eq!(n, expected);
+                    let bytes = vec![23; n as usize];
+                    pointer = bytes.as_ptr();
+                    Ok(bytes)
+                })
+                .unwrap();
+            assert_eq!(data, vec![23; expected as usize]);
+            assert_eq!(data.capacity(), data.len());
+            assert_eq!(calls, usize::from(expected != 0));
+            if expected != 0 {
+                assert_eq!(data.as_ptr(), pointer);
+            }
+        }
+    }
+    #[test]
+    fn catalog_covered_ranges_do_not_retain_provider_padding_capacity() {
+        let page = covered_page();
+        let mut calls = 0;
+        let data = page
+            .read_data_range(7, 9, |_, physical, n| {
+                calls += 1;
+                assert_eq!((physical, n), (26, 9));
+                let mut bytes = Vec::with_capacity(8192);
+                bytes.resize(n as usize, 31);
+                Ok(bytes)
+            })
+            .unwrap();
+        assert_eq!(data, vec![31; 9]);
+        assert_eq!(data.capacity(), 9);
+        assert_eq!(calls, 1);
+    }
+    #[test]
+    fn catalog_covered_ranges_refuse_wrong_lengths_and_propagate_io_errors() {
+        let page = covered_page();
+        for count in [8, 10] {
+            let error = page
+                .read_data_range(7, 9, |_, _, _| Ok(vec![1; count]))
+                .unwrap_err();
+            assert_eq!(error.to_string(), "short checkpoint payload read");
+        }
+        let error = page
+            .read_data_range(7, 9, |_, _, _| {
+                Err(io::Error::new(io::ErrorKind::UnexpectedEof, "source ended"))
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(error.to_string(), "source ended");
+    }
     #[test]
     fn sparse_ranges_read_only_intersecting_payload_bytes() {
         let extent = Arc::new(PayloadExtent {

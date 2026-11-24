@@ -11,7 +11,7 @@
 //! and reads `<Code>` to tell a missing bucket from a missing key. A surface that answers the
 //! right status with a plain-text body is one an S3 client reports as an unknown failure.
 //!
-//! So the wire format lives here, on its own, and [`super::service`] routes onto it. The two
+//! So the wire format lives here, on its own, and the gateway routes onto it. The two
 //! halves fail separately: a routing mistake is a wrong status, a format mistake is a body no
 //! client can read, and keeping them apart lets a test say which happened.
 //!
@@ -46,6 +46,18 @@ pub enum S3ErrorCode {
     BucketNotEmpty,
     NoSuchUpload,
     NoSuchCorsConfiguration,
+    NoSuchBucketPolicy,
+    NoSuchLifecycleConfiguration,
+    NoSuchTagSet,
+    /// The bucket has no object-lock configuration.
+    ObjectLockConfigurationNotFound,
+    /// The object is locked by a retention period or a legal hold and cannot be overwritten or deleted.
+    AccessDenied,
+    /// A version that does not exist.
+    NoSuchVersion,
+    /// The bucket would hold more than its quota.
+    QuotaExceeded,
+    InvalidObjectState,
     InvalidRequest,
     InvalidPart,
     InvalidPartOrder,
@@ -57,6 +69,9 @@ pub enum S3ErrorCode {
     /// The catalog that names objects is full: a refusal that is permanent until something is
     /// removed or the limit is raised, so it is not a 503 and a client must not retry it.
     InsufficientStorage,
+    /// An append whose outcome cannot be decided: bytes equal to it are in the object, but nothing proves they are
+    /// THIS attempt's. The client decides from its own record of what it acknowledged.
+    AppendAmbiguous,
 }
 
 impl S3ErrorCode {
@@ -74,6 +89,14 @@ impl S3ErrorCode {
             // is what a client matches, so the two differ here on purpose -- as for
             // MalformedXML above.
             S3ErrorCode::NoSuchCorsConfiguration => "NoSuchCORSConfiguration",
+            S3ErrorCode::NoSuchBucketPolicy => "NoSuchBucketPolicy",
+            S3ErrorCode::NoSuchLifecycleConfiguration => "NoSuchLifecycleConfiguration",
+            S3ErrorCode::NoSuchTagSet => "NoSuchTagSet",
+            S3ErrorCode::ObjectLockConfigurationNotFound => "ObjectLockConfigurationNotFoundError",
+            S3ErrorCode::AccessDenied => "AccessDenied",
+            S3ErrorCode::NoSuchVersion => "NoSuchVersion",
+            S3ErrorCode::QuotaExceeded => "QuotaExceeded",
+            S3ErrorCode::InvalidObjectState => "InvalidObjectState",
             S3ErrorCode::InvalidRequest => "InvalidRequest",
             S3ErrorCode::InvalidPart => "InvalidPart",
             S3ErrorCode::InvalidPartOrder => "InvalidPartOrder",
@@ -86,6 +109,7 @@ impl S3ErrorCode {
             S3ErrorCode::InternalError => "InternalError",
             S3ErrorCode::ServiceUnavailable => "ServiceUnavailable",
             S3ErrorCode::InsufficientStorage => "InsufficientStorage",
+            S3ErrorCode::AppendAmbiguous => "AppendAmbiguous",
         }
     }
 
@@ -100,7 +124,16 @@ impl S3ErrorCode {
             S3ErrorCode::InvalidRange => 416,
             S3ErrorCode::PreconditionFailed => 412,
             S3ErrorCode::BucketNotEmpty => 409,
-            S3ErrorCode::NoSuchUpload | S3ErrorCode::NoSuchCorsConfiguration => 404,
+            S3ErrorCode::NoSuchUpload
+            | S3ErrorCode::NoSuchCorsConfiguration
+            | S3ErrorCode::NoSuchBucketPolicy
+            | S3ErrorCode::NoSuchLifecycleConfiguration
+            | S3ErrorCode::NoSuchTagSet
+            | S3ErrorCode::ObjectLockConfigurationNotFound
+            | S3ErrorCode::NoSuchVersion => 404,
+            S3ErrorCode::AccessDenied => 403,
+            S3ErrorCode::QuotaExceeded => 403,
+            S3ErrorCode::InvalidObjectState => 403,
             S3ErrorCode::InvalidRequest => 400,
             S3ErrorCode::InvalidPart
             | S3ErrorCode::InvalidPartOrder
@@ -110,6 +143,7 @@ impl S3ErrorCode {
             S3ErrorCode::InternalError => 500,
             S3ErrorCode::ServiceUnavailable => 503,
             S3ErrorCode::InsufficientStorage => 507,
+            S3ErrorCode::AppendAmbiguous => 409,
         }
     }
 }
