@@ -250,12 +250,24 @@ mod tests {
         sender.send(PeerDelivery::new(b"new".to_vec(), Duration::from_secs(2))).unwrap();
         assert_ne!(sender.cached.as_ref().unwrap().0.local_port(), first_port);
         assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), b"new");
+        // Hold the peer open so local write shutdown deterministically exercises write failure.
+        // A receiver EOF can otherwise trigger a successful reconnect before this send.
+        let held_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let held_address = held_listener.local_addr().unwrap();
+        let failed_stream = super::super::peer_tls::PeerSendStream::connect(
+            &held_address,
+            &super::super::peer_tls::PeerTransport::Plain,
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap();
+        let (held_peer, _) = held_listener.accept().unwrap();
+        sender.cached = Some((failed_stream, Instant::now()));
         sender.cached.as_ref().unwrap().0.stop_writes();
-        sender.cached.as_mut().unwrap().1 = Instant::now();
         let counters = PeerDeliveryCounters::default();
         assert!(sender.send(PeerDelivery::observed(b"failed".to_vec(), Duration::from_secs(2), counters.clone())).is_err());
         assert!(sender.cached.is_none());
         assert_eq!(counters.0.write_failed.load(Ordering::Relaxed), 1);
+        drop(held_peer);
         sender.send(PeerDelivery::new(b"after".to_vec(), Duration::from_secs(2))).unwrap();
         assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), b"after");
         assert!(rx.try_recv().is_err());
