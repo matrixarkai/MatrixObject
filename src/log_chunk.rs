@@ -465,7 +465,7 @@ impl LogChunk {
         }
         let mut file = OpenOptions::new()
             .read(true)
-            .write(true)
+            .append(true)
             .create(true)
             .truncate(false)
             .open(path)?;
@@ -971,10 +971,10 @@ impl LogChunk {
         // Borrow the header and caller payload for one vectored write in the normal case.
         // Short writes still leave only a prefix, and any failure poisons this handle.
         self.check_available()?;
-        if let Err(error) = self
-            .file
-            .seek(SeekFrom::Start(self.file_len))
-            .and_then(|_| record_write::write_record_parts(&mut self.file, &encoded[..header_len], data))
+        // Append mode places every write at EOF even if a cloned sync handle moved
+        // the shared cursor. Recovery trims an incomplete suffix before this handle is used.
+        if let Err(error) =
+            record_write::write_record_parts(&mut self.file, &encoded[..header_len], data)
         {
             self.failed = true;
             return Err(error.into());

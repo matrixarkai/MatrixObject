@@ -33,6 +33,9 @@ fn three(path: &std::path::Path) -> (Vec<u8>, [u64; 3]) {
     let mut ends = [0u64; 3];
     for (i, n) in [100usize, 37, 4096].into_iter().enumerate() {
         let data = bytes(i as u8 + 1, n);
+        // File clones share their cursor. Appending must remain correct after it moves.
+        let (mut sync, _) = chunk.sync_handle().unwrap();
+        std::io::Seek::seek(&mut sync, std::io::SeekFrom::Start(0)).unwrap();
         chunk.append(1, all.len() as u64, &data).unwrap();
         all.extend_from_slice(&data);
         chunk.commit().unwrap();
@@ -73,7 +76,7 @@ fn a_cut_at_every_byte_of_the_last_record_replays_to_the_records_before_it() {
     for cut in ends[1]..ends[2] {
         let copy = dir.file(&format!("cut{cut}"));
         fs::write(&copy, &original[..cut as usize]).unwrap();
-        let chunk = LogChunk::open(&copy, 1, MAX).unwrap();
+        let mut chunk = LogChunk::open(&copy, 1, MAX).unwrap();
         assert_eq!(chunk.length(), 137, "cut at byte {cut}");
         assert_eq!(chunk.read_vec(0, 137).unwrap(), before_last);
         // the cut is made durable: the file is exactly the whole records
@@ -82,6 +85,20 @@ fn a_cut_at_every_byte_of_the_last_record_replays_to_the_records_before_it() {
             ends[1],
             "cut at byte {cut}"
         );
+        if [ends[1], ends[1] + LOG_HEADER_LEN as u64 / 2, ends[2] - 1].contains(&cut) {
+            let (mut sync, _) = chunk.sync_handle().unwrap();
+            std::io::Seek::seek(&mut sync, std::io::SeekFrom::Start(0)).unwrap();
+            let suffix = bytes(19, 63);
+            chunk.append(1, 137, &suffix).unwrap();
+            chunk.commit().unwrap();
+            drop(chunk);
+            let recovered = LogChunk::open(&copy, 1, MAX).unwrap();
+            assert_eq!(
+                recovered.read_vec(0, 200).unwrap(),
+                [before_last, &suffix].concat()
+            );
+            assert_eq!(recovered.durable_length(), 200);
+        }
     }
     // a cut exactly after the last record loses nothing
     let chunk = LogChunk::open(&path, 1, MAX).unwrap();
