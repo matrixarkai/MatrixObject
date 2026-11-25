@@ -7,6 +7,7 @@ use super::{
 };
 use crate::{
     chunk_namespace_fence::NamespaceFenceOutcome,
+    log_page_outcome::LogPageOutcome,
     outcome::{BytePatch, PageOutcome},
     MatrixReplicaService, ObjectError,
 };
@@ -39,12 +40,14 @@ pub use crate::checkpoint_fragment::CheckpointFragment;
 #[derive(Clone, Copy)]
 pub enum DecidedMutation<'a> {
     Page(&'a PageOutcome),
+    LogPage(&'a LogPageOutcome),
     NamespaceFence(&'a NamespaceFenceOutcome),
     CheckpointFragment(&'a CheckpointFragment),
 }
 #[derive(Debug, PartialEq)]
 pub enum RecoveredMutation {
     Page(PageOutcome),
+    LogPage(LogPageOutcome),
     NamespaceFence(NamespaceFenceOutcome),
     CheckpointFragment(CheckpointFragment),
 }
@@ -56,6 +59,9 @@ impl RecoveredMutation {
     ) -> Result<(), ObjectError> {
         match self {
             Self::Page(value) => value.apply(service, max_pages),
+            Self::LogPage(_) => Err(ObjectError::Corruption(
+                "log page outcomes require log-aware recovery".into(),
+            )),
             Self::NamespaceFence(value) => value.apply(service),
             Self::CheckpointFragment(_) => Err(ObjectError::Corruption(
                 "checkpoint storage records require checkpoint-aware recovery".into(),
@@ -65,6 +71,7 @@ impl RecoveredMutation {
     pub fn to_payload(&self) -> Result<Vec<u8>, ObjectError> {
         match self {
             Self::Page(value) => value.to_payload(),
+            Self::LogPage(value) => value.to_payload(),
             Self::NamespaceFence(value) => value.to_payload(),
             Self::CheckpointFragment(value) => value.to_payload(),
         }
@@ -99,6 +106,8 @@ pub struct StoredDecision {
     pub namespace_fence: Option<NamespaceFenceOutcome>,
     #[prost(message, optional, boxed, tag = "7")]
     pub checkpoint_fragment: Option<Box<CheckpointFragment>>,
+    #[prost(message, optional, tag = "8")]
+    pub log_page: Option<LogPageOutcome>,
 }
 #[derive(Clone, PartialEq, Message)]
 pub struct StoredOutcomeBatch {
@@ -189,6 +198,84 @@ fn stripped(page: &PageOutcome) -> PageOutcome {
         physical_deltas: page.physical_deltas.clone(),
     }
 }
+// Version 4 binds an append identity to exactly its contiguous page patches.
+fn validate_log_pages(batch: &StoredOutcomeBatch) -> io::Result<()> {
+    let mut chunks = std::collections::BTreeSet::new();
+    for log in batch
+        .decisions
+        .iter()
+        .filter_map(|decision| decision.log_page.as_ref())
+    {
+        log.validate().map_err(object)?;
+        if !chunks.insert((log.volume_id, log.chunk_id)) {
+            return Err(invalid("stored batch repeats a log chunk transition"));
+        }
+        let Some(append) = &log.append else { continue };
+        let page_bytes = u64::from(log.after.as_ref().unwrap().page_bytes);
+        let mut patches = Vec::new();
+        for decision in &batch.decisions {
+            let Some(page) = &decision.page else { continue };
+            if (page.volume_id, page.chunk_id) != (log.volume_id, log.chunk_id) {
+                continue;
+            }
+            if page.data_length > page_bytes
+                || page.logical_length != page.data_length
+                || !page.discarded_ranges.is_empty()
+            {
+                return Err(invalid("log append carries invalid page state"));
+            }
+            for (patch, length) in page.patches.iter().zip(&decision.patch_lengths) {
+                let offset = page
+                    .page_index
+                    .checked_mul(page_bytes)
+                    .and_then(|start| start.checked_add(patch.offset))
+                    .ok_or_else(|| invalid("log append page address overflow"))?;
+                patches.push((offset, u64::from(*length)));
+            }
+        }
+        patches.sort_unstable();
+        let mut next = append.offset;
+        for (offset, length) in patches {
+            if offset != next {
+                return Err(invalid("log append page coverage is not contiguous"));
+            }
+            next = next
+                .checked_add(length)
+                .ok_or_else(|| invalid("log append coverage overflow"))?;
+        }
+        if next != log.after.as_ref().unwrap().length {
+            return Err(invalid("log append page coverage differs from identity"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_log_data<'a>(
+    logs: impl Iterator<Item = &'a LogPageOutcome>,
+    pages: &[&PageOutcome],
+) -> io::Result<()> {
+    for log in logs.filter(|log| log.append.is_some()) {
+        let page_bytes = u64::from(log.after.as_ref().unwrap().page_bytes);
+        let mut parts = Vec::new();
+        for page in pages {
+            if (page.volume_id, page.chunk_id) == (log.volume_id, log.chunk_id) {
+                for patch in &page.patches {
+                    let offset = page
+                        .page_index
+                        .checked_mul(page_bytes)
+                        .and_then(|start| start.checked_add(patch.offset))
+                        .ok_or_else(|| invalid("log append page address overflow"))?;
+                    parts.push((offset, patch.data.as_slice()));
+                }
+            }
+        }
+        parts.sort_unstable_by_key(|(offset, _)| *offset);
+        log.check_append_parts(parts.into_iter().map(|(_, data)| data))
+            .map_err(object)?;
+    }
+    Ok(())
+}
+
 fn descriptors(id: &[u8], data: &[u8]) -> Vec<PayloadExtent> {
     data.chunks(MAX_EXTENT_BYTES)
         .map(|bytes| {
@@ -384,6 +471,9 @@ impl DurableOutcomeLog {
                 "checkpoint fragments cannot carry replica metadata context",
             ));
         }
+        let log_batch = mutations
+            .iter()
+            .any(|value| matches!(value, DecidedMutation::LogPage(_)));
         let mut decisions = Vec::with_capacity(mutations.len());
         let mut logical = 0usize;
         let mut data_length = 0u64;
@@ -391,6 +481,7 @@ impl DurableOutcomeLog {
         for mutation in mutations {
             let original = match mutation {
                 DecidedMutation::Page(page) => page.to_payload(),
+                DecidedMutation::LogPage(log) => log.to_payload(),
                 DecidedMutation::NamespaceFence(fence) => fence.to_payload(),
                 DecidedMutation::CheckpointFragment(fragment) => fragment.to_payload(),
             }
@@ -409,6 +500,7 @@ impl DurableOutcomeLog {
                 original_length: original.len() as u32,
                 namespace_fence: None,
                 checkpoint_fragment: None,
+                log_page: None,
             };
             match mutation {
                 DecidedMutation::Page(page) => {
@@ -417,6 +509,9 @@ impl DurableOutcomeLog {
                     data_length += page_shape(page, &decision.patch_lengths, false)?;
                     patches.extend(page.patches.iter().map(|p| p.data.as_slice()));
                     decision.page = Some(stripped(page));
+                }
+                DecidedMutation::LogPage(log) => {
+                    decision.log_page = Some((*log).clone());
                 }
                 DecidedMutation::NamespaceFence(fence) => {
                     decision.namespace_fence = Some((*fence).clone());
@@ -447,6 +542,8 @@ impl DurableOutcomeLog {
         let mut batch = StoredOutcomeBatch {
             version: if checkpoint_batch {
                 2
+            } else if log_batch {
+                4
             } else if metadata.is_some() {
                 3
             } else {
@@ -456,6 +553,29 @@ impl DurableOutcomeLog {
             payloads: descriptors(self.store_id(), &data),
             replica_metadata: metadata.map_or_else(Vec::new, |bytes| bytes.to_vec()),
         };
+        if log_batch {
+            validate_log_pages(&batch)?;
+            let pages: Vec<_> = mutations
+                .iter()
+                .filter_map(|mutation| {
+                    if let DecidedMutation::Page(page) = mutation {
+                        Some(*page)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            validate_log_data(
+                mutations.iter().filter_map(|mutation| {
+                    if let DecidedMutation::LogPage(log) = mutation {
+                        Some(*log)
+                    } else {
+                        None
+                    }
+                }),
+                &pages,
+            )?;
+        }
         let _writer = self.store.writer.lock().map_err(|_| {
             self.store.failed.store(true, Ordering::Release);
             invalid("stored outcome writer is poisoned")
@@ -531,7 +651,7 @@ impl DurableOutcomeLog {
         header: usize,
         end: u64,
     ) -> io::Result<()> {
-        if !matches!(batch.version, 1 | 2 | 3)
+        if !matches!(batch.version, 1 | 2 | 3 | 4)
             || batch.decisions.is_empty()
             || batch.decisions.len() > MAX_BATCH_EXTENTS
             || batch.payloads.len() > 8
@@ -539,7 +659,12 @@ impl DurableOutcomeLog {
             return Err(invalid("invalid stored outcome batch"));
         }
         if batch.replica_metadata.len() > MAX_REPLICA_METADATA_BYTES
-            || (batch.version == 3) != !batch.replica_metadata.is_empty()
+            || (batch.version != 4 && (batch.version == 3) != !batch.replica_metadata.is_empty())
+            || (batch.version == 4)
+                != batch
+                    .decisions
+                    .iter()
+                    .any(|decision| decision.log_page.is_some())
         {
             return Err(invalid("invalid stored replica metadata context"));
         }
@@ -562,18 +687,19 @@ impl DurableOutcomeLog {
                 &decision.page,
                 &decision.namespace_fence,
                 &decision.checkpoint_fragment,
+                &decision.log_page,
             ) {
-                (Some(page), None, None) if matches!(batch.version, 1 | 3) => {
+                (Some(page), None, None, None) if matches!(batch.version, 1 | 3 | 4) => {
                     data = data
                         .checked_add(page_shape(page, &decision.patch_lengths, true)?)
                         .ok_or_else(|| invalid("stored payload length overflow"))?;
                 }
-                (None, Some(fence), None)
-                    if matches!(batch.version, 1 | 3) && decision.patch_lengths.is_empty() =>
+                (None, Some(fence), None, None)
+                    if matches!(batch.version, 1 | 3 | 4) && decision.patch_lengths.is_empty() =>
                 {
                     fence.to_payload().map_err(object)?;
                 }
-                (None, None, Some(fragment))
+                (None, None, Some(fragment), None)
                     if batch.version == 2 && decision.patch_lengths.len() == 1 =>
                 {
                     let length = decision.patch_lengths[0];
@@ -582,8 +708,16 @@ impl DurableOutcomeLog {
                         .checked_add(u64::from(length))
                         .ok_or_else(|| invalid("stored checkpoint payload length overflow"))?;
                 }
+                (None, None, None, Some(log))
+                    if batch.version == 4 && decision.patch_lengths.is_empty() =>
+                {
+                    log.to_payload().map_err(object)?;
+                }
                 _ => return Err(invalid("stored decision must have one supported outcome")),
             }
+        }
+        if batch.version == 4 {
+            validate_log_pages(batch)?;
         }
         if data > MAX_BATCH_BYTES as u64 {
             return Err(invalid("stored payload stream exceeds bound"));
@@ -819,6 +953,8 @@ impl DurableOutcomeLog {
                     offset += u64::from(length);
                 }
                 RecoveredMutation::Page(page)
+            } else if let Some(log) = &decision.log_page {
+                RecoveredMutation::LogPage(log.clone())
             } else if let Some(fragment) = &decision.checkpoint_fragment {
                 let mut fragment = (**fragment).clone();
                 let offset = usize::try_from(decision.data_offset).map_err(object)?;
@@ -845,6 +981,28 @@ impl DurableOutcomeLog {
                 return Err(invalid("stored outcome logical digest mismatch"));
             }
             result.push(value);
+        }
+        if batch.version == 4 {
+            let pages: Vec<_> = result
+                .iter()
+                .filter_map(|mutation| {
+                    if let RecoveredMutation::Page(page) = mutation {
+                        Some(page)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            validate_log_data(
+                result.iter().filter_map(|mutation| {
+                    if let RecoveredMutation::LogPage(log) = mutation {
+                        Some(log)
+                    } else {
+                        None
+                    }
+                }),
+                &pages,
+            )?;
         }
         Ok(result)
     }
@@ -879,6 +1037,9 @@ impl DurableOutcomeLog {
         let mut at = offset;
         let mut count = 0;
         while let Some(record) = self.next_metadata(at)? {
+            if record.batch.version == 4 {
+                return Err(invalid("log page outcomes require log-aware recovery"));
+            }
             if !record.batch.replica_metadata.is_empty() {
                 return Err(invalid(
                     "replica metadata context requires context-aware recovery",
@@ -900,3 +1061,7 @@ mod tests;
 #[cfg(all(test, unix))]
 #[path = "stored_checkpoint_fragment_tests.rs"]
 mod checkpoint_fragment_tests;
+
+#[cfg(all(test, unix))]
+#[path = "stored_log_page_outcome_tests.rs"]
+mod log_page_tests;

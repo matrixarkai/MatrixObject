@@ -672,7 +672,10 @@ impl SegmentedOutcomeLog {
     /// Sampling can wait behind an append; quiesce writers for interval measurements.
     pub fn write_statistics(&self) -> io::Result<OutcomeWriteStatistics> {
         self.healthy()?;
-        let writer = self.writer.lock().map_err(|_| invalid("segment writer is poisoned"))?;
+        let writer = self
+            .writer
+            .lock()
+            .map_err(|_| invalid("segment writer is poisoned"))?;
         self.healthy()?;
         Ok(writer.write_statistics.clone())
     }
@@ -722,7 +725,7 @@ impl SegmentedOutcomeLog {
             Ok(record) => {
                 writer.write_statistics.observe(&record);
                 return Ok(record);
-            },
+            }
             Err(error)
                 if error
                     .get_ref()
@@ -1111,6 +1114,9 @@ impl SegmentedOutcomeLog {
     ) -> io::Result<usize> {
         let mut count = 0;
         self.scan_metadata_after(after, |record| {
+            if record.batch.version == 4 {
+                return Err(invalid("log page outcomes require log-aware recovery"));
+            }
             for outcome in self.read_outcomes(&record.position)? {
                 outcome
                     .apply(service, max_pages)

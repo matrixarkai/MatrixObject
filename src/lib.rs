@@ -34,6 +34,7 @@ mod test_fixtures;
 mod tests;
 pub mod cluster_features;
 pub mod log_chunk_outcome;
+pub mod log_page_outcome;
 #[cfg(test)]
 mod cluster_features_tests;
 pub mod log_chunk;
