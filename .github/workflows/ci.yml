@@ -2395,6 +2395,11 @@ jobs:
           set -euo pipefail
           cargo test --locked --features metadata-consensus --lib native_object_path_tests -- --test-threads=1 2>&1 | tee /tmp/native-object-processes.log
           grep -q '^test result: ok. 4 passed; 0 failed; 1 ignored' /tmp/native-object-processes.log
+      - name: Resident tail reads, retries, recovery and bounded growth
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib log_chunk::resident_tests:: -- --test-threads=1 2>&1 | tee /tmp/resident-tail-blocks.log
+          grep -q '^test result: ok. 3 passed; 0 failed;' /tmp/resident-tail-blocks.log
       - name: physical storage authority and recovery
         run: |
           set -euo pipefail
