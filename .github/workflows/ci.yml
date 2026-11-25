@@ -2308,8 +2308,8 @@ jobs:
           grep -q '^running 8 tests$' /tmp/log-page-outcomes.log
           grep -q '^test result: ok. 8 passed' /tmp/log-page-outcomes.log
           cargo test --locked --all-features --lib cluster::log_page_catalog::tests:: -- --test-threads=1 | tee /tmp/log-page-catalog.log
-          grep -q '^running 7 tests$' /tmp/log-page-catalog.log
-          grep -q '^test result: ok. 7 passed' /tmp/log-page-catalog.log
+          grep -q '^running 8 tests$' /tmp/log-page-catalog.log
+          grep -q '^test result: ok. 8 passed' /tmp/log-page-catalog.log
           cargo test --locked --all-features --lib cluster::server::log_page_ownership_tests:: -- --test-threads=1 | tee /tmp/log-page-ownership.log
           grep -q '^running 5 tests$' /tmp/log-page-ownership.log
           grep -q '^test result: ok. 5 passed' /tmp/log-page-ownership.log

@@ -372,3 +372,61 @@ fn log_catalog_fence_truncates_pages_and_receipts_while_retained_read_keeps_old_
         vec![23; 113]
     );
 }
+
+#[test]
+fn log_receipt_checkpoint_preserves_original_publication_after_later_prefix_advances() {
+    let dir = Directory::new();
+    let path = dir.0.join("outcomes");
+    let log = SegmentedOutcomeLog::open(&path, 32 * 1024 * 1024).unwrap();
+    let (mut catalog, _, first) = seeded(&log);
+    let intermediate = append(first.after.as_ref().unwrap(), &[23; 100], 18, false);
+    let page = PageOutcome::between(
+        &id(1),
+        Some(&page_state(&[23; 113], 1)),
+        &page_state(&[23; 213], 2),
+    )
+    .unwrap();
+    catalog.fold(&record(&log, &[page], &intermediate)).unwrap();
+    let complete = append(intermediate.after.as_ref().unwrap(), &[23; 200], 19, true);
+    let page = PageOutcome::between(
+        &id(1),
+        Some(&page_state(&[23; 213], 2)),
+        &page_state(&[23; 413], 3),
+    )
+    .unwrap();
+    let last = record(&log, &[page], &complete);
+    catalog.fold(&last).unwrap();
+    let mut index = None;
+    let mut dirty = BTreeSet::new();
+    let prepared = replica_checkpoint_index::prepare(
+        &log,
+        &catalog,
+        &mut index,
+        &mut dirty,
+        vec![42],
+        Some(last.position),
+        2,
+        false,
+        &|| Ok(()),
+    )
+    .unwrap();
+    let (commit, _) = prepared.publish_record(&log).unwrap();
+    drop(log);
+    let log = SegmentedOutcomeLog::open(&path, 32 * 1024 * 1024).unwrap();
+    let loaded = checkpoint::load(&log, commit, 100).unwrap();
+    let entry = &loaded.catalog.logs.chunks[&id(0).chunk_id];
+    entry.validate().unwrap();
+    assert_eq!(entry.state.published_length, 4509);
+    assert_eq!(entry.receipts[&0].published_length, 4209);
+    assert_eq!(entry.receipts[&4209].published_length, 4209);
+    assert_eq!(entry.receipts[&4309].published_length, 4509);
+    assert_eq!(
+        entry.receipts[&4209].append.as_ref().unwrap().attempt,
+        vec![18; 16]
+    );
+    let mut corrupt = entry.clone();
+    let mut receipt = corrupt.receipts[&4209].clone();
+    receipt.published_length = 4509;
+    corrupt.receipts.insert(4209, receipt);
+    assert!(corrupt.validate().is_err());
+}

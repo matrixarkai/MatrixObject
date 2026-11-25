@@ -17,6 +17,8 @@ pub(super) struct LogPageReceipt {
     pub epoch: u64,
     #[prost(message, optional, tag = "2")]
     pub append: Option<LogPageAppendIdentity>,
+    #[prost(uint64, tag = "3")]
+    pub published_length: u64,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct LogPageEntry {
@@ -32,7 +34,7 @@ impl LogPageEntry {
         self.state.validate().map_err(invalid)?;
         let mut next = 0;
         let mut epoch = 0;
-        let mut published = self.state.published_length == 0;
+        let mut published_length = 0;
         for (offset, receipt) in &self.receipts {
             let append = receipt
                 .append
@@ -52,10 +54,13 @@ impl LogPageEntry {
             next = next
                 .checked_add(u64::from(append.length))
                 .ok_or_else(|| invalid("log receipt length overflow"))?;
+            if ![published_length, next].contains(&receipt.published_length) {
+                return Err(invalid("log receipt has an invalid publication boundary"));
+            }
             epoch = receipt.epoch;
-            published |= next == self.state.published_length;
+            published_length = receipt.published_length;
         }
-        if next != self.state.length || !published {
+        if next != self.state.length || published_length != self.state.published_length {
             return Err(invalid("log receipts do not cover the committed state"));
         }
         Ok(())
@@ -88,6 +93,7 @@ impl LogPageCatalog {
                 LogPageReceipt {
                     epoch: outcome.after.as_ref().unwrap().writer_epoch,
                     append: Some(append.clone()),
+                    published_length: outcome.after.as_ref().unwrap().published_length,
                 },
             );
         } else if outcome.kind == LOG_PAGE_FENCE {
