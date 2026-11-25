@@ -38,6 +38,11 @@ fn invalid(message: &str) -> ObjectError {
     ObjectError::Corruption(message.into())
 }
 
+fn entry_size(body_bytes: usize) -> usize {
+    if body_bytes == 0 { return 0; }
+    1 + prost::encoding::encoded_len_varint(body_bytes as u64) + body_bytes
+}
+
 /// A publication: the manifest the writer saw and the manifest it publishes.
 #[derive(Clone, PartialEq, Eq, Message)]
 pub struct ChunkOutcome {
@@ -115,6 +120,8 @@ struct ChunkCatalogImage {
 pub struct ChunkCatalog {
     objects: imbl::OrdMap<ObjectId, Arc<ChunkManifest>>,
     body_bytes: usize,
+    /// Protobuf field framing plus bodies, maintained without walking the catalog.
+    framed_bytes: usize,
     revision: u64,
     /// The image bound; the default unless a test lowers it.
     image_limit: Option<usize>,
@@ -213,7 +220,9 @@ impl ChunkCatalog {
         let after = outcome.after()?.clone();
         let id = after.object_id();
         let replaced = self.objects.get(&id).map_or(0, |stored| stored.encoded_len());
-        self.body_bytes = self.body_bytes - replaced + after.encoded_len();
+        let encoded = after.encoded_len();
+        self.body_bytes = self.body_bytes - replaced + encoded;
+        self.framed_bytes = self.framed_bytes - entry_size(replaced) + entry_size(encoded);
         self.objects.insert(id, Arc::new(after));
         self.revision += 1;
         Ok(true)
@@ -232,6 +241,7 @@ impl ChunkCatalog {
         let current = self.objects.get(id).map_or(0, |stored| stored.encoded_len());
         let restored = entry.as_ref().map_or(0, |stored| stored.encoded_len());
         self.body_bytes = self.body_bytes - current + restored;
+        self.framed_bytes = self.framed_bytes - entry_size(current) + entry_size(restored);
         match entry {
             Some(entry) => {
                 self.objects.insert(id.clone(), entry);
@@ -281,25 +291,55 @@ impl ChunkCatalog {
         })
     }
 
-    /// The image a snapshot carries.
-    pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
-        let header = ChunkCatalogImage { format_version: IMAGE_FORMAT, manifests: Vec::new() };
-        let body_len = self.objects.values().try_fold(header.encoded_len(), |total, manifest| {
-            total.checked_add(prost::encoding::message::encoded_len(2, manifest.as_ref()))
-                .ok_or_else(|| invalid("manifest encoding exceeds size bound"))
-        })?;
+    /// Exact frame size, without traversing manifests or allocating a catalog image.
+    pub(crate) fn encoded_size(&self) -> Result<usize, ObjectError> {
+        let body_len = self.framed_bytes.checked_add(2)
+            .ok_or_else(|| invalid("manifest encoding exceeds size bound"))?;
         if body_len > self.image_limit() {
             return Err(invalid("manifest encoding exceeds size bound"));
         }
+        body_len.checked_add(12).ok_or_else(|| invalid("manifest encoding exceeds size bound"))
+    }
+
+    /// Emit canonical image bytes using scratch bounded by the largest manifest.
+    /// Callers check `encoded_size` before emitting; callback errors stop output immediately.
+    pub(crate) fn visit_encoded<E>(
+        &self,
+        emit: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut checksum = 0xcbf29ce484222325u64;
+        let mut body = |bytes: &[u8]| {
+            checksum = bytes.iter().fold(checksum, |h, byte| {
+                (h ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+            });
+            emit(bytes)
+        };
+        body(b"MOCC")?;
+        body(&[8, IMAGE_FORMAT as u8])?;
+        let mut scratch = Vec::new();
+        for manifest in self.objects.values() {
+            scratch.clear();
+            scratch.reserve(prost::encoding::message::encoded_len(2, manifest.as_ref()));
+            prost::encoding::message::encode(2, manifest.as_ref(), &mut scratch);
+            body(&scratch)?;
+        }
+        drop(body);
+        emit(&checksum.to_le_bytes())
+    }
+
+    /// The image a snapshot carries.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
+        let size = self.encoded_size()?;
+        let header = ChunkCatalogImage { format_version: IMAGE_FORMAT, manifests: Vec::new() };
         // Encode immutable entries directly. A checkpoint needs one output buffer,
         // without cloning every stored extent and digest into an intermediate image.
-        let mut bytes = Vec::with_capacity(body_len + 12);
+        let mut bytes = Vec::with_capacity(size);
         bytes.extend_from_slice(b"MOCC");
         header.encode_raw(&mut bytes);
         for manifest in self.objects.values() {
             prost::encoding::message::encode(2, manifest.as_ref(), &mut bytes);
         }
-        debug_assert_eq!(bytes.len(), body_len + 4);
+        debug_assert_eq!(bytes.len(), size - 8);
         bytes.extend_from_slice(&crate::fnv1a64(&bytes).to_le_bytes());
         Ok(bytes)
     }
@@ -328,7 +368,9 @@ impl ChunkCatalog {
             if previous.as_ref().is_some_and(|previous| *previous >= id) {
                 return Err(invalid("chunk catalog objects are not in order"));
             }
-            catalog.body_bytes += manifest.encoded_len();
+            let encoded = manifest.encoded_len();
+            catalog.body_bytes += encoded;
+            catalog.framed_bytes += entry_size(encoded);
             previous = Some(id.clone());
             catalog.objects.insert(id, Arc::new(manifest));
         }

@@ -265,11 +265,11 @@ impl MetaSnapshot {
             }
             if has_chunk_catalog {
                 // Catalog mutation enforces its image bound.
-                let bytes = self.chunk_catalog.to_bytes().expect("valid chunk catalog");
-                append_u64(&mut out, bytes.len() as u64);
+                let size = self.chunk_catalog.encoded_size().expect("valid chunk catalog");
+                append_u64(&mut out, size as u64);
                 emit_body(&out)?;
                 out.clear();
-                emit_body(&bytes)?;
+                self.chunk_catalog.visit_encoded(&mut emit_body)?;
             }
             if native_objects {
                 let bytes = self.native_objects.to_bytes().expect("valid native object state");
@@ -286,7 +286,7 @@ impl MetaSnapshot {
     }
 
     pub(crate) fn encoded_size_hint(&self) -> usize {
-        const FIXED_HEADER_BYTES: usize = 512;
+        const FIXED_HEADER_BYTES: usize = 1024;
         let record_bytes = self.records.iter().fold(0usize, |total, (key, record)| {
             total
                 .saturating_add(encoded_string_len(key))
@@ -378,6 +378,11 @@ impl MetaSnapshot {
                         .saturating_add(metadata_transaction_receipt_encoded_size(receipt))
                 });
         FIXED_HEADER_BYTES
+            .saturating_add(if self.chunk_catalog.is_empty() {
+                0
+            } else {
+                8 + self.chunk_catalog.encoded_size().expect("valid chunk catalog")
+            })
             .saturating_add(if self.cluster_features.has(crate::cluster_features::FEATURE_NATIVE_OBJECT_STATE) {
                 8usize.saturating_add(self.native_objects.image_size_bound())
             } else { 0 })
