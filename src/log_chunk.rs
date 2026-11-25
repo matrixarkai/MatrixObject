@@ -35,6 +35,10 @@ use std::io::{self, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[path = "log_chunk_resident_data.rs"]
+mod resident_data;
+use resident_data::ResidentData;
+
 /// Bytes read at a time while a file is replayed or a sealed chunk is checksummed: the only
 /// buffer an open of a sealed chunk needs, however large the chunk is.
 const REPLAY_PIECE: usize = 256 * 1024;
@@ -427,7 +431,7 @@ pub struct LogChunk {
     max_length: u64,
     /// The bytes of the chunk, held only while the chunk can still change: an open tail. A sealed
     /// chunk holds none and is read from its file.
-    data: Vec<u8>,
+    data: ResidentData,
     /// Every byte `[0, length)` is described by the extents, in order, with nothing missing between them.
     extents: Vec<Extent>,
     length: u64,
@@ -447,12 +451,6 @@ pub struct LogChunk {
     pending_bytes: usize,
     max_pending_records: usize,
     max_pending_bytes: usize,
-}
-
-fn sha256(data: &[u8]) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    out.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, data).as_ref());
-    out
 }
 
 impl LogChunk {
@@ -477,7 +475,7 @@ impl LogChunk {
             shared_path: Arc::from(path),
             generation,
             max_length,
-            data: Vec::new(),
+            data: ResidentData::default(),
             extents: Vec::new(),
             length: 0,
             published_length: 0,
@@ -611,7 +609,7 @@ impl LogChunk {
         chunk.durable_length = chunk.length;
         if chunk.sealed.is_none() {
             // an open tail keeps its bytes: appends are checked against them
-            let mut data = Vec::with_capacity(chunk.length as usize);
+            let mut data = ResidentData::default();
             chunk.stream_logical(0, chunk.length, |bytes| data.extend_from_slice(bytes))?;
             chunk.data = data;
         }
@@ -889,7 +887,7 @@ impl LogChunk {
         }
         out.reserve((end - start) as usize);
         if self.sealed.is_none() {
-            out.extend_from_slice(&self.data[start as usize..end as usize]);
+            self.data.copy_into(start as usize, end as usize, out);
             return Ok(());
         }
         let first = self
@@ -1284,8 +1282,7 @@ impl LogChunk {
                     return Err(LogError::Overlap);
                 }
             }
-            let held = &self.data[offset as usize..end as usize];
-            return if held == data {
+            return if self.data.matches(offset as usize, data) {
                 Ok(length)
             } else {
                 Err(LogError::Overlap)
@@ -1299,7 +1296,7 @@ impl LogChunk {
         if attempt_tag.is_some() && overlap != 0 {
             return Err(LogError::Overlap);
         }
-        if self.data[offset as usize..].get(..overlap) != Some(&data[..overlap]) {
+        if !self.data.matches(offset as usize, &data[..overlap]) {
             return Err(LogError::Overlap);
         }
         self.apply_new(epoch, &data[overlap..], attempt_tag, published_length)?;
@@ -1371,9 +1368,7 @@ impl LogChunk {
             let data = pending.data;
             self.pending_bytes -= data.len();
             let overlap = (length - next) as usize;
-            if overlap > data.len()
-                || self.data[next as usize..].get(..overlap) != Some(&data[..overlap])
-            {
+            if overlap > data.len() || !self.data.matches(next as usize, &data[..overlap]) {
                 return Err(LogError::Overlap);
             }
             if overlap < data.len() {
@@ -1476,7 +1471,7 @@ impl LogChunk {
         self.cut_extents(length);
         self.length = length;
         self.published_length = length;
-        self.crc = crc32c(&self.data);
+        self.crc = self.data.chunks().fold(0, crc32c_update);
         self.epoch = epoch;
         self.pending.clear();
         self.pending_bytes = 0;
@@ -1515,7 +1510,7 @@ impl LogChunk {
         if !self.pending.is_empty() || self.published_length != self.length {
             return Err(LogError::SealMismatch);
         }
-        let digest = with_sha256.then(|| sha256(&self.data));
+        let digest = with_sha256.then(|| self.data.sha256());
         let header = Header {
             kind: KIND_SEAL,
             flags: if with_sha256 { FLAG_SEAL_SHA256 } else { 0 },
@@ -1538,7 +1533,7 @@ impl LogChunk {
         };
         self.sealed = Some(sealed.clone());
         // nothing more can change: the bytes now live only in the file
-        self.data = Vec::new();
+        self.data = ResidentData::default();
         Ok(sealed)
     }
 }
@@ -1565,3 +1560,7 @@ mod publication_write_tests;
 
 #[path = "log_chunk_record_write.rs"]
 mod record_write;
+
+#[cfg(test)]
+#[path = "log_chunk_resident_tests.rs"]
+mod resident_tests;
