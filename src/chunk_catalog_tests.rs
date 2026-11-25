@@ -302,3 +302,30 @@ fn an_outcome_is_framed_with_its_own_magic_and_checked_when_it_is_read() {
 
 #[path = "chunk_catalog_shared_root_tests.rs"]
 mod snapshot_tests;
+
+#[test]
+fn catalog_image_encoding_preserves_owned_bytes_with_shared_roots_and_attributes() {
+    let mut catalog = ChunkCatalog::new();
+    assert_eq!(catalog.to_bytes().unwrap(), framed_image(Vec::new(), IMAGE_FORMAT));
+    for index in 0..1024 {
+        let key = format!("object-{index:04}");
+        let mut value = small(&key, 1, (index % 251) as u8);
+        value.content_type = "application/octet-stream".into();
+        value.modified_ms = index as u64 + 1;
+        value.user_metadata.insert("owner".into(), format!("owner-{index}"));
+        value.tags.insert("tier".into(), "hot".into());
+        publish(&mut catalog, None, value.clone()).unwrap();
+        if index % 7 == 0 { publish(&mut catalog, Some(&value), tombstone(&key, 2)).unwrap(); }
+    }
+    let expected = framed_image(catalog.iter().map(|(_, value)| value.as_ref().clone()).collect(), IMAGE_FORMAT);
+    let captured = catalog.clone();
+    assert_eq!(catalog.to_bytes().unwrap(), expected);
+    assert_eq!(ChunkCatalog::from_bytes(&expected).unwrap(), catalog);
+    let before = catalog.get(&small("object-0043", 1, 0).object_id()).unwrap().as_ref().clone();
+    let mut after = before.clone();
+    after.generation += 1;
+    after.extents[0].digest = vec![99; 32];
+    publish(&mut catalog, Some(&before), after).unwrap();
+    assert_eq!(captured.to_bytes().unwrap(), expected);
+    assert_ne!(catalog.to_bytes().unwrap(), expected);
+}
