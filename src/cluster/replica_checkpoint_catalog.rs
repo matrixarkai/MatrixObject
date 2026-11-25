@@ -45,6 +45,8 @@ pub(super) struct CatalogHeader {
     pub extent_count: u64,
     #[prost(uint64, tag = "9")]
     pub page_count: u64,
+    #[prost(uint64, tag = "10")]
+    pub log_count: u64,
 }
 #[derive(Clone, PartialEq, Message)]
 struct PageHeader {
@@ -65,8 +67,19 @@ struct Span {
     extent_offset: u64,
 }
 #[derive(Clone, PartialEq, Message)]
+struct LogHeader {
+    #[prost(uint64, tag = "1")]
+    volume_id: u64,
+    #[prost(uint64, tag = "2")]
+    chunk_id: u64,
+    #[prost(message, optional, tag = "3")]
+    state: Option<crate::log_page_outcome::LogPageState>,
+    #[prost(uint64, tag = "4")]
+    receipts: u64,
+}
+#[derive(Clone, PartialEq, Message)]
 struct Row {
-    #[prost(oneof = "row::Value", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "row::Value", tags = "1, 2, 3, 4, 5, 6")]
     value: Option<row::Value>,
 }
 mod row {
@@ -81,6 +94,10 @@ mod row {
         Page(PageHeader),
         #[prost(message, tag = "4")]
         Span(Span),
+        #[prost(message, tag = "5")]
+        Log(LogHeader),
+        #[prost(message, tag = "6")]
+        Receipt(super::super::log_page_catalog::LogPageReceipt),
     }
 }
 #[derive(Clone, PartialEq, Message)]
@@ -224,6 +241,7 @@ pub(super) fn prepare(
         &|| Ok(()),
     )
 }
+#[cfg(all(test, unix))]
 pub(super) fn prepare_checked(
     log: &SegmentedOutcomeLog,
     catalog: &PageCatalog,
@@ -233,14 +251,37 @@ pub(super) fn prepare_checked(
     install: bool,
     check: &dyn Fn() -> io::Result<()>,
 ) -> io::Result<PreparedCheckpoint> {
+    catalog.validate_log_pages()?;
     prepare_iter_checked(
         log,
         catalog.pages.iter(),
         catalog.pages.len(),
+        &catalog.logs,
         metadata,
         captured_cut,
         epoch,
         install,
+        check,
+    )
+}
+
+pub(super) fn prepare_metadata_checked(
+    log: &SegmentedOutcomeLog,
+    catalog: &PageCatalog,
+    metadata: Vec<u8>,
+    epoch: u64,
+    check: &dyn Fn() -> io::Result<()>,
+) -> io::Result<PreparedCheckpoint> {
+    catalog.validate_log_pages()?;
+    prepare_iter_checked(
+        log,
+        std::iter::empty(),
+        0,
+        &catalog.logs,
+        metadata,
+        None,
+        epoch,
+        false,
         check,
     )
 }
@@ -256,6 +297,7 @@ pub(super) fn prepare_page_checked(
         log,
         std::iter::once((id, page)),
         1,
+        &super::log_page_catalog::LogPageCatalog::default(),
         Vec::new(),
         None,
         epoch,
@@ -268,6 +310,7 @@ fn prepare_iter_checked<'a>(
     log: &SegmentedOutcomeLog,
     pages: impl Iterator<Item = (&'a PageId, &'a CatalogPage)> + Clone,
     page_count: usize,
+    logs: &super::log_page_catalog::LogPageCatalog,
     metadata: Vec<u8>,
     captured_cut: Option<StoredOutcomePosition>,
     epoch: u64,
@@ -306,7 +349,7 @@ fn prepare_iter_checked<'a>(
         .fill(&mut id)
         .map_err(|_| invalid("checkpoint identity generation failed"))?;
     let header = CatalogHeader {
-        version: 1,
+        version: if logs.chunks.is_empty() { 1 } else { 2 },
         log_id: log.store_id().to_vec(),
         checkpoint_id: id.clone(),
         epoch,
@@ -315,6 +358,7 @@ fn prepare_iter_checked<'a>(
         metadata,
         extent_count: extents.len() as u64,
         page_count: page_count as u64,
+        log_count: logs.chunks.len() as u64,
     };
     let mut writer = CatalogWriter {
         log,
@@ -367,6 +411,24 @@ fn prepare_iter_checked<'a>(
                 extent_offset: span.extent_offset,
             };
             writer.row(4, &binding, &mut scratch)?;
+        }
+    }
+    for (id, entry) in &logs.chunks {
+        check()?;
+        entry.validate()?;
+        writer.row(
+            5,
+            &LogHeader {
+                volume_id: id.volume_id(),
+                chunk_id: id.id(),
+                state: Some(entry.state.clone()),
+                receipts: entry.receipts.len() as u64,
+            },
+            &mut scratch,
+        )?;
+        for receipt in entry.receipts.values() {
+            check()?;
+            writer.row(6, receipt, &mut scratch)?;
         }
     }
     writer.flush()?;
@@ -578,7 +640,11 @@ pub(super) fn load(
     let Some(row::Value::Header(header)) = reader.row()?.value else {
         return Err(invalid("missing catalog header"));
     };
-    if header.version != 1
+    if !matches!(header.version, 1 | 2)
+        || (header.version == 1 && header.log_count != 0)
+        || (header.version == 2 && header.log_count == 0)
+        || header.log_count > commit.bytes
+        || header.log_count > 1_000_000
         || header.log_id != commit.log_id
         || header.checkpoint_id != commit.checkpoint_id
         || header.epoch != commit.epoch
@@ -656,6 +722,44 @@ pub(super) fn load(
         let page = CatalogPage { metadata, spans };
         page.validate_spans()?;
         catalog.pages.insert(id, page);
+    }
+    let mut previous = None;
+    for _ in 0..header.log_count {
+        let Some(row::Value::Log(row)) = reader.row()?.value else {
+            return Err(invalid("missing log checkpoint state"));
+        };
+        let id = ChunkId::new(row.volume_id, row.chunk_id).map_err(invalid)?;
+        if previous.as_ref().is_some_and(|old| old >= &id) || row.receipts > commit.bytes {
+            return Err(invalid("duplicate, unordered or oversized log checkpoint"));
+        }
+        previous = Some(id.clone());
+        let mut entry = super::log_page_catalog::LogPageEntry {
+            state: row
+                .state
+                .ok_or_else(|| invalid("missing log checkpoint authority"))?,
+            receipts: imbl::OrdMap::new(),
+        };
+        let mut offset = None;
+        for _ in 0..row.receipts {
+            let Some(row::Value::Receipt(receipt)) = reader.row()?.value else {
+                return Err(invalid("missing log checkpoint receipt"));
+            };
+            let next = receipt
+                .append
+                .as_ref()
+                .ok_or_else(|| invalid("missing log receipt identity"))?
+                .offset;
+            if offset.is_some_and(|old| old >= next) {
+                return Err(invalid("duplicate or unordered log checkpoint receipt"));
+            }
+            offset = Some(next);
+            entry.receipts.insert(next, receipt);
+        }
+        entry.validate()?;
+        catalog.logs.chunks.insert(id, entry);
+    }
+    if max_pages != 0 {
+        catalog.validate_log_pages()?;
     }
     reader.finish()?;
     Ok(LoadedCheckpoint {

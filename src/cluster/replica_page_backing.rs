@@ -210,12 +210,14 @@ impl PageReadPlan {
 
 impl LivePageBacking {
     pub fn new(log: Arc<SegmentedOutcomeLog>, catalog: PageCatalog) -> io::Result<Self> {
+        catalog.validate_log_pages()?;
         let mut state = State {
             catalog: PageCatalog::default(),
             by_segment: BTreeMap::new(),
             bytes: 0,
             failed: None,
         };
+        state.catalog.logs = catalog.logs;
         // The index prunes using descriptor ownership within its checkpoint
         // worker. Keep backing/read-plan handles in a separate descriptor
         // domain, while interning aliases within this catalog.
@@ -274,7 +276,10 @@ impl LivePageBacking {
                 }
             }
             // Only touched page metadata is staged; never clone the corpus.
-            let mut working = PageCatalog::default();
+            let mut working = PageCatalog {
+                logs: state.catalog.logs.clone(),
+                ..PageCatalog::default()
+            };
             for id in &changed {
                 if let Some(page) = state.catalog.pages.get(id) {
                     working.pages.insert(id.clone(), page.clone());
@@ -285,6 +290,7 @@ impl LivePageBacking {
                 page.validate_spans()?;
                 segments(page)?;
             }
+            state.catalog.logs = working.logs;
             for (id, page) in working.pages {
                 state.replace(id, page)?;
             }
@@ -299,14 +305,17 @@ impl LivePageBacking {
     /// The caller pins retention before this capture and through replacement
     /// publication, since this metadata alone does not own physical files.
     pub fn catalog_snapshot(&self) -> io::Result<PageCatalog> {
-        let mut pages = self.lock()?.catalog.pages.clone();
+        let state = self.lock()?;
+        let mut pages = state.catalog.pages.clone();
+        let logs = state.catalog.logs.clone();
+        drop(state);
         let mut local = BTreeMap::new();
         for page in pages.values_mut() {
             for span in &mut page.spans {
                 span.extent = local_descriptor(&span.extent, &mut local)?;
             }
         }
-        Ok(PageCatalog { pages })
+        Ok(PageCatalog { pages, logs })
     }
     pub fn sequences_after(
         &self,

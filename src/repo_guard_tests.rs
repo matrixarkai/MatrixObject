@@ -160,8 +160,7 @@ fn every_guard_the_workflow_pins_by_name_exists() {
             .count()
     };
     let workflow_lines: Vec<&str> = WORKFLOW.lines().collect();
-    let mut asserted: std::collections::BTreeMap<&str, usize> =
-        std::collections::BTreeMap::new();
+    let mut asserted: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     for (index, line) in workflow_lines.iter().enumerate() {
         let Some(at) = line.find("tests::") else {
             continue;
@@ -302,7 +301,10 @@ fn the_repository_carries_what_an_outside_contributor_needs() {
         paths.len() >= 5,
         "the guide should point at several files in this tree, and this found {paths:?}"
     );
-    println!("CONTRIBUTING cites {} in-tree paths: {paths:?}", paths.len());
+    println!(
+        "CONTRIBUTING cites {} in-tree paths: {paths:?}",
+        paths.len()
+    );
     let missing: Vec<&str> = paths
         .iter()
         .copied()
@@ -475,8 +477,12 @@ fn the_readme_describes_the_continuous_integration_it_has() {
     const BASELINE: &str = include_str!("../tools/known_failures.txt");
 
     // 1. The jobs the README names are the jobs the workflow declares.
-    for job in ["build & docs", "format and rollback guards",
-        "network metadata consensus", "network chunk consensus"] {
+    for job in [
+        "build & docs",
+        "format and rollback guards",
+        "network metadata consensus",
+        "network chunk consensus",
+    ] {
         assert!(
             README.contains(job),
             "the README should name the {job:?} job"
@@ -546,7 +552,9 @@ fn the_readme_describes_the_continuous_integration_it_has() {
         )
     };
     let has_a_filter = |command: &str| {
-        let mut words = command.split_whitespace().skip_while(|word| *word != "test");
+        let mut words = command
+            .split_whitespace()
+            .skip_while(|word| *word != "test");
         words.next();
         let mut words = words.peekable();
         while let Some(word) = words.next() {
@@ -567,22 +575,42 @@ fn the_readme_describes_the_continuous_integration_it_has() {
         if has_a_filter(command) {
             return false;
         }
-        let args: Vec<_> = command.split_whitespace()
-            .skip_while(|word| *word != "test").skip(1)
-            .take_while(|word| *word != "--" && *word != "|").collect();
-        if args.iter().any(|word| matches!(*word, "--lib" | "--all-targets")) {
+        let args: Vec<_> = command
+            .split_whitespace()
+            .skip_while(|word| *word != "test")
+            .skip(1)
+            .take_while(|word| *word != "--" && *word != "|")
+            .collect();
+        if args
+            .iter()
+            .any(|word| matches!(*word, "--lib" | "--all-targets"))
+        {
             return true;
         }
         !args.iter().any(|word| matches!(*word, "--test" | "--bin"))
     };
-    for command in ["cargo test --bin star_repaird", "cargo test --test automatic_staged_expiry",
-        "cargo test --lib --features metadata-consensus selected_test"] {
-        assert!(!runs_the_whole_library_suite(command), "scoped command rejected: {command}");
+    for command in [
+        "cargo test --bin star_repaird",
+        "cargo test --test automatic_staged_expiry",
+        "cargo test --lib --features metadata-consensus selected_test",
+    ] {
+        assert!(
+            !runs_the_whole_library_suite(command),
+            "scoped command rejected: {command}"
+        );
     }
-    for command in ["cargo test", "cargo test --lib", "cargo test --all-targets",
-        "cargo test --lib --bin star_repaird", "cargo test --all-targets --test automatic_staged_expiry",
-        "cargo test -- --bin star_repaird"] {
-        assert!(runs_the_whole_library_suite(command), "unfiltered library run admitted: {command}");
+    for command in [
+        "cargo test",
+        "cargo test --lib",
+        "cargo test --all-targets",
+        "cargo test --lib --bin star_repaird",
+        "cargo test --all-targets --test automatic_staged_expiry",
+        "cargo test -- --bin star_repaird",
+    ] {
+        assert!(
+            runs_the_whole_library_suite(command),
+            "unfiltered library run admitted: {command}"
+        );
     }
     let filters_a_library_run = |command: &str| {
         command.split_whitespace().any(|word| word == "--lib")
@@ -593,9 +621,7 @@ fn the_readme_describes_the_continuous_integration_it_has() {
     let unfiltered: Vec<&String> = joined
         .iter()
         .filter(is_command)
-        .filter(|command| {
-            command.contains("cargo test") && runs_the_whole_library_suite(command)
-        })
+        .filter(|command| command.contains("cargo test") && runs_the_whole_library_suite(command))
         .collect();
     assert!(
         unfiltered.is_empty(),
@@ -624,13 +650,15 @@ fn the_readme_describes_the_continuous_integration_it_has() {
     let integration_named = joined
         .iter()
         .filter(is_command)
+        .filter(|command| command.contains("cargo test") && uses_an_integration_target(command))
+        .count();
+    let binary_named = joined
+        .iter()
+        .filter(is_command)
         .filter(|command| {
-            command.contains("cargo test") && uses_an_integration_target(command)
+            command.contains("cargo test") && command.split_whitespace().any(|word| word == "--bin")
         })
         .count();
-    let binary_named = joined.iter().filter(is_command).filter(|command| {
-        command.contains("cargo test") && command.split_whitespace().any(|word| word == "--bin")
-    }).count();
     assert!(
         library_filtered >= 20,
         "only {library_filtered} steps run a filtered `--lib`, so that clause is not carrying \
@@ -641,7 +669,10 @@ fn the_readme_describes_the_continuous_integration_it_has() {
         "no step runs a `--test` target, so the clause admitting that shape is admitting \
          nothing and could be removed without failing anything"
     );
-    assert!(binary_named >= 1, "no binary target exercises the binary-selection clause");
+    assert!(
+        binary_named >= 1,
+        "no binary target exercises the binary-selection clause"
+    );
 
     // 4. When it runs.
     assert!(
@@ -756,6 +787,7 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOL1",
         "MOL2",
         "MOL3",
+        "MOLP",
         "MOSRS-BLOCK-ROUTE-BOOTSTRAP1",
         "MOSRS-BLOCKSERVER-BOOTSTRAP1",
         "MOSRS-BUCKET-CORS-REQUEST1",
@@ -915,9 +947,7 @@ fn every_durable_format_constant_is_accounted_for() {
                 let value = &text[start..end.min(text.len())];
                 if (value.starts_with("MXOS")
                     || value.starts_with("MOSRS")
-                    || value
-                        .strip_prefix("MOL")
-                        .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())))
+                    || value.starts_with("MOL"))
                     && value
                         .bytes()
                         .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
@@ -943,7 +973,7 @@ fn every_durable_format_constant_is_accounted_for() {
     );
     assert_eq!(
         found.len(),
-        121,
+        122,
         "the count is pinned as well, so a rename that happens to swap two names cannot pass"
     );
 }

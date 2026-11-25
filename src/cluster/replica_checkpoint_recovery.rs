@@ -124,7 +124,7 @@ impl CheckpointState {
             self.cut = Some(record.position.clone());
             return Ok(());
         }
-        if record.batch.version != 3 {
+        if !matches!(record.batch.version, 3 | 4) {
             return Err(invalid("replica outcome lacks committed scalar context"));
         }
         let mut scalars =

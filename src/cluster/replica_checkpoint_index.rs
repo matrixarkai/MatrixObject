@@ -760,16 +760,7 @@ pub(super) fn prepare(
     if pages != catalog.pages.len() as u64 {
         return Err(invalid("index page count mismatch"));
     }
-    let meta = catalog::prepare_checked(
-        log,
-        &PageCatalog::default(),
-        metadata,
-        None,
-        epoch,
-        false,
-        check,
-    )?
-    .commit;
+    let meta = catalog::prepare_metadata_checked(log, catalog, metadata, epoch, check)?.commit;
     let last = meta.last.clone();
     let root = IndexRoot {
         version: 1,
@@ -1242,7 +1233,10 @@ pub(super) fn load(
         extent_cache: BTreeMap::new(),
     };
     let mut index = IndexState::default();
-    let mut pages = PageCatalog::default();
+    let mut pages = PageCatalog {
+        logs: meta.catalog.logs,
+        ..PageCatalog::default()
+    };
     let tree = root
         .node
         .as_ref()
@@ -1260,6 +1254,7 @@ pub(super) fn load(
         })
         .transpose()?;
     index.root = tree;
+    pages.validate_log_pages()?;
     index.rebuild_planner(&pages)?;
     if count(&index.root) != root.pages || pages.pages.len() as u64 != root.pages {
         return Err(invalid("indexed checkpoint page count mismatch"));
@@ -1274,6 +1269,7 @@ pub(super) fn load(
         metadata: meta.header.metadata,
         extent_count: index.extents.len() as u64,
         page_count: root.pages,
+        log_count: pages.logs.chunks.len() as u64,
     };
     Ok(LoadedCheckpoint {
         header,

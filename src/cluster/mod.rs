@@ -247,6 +247,7 @@ mod replica_checkpoint_index;
 mod replica_checkpoint_recovery;
 #[cfg(feature = "replica-server")]
 mod replica_checkpoint_spans;
+mod log_page_catalog;
 #[cfg(feature = "replica-server")]
 mod replica_page_backing;
 #[cfg(feature = "replica-server")]

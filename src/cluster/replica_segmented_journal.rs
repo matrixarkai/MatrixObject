@@ -78,6 +78,7 @@ pub(super) struct SegmentedReplicaJournal {
     log: Arc<SegmentedOutcomeLog>,
     backing: Option<Arc<LivePageBacking>>,
     metadata_only: bool,
+    log_authority: super::log_page_catalog::LogPageCatalog,
     empty: ReplicaServiceSnapshot,
     state: Option<CheckpointState>,
     cut: Option<StoredOutcomePosition>,
@@ -204,10 +205,15 @@ impl SegmentedReplicaJournal {
                 position: position.clone(),
                 revision: (bytes_since_checkpoint == 0).then_some(0),
             });
+        let log_authority = state
+            .as_ref()
+            .map(|state| state.catalog.logs.clone())
+            .unwrap_or_default();
         let mut journal = Self {
             log,
             backing: None,
             metadata_only,
+            log_authority,
             empty: replica_checkpoint_recovery::scalar_template(),
             state,
             cut,
@@ -318,6 +324,14 @@ impl SegmentedReplicaJournal {
         }
         Ok(())
     }
+    fn page_namespace_available(&self, chunk: &crate::ChunkId) -> Result<(), crate::ObjectError> {
+        if self.log_authority.chunks.contains_key(chunk) {
+            return Err(crate::ObjectError::PreconditionFailed(
+                "page-backed log chunks require log-aware operations".into(),
+            ));
+        }
+        Ok(())
+    }
     fn enqueue(
         &mut self,
         pending: Pending,
@@ -325,6 +339,19 @@ impl SegmentedReplicaJournal {
         sync: bool,
     ) -> io::Result<()> {
         self.health()?;
+        match &pending {
+            Pending::Page(page) => self
+                .page_namespace_available(&page.page_id().map_err(invalid)?.chunk_id)
+                .map_err(invalid)?,
+            Pending::Namespace(fence) => {
+                if let Some(after) = &fence.after {
+                    self.page_namespace_available(
+                        &crate::ChunkId::new(after.volume_id, after.chunk_id).map_err(invalid)?,
+                    )
+                    .map_err(invalid)?;
+                }
+            }
+        }
         let context = context.ok_or_else(|| invalid("replica outcome has no scalar context"))?;
         let length = pending.length();
         if length > MAX_BATCH_BYTES {
@@ -427,6 +454,14 @@ impl SegmentedReplicaJournal {
         service: &MatrixReplicaService,
         page: Option<(&crate::PageId, &crate::PageState)>,
     ) -> io::Result<()> {
+        if let Some((page, _)) = page {
+            self.page_namespace_available(&page.chunk_id)
+                .map_err(invalid)?;
+        } else if !self.log_authority.chunks.is_empty() {
+            return Err(invalid(
+                "whole replica installation cannot replace log authority",
+            ));
+        }
         self.flush()?;
         let epoch = self.reserve_epoch()?;
         let token = {
@@ -554,6 +589,7 @@ impl SegmentedReplicaJournal {
                 self.log.clone(),
                 PageCatalog {
                     pages: state.catalog.pages.clone(),
+                    logs: state.catalog.logs.clone(),
                 },
             )?)
         } else {
@@ -819,6 +855,10 @@ impl SegmentedReplicaJournal {
     }
 }
 impl ReplicaJournalBackend for SegmentedReplicaJournal {
+    fn check_page_namespace(&self, chunk: &crate::ChunkId) -> Result<(), crate::ObjectError> {
+        self.page_namespace_available(chunk)
+    }
+
     fn enable_page_backing(&mut self) -> io::Result<Arc<LivePageBacking>> {
         self.flush()?;
         if let Some(backing) = &self.backing {
@@ -847,6 +887,7 @@ impl ReplicaJournalBackend for SegmentedReplicaJournal {
             self.log.clone(),
             PageCatalog {
                 pages: state.catalog.pages.clone(),
+                logs: state.catalog.logs.clone(),
             },
         )?);
         self.backing = Some(backing.clone());

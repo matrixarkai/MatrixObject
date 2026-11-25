@@ -287,6 +287,7 @@ fn live_backing_keeps_checkpoint_descriptor_lifetimes_separate_and_interns_alias
     );
     let descriptor = Arc::downgrade(&worker.pages[&id(0)].spans[0].extent);
     let snapshot = PageCatalog {
+        logs: worker.logs.clone(),
         pages: worker
             .pages
             .iter()
@@ -575,6 +576,7 @@ fn append_span_deltas_keep_full_validation_for_truncation_and_suffix_bounds() {
         log.clone(),
         PageCatalog {
             pages: catalog.pages.clone(),
+            logs: catalog.logs.clone(),
         },
     )
     .unwrap();

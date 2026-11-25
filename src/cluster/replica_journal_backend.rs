@@ -9,6 +9,10 @@ use crate::{
 use std::io;
 pub(super) trait ReplicaJournalBackend: Send {
     fn status(&self) -> io::Result<ReplicaJournalStatus>;
+    fn check_page_namespace(&self, _chunk: &crate::ChunkId) -> Result<(), crate::ObjectError> {
+        Ok(())
+    }
+
     fn maintenance_status(&self) -> io::Result<ReplicaJournalStatus> {
         let mut status = self.status()?;
         status.version = 2;
