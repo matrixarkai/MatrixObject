@@ -329,3 +329,71 @@ fn catalog_image_encoding_preserves_owned_bytes_with_shared_roots_and_attributes
     assert_eq!(captured.to_bytes().unwrap(), expected);
     assert_ne!(catalog.to_bytes().unwrap(), expected);
 }
+
+#[test]
+fn streamed_catalog_matches_image_and_stops_at_each_callback_error() {
+    for count in [0, 1, 257] {
+        let mut catalog = ChunkCatalog::new();
+        for index in 0..count {
+            publish(&mut catalog, None, small(&format!("key-{index:04}"), 1, (index % 251) as u8)).unwrap();
+        }
+        let expected = framed_image(catalog.iter().map(|(_, m)| m.as_ref().clone()).collect(), IMAGE_FORMAT);
+        assert_eq!(catalog.encoded_size().unwrap(), expected.len());
+        let mut parts = Vec::new();
+        catalog.visit_encoded(&mut |part| { parts.push(part.to_vec()); Ok::<(), ()>(()) }).unwrap();
+        assert_eq!(parts.concat(), expected);
+        for stop in 0..parts.len() {
+            let mut calls = 0;
+            let mut prefix = Vec::new();
+            let result = catalog.visit_encoded(&mut |part| {
+                let current = calls;
+                calls += 1;
+                if current == stop { return Err(stop); }
+                prefix.extend_from_slice(part);
+                Ok(())
+            });
+            assert_eq!(result, Err(stop));
+            assert_eq!(calls, stop + 1);
+            assert_eq!(prefix, parts[..stop].concat());
+        }
+    }
+}
+
+#[test]
+fn exact_image_size_survives_replay_refusal_rollback_and_cold_restore() {
+    fn check(catalog: &ChunkCatalog) {
+        let expected = framed_image(catalog.iter().map(|(_, m)| m.as_ref().clone()).collect(), IMAGE_FORMAT);
+        assert_eq!(catalog.encoded_size().unwrap(), expected.len());
+        assert_eq!(catalog.to_bytes().unwrap(), expected);
+        let decoded = ChunkCatalog::from_bytes(&expected).unwrap();
+        assert_eq!(decoded.encoded_size().unwrap(), expected.len());
+    }
+    let mut catalog = ChunkCatalog::new();
+    check(&catalog);
+    for index in 0..257 {
+        let mut first = small(&format!("key-{index:04}"), 1, 42);
+        first.user_metadata.insert("padding".into(), "x".repeat(index));
+        let id = first.object_id();
+        let entry = catalog.entry(&id);
+        let revision = catalog.revision();
+        let create = ChunkOutcome::decide(None, first.clone()).unwrap();
+        assert!(catalog.apply(&create).unwrap());
+        check(&catalog);
+        assert!(!catalog.apply(&create).unwrap());
+        let captured = catalog.clone();
+        let mut after = first.clone();
+        after.generation += 1;
+        after.user_metadata.insert("padding".into(), "x".repeat(index + 1024));
+        let update = ChunkOutcome::decide(Some(first.clone()), after).unwrap();
+        assert!(catalog.apply(&update).unwrap());
+        check(&catalog);
+        check(&captured);
+        assert!(catalog.apply(&create).is_err());
+        check(&catalog);
+        catalog.restore_entry(&id, Some(std::sync::Arc::new(first)), revision + 1);
+        check(&catalog);
+        catalog.restore_entry(&id, entry, revision);
+        check(&catalog);
+        assert!(catalog.apply(&create).unwrap());
+    }
+}

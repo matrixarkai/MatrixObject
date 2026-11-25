@@ -211,12 +211,15 @@ impl MetaSnapshot {
         }
         if !self.chunk_catalog.is_empty() {
             // Covered only when present, so every snapshot that predates it keeps its checksum.
-            let bytes = self.chunk_catalog.to_bytes().expect("valid chunk catalog");
+            let size = self.chunk_catalog.encoded_size().expect("valid chunk catalog");
             material.clear();
             append_string(&mut material, "MOSRSCHUNKS1");
-            append_u64(&mut material, bytes.len() as u64);
+            append_u64(&mut material, size as u64);
             digest = fnv1a64_resumed(digest, &material);
-            digest = fnv1a64_resumed(digest, &bytes);
+            self.chunk_catalog.visit_encoded(&mut |part| {
+                digest = fnv1a64_resumed(digest, part);
+                Ok::<(), std::convert::Infallible>(())
+            }).unwrap();
         }
         if !self.native_objects.is_default() {
             let bytes = self.native_objects.to_bytes().expect("valid native object state");

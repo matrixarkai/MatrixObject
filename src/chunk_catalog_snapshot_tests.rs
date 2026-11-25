@@ -119,3 +119,14 @@ fn a_snapshot_with_a_catalog_and_no_lease_still_carries_the_lease_table_and_the_
     assert!(decoded.cluster_features.is_default());
     assert_eq!(decoded.chunk_catalog.len(), 1);
 }
+
+#[test]
+fn catalog_snapshot_output_reservation_covers_the_encoded_image() {
+    for count in [0, 1, 256, 4096] {
+        let values: Vec<_> = (0..count).map(|index| manifest(&format!("key-{index:05}"), 1, 42)).collect();
+        let snapshot = service_holding(&values).export_snapshot();
+        let bytes = snapshot.to_bytes().unwrap();
+        assert!(snapshot.encoded_size_hint() >= bytes.len(), "{count} objects");
+        assert_eq!(MetaSnapshot::from_bytes(&bytes).unwrap(), snapshot);
+    }
+}

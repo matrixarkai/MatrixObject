@@ -513,7 +513,7 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --all-features --lib chunk_catalog::tests:: -- --test-threads=1 | tee /tmp/native-catalog-capture.log
-          grep -q '^test result: ok. 16 passed; 0 failed' /tmp/native-catalog-capture.log
+          grep -q '^test result: ok. 18 passed; 0 failed' /tmp/native-catalog-capture.log
           cargo test --locked --all-features --lib log_chunk_outcome::writer_lease_snapshot_tests:: -- --test-threads=1 | tee /tmp/writer-lease-capture.log
           grep -q '^test result: ok. 2 passed; 0 failed' /tmp/writer-lease-capture.log
 
