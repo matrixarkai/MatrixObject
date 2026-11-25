@@ -1429,10 +1429,12 @@ fn digest(bytes: &[u8]) -> u64 {
     })
 }
 pub(crate) fn frame<T: Message>(magic: &[u8; 4], value: &T, limit: usize) -> Result<Vec<u8>, ObjectError> {
-    if value.encoded_len() > limit {
+    let encoded_len = value.encoded_len();
+    if encoded_len > limit {
         return Err(invalid("manifest encoding exceeds size bound"));
     }
-    let mut bytes = magic.to_vec();
+    let mut bytes = Vec::with_capacity(encoded_len + 12);
+    bytes.extend_from_slice(magic);
     value
         .encode(&mut bytes)
         .map_err(|_| invalid("manifest encode failed"))?;

@@ -283,11 +283,25 @@ impl ChunkCatalog {
 
     /// The image a snapshot carries.
     pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
-        let image = ChunkCatalogImage {
-            format_version: IMAGE_FORMAT,
-            manifests: self.objects.values().map(|manifest| manifest.as_ref().clone()).collect(),
-        };
-        frame(b"MOCC", &image, self.image_limit())
+        let header = ChunkCatalogImage { format_version: IMAGE_FORMAT, manifests: Vec::new() };
+        let body_len = self.objects.values().try_fold(header.encoded_len(), |total, manifest| {
+            total.checked_add(prost::encoding::message::encoded_len(2, manifest.as_ref()))
+                .ok_or_else(|| invalid("manifest encoding exceeds size bound"))
+        })?;
+        if body_len > self.image_limit() {
+            return Err(invalid("manifest encoding exceeds size bound"));
+        }
+        // Encode immutable entries directly. A checkpoint needs one output buffer,
+        // without cloning every stored extent and digest into an intermediate image.
+        let mut bytes = Vec::with_capacity(body_len + 12);
+        bytes.extend_from_slice(b"MOCC");
+        header.encode_raw(&mut bytes);
+        for manifest in self.objects.values() {
+            prost::encoding::message::encode(2, manifest.as_ref(), &mut bytes);
+        }
+        debug_assert_eq!(bytes.len(), body_len + 4);
+        bytes.extend_from_slice(&crate::fnv1a64(&bytes).to_le_bytes());
+        Ok(bytes)
     }
 
     /// Rebuild a catalog from an image, checking everything a voter relies on: the version, every

@@ -296,7 +296,7 @@ fn the_generation_and_the_names_are_checked() {
     zero.generation = 0;
     assert!(refused(&zero).contains("version, generation or size"));
     let mut version = paged_manifest(vec![paged("group-a", 9, 0, 0, PAGE)]);
-    version.format_version = 2;
+    version.format_version = u32::MAX;
     assert!(refused(&version).contains("version, generation or size"));
     let mut bad_group = paged_manifest(vec![paged("group a", 9, 0, 0, PAGE)]);
     assert!(refused(&bad_group).contains("ordering, identity or bounds"));
