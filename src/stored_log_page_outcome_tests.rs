@@ -328,3 +328,141 @@ fn segmented_log_page_replay_refuses_before_applying_page_mutations() {
         Err(ObjectError::NotFound(_))
     ));
 }
+
+#[test]
+fn log_page_full_chunk_fence_commits_all_64_pages_and_log_state_with_one_sync() {
+    let dir = Directory::new();
+    let log = DurableOutcomeLog::open(dir.path(), 1024 * 1024).unwrap();
+    log.append_decided_batch(&[DecidedMutation::LogPage(&initialize())])
+        .unwrap();
+    let data = vec![23; 64 * 4096];
+    let written = pages(&data);
+    let mut append = append(&data);
+    append.after.as_mut().unwrap().published_length = 0;
+    let appended = log
+        .append_decided_batch(&mutations(&written, &append))
+        .unwrap();
+    assert_eq!(appended.batch.decisions.len(), 65);
+    let before = PageState {
+        logical_length: 4096,
+        write_sequence: 1,
+        checksum_fnv1a64: crate::fnv1a64(&[23; 4096]),
+        data: Arc::new(vec![23; 4096]),
+        ec_parity_fragment: None,
+        ec_fragment_digests: None,
+        discarded_ranges: vec![],
+    };
+    let after = PageState {
+        logical_length: 0,
+        write_sequence: 2,
+        checksum_fnv1a64: crate::fnv1a64(&[]),
+        data: Arc::new(vec![]),
+        ec_parity_fragment: None,
+        ec_fragment_digests: None,
+        discarded_ranges: vec![],
+    };
+    let truncated: Vec<_> = (0..64)
+        .map(|index| {
+            PageOutcome::between(
+                &PageId {
+                    chunk_id: ChunkId::new(1, 2).unwrap(),
+                    page_index: index,
+                },
+                Some(&before),
+                &after,
+            )
+            .unwrap()
+        })
+        .collect();
+    let mut final_state = initialized();
+    final_state.writer_epoch += 1;
+    let fence = LogPageOutcome {
+        version: 1,
+        volume_id: 1,
+        chunk_id: 2,
+        kind: LOG_PAGE_FENCE,
+        before: append.after,
+        after: Some(final_state),
+        append: None,
+    };
+    let mut syncs = 0;
+    let fenced = log
+        .append_with_sync(&mutations(&truncated, &fence), |file| {
+            syncs += 1;
+            file.sync_data()
+        })
+        .unwrap();
+    assert_eq!(syncs, 1);
+    assert_eq!(fenced.batch.decisions.len(), 65);
+    assert!(fenced.batch.payloads.is_empty());
+    drop(log);
+    let reopened = DurableOutcomeLog::open(dir.path(), 1024 * 1024).unwrap();
+    let recovered = reopened.read_outcomes(&fenced.position).unwrap();
+    assert_eq!(
+        recovered,
+        truncated
+            .into_iter()
+            .map(RecoveredMutation::Page)
+            .chain(std::iter::once(RecoveredMutation::LogPage(fence)))
+            .collect::<Vec<_>>()
+    );
+}
+#[test]
+fn log_page_extended_decision_limit_is_bounded_and_does_not_relax_old_formats() {
+    let dir = Directory::new();
+    let log = DurableOutcomeLog::open(dir.path(), 1024 * 1024).unwrap();
+    log.append_decided_batch(&[DecidedMutation::LogPage(&initialize())])
+        .unwrap();
+    let before = log.length();
+    let data = vec![23; 128 * 4096];
+    let oversized_pages = pages(&data);
+    let oversized_log = append(&data);
+    assert!(log
+        .append_decided_batch(&mutations(&oversized_pages, &oversized_log))
+        .is_err());
+    let legacy: Vec<_> = oversized_pages[..65]
+        .iter()
+        .map(DecidedMutation::Page)
+        .collect();
+    assert!(log.append_decided_batch(&legacy).is_err());
+    assert!(log
+        .append_decided_batch_with_metadata(&legacy, b"metadata")
+        .is_err());
+    assert_eq!(log.length(), before);
+    log.healthy().unwrap();
+    let data = vec![23; 127 * 4096];
+    let pages = pages(&data);
+    let outcome = append(&data);
+    let record = log
+        .append_decided_batch(&mutations(&pages, &outcome))
+        .unwrap();
+    assert_eq!(record.batch.decisions.len(), MAX_LOG_BATCH_DECISIONS);
+    let encoded = record.batch.encode_to_vec();
+    assert_eq!(&encoded[..2], &[8, 4]);
+    let mut reordered = encoded[2..].to_vec();
+    reordered.extend_from_slice(&encoded[..2]);
+    preflight(&reordered).unwrap();
+    for version in [1, 3] {
+        let mut changed = reordered.clone();
+        *changed.last_mut().unwrap() = version;
+        assert!(preflight(&changed).is_err());
+    }
+    let mut duplicate = encoded;
+    duplicate.extend_from_slice(&[8, 1]);
+    assert!(preflight(&duplicate).is_err());
+    let mut bad = record.batch.clone();
+    bad.decisions.push(bad.decisions[0].clone());
+    assert!(preflight(&bad.encode_to_vec()).is_err());
+    for version in [1, 3] {
+        let mut old = record.batch.clone();
+        old.version = version;
+        old.decisions.truncate(65);
+        assert!(preflight(&old.encode_to_vec()).is_err());
+    }
+    drop(log);
+    let reopened = DurableOutcomeLog::open(dir.path(), 1024 * 1024).unwrap();
+    assert_eq!(
+        reopened.read_outcomes(&record.position).unwrap().len(),
+        MAX_LOG_BATCH_DECISIONS
+    );
+}

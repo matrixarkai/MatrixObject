@@ -2305,8 +2305,8 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --all-features --lib durable_payload::outcome_log::log_page_tests:: -- --test-threads=1 | tee /tmp/log-page-outcomes.log
-          grep -q '^running 8 tests$' /tmp/log-page-outcomes.log
-          grep -q '^test result: ok. 8 passed' /tmp/log-page-outcomes.log
+          grep -q '^running 10 tests$' /tmp/log-page-outcomes.log
+          grep -q '^test result: ok. 10 passed' /tmp/log-page-outcomes.log
           cargo test --locked --all-features --lib cluster::log_page_catalog::tests:: -- --test-threads=1 | tee /tmp/log-page-catalog.log
           grep -q '^running 8 tests$' /tmp/log-page-catalog.log
           grep -q '^test result: ok. 8 passed' /tmp/log-page-catalog.log

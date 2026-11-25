@@ -25,6 +25,16 @@ const ENVELOPE: usize = 128;
 const COMMIT_OFFSET: u64 = 127;
 const MAX_HEADER: usize = 16 * 1024 * 1024;
 pub const MAX_REPLICA_METADATA_BYTES: usize = 64 * 1024;
+/// A log transition can accompany every page of a full 64-page chunk.
+/// Earlier batch versions retain their original limit.
+pub const MAX_LOG_BATCH_DECISIONS: usize = 128;
+fn decision_limit(version: u32) -> usize {
+    if version == 4 {
+        MAX_LOG_BATCH_DECISIONS
+    } else {
+        MAX_BATCH_EXTENTS
+    }
+}
 #[derive(Debug)]
 pub(super) struct CapacityExhausted;
 impl std::fmt::Display for CapacityExhausted {
@@ -112,6 +122,7 @@ pub struct StoredDecision {
 #[derive(Clone, PartialEq, Message)]
 pub struct StoredOutcomeBatch {
     /// Version 1 carries state transitions; version 2 carries only checkpoint fragments.
+    /// Version 4 includes log transitions and permits up to 128 decisions.
     #[prost(uint32, tag = "1")]
     pub version: u32,
     #[prost(message, repeated, tag = "2")]
@@ -330,11 +341,12 @@ fn envelope(body: &[u8], header: usize, span: u64, start: u64, id: &[u8]) -> Vec
 fn preflight(mut bytes: &[u8]) -> io::Result<()> {
     let mut decisions = 0;
     let mut payloads = 0;
+    let mut version = 0;
     while !bytes.is_empty() {
         let key = prost::encoding::decode_varint(&mut bytes).map_err(object)?;
         match (key >> 3, key & 7) {
             (1, 0) => {
-                prost::encoding::decode_varint(&mut bytes).map_err(object)?;
+                version = prost::encoding::decode_varint(&mut bytes).map_err(object)?;
             }
             (field @ (2 | 3 | 4), 2) => {
                 let length =
@@ -345,7 +357,7 @@ fn preflight(mut bytes: &[u8]) -> io::Result<()> {
                 }
                 if field == 2 {
                     decisions += 1;
-                    if decisions > MAX_BATCH_EXTENTS {
+                    if decisions > MAX_LOG_BATCH_DECISIONS {
                         return Err(invalid("too many stored decisions"));
                     }
                 } else if field == 4 {
@@ -362,6 +374,11 @@ fn preflight(mut bytes: &[u8]) -> io::Result<()> {
             }
             _ => return Err(invalid("unsupported stored outcome field")),
         }
+    }
+    // Protobuf fields may arrive in any order. Bound allocation while scanning,
+    // then enforce the final version's narrower limit before decoding.
+    if decisions > decision_limit(if version == 4 { 4 } else { 0 }) {
+        return Err(invalid("too many stored decisions"));
     }
     Ok(())
 }
@@ -453,10 +470,12 @@ impl DurableOutcomeLog {
             return Err(argument("invalid replica metadata context length"));
         }
         self.store.healthy()?;
-        if mutations.is_empty() || mutations.len() > MAX_BATCH_EXTENTS {
-            return Err(argument(
-                "stored outcome batch must contain 1..64 decisions",
-            ));
+        let log_batch = mutations
+            .iter()
+            .any(|value| matches!(value, DecidedMutation::LogPage(_)));
+        let limit = decision_limit(if log_batch { 4 } else { 1 });
+        if mutations.is_empty() || mutations.len() > limit {
+            return Err(argument("stored outcome batch exceeds its decision limit"));
         }
         let checkpoint_batch = matches!(mutations[0], DecidedMutation::CheckpointFragment(_));
         if mutations.iter().any(|value| {
@@ -471,9 +490,7 @@ impl DurableOutcomeLog {
                 "checkpoint fragments cannot carry replica metadata context",
             ));
         }
-        let log_batch = mutations
-            .iter()
-            .any(|value| matches!(value, DecidedMutation::LogPage(_)));
+
         let mut decisions = Vec::with_capacity(mutations.len());
         let mut logical = 0usize;
         let mut data_length = 0u64;
@@ -653,7 +670,7 @@ impl DurableOutcomeLog {
     ) -> io::Result<()> {
         if !matches!(batch.version, 1 | 2 | 3 | 4)
             || batch.decisions.is_empty()
-            || batch.decisions.len() > MAX_BATCH_EXTENTS
+            || batch.decisions.len() > decision_limit(batch.version)
             || batch.payloads.len() > 8
         {
             return Err(invalid("invalid stored outcome batch"));
