@@ -176,6 +176,7 @@ fn checkpoint_catalog_metadata_spans_fragments_and_skips_interleaved_writes() {
         metadata: vec![0x61; 2 * 1024 * 1024],
         extent_count: 0,
         page_count: 0,
+        log_count: 0,
     };
     let encoded = Row {
         value: Some(row::Value::Header(header.clone())),
@@ -270,6 +271,7 @@ fn checkpoint_catalog_install_cut_cannot_skip_interleaved_logical_writes() {
         metadata: encoded,
         extent_count: 0,
         page_count: 0,
+        log_count: 0,
     };
     writer.row(1, &header, &mut Vec::new()).unwrap();
     writer.flush().unwrap();

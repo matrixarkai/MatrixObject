@@ -127,14 +127,108 @@ pub(super) struct CatalogPage {
 #[derive(Default)]
 pub(super) struct PageCatalog {
     pub pages: BTreeMap<PageId, CatalogPage>,
+    pub logs: super::log_page_catalog::LogPageCatalog,
 }
 
 impl PageCatalog {
+    pub fn validate_log_pages(&self) -> io::Result<()> {
+        for (chunk, entry) in &self.logs.chunks {
+            entry.validate()?;
+            let bytes = u64::from(entry.state.page_bytes);
+            let length = entry.state.length;
+            let first = PageId {
+                chunk_id: chunk.clone(),
+                page_index: 0,
+            };
+            let mut expected = 0;
+            for (id, page) in self
+                .pages
+                .range(first..)
+                .take_while(|(id, _)| &id.chunk_id == chunk)
+            {
+                let start = id
+                    .page_index
+                    .checked_mul(bytes)
+                    .ok_or_else(|| invalid("log page index overflow"))?;
+                let want = length.saturating_sub(start).min(bytes);
+                if page.metadata.data_length != want
+                    || page.metadata.logical_length != want
+                    || !page.metadata.discarded_ranges.is_empty()
+                    || (want != 0 && id.page_index != expected)
+                {
+                    return Err(invalid(
+                        "log checkpoint page coverage differs from authority",
+                    ));
+                }
+                if want != 0 {
+                    expected += 1;
+                }
+            }
+            if expected != length.div_ceil(bytes) {
+                return Err(invalid("log checkpoint omits a committed page"));
+            }
+        }
+        Ok(())
+    }
     /// Fold a validated stored record without loading any payload. On error the
     /// caller discards this working catalog, just as it discards partial replay.
     pub fn fold(&mut self, record: &StoredRecordMetadata) -> io::Result<()> {
-        if !matches!(record.batch.version, 1 | 3) {
+        if !matches!(record.batch.version, 1 | 3 | 4) {
             return Err(invalid("unsupported checkpoint outcome batch"));
+        }
+        for decision in &record.batch.decisions {
+            if let Some(log) = &decision.log_page {
+                log.validate().map_err(|e| invalid(&e.to_string()))?;
+                if log.kind == crate::log_page_outcome::LOG_PAGE_INITIALIZE {
+                    let chunk = crate::ChunkId::new(log.volume_id, log.chunk_id)
+                        .map_err(|e| invalid(&e.to_string()))?;
+                    let first = PageId {
+                        chunk_id: chunk.clone(),
+                        page_index: 0,
+                    };
+                    if self
+                        .pages
+                        .range(first..)
+                        .next()
+                        .is_some_and(|(id, _)| id.chunk_id == chunk)
+                    {
+                        return Err(invalid(
+                            "log initialization reuses a populated page namespace",
+                        ));
+                    }
+                }
+            }
+            if let Some(page) = &decision.page {
+                let id = page.page_id().map_err(|e| invalid(&e.to_string()))?;
+                let transition = record
+                    .batch
+                    .decisions
+                    .iter()
+                    .filter_map(|decision| decision.log_page.as_ref())
+                    .find(|log| log.volume_id == page.volume_id && log.chunk_id == page.chunk_id);
+                if self.logs.chunks.contains_key(&id.chunk_id) || transition.is_some() {
+                    let log = transition
+                        .ok_or_else(|| invalid("log page mutation omits chunk transition"))?;
+                    match log.kind {
+                        crate::log_page_outcome::LOG_PAGE_APPEND => {}
+                        crate::log_page_outcome::LOG_PAGE_FENCE
+                            if page.patches.is_empty()
+                                && self.pages.get(&id).is_some_and(|old| {
+                                    page.data_length <= old.metadata.data_length
+                                }) => {}
+                        _ => return Err(invalid("log transition cannot replace page contents")),
+                    }
+                }
+            }
+            if let Some(fence) = &decision.namespace_fence {
+                if let Some(after) = &fence.after {
+                    let id = crate::ChunkId::new(after.volume_id, after.chunk_id)
+                        .map_err(|e| invalid(&e.to_string()))?;
+                    if self.logs.chunks.contains_key(&id) {
+                        return Err(invalid("page namespace fence cannot replace log authority"));
+                    }
+                }
+            }
         }
         let extents: Vec<_> = record
             .batch
@@ -144,6 +238,9 @@ impl PageCatalog {
             .map(Arc::new)
             .collect();
         for decision in &record.batch.decisions {
+            if let Some(log) = &decision.log_page {
+                self.logs.fold(log)?;
+            }
             let Some(page) = &decision.page else { continue };
             let id = page.page_id().map_err(|e| invalid(&e.to_string()))?;
             if page.version != 1

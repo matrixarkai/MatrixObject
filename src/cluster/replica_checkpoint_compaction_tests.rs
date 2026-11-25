@@ -712,6 +712,7 @@ fn compaction_indexed_owners_bound_partial_copy_work_and_release_the_source_afte
     let count = Cell::new(0usize);
     let mut scanned = PageCatalog {
         pages: managed.catalog.pages.clone(),
+        logs: managed.catalog.logs.clone(),
     };
     let mut scanned_dirty = BTreeSet::new();
     let (scanned_bytes, scanned_moves) = relocate_with_movements(

@@ -148,7 +148,7 @@ pub fn crc32c_update(crc: u32, data: &[u8]) -> u32 {
     !state
 }
 // Runtime acceleration preserves the CRC-32C byte contract, with a portable fallback.
-fn crc32c_update_stored(crc: u32, data: &[u8]) -> u32 {
+pub(crate) fn crc32c_update_stored(crc: u32, data: &[u8]) -> u32 {
     #[cfg(target_arch = "x86_64")]
     if data.len() >= 8 && std::arch::is_x86_feature_detected!("sse4.2") {
         // SAFETY: runtime detection establishes the instruction set before entry.

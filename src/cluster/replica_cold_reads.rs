@@ -147,6 +147,7 @@ pub(super) fn capture(
             return Err(corrupt(error));
         }
     }
+    check_page_api_request(node, request)?;
     use crate::cluster::message::check_reply_size;
     Ok(Some(match request {
         ReplicaRequest::ReadChunk {

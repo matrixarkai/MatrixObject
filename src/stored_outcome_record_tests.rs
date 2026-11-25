@@ -557,6 +557,7 @@ fn stored_outcomes_binary_metadata_and_envelope_bytes_are_stable() {
             original_length: original.len() as u32,
             namespace_fence: Some(fence),
             checkpoint_fragment: None,
+            log_page: None,
         }],
         payloads: Vec::new(),
         replica_metadata: Vec::new(),

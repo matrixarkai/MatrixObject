@@ -298,11 +298,19 @@ impl ReplicaNodeServer {
         segmented: Option<ReplicaSegmentedJournalOptions>,
     ) -> std::io::Result<Self> {
         crate::cluster::message::validate_payload_limit(options.max_payload_bytes)?;
-        if options.publication_writes && options.max_payload_bytes < super::log_op::MIN_PUBLICATION_PAYLOAD_BYTES {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,"publication wire writes need at least 512 payload bytes"));
+        if options.publication_writes
+            && options.max_payload_bytes < super::log_op::MIN_PUBLICATION_PAYLOAD_BYTES
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "publication wire writes need at least 512 payload bytes",
+            ));
         }
         if options.publication_writes && path.is_none() {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,"publication wire writes require durable standalone storage"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "publication wire writes require durable standalone storage",
+            ));
         }
         if options.capacity_bytes == 0 || options.max_pages == 0 {
             return Err(std::io::Error::new(
@@ -411,11 +419,18 @@ impl ReplicaNodeServer {
                 health: Arc::clone(&health),
                 log_chunks: match path {
                     Some(path) => {
-                        let mut store=super::log_chunk_store::LogChunkStore::open(&path.parent().unwrap_or(std::path::Path::new(".")).join("logchunks"))?;
-                        store.set_publication_writes(options.publication_writes && !options.maintenance);
+                        let mut store = super::log_chunk_store::LogChunkStore::open(
+                            &path
+                                .parent()
+                                .unwrap_or(std::path::Path::new("."))
+                                .join("logchunks"),
+                        )?;
+                        store.set_publication_writes(
+                            options.publication_writes && !options.maintenance,
+                        );
                         store.set_publication_payload_limit(options.max_payload_bytes);
                         Some(store)
-                    },
+                    }
                     None => None,
                 },
             })),
@@ -516,16 +531,15 @@ impl ReplicaNodeServer {
         let standalone = self.consensus.is_none();
         #[cfg(not(feature = "chunk-consensus"))]
         let standalone = true;
-        let group_commit =
-            if standalone && self.has_local_journal {
-                Some(star_group_commit::Committer::start_with_deferred(
-                    Arc::clone(&self.replica),
-                    self.options.max_payload_bytes,
-                    self.options.journal_deferred_completion,
-                )?)
-            } else {
-                None
-            };
+        let group_commit = if standalone && self.has_local_journal {
+            Some(star_group_commit::Committer::start_with_deferred(
+                Arc::clone(&self.replica),
+                self.options.max_payload_bytes,
+                self.options.journal_deferred_completion,
+            )?)
+        } else {
+            None
+        };
         let maintain_journal = standalone && self.has_background_journal;
         let worker_threads = self.options.worker_threads.max(1);
         let io_threads = self.io_threads.unwrap_or(worker_threads);
@@ -843,6 +857,12 @@ fn apply_batch_locked(
     writes: Vec<super::message::ConditionalChunkWrite>,
     max_payload_bytes: usize,
 ) -> Result<ReplicaReply, ObjectError> {
+    if let Some(journal) = &guard.journal {
+        for write in &writes {
+            journal.check_page_namespace(&write.page_id.chunk_id)?;
+        }
+    }
+
     for write in writes {
         if let Err(error) = apply_locked(
             guard,
@@ -885,6 +905,12 @@ fn apply_batch_digests_locked(
     writes: Vec<super::message::ConditionalChunkWrite>,
     max_payload_bytes: usize,
 ) -> Result<ReplicaReply, ObjectError> {
+    if let Some(journal) = &guard.journal {
+        for write in &writes {
+            journal.check_page_namespace(&write.page_id.chunk_id)?;
+        }
+    }
+
     let mut digests = Vec::with_capacity(writes.len());
     for write in writes {
         let reply = match apply_locked(
@@ -1067,6 +1093,7 @@ fn apply_locked(
             return Err(ObjectError::Corruption(error.to_string()));
         }
     }
+    check_page_api_request(guard, &request)?;
     if let ReplicaRequest::JournalControl(command) = request {
         use super::replica_journal_control::{ReplicaJournalControl, ReplicaJournalStatus};
         command.validate()?;
@@ -1445,12 +1472,73 @@ fn apply_locked(
     Ok(reply)
 }
 
+fn check_page_api_request(node: &NodeReplica, request: &ReplicaRequest) -> Result<(), ObjectError> {
+    let Some(journal) = node.journal.as_ref() else {
+        return Ok(());
+    };
+    let check = |page: &crate::PageId| journal.check_page_namespace(&page.chunk_id);
+    match request {
+        ReplicaRequest::WriteChunk { page_id, .. }
+        | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
+        | ReplicaRequest::WriteChunkIfState { page_id, .. }
+        | ReplicaRequest::WriteChunkIfSequenceDigest { page_id, .. }
+        | ReplicaRequest::DiscardChunk { page_id, .. }
+        | ReplicaRequest::DiscardChunkIfSequence { page_id, .. }
+        | ReplicaRequest::ReadChunk { page_id, .. }
+        | ReplicaRequest::DigestChunk { page_id, .. }
+        | ReplicaRequest::HeadChunk { page_id, .. }
+        | ReplicaRequest::ReadChunkStateRange { page_id, .. } => check(page_id),
+        ReplicaRequest::WriteChunkBatchIfSequence { writes }
+        | ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } => {
+            for write in writes {
+                check(&write.page_id)?;
+            }
+            Ok(())
+        }
+        ReplicaRequest::ReadChunkBatch { reads } | ReplicaRequest::DigestChunkBatch { reads } => {
+            for (page, _, _) in reads {
+                check(page)?;
+            }
+            Ok(())
+        }
+        ReplicaRequest::HeadChunkBatch { pages } => {
+            for page in pages {
+                check(page)?;
+            }
+            Ok(())
+        }
+        ReplicaRequest::FenceNamespace(fence) => {
+            journal.check_page_namespace(&crate::ChunkId::new(fence.volume_id, fence.chunk_id)?)
+        }
+        ReplicaRequest::ReadNamespaceFence { namespace } => journal.check_page_namespace(namespace),
+        ReplicaRequest::LogOp(op) => {
+            if op.op == super::log_op::OP_STORAGE {
+                return Ok(());
+            }
+            journal.check_page_namespace(&crate::ChunkId::new(op.volume, op.chunk)?)
+        }
+        ReplicaRequest::JournalControl(_)
+        | ReplicaRequest::Membership(_)
+        | ReplicaRequest::StateInstall(_)
+        | ReplicaRequest::Ping
+        | ReplicaRequest::Capabilities
+        | ReplicaRequest::ConditionalWriteLimits
+        | ReplicaRequest::WideConditionalWriteLimits
+        | ReplicaRequest::ReadBatchLimits
+        | ReplicaRequest::GroupIdentity
+        | ReplicaRequest::PageInventory { .. } => Ok(()),
+    }
+}
+
 fn check_install_destination(
     node: &NodeReplica,
     page: &crate::PageId,
     expected: &str,
     source_sequence: u64,
 ) -> Result<(), ObjectError> {
+    if let Some(journal) = &node.journal {
+        journal.check_page_namespace(&page.chunk_id)?;
+    }
     match node.page_head(page) {
         Ok(head) if head.state_checksum == expected && head.write_sequence <= source_sequence => {
             Ok(())
@@ -2203,3 +2291,7 @@ mod io_configuration_tests {
         assert_eq!(server.options.worker_threads, 16);
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "replica_log_page_ownership_tests.rs"]
+mod log_page_ownership_tests;
