@@ -472,3 +472,54 @@ fn native_begin_cannot_take_a_legacy_manifest_namespace() {
     assert!(NativeObjectChange::decide(&s, op, now).is_err());
     assert_eq!(bytes(&s), saved);
 }
+
+#[test]
+fn open_tail_publication_refuses_invalid_lease_holders_atomically() {
+    for holder in [
+        "x".repeat(129),
+        "writer with spaces".to_owned(),
+        "writer\n".to_owned(),
+    ] {
+        let mut begin = start(2, None, 4);
+        begin.holder = holder.clone();
+        let owned = chunk(&begin, 3, 0, 4, 0);
+        let manifest = publication(&begin, &[owned.clone()]);
+        let reference = |revision| NativeStageRef {
+            stage_id: 2,
+            expected_revision: revision,
+            holder: holder.clone(),
+        };
+        let mut service = service();
+        commit(
+            &mut service,
+            Operation::Begin(NativeBegin {
+                start: Some(begin),
+                ..Default::default()
+            }),
+            1000,
+        );
+        commit(
+            &mut service,
+            Operation::Extend(NativeExtend {
+                stage: Some(reference(2)),
+                chunk: Some(owned),
+            }),
+            1001,
+        );
+        let before = bytes(&service);
+        assert!(
+            NativeObjectChange::decide(
+                &service,
+                Operation::Publish(NativePublish {
+                    stage: Some(reference(3)),
+                    manifest: Some(manifest),
+                    expected_lease: None,
+                }),
+                1002
+            )
+            .is_err(),
+            "published a grant that its canonical lease codec rejects"
+        );
+        assert_eq!(bytes(&service), before);
+    }
+}

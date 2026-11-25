@@ -197,14 +197,14 @@ impl Drop for ServerProcess {
         self.halt();
     }
 }
-struct Cluster {
+pub(crate) struct Cluster {
     root: PathBuf,
     data: Vec<ServerProcess>,
     meta: Vec<ServerProcess>,
     proxies: Vec<crate::cluster::chunk_log_tests::FaultProxy>,
 }
 impl Cluster {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_append_gate(None)
     }
     fn with_append_gate(
@@ -288,7 +288,7 @@ impl Cluster {
         assert_eq!(pids.len(), 6);
         result
     }
-    fn client(&self) -> NativeObjectClient {
+    pub(crate) fn client(&self) -> NativeObjectClient {
         let options = MetaClientOptions {
             read_timeout: Duration::from_secs(10),
             connect_timeout: Duration::from_secs(2),
@@ -698,4 +698,102 @@ fn native_staged_write_reaches_every_member_before_waiting_for_any_acknowledgmen
     );
     client.close_pin(&pin).unwrap();
     println!("NATIVE_STAGE_FANOUT_EVIDENCE metadata=3 data=3 required_acks=3 prefix_metadata_commits=0 sealed_retry=passed foreign_attempt=refused exact_bytes=8196");
+}
+
+#[test]
+fn native_writer_renewal_keeps_original_attempts_across_process_restarts() {
+    let mut cluster = Cluster::new();
+    let mut client = cluster.client();
+    let mut stage = client
+        .begin("bucket", "renewed-log", "writer", [13; 32], 4, None, 3_000)
+        .unwrap();
+    let owned = client.allocate(&mut stage, "native-group", 4).unwrap();
+    client
+        .write_chunk(&stage, &owned, b"init", [14; 16])
+        .unwrap();
+    // The locally mutable stage receipt cannot extend the leader's actual grant.
+    stage.start.expires_at_ms = u64::MAX;
+    let published = client.publish(&stage, true).unwrap();
+    let incarnation = published
+        .manifest
+        .initialized_log
+        .as_ref()
+        .unwrap()
+        .object_incarnation
+        .as_slice()
+        .try_into()
+        .unwrap();
+    let mut writer = client.writer(&published).unwrap();
+    let mut old_writer = client.writer(&published).unwrap();
+    assert!(old_writer.lease_remaining() <= Duration::from_millis(3_000));
+    let before = client.metadata_position().unwrap();
+    client.renew_writer(&mut writer, 30_000).unwrap();
+    assert_eq!(client.metadata_position().unwrap(), before + 1);
+    assert!(writer.lease_remaining() > Duration::from_secs(20));
+    std::thread::sleep(old_writer.lease_remaining() + Duration::from_millis(10));
+    let identity = AppendIdentity {
+        object_incarnation: incarnation,
+        attempt_id: [15; 16],
+        request_offset: 4,
+        request_length: 4,
+    };
+    assert!(matches!(
+        old_writer.append(b"late", identity),
+        Err(NativeObjectError::Unknown(_))
+    ));
+    assert!(client.renew_writer(&mut old_writer, 60_000).is_err());
+    assert_eq!(
+        client.metadata_position().unwrap(),
+        before + 1,
+        "expired handle performed a renewal"
+    );
+    cluster.data[2].halt();
+    assert!(matches!(
+        writer.append(b"next", identity),
+        Err(NativeObjectError::Unknown(_))
+    ));
+    assert_eq!(writer.pending_identity(), Some(identity));
+    client.renew_writer(&mut writer, 60_000).unwrap();
+    assert_eq!(
+        writer.pending_identity(),
+        Some(identity),
+        "renewal replaced the original append"
+    );
+    assert_eq!(client.metadata_position().unwrap(), before + 2);
+    for node in &mut cluster.meta {
+        node.restart();
+    }
+    let until = Instant::now() + Duration::from_secs(20);
+    loop {
+        if client.metadata_position().is_ok() {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "original client did not reconnect after metadata restart"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    client.renew_writer(&mut writer, 120_000).unwrap();
+    assert_eq!(
+        client.metadata_position().unwrap(),
+        before + 3,
+        "renewed lease was not recovered"
+    );
+    cluster.data[2].restart();
+    let append_position = client.metadata_position().unwrap();
+    assert_eq!(writer.append(b"next", identity).unwrap(), 8);
+    assert!(writer.pending_identity().is_none());
+    assert_eq!(
+        client.metadata_position().unwrap(),
+        append_position,
+        "data append committed metadata"
+    );
+    for node in &mut cluster.data {
+        node.restart();
+    }
+    let pinned = client.pin("bucket", "renewed-log", 30_000).unwrap();
+    assert_eq!(client.length(&pinned).unwrap(), 8);
+    assert_eq!(client.read_range(&pinned, 0, 8).unwrap(), b"initnext");
+    client.close_pin(&pinned).unwrap();
 }

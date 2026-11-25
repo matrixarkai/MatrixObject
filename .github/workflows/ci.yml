@@ -2357,7 +2357,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --lib native_object_outcome_tests:: -- --test-threads=1 2>&1 | tee /tmp/native-outcomes.log
-          grep -q '^test result: ok. 11 passed' /tmp/native-outcomes.log
+          grep -q '^test result: ok. 12 passed' /tmp/native-outcomes.log
           cargo test --locked --lib cluster::meta_snapshot_file::tests::native_journal:: -- --test-threads=1 2>&1 | tee /tmp/native-journal.log
           grep -q '^test result: ok. 1 passed' /tmp/native-journal.log
       - name: physical metadata bindings and pinned readers
@@ -2381,6 +2381,10 @@ jobs:
           set -euo pipefail
           cargo test --locked --features metadata-consensus --lib native_object_commands::tests -- --test-threads=1 2>&1 | tee /tmp/native-object-rpc.log
           grep -q '^test result: ok. 4 passed' /tmp/native-object-rpc.log
+          cargo test --locked --features metadata-consensus --lib native_object_commands::publication_grant_tests -- --test-threads=1 2>&1 | tee /tmp/native-publication-grant.log
+          grep -q '^test result: ok. 1 passed; 0 failed;' /tmp/native-publication-grant.log
+          cargo test --locked --features metadata-consensus --lib native_object_client::lease_tests:: -- --test-threads=1 2>&1 | tee /tmp/native-writer-renewal.log
+          grep -q '^test result: ok. 5 passed; 0 failed;' /tmp/native-writer-renewal.log
       - name: native object Raft batches restore uncommitted state
         run: |
           set -euo pipefail
@@ -2390,7 +2394,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --features metadata-consensus --lib native_object_path_tests -- --test-threads=1 2>&1 | tee /tmp/native-object-processes.log
-          grep -q '^test result: ok. 3 passed; 0 failed; 1 ignored' /tmp/native-object-processes.log
+          grep -q '^test result: ok. 4 passed; 0 failed; 1 ignored' /tmp/native-object-processes.log
       - name: physical storage authority and recovery
         run: |
           set -euo pipefail

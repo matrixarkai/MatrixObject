@@ -398,6 +398,25 @@ pub(super) fn prepare(
                 ));
             }
             command.expected_lease = service.writer_leases.get(&manifest.bucket, &manifest.key);
+            if manifest
+                .extents
+                .last()
+                .is_some_and(|extent| extent.flags == crate::chunk_manifest::CHUNK_FLAG_TAIL)
+            {
+                let stage = command
+                    .stage
+                    .as_ref()
+                    .ok_or_else(|| invalid("native publication lacks its stage"))?;
+                let start = service
+                    .native_objects
+                    .stage_start(stage.stage_id)
+                    .ok_or_else(|| refused("native publication stage is missing"))?;
+                result.lease = Some(crate::log_chunk_outcome::WriterLease {
+                    holder: start.holder.clone(),
+                    epoch: start.writer_epoch,
+                    expires_at_ms: start.expires_at_ms,
+                });
+            }
             result.manifest = Some(manifest.clone());
         }
         Operation::OpenPin(pin) => {
@@ -609,5 +628,67 @@ pub(crate) mod tests {
         });
         assert!(read(&service, &query, 1 << 20, 3999).is_ok());
         assert!(read(&service, &query, 1 << 20, 4000).is_err());
+    }
+}
+
+#[cfg(test)]
+mod publication_grant_tests {
+    use super::*;
+    #[test]
+    fn publication_reply_carries_the_same_writer_grant_that_is_committed() {
+        let mut service = crate::native_object_outcome_tests::service();
+        let mut commands = crate::native_object_outcome_tests::commands();
+        for (operation, now) in commands.drain(..2) {
+            NativeObjectChange::decide(&service, operation, now)
+                .unwrap()
+                .apply(&mut service)
+                .unwrap();
+        }
+        let (operation, now) = commands.remove(0);
+        let request = NativeObjectRequest::mutation(operation, 0);
+        let before = service.export_snapshot().to_bytes().unwrap();
+        let (outcome, reply) = prepare(
+            &service,
+            &super::super::ChunkGroupCatalog::default(),
+            &request,
+            1 << 20,
+            now,
+        )
+        .unwrap();
+        let super::super::MetaReply::NativeObject(reply) = reply else {
+            panic!("wrong reply");
+        };
+        let lease = reply
+            .lease
+            .as_ref()
+            .expect("publication omitted its resulting grant");
+        assert_eq!(
+            (lease.holder.as_str(), lease.epoch, lease.expires_at_ms),
+            ("writer", 2, 10_000)
+        );
+        assert_eq!(reply.now_ms, now);
+        assert_eq!(service.export_snapshot().to_bytes().unwrap(), before);
+        assert!(prepare(
+            &service,
+            &super::super::ChunkGroupCatalog::default(),
+            &request,
+            reply.encoded_len() - 1,
+            now
+        )
+        .is_err());
+        assert_eq!(
+            service.export_snapshot().to_bytes().unwrap(),
+            before,
+            "oversized grant receipt committed publication"
+        );
+        outcome.apply(&mut service).unwrap();
+        let manifest = reply.manifest.unwrap();
+        assert_eq!(
+            service
+                .writer_leases
+                .get(&manifest.bucket, &manifest.key)
+                .as_ref(),
+            Some(lease)
+        );
     }
 }
