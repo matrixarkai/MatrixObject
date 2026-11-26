@@ -122,9 +122,16 @@ impl MatrixReplicaService {
     /// application state nor inputs to the durable outcome. Do not copy their
     /// payloads or validation indexes into a short-lived candidate.
     /// The live service and the public Clone implementation remain unchanged.
+    #[cfg(test)]
     pub(crate) fn clone_for_raft_preparation(&self) -> Self {
+        let mut candidate = self.clone_for_raft_preparation_without_pages();
+        candidate.pages = self.pages.clone();
+        candidate
+    }
+
+    fn clone_for_raft_preparation_without_pages(&self) -> Self {
         Self {
-            pages: self.pages.clone(),
+            pages: BTreeMap::new(),
             namespace_fences: self.namespace_fences.clone(),
             keep_ec_sidecar: self.keep_ec_sidecar,
             receipt_retention: self.receipt_retention,
@@ -206,9 +213,131 @@ impl MatrixReplicaService {
     }
 }
 
+/// Exclusive proposal preparation. The live page map is temporarily moved
+/// into the candidate. Only pages that can change need before-images.
+#[cfg(feature = "chunk-consensus")]
+pub(crate) struct RaftPagePreparation<'a> {
+    live: &'a mut MatrixReplicaService,
+    candidate: MatrixReplicaService,
+    original_pages: BTreeMap<PageId, Option<std::sync::Arc<PageState>>>,
+}
+
+#[cfg(feature = "chunk-consensus")]
+impl<'a> RaftPagePreparation<'a> {
+    pub(crate) fn new(live: &'a mut MatrixReplicaService) -> Self {
+        let mut candidate = live.clone_for_raft_preparation_without_pages();
+        candidate.pages = std::mem::take(&mut live.pages);
+        Self {
+            live,
+            candidate,
+            original_pages: BTreeMap::new(),
+        }
+    }
+
+    /// Stage a mutation that can change at most the supplied page. Preserve
+    /// accepted mutations so the next proposal sees them in order.
+    pub(crate) fn stage<R>(
+        &mut self,
+        page: Option<&PageId>,
+        prepare: impl FnOnce(&mut MatrixReplicaService) -> (R, bool),
+    ) -> R {
+        let mut previous = self.candidate.clone_for_raft_preparation_without_pages();
+        let page_before = page.and_then(|id| self.candidate.pages.get(id).cloned());
+        if let Some(id) = page {
+            self.original_pages
+                .entry(id.clone())
+                .or_insert_with(|| page_before.clone());
+        }
+
+        let (result, accepted) = prepare(&mut self.candidate);
+        if !accepted {
+            previous.pages = std::mem::take(&mut self.candidate.pages);
+            if let Some(id) = page {
+                Self::restore_page(&mut previous.pages, id.clone(), page_before);
+            }
+            self.candidate = previous;
+        }
+        result
+    }
+
+    fn restore_page(
+        pages: &mut BTreeMap<PageId, std::sync::Arc<PageState>>,
+        id: PageId,
+        prior: Option<std::sync::Arc<PageState>>,
+    ) {
+        if let Some(prior) = prior {
+            pages.insert(id, prior);
+        } else {
+            pages.remove(&id);
+        }
+    }
+}
+
+#[cfg(feature = "chunk-consensus")]
+impl Drop for RaftPagePreparation<'_> {
+    fn drop(&mut self) {
+        let mut pages = std::mem::take(&mut self.candidate.pages);
+        for (id, prior) in std::mem::take(&mut self.original_pages) {
+            Self::restore_page(&mut pages, id, prior);
+        }
+        self.live.pages = pages;
+    }
+}
+
 #[cfg(all(test, feature = "chunk-consensus"))]
 mod preparation_clone_tests {
     use super::*;
+    #[test]
+    fn proposal_preparation_restores_rejected_and_unwound_page_changes() {
+        let mut live = MatrixReplicaService::new();
+        let chunk = ChunkId::new(1, 1).unwrap();
+        let existing = PageId {
+            chunk_id: chunk.clone(),
+            page_index: 0,
+        };
+        let new_page = PageId {
+            chunk_id: chunk,
+            page_index: 1,
+        };
+        live.write_chunk(existing.clone(), 0, b"live").unwrap();
+        let original = live.clone();
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut preparation = RaftPagePreparation::new(&mut live);
+            preparation.stage(Some(&existing), |candidate| {
+                candidate
+                    .write_chunk(existing.clone(), 0, b"staged")
+                    .unwrap();
+                ((), true)
+            });
+            preparation.stage(Some(&new_page), |candidate| {
+                candidate
+                    .write_chunk(new_page.clone(), 0, b"reject")
+                    .unwrap();
+                ((), false)
+            });
+            preparation.stage::<()>(Some(&new_page), |candidate| {
+                assert!(matches!(
+                    candidate.read_chunk_state(&new_page),
+                    Err(ObjectError::NotFound(_))
+                ));
+                assert_eq!(
+                    candidate
+                        .read_chunk_state(&existing)
+                        .unwrap()
+                        .data
+                        .as_slice(),
+                    b"staged"
+                );
+                candidate
+                    .write_chunk(new_page.clone(), 0, b"unwind")
+                    .unwrap();
+                panic!("unwind speculative preparation");
+            });
+        }));
+        assert!(unwind.is_err());
+        assert_eq!(live, original);
+    }
+
     #[test]
     fn preparation_clone_preserves_state_without_copying_read_caches() {
         let mut service = MatrixReplicaService::new();
