@@ -839,8 +839,9 @@ fn run(
                             }
                         }
                     } else {
+                        let max_pages = node.max_pages;
                         let batch = prepare_write_batch(
-                            &node.service, node.max_pages, limit, request,
+                            &mut node.service, max_pages, limit, request,
                             requests.receiver(), &mut deferred,
                         )?;
                         let (mut payloads, replies): (Vec<_>, Vec<_>) = batch.into_iter().unzip();
@@ -882,7 +883,7 @@ fn run(
 type PreparedWrite = (Vec<u8>, (Request, Option<Result<ReplicaReply, ObjectError>>));
 
 fn prepare_write_batch(
-    service: &MatrixReplicaService,
+    service: &mut MatrixReplicaService,
     max_pages: usize,
     limit: usize,
     first: Request,
@@ -890,7 +891,7 @@ fn prepare_write_batch(
     deferred: &mut Option<Request>,
 ) -> Result<Vec<PreparedWrite>, RaftError> {
     debug_assert!(deferred.is_none());
-    let mut candidate = None;
+    let mut preparation = crate::replica_service::RaftPagePreparation::new(service);
     let mut next = Some(first);
     let mut batch = Vec::new();
     let mut bytes = 0usize;
@@ -905,20 +906,22 @@ fn prepare_write_batch(
             continue;
         }
         request.progress.mark(RequestPhase::Preparing);
-        let (outcome, reply, prepared) = match prepare_candidate(
-            candidate.as_ref().unwrap_or(service), &request.request, max_pages, limit,
-        ) {
-            Ok((outcome, reply, prepared)) => (outcome, reply.map(Ok), prepared),
-            Err(error) => (Vec::new(), Some(Err(error)), None),
-        };
-        let entry = Entry { version: 1, outcome };
-        let payload = entry.encode_to_vec();
-        if !batch.is_empty() && bytes.saturating_add(payload.len()) > 4 * 1024 * 1024 {
+        let (payload, reply, over_batch_limit) =
+            preparation.stage(mutation_page(&request.request), |candidate| {
+                let (outcome, reply) =
+                    match prepare_on_candidate(candidate, &request.request, max_pages, limit) {
+                        Ok((outcome, reply)) => (outcome, reply.map(Ok)),
+                        Err(error) => (Vec::new(), Some(Err(error))),
+                    };
+                let has_outcome = !outcome.is_empty();
+                let payload = Entry { version: 1, outcome }.encode_to_vec();
+                let over_batch_limit =
+                    !batch.is_empty() && bytes.saturating_add(payload.len()) > 4 * 1024 * 1024;
+                ((payload, reply, over_batch_limit), has_outcome && !over_batch_limit)
+            });
+        if over_batch_limit {
             *deferred = Some(request);
             break;
-        }
-        if !entry.outcome.is_empty() {
-            if let Some(prepared) = prepared { candidate = Some(prepared); }
         }
         bytes += payload.len();
         batch.push((payload, (request, reply)));
@@ -1062,22 +1065,38 @@ fn prepare(
     max_pages: usize,
     limit: usize,
 ) -> Result<(Vec<u8>, Option<ReplicaReply>), ObjectError> {
-    let (outcome, reply, _) = prepare_candidate(service, request, max_pages, limit)?;
-    Ok((outcome, reply))
+    let mut candidate = service.clone_for_raft_preparation();
+    prepare_on_candidate(&mut candidate, request, max_pages, limit)
 }
-fn prepare_candidate(
-    service: &MatrixReplicaService,
+
+fn mutation_page(request: &ReplicaRequest) -> Option<&crate::PageId> {
+    match request {
+        ReplicaRequest::WriteChunk { page_id, .. }
+        | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
+        | ReplicaRequest::WriteChunkIfState { page_id, .. }
+        | ReplicaRequest::WriteChunkIfSequenceDigest { page_id, .. }
+        | ReplicaRequest::DiscardChunkIfSequence { page_id, .. }
+        | ReplicaRequest::DiscardChunk { page_id, .. } => Some(page_id),
+        _ => None,
+    }
+}
+
+fn prepare_on_candidate(
+    candidate: &mut MatrixReplicaService,
     request: &ReplicaRequest,
     max_pages: usize,
     limit: usize,
-) -> Result<(Vec<u8>, Option<ReplicaReply>, Option<MatrixReplicaService>), ObjectError> {
+) -> Result<(Vec<u8>, Option<ReplicaReply>), ObjectError> {
     if let ReplicaRequest::FenceNamespace(fence) = request {
-        let outcome = crate::chunk_namespace_fence::NamespaceFenceOutcome::decide(service, fence.clone())?;
-        crate::cluster::message::check_reply_size(outcome.after.as_ref().unwrap().encoded_len(), limit)?;
-        let mut candidate = service.clone_for_raft_preparation();
-        outcome.apply(&mut candidate)?;
+        let outcome =
+            crate::chunk_namespace_fence::NamespaceFenceOutcome::decide(candidate, fence.clone())?;
+        crate::cluster::message::check_reply_size(
+            outcome.after.as_ref().unwrap().encoded_len(),
+            limit,
+        )?;
+        outcome.apply(candidate)?;
         let bytes = outcome.to_payload()?;
-        return Ok((bytes, Some(ReplicaReply::NamespaceFence(outcome.after.unwrap())), Some(candidate)));
+        return Ok((bytes, Some(ReplicaReply::NamespaceFence(outcome.after.unwrap()))));
     }
     if matches!(request, ReplicaRequest::StateInstall(_)) {
         return Err(ObjectError::PreconditionFailed(
@@ -1093,34 +1112,27 @@ fn prepare_candidate(
             "batch writes require batch admission".into(),
         ));
     }
-    let page = match request {
-        ReplicaRequest::WriteChunk { page_id, .. }
-        | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
-        | ReplicaRequest::WriteChunkIfState { page_id, .. }
-        | ReplicaRequest::WriteChunkIfSequenceDigest { page_id, .. }
-        | ReplicaRequest::DiscardChunkIfSequence { page_id, .. }
-        | ReplicaRequest::DiscardChunk { page_id, .. } => page_id,
-        _ => return Ok((Vec::new(), None, None)),
+    let Some(page) = mutation_page(request) else {
+        return Ok((Vec::new(), None));
     };
-    let before = match service.read_chunk_state(page) {
+    let before = match candidate.read_chunk_state(page) {
         Ok(state) => Some(state),
         Err(ObjectError::NotFound(_)) => None,
-        Err(e) => return Err(e),
+        Err(error) => return Err(error),
     };
-    let counters = PageOutcome::counters(service);
-    let mut candidate = service.clone_for_raft_preparation();
-    // The digest reply describes this candidate's applied bytes. Its outcome
-    // is committed and installed before the pending reply is delivered.
-    let reply = checked_apply(&mut candidate, request.clone(), max_pages, limit)?;
+    let counters = PageOutcome::counters(candidate);
+    // The reply describes the candidate's applied bytes. The worker delivers
+    // it only after the encoded outcome commits and is installed.
+    let reply = checked_apply(candidate, request.clone(), max_pages, limit)?;
     let after = match candidate.read_chunk_state(page) {
         Ok(state) => state,
-        Err(ObjectError::NotFound(_)) if before.is_none() => return Ok((Vec::new(), Some(reply), Some(candidate))),
-        Err(e) => return Err(e),
+        Err(ObjectError::NotFound(_)) if before.is_none() => return Ok((Vec::new(), Some(reply))),
+        Err(error) => return Err(error),
     };
     let outcome = PageOutcome::between(page, before.as_ref(), &after)?
-        .with_counters(counters, PageOutcome::counters(&candidate))
+        .with_counters(counters, PageOutcome::counters(candidate))
         .to_payload()?;
-    Ok((outcome, Some(reply), Some(candidate)))
+    Ok((outcome, Some(reply)))
 }
 
 #[cfg(test)]

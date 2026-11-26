@@ -32,7 +32,8 @@ fn service() -> MatrixReplicaService {
 
 #[test]
 fn write_batch_preserves_live_state_and_replays_same_page_in_order() {
-    let live = service();
+    let mut live = service();
+    checked_apply(&mut live, write(47, 9, 128), 64, 8 * 1024 * 1024).unwrap();
     let original = live.clone();
     let mut expected = live.clone();
     let commands = [
@@ -64,7 +65,7 @@ fn write_batch_preserves_live_state_and_replays_same_page_in_order() {
         tx.send(request).unwrap();
         receivers.push(reply);
     }
-    let batch = prepare_write_batch(&live, 64, 8 * 1024 * 1024, first, &rx, &mut None).unwrap();
+    let batch = prepare_write_batch(&mut live, 64, 8 * 1024 * 1024, first, &rx, &mut None).unwrap();
     assert_eq!(batch.len(), commands.len());
     assert_eq!(live, original);
     assert!(receivers
@@ -100,7 +101,7 @@ fn write_batch_stops_at_reads_and_expires_unadmitted_requests() {
             node_id: 4,
         }),
     ] {
-        let live = service();
+        let mut live = service();
         let (tx, rx) = mpsc::sync_channel(8);
         let (first, _reply) = request(write(0, 1, 16));
         let (mut expired, expired_reply) = request(write(1, 2, 16));
@@ -109,7 +110,7 @@ fn write_batch_stops_at_reads_and_expires_unadmitted_requests() {
         tx.send(request(barrier.clone()).0).unwrap();
         tx.send(request(write(2, 3, 16)).0).unwrap();
         let mut deferred = None;
-        let batch = prepare_write_batch(&live, 64, 65536, first, &rx, &mut deferred).unwrap();
+        let batch = prepare_write_batch(&mut live, 64, 65536, first, &rx, &mut deferred).unwrap();
         assert_eq!(batch.len(), 1);
         assert!(expired_reply.try_recv().unwrap().is_err());
         assert_eq!(deferred.unwrap().request, barrier);
@@ -123,7 +124,7 @@ fn write_batch_stops_at_reads_and_expires_unadmitted_requests() {
 #[test]
 fn write_batch_bounds_count_and_bytes_without_consuming_the_next_request() {
     for size in [16, 1024 * 1024] {
-        let live = service();
+        let mut live = service();
         let original = live.clone();
         let (tx, rx) = mpsc::sync_channel(40);
         for index in 1..40 {
@@ -131,7 +132,7 @@ fn write_batch_bounds_count_and_bytes_without_consuming_the_next_request() {
         }
         let mut deferred = None;
         let batch = prepare_write_batch(
-            &live,
+            &mut live,
             64,
             8 * 1024 * 1024,
             request(write(0, 1, size)).0,
